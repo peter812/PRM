@@ -76,7 +76,7 @@ export default function PeopleList() {
             </Button>
           </div>
         ) : people && people.length > 0 ? (
-          <div className="space-y-3">
+          <div className="space-y-4">
             {people.map((person) => (
               <Link key={person.id} href={`/person/${person.id}`}>
                 <Card
