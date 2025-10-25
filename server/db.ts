@@ -4,7 +4,7 @@ import * as schema from "@shared/schema";
 
 const { Pool } = pg;
 
-const connectionString = 'postgresql://people:people812@pbe.im:3306/people';
+const connectionString = process.env.DATABASE_URL || 'postgresql://people:people812@pbe.im:3306/people';
 
 export const pool = new Pool({ 
   connectionString,

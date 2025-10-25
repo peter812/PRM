@@ -4,6 +4,7 @@ import {
   notes,
   interactions,
   relationships,
+  users,
   type Person,
   type InsertPerson,
   type Note,
@@ -14,9 +15,15 @@ import {
   type InsertRelationship,
   type PersonWithRelations,
   type RelationshipWithPerson,
+  type User,
+  type InsertUser,
 } from "@shared/schema";
-import { db } from "./db";
+import { db, pool } from "./db";
 import { eq, or, ilike, sql } from "drizzle-orm";
+import session from "express-session";
+import connectPg from "connect-pg-simple";
+
+const PostgresSessionStore = connectPg(session);
 
 export interface IStorage {
   // People operations
@@ -39,9 +46,23 @@ export interface IStorage {
   createRelationship(relationship: InsertRelationship): Promise<Relationship>;
   updateRelationship(id: string, relationship: Partial<InsertRelationship>): Promise<Relationship | undefined>;
   deleteRelationship(id: string): Promise<void>;
+
+  // User operations
+  getUser(id: number): Promise<User | undefined>;
+  getUserByUsername(username: string): Promise<User | undefined>;
+  createUser(user: InsertUser): Promise<User>;
+  
+  // Session store
+  sessionStore: session.SessionStore;
 }
 
 export class DatabaseStorage implements IStorage {
+  sessionStore: session.SessionStore;
+
+  constructor() {
+    this.sessionStore = new PostgresSessionStore({ pool, createTableIfMissing: true });
+  }
+
   // People operations
   async getAllPeople(searchQuery?: string): Promise<Person[]> {
     if (searchQuery) {
@@ -199,6 +220,22 @@ export class DatabaseStorage implements IStorage {
 
   async deleteRelationship(id: string): Promise<void> {
     await db.delete(relationships).where(eq(relationships.id, id));
+  }
+
+  // User operations
+  async getUser(id: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user || undefined;
+  }
+
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.username, username));
+    return user || undefined;
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const [user] = await db.insert(users).values(insertUser).returning();
+    return user;
   }
 }
 
