@@ -29,6 +29,24 @@ interface Edge {
   graphics: Graphics;
 }
 
+// Helper to convert HSL from CSS variable to hex color
+function hslToHex(h: number, s: number, l: number): number {
+  l /= 100;
+  const a = (s * Math.min(l, 1 - l)) / 100;
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color);
+  };
+  return (f(0) << 16) + (f(8) << 8) + f(4);
+}
+
+// Parse HSL string from CSS variable
+function parseHSL(hslString: string): { h: number; s: number; l: number } {
+  const values = hslString.split(' ').map(v => parseFloat(v));
+  return { h: values[0], s: values[1], l: values[2] };
+}
+
 export default function Graph() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
@@ -37,6 +55,7 @@ export default function Graph() {
   const containerRef = useRef<Container | null>(null);
   const animationRef = useRef<number>(0);
   const isDraggingRef = useRef<string | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [scale, setScale] = useState(1);
@@ -64,12 +83,24 @@ export default function Graph() {
         appRef.current.destroy(true, { children: true, texture: true });
       }
 
+      // Get theme colors from CSS variables
+      const styles = getComputedStyle(document.documentElement);
+      const backgroundHSL = styles.getPropertyValue('--background').trim();
+      const foregroundHSL = styles.getPropertyValue('--foreground').trim();
+      
+      const bgColor = parseHSL(backgroundHSL);
+      const fgColor = parseHSL(foregroundHSL);
+      
+      const backgroundColor = hslToHex(bgColor.h, bgColor.s, bgColor.l);
+      const foregroundColor = hslToHex(fgColor.h, fgColor.s, fgColor.l);
+      const lineColor = foregroundColor; // Use foreground color for lines
+
       // Create PIXI application
       const app = new Application();
       await app.init({
         width: canvasRef.current.clientWidth,
         height: canvasRef.current.clientHeight,
-        backgroundColor: 0x000000,
+        backgroundColor: backgroundColor,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
@@ -103,12 +134,12 @@ export default function Graph() {
         graphics.x = x;
         graphics.y = y;
         graphics.eventMode = 'static';
-        graphics.cursor = 'pointer';
+        graphics.cursor = 'grab';
 
         const textStyle = new TextStyle({
           fontFamily: 'Inter, sans-serif',
           fontSize: 12,
-          fill: 0xffffff,
+          fill: foregroundColor,
         });
 
         const text = new Text({
@@ -122,14 +153,25 @@ export default function Graph() {
         // Interaction handlers
         graphics.on('pointerdown', (e) => {
           isDraggingRef.current = person.id;
+          dragStartRef.current = { x: e.global.x, y: e.global.y };
+          graphics.cursor = 'grabbing';
           e.stopPropagation();
         });
 
-        graphics.on('pointerup', () => {
-          if (isDraggingRef.current === person.id) {
-            navigate(`/person/${person.id}`);
+        graphics.on('pointerup', (e) => {
+          if (isDraggingRef.current === person.id && dragStartRef.current) {
+            // Only navigate if drag distance is small (click vs drag)
+            const dx = e.global.x - dragStartRef.current.x;
+            const dy = e.global.y - dragStartRef.current.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance < 5) {
+              navigate(`/person/${person.id}`);
+            }
           }
           isDraggingRef.current = null;
+          dragStartRef.current = null;
+          graphics.cursor = 'grab';
         });
 
         graphics.on('pointerover', () => {
@@ -173,11 +215,10 @@ export default function Graph() {
 
             if (fromNode && toNode) {
               const graphics = new Graphics();
-              const color = relationshipColors[rel.level] || relationshipColors.other;
               
               graphics.moveTo(fromNode.x, fromNode.y);
               graphics.lineTo(toNode.x, toNode.y);
-              graphics.stroke({ color, width: 2, alpha: 0.6 });
+              graphics.stroke({ color: lineColor, width: 2, alpha: 0.3 });
 
               container.addChildAt(graphics, 0); // Add edges behind nodes
               edges.push({
@@ -262,11 +303,10 @@ export default function Graph() {
           const fromNode = nodesRef.current.get(edge.from);
           const toNode = nodesRef.current.get(edge.to);
           if (fromNode && toNode) {
-            const color = relationshipColors[edge.level] || relationshipColors.other;
             edge.graphics.clear();
             edge.graphics.moveTo(fromNode.x, fromNode.y);
             edge.graphics.lineTo(toNode.x, toNode.y);
-            edge.graphics.stroke({ color, width: 2, alpha: 0.6 });
+            edge.graphics.stroke({ color: lineColor, width: 2, alpha: 0.3 });
           }
         });
 
@@ -291,7 +331,25 @@ export default function Graph() {
       });
 
       app.stage.on('pointerup', () => {
+        if (isDraggingRef.current) {
+          const node = nodesRef.current.get(isDraggingRef.current);
+          if (node) {
+            node.graphics.cursor = 'grab';
+          }
+        }
         isDraggingRef.current = null;
+        dragStartRef.current = null;
+      });
+
+      app.stage.on('pointerupoutside', () => {
+        if (isDraggingRef.current) {
+          const node = nodesRef.current.get(isDraggingRef.current);
+          if (node) {
+            node.graphics.cursor = 'grab';
+          }
+        }
+        isDraggingRef.current = null;
+        dragStartRef.current = null;
       });
     };
 
