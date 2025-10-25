@@ -35,10 +35,22 @@ export const interactions = pgTable("interactions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Relationships table
+export const relationships = pgTable("relationships", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  fromPersonId: integer("from_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  toPersonId: integer("to_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  level: text("level").notNull(), // "colleague", "friend", "family", "client", "partner", etc.
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Relations
 export const peopleRelations = relations(people, ({ many }) => ({
   notes: many(notes),
   interactions: many(interactions),
+  relationshipsFrom: many(relationships, { relationName: "relationshipsFrom" }),
+  relationshipsTo: many(relationships, { relationName: "relationshipsTo" }),
 }));
 
 export const notesRelations = relations(notes, ({ one }) => ({
@@ -52,6 +64,19 @@ export const interactionsRelations = relations(interactions, ({ one }) => ({
   person: one(people, {
     fields: [interactions.personId],
     references: [people.id],
+  }),
+}));
+
+export const relationshipsRelations = relations(relationships, ({ one }) => ({
+  fromPerson: one(people, {
+    fields: [relationships.fromPersonId],
+    references: [people.id],
+    relationName: "relationshipsFrom",
+  }),
+  toPerson: one(people, {
+    fields: [relationships.toPersonId],
+    references: [people.id],
+    relationName: "relationshipsTo",
   }),
 }));
 
@@ -75,6 +100,11 @@ export const insertInteractionSchema = createInsertSchema(interactions)
     date: z.coerce.date(),
   });
 
+export const insertRelationshipSchema = createInsertSchema(relationships).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type Person = typeof people.$inferSelect;
 export type InsertPerson = z.infer<typeof insertPersonSchema>;
@@ -85,8 +115,16 @@ export type InsertNote = z.infer<typeof insertNoteSchema>;
 export type Interaction = typeof interactions.$inferSelect;
 export type InsertInteraction = z.infer<typeof insertInteractionSchema>;
 
+export type Relationship = typeof relationships.$inferSelect;
+export type InsertRelationship = z.infer<typeof insertRelationshipSchema>;
+
 // Extended types for API responses with relations
+export type RelationshipWithPerson = Relationship & {
+  toPerson: Person;
+};
+
 export type PersonWithRelations = Person & {
   notes: Note[];
   interactions: Interaction[];
+  relationships: RelationshipWithPerson[];
 };

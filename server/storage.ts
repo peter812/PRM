@@ -3,13 +3,17 @@ import {
   people,
   notes,
   interactions,
+  relationships,
   type Person,
   type InsertPerson,
   type Note,
   type InsertNote,
   type Interaction,
   type InsertInteraction,
+  type Relationship,
+  type InsertRelationship,
   type PersonWithRelations,
+  type RelationshipWithPerson,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, or, ilike, sql } from "drizzle-orm";
@@ -29,6 +33,11 @@ export interface IStorage {
   // Interaction operations
   createInteraction(interaction: InsertInteraction): Promise<Interaction>;
   deleteInteraction(id: number): Promise<void>;
+
+  // Relationship operations
+  createRelationship(relationship: InsertRelationship): Promise<Relationship>;
+  updateRelationship(id: number, relationship: Partial<InsertRelationship>): Promise<Relationship | undefined>;
+  deleteRelationship(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -69,10 +78,25 @@ export class DatabaseStorage implements IStorage {
       .from(interactions)
       .where(eq(interactions.personId, id));
 
+    const personRelationships = await db
+      .select({
+        id: relationships.id,
+        fromPersonId: relationships.fromPersonId,
+        toPersonId: relationships.toPersonId,
+        level: relationships.level,
+        notes: relationships.notes,
+        createdAt: relationships.createdAt,
+        toPerson: people,
+      })
+      .from(relationships)
+      .innerJoin(people, eq(relationships.toPersonId, people.id))
+      .where(eq(relationships.fromPersonId, id));
+
     return {
       ...person,
       notes: personNotes,
       interactions: personInteractions,
+      relationships: personRelationships,
     };
   }
 
@@ -120,6 +144,31 @@ export class DatabaseStorage implements IStorage {
 
   async deleteInteraction(id: number): Promise<void> {
     await db.delete(interactions).where(eq(interactions.id, id));
+  }
+
+  // Relationship operations
+  async createRelationship(insertRelationship: InsertRelationship): Promise<Relationship> {
+    const [relationship] = await db
+      .insert(relationships)
+      .values(insertRelationship)
+      .returning();
+    return relationship;
+  }
+
+  async updateRelationship(
+    id: number,
+    relationshipData: Partial<InsertRelationship>
+  ): Promise<Relationship | undefined> {
+    const [relationship] = await db
+      .update(relationships)
+      .set(relationshipData)
+      .where(eq(relationships.id, id))
+      .returning();
+    return relationship || undefined;
+  }
+
+  async deleteRelationship(id: number): Promise<void> {
+    await db.delete(relationships).where(eq(relationships.id, id));
   }
 }
 

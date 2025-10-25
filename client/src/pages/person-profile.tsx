@@ -11,8 +11,10 @@ import type { PersonWithRelations } from "@shared/schema";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
 import { EditPersonDialog } from "@/components/edit-person-dialog";
+import { AddRelationshipDialog } from "@/components/add-relationship-dialog";
 import { NotesTab } from "@/components/notes-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
+import { RelationshipsTab } from "@/components/relationships-tab";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -20,6 +22,7 @@ export default function PersonProfile() {
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
+  const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
 
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
     queryKey: ["/api/people", id],
@@ -182,6 +185,13 @@ export default function PersonProfile() {
             >
               Interactions
             </TabsTrigger>
+            <TabsTrigger
+              value="relationships"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-relationships"
+            >
+              Relationships
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -201,6 +211,14 @@ export default function PersonProfile() {
               onAddInteraction={() => setIsAddInteractionOpen(true)}
             />
           </TabsContent>
+
+          <TabsContent value="relationships" className="mt-0 h-full">
+            <RelationshipsTab
+              relationships={person.relationships}
+              personId={person.id}
+              onAddRelationship={() => setIsAddRelationshipOpen(true)}
+            />
+          </TabsContent>
         </div>
       </Tabs>
 
@@ -212,6 +230,11 @@ export default function PersonProfile() {
       <AddInteractionDialog
         open={isAddInteractionOpen}
         onOpenChange={setIsAddInteractionOpen}
+        personId={person.id}
+      />
+      <AddRelationshipDialog
+        open={isAddRelationshipOpen}
+        onOpenChange={setIsAddRelationshipOpen}
         personId={person.id}
       />
       <EditPersonDialog

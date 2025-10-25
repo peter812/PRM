@@ -5,6 +5,7 @@ import {
   insertPersonSchema,
   insertNoteSchema,
   insertInteractionSchema,
+  insertRelationshipSchema,
 } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -137,6 +138,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting interaction:", error);
       res.status(500).json({ error: "Failed to delete interaction" });
+    }
+  });
+
+  // Relationships endpoints
+  app.post("/api/relationships", async (req, res) => {
+    try {
+      const validatedData = insertRelationshipSchema.parse(req.body);
+      const relationship = await storage.createRelationship(validatedData);
+      res.status(201).json(relationship);
+    } catch (error) {
+      console.error("Error creating relationship:", error);
+      res.status(400).json({ error: "Failed to create relationship" });
+    }
+  });
+
+  app.patch("/api/relationships/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid ID" });
+      }
+
+      const validatedData = insertRelationshipSchema.partial().parse(req.body);
+      const relationship = await storage.updateRelationship(id, validatedData);
+
+      if (!relationship) {
+        return res.status(404).json({ error: "Relationship not found" });
+      }
+
+      res.json(relationship);
+    } catch (error) {
+      console.error("Error updating relationship:", error);
+      res.status(400).json({ error: "Failed to update relationship" });
+    }
+  });
+
+  app.delete("/api/relationships/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: "Invalid ID" });
+      }
+
+      await storage.deleteRelationship(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting relationship:", error);
+      res.status(500).json({ error: "Failed to delete relationship" });
     }
   });
 
