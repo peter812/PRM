@@ -98,15 +98,17 @@ export default function Graph() {
       // Create PIXI application
       const app = new Application();
       await app.init({
-        width: canvasRef.current.clientWidth,
-        height: canvasRef.current.clientHeight,
+        width: canvasRef.current?.clientWidth || 800,
+        height: canvasRef.current?.clientHeight || 600,
         backgroundColor: backgroundColor,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
       });
 
-      canvasRef.current.appendChild(app.canvas);
+      if (canvasRef.current) {
+        canvasRef.current.appendChild(app.canvas);
+      }
       appRef.current = app;
 
       // Create main container for zooming/panning
