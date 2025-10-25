@@ -23,11 +23,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/people/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid ID" });
-      }
-
+      const id = req.params.id;
       const person = await storage.getPersonById(id);
       if (!person) {
         return res.status(404).json({ error: "Person not found" });
@@ -53,11 +49,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/people/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid ID" });
-      }
-
+      const id = req.params.id;
       const validatedData = insertPersonSchema.partial().parse(req.body);
       const person = await storage.updatePerson(id, validatedData);
 
@@ -74,11 +66,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/people/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid ID" });
-      }
-
+      const id = req.params.id;
       await storage.deletePerson(id);
       res.json({ success: true });
     } catch (error) {
@@ -101,11 +89,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/notes/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid ID" });
-      }
-
+      const id = req.params.id;
       await storage.deleteNote(id);
       res.json({ success: true });
     } catch (error) {
@@ -128,11 +112,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/interactions/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid ID" });
-      }
-
+      const id = req.params.id;
       await storage.deleteInteraction(id);
       res.json({ success: true });
     } catch (error) {
@@ -155,11 +135,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.patch("/api/relationships/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid ID" });
-      }
-
+      const id = req.params.id;
       const validatedData = insertRelationshipSchema.partial().parse(req.body);
       const relationship = await storage.updateRelationship(id, validatedData);
 
@@ -176,11 +152,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.delete("/api/relationships/:id", async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      if (isNaN(id)) {
-        return res.status(400).json({ error: "Invalid ID" });
-      }
-
+      const id = req.params.id;
       await storage.deleteRelationship(id);
       res.json({ success: true });
     } catch (error) {

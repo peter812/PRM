@@ -9,7 +9,7 @@ import { formatDistanceToNow } from "date-fns";
 
 interface NotesTabProps {
   notes: Note[];
-  personId: number;
+  personId: string;
   onAddNote: () => void;
 }
 
@@ -17,7 +17,7 @@ export function NotesTab({ notes, personId, onAddNote }: NotesTabProps) {
   const { toast } = useToast();
 
   const deleteMutation = useMutation({
-    mutationFn: async (noteId: number) => {
+    mutationFn: async (noteId: string) => {
       return await apiRequest("DELETE", `/api/notes/${noteId}`, undefined);
     },
     onSuccess: () => {

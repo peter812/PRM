@@ -10,7 +10,7 @@ import type { RelationshipWithPerson } from "@shared/schema";
 
 interface RelationshipsTabProps {
   relationships: RelationshipWithPerson[];
-  personId: number;
+  personId: string;
   onAddRelationship: () => void;
 }
 
@@ -22,7 +22,7 @@ export function RelationshipsTab({
   const { toast } = useToast();
 
   const deleteMutation = useMutation({
-    mutationFn: async (relationshipId: number) => {
+    mutationFn: async (relationshipId: string) => {
       return await apiRequest("DELETE", `/api/relationships/${relationshipId}`, undefined);
     },
     onSuccess: () => {

@@ -6,7 +6,7 @@ import { z } from "zod";
 
 // People table
 export const people = pgTable("people", {
-  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email"),
@@ -19,16 +19,16 @@ export const people = pgTable("people", {
 
 // Notes table
 export const notes = pgTable("notes", {
-  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  personId: integer("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   content: text("content").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 // Interactions table
 export const interactions = pgTable("interactions", {
-  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  personId: integer("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   type: text("type").notNull(), // "meeting", "call", "email", "other"
   date: timestamp("date").notNull(),
   description: text("description").notNull(),
@@ -37,9 +37,9 @@ export const interactions = pgTable("interactions", {
 
 // Relationships table
 export const relationships = pgTable("relationships", {
-  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
-  fromPersonId: integer("from_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
-  toPersonId: integer("to_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fromPersonId: varchar("from_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  toPersonId: varchar("to_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   level: text("level").notNull(), // "colleague", "friend", "family", "client", "partner", etc.
   notes: text("notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

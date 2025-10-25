@@ -10,7 +10,7 @@ import { format } from "date-fns";
 
 interface InteractionsTabProps {
   interactions: Interaction[];
-  personId: number;
+  personId: string;
   onAddInteraction: () => void;
 }
 
@@ -22,7 +22,7 @@ export function InteractionsTab({
   const { toast } = useToast();
 
   const deleteMutation = useMutation({
-    mutationFn: async (interactionId: number) => {
+    mutationFn: async (interactionId: string) => {
       return await apiRequest("DELETE", `/api/interactions/${interactionId}`, undefined);
     },
     onSuccess: () => {

@@ -32,7 +32,7 @@ import { z } from "zod";
 interface AddRelationshipDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  personId: number;
+  personId: string;
 }
 
 const relationshipFormSchema = insertRelationshipSchema.extend({
@@ -117,8 +117,8 @@ export function AddRelationshipDialog({
                 <FormItem>
                   <FormLabel>Person</FormLabel>
                   <Select
-                    onValueChange={(value) => field.onChange(parseInt(value))}
-                    value={field.value?.toString()}
+                    onValueChange={field.onChange}
+                    value={field.value}
                   >
                     <FormControl>
                       <SelectTrigger data-testid="select-person">
@@ -127,7 +127,7 @@ export function AddRelationshipDialog({
                     </FormControl>
                     <SelectContent>
                       {availablePeople.map((person) => (
-                        <SelectItem key={person.id} value={person.id.toString()}>
+                        <SelectItem key={person.id} value={person.id}>
                           {person.firstName} {person.lastName}
                           {person.company && ` (${person.company})`}
                         </SelectItem>

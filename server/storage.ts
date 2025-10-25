@@ -21,23 +21,23 @@ import { eq, or, ilike, sql } from "drizzle-orm";
 export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
-  getPersonById(id: number): Promise<PersonWithRelations | undefined>;
+  getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
-  updatePerson(id: number, person: Partial<InsertPerson>): Promise<Person | undefined>;
-  deletePerson(id: number): Promise<void>;
+  updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
+  deletePerson(id: string): Promise<void>;
 
   // Note operations
   createNote(note: InsertNote): Promise<Note>;
-  deleteNote(id: number): Promise<void>;
+  deleteNote(id: string): Promise<void>;
 
   // Interaction operations
   createInteraction(interaction: InsertInteraction): Promise<Interaction>;
-  deleteInteraction(id: number): Promise<void>;
+  deleteInteraction(id: string): Promise<void>;
 
   // Relationship operations
   createRelationship(relationship: InsertRelationship): Promise<Relationship>;
-  updateRelationship(id: number, relationship: Partial<InsertRelationship>): Promise<Relationship | undefined>;
-  deleteRelationship(id: number): Promise<void>;
+  updateRelationship(id: string, relationship: Partial<InsertRelationship>): Promise<Relationship | undefined>;
+  deleteRelationship(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -64,7 +64,7 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(people);
   }
 
-  async getPersonById(id: number): Promise<PersonWithRelations | undefined> {
+  async getPersonById(id: string): Promise<PersonWithRelations | undefined> {
     const [person] = await db.select().from(people).where(eq(people.id, id));
     if (!person) return undefined;
 
@@ -106,7 +106,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updatePerson(
-    id: number,
+    id: string,
     personData: Partial<InsertPerson>
   ): Promise<Person | undefined> {
     const [person] = await db
@@ -117,7 +117,7 @@ export class DatabaseStorage implements IStorage {
     return person || undefined;
   }
 
-  async deletePerson(id: number): Promise<void> {
+  async deletePerson(id: string): Promise<void> {
     await db.delete(people).where(eq(people.id, id));
   }
 
@@ -127,7 +127,7 @@ export class DatabaseStorage implements IStorage {
     return note;
   }
 
-  async deleteNote(id: number): Promise<void> {
+  async deleteNote(id: string): Promise<void> {
     await db.delete(notes).where(eq(notes.id, id));
   }
 
@@ -142,7 +142,7 @@ export class DatabaseStorage implements IStorage {
     return interaction;
   }
 
-  async deleteInteraction(id: number): Promise<void> {
+  async deleteInteraction(id: string): Promise<void> {
     await db.delete(interactions).where(eq(interactions.id, id));
   }
 
@@ -156,7 +156,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateRelationship(
-    id: number,
+    id: string,
     relationshipData: Partial<InsertRelationship>
   ): Promise<Relationship | undefined> {
     const [relationship] = await db
@@ -167,7 +167,7 @@ export class DatabaseStorage implements IStorage {
     return relationship || undefined;
   }
 
-  async deleteRelationship(id: number): Promise<void> {
+  async deleteRelationship(id: string): Promise<void> {
     await db.delete(relationships).where(eq(relationships.id, id));
   }
 }

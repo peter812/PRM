@@ -33,7 +33,7 @@ import { z } from "zod";
 interface AddInteractionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  personId: number;
+  personId: string;
 }
 
 const interactionFormSchema = insertInteractionSchema.extend({
