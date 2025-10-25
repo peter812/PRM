@@ -12,19 +12,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // People endpoints
   app.get("/api/people", async (req, res) => {
     try {
-      const searchQuery = req.query.search as string | undefined;
       const includeRelationships = req.query.includeRelationships === 'true';
       
       if (includeRelationships) {
         const people = await storage.getAllPeopleWithRelationships();
         res.json(people);
       } else {
-        const people = await storage.getAllPeople(searchQuery);
+        const people = await storage.getAllPeople();
         res.json(people);
       }
     } catch (error) {
       console.error("Error fetching people:", error);
       res.status(500).json({ error: "Failed to fetch people" });
+    }
+  });
+
+  app.get("/api/people/search", async (req, res) => {
+    try {
+      const query = req.query.q as string | undefined;
+      
+      if (!query) {
+        return res.status(400).json({ error: "Search query parameter 'q' is required" });
+      }
+
+      const people = await storage.getAllPeople(query);
+      res.json(people);
+    } catch (error) {
+      console.error("Error searching people:", error);
+      res.status(500).json({ error: "Failed to search people" });
     }
   });
 
