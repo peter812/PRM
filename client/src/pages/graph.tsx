@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Application, Graphics, Container, Text, TextStyle } from "pixi.js";
 import { Button } from "@/components/ui/button";
-import { Plus, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useLocation } from "wouter";
 import type { Person, RelationshipWithPerson } from "@shared/schema";
 import { AddConnectionDialog } from "@/components/add-connection-dialog";
@@ -58,7 +58,6 @@ export default function Graph() {
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [scale, setScale] = useState(1);
 
   const { data: people = [] } = useQuery<PersonWithRelationships[]>({
     queryKey: ["/api/people?includeRelationships=true"],
@@ -317,17 +316,21 @@ export default function Graph() {
 
       simulate();
 
-      // Handle dragging
+      // Handle dragging - node follows mouse in real-time
       app.stage.eventMode = 'static';
       app.stage.on('pointermove', (e) => {
         if (isDraggingRef.current) {
           const node = nodesRef.current.get(isDraggingRef.current);
           if (node) {
             const pos = e.global;
-            node.x = pos.x / scale;
-            node.y = pos.y / scale;
+            node.x = pos.x;
+            node.y = pos.y;
             node.vx = 0;
             node.vy = 0;
+            node.graphics.x = node.x;
+            node.graphics.y = node.y;
+            node.text.x = node.x;
+            node.text.y = node.y;
           }
         }
       });
@@ -364,32 +367,7 @@ export default function Graph() {
         appRef.current = null;
       }
     };
-  }, [people, navigate, scale]);
-
-  const handleZoomIn = () => {
-    if (containerRef.current) {
-      const newScale = Math.min(scale * 1.2, 3);
-      setScale(newScale);
-      containerRef.current.scale.set(newScale);
-    }
-  };
-
-  const handleZoomOut = () => {
-    if (containerRef.current) {
-      const newScale = Math.max(scale / 1.2, 0.3);
-      setScale(newScale);
-      containerRef.current.scale.set(newScale);
-    }
-  };
-
-  const handleResetZoom = () => {
-    if (containerRef.current) {
-      setScale(1);
-      containerRef.current.scale.set(1);
-      containerRef.current.x = 0;
-      containerRef.current.y = 0;
-    }
-  };
+  }, [people, navigate]);
 
   return (
     <div className="h-full flex flex-col">
@@ -402,36 +380,10 @@ export default function Graph() {
             Visualize relationships between people
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={handleZoomOut}
-            data-testid="button-zoom-out"
-          >
-            <ZoomOut className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={handleResetZoom}
-            data-testid="button-reset-zoom"
-          >
-            <Maximize2 className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={handleZoomIn}
-            data-testid="button-zoom-in"
-          >
-            <ZoomIn className="h-4 w-4" />
-          </Button>
-          <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-connection">
-            <Plus className="h-4 w-4" />
-            Add Connection
-          </Button>
-        </div>
+        <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-connection">
+          <Plus className="h-4 w-4" />
+          Add Connection
+        </Button>
       </div>
 
       <div className="flex-1 relative bg-background">
