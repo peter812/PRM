@@ -61,7 +61,7 @@ export default function Graph() {
   const [scale, setScale] = useState(1);
 
   const { data: people = [] } = useQuery<PersonWithRelationships[]>({
-    queryKey: ["/api/people"],
+    queryKey: ["/api/people?includeRelationships=true"],
   });
 
   const relationshipColors: Record<string, number> = {

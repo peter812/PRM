@@ -21,6 +21,7 @@ import { eq, or, ilike, sql } from "drizzle-orm";
 export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
+  getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
   getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
@@ -62,6 +63,35 @@ export class DatabaseStorage implements IStorage {
         );
     }
     return await db.select().from(people);
+  }
+
+  async getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>> {
+    const allPeople = await db.select().from(people);
+    
+    const peopleWithRelationships = await Promise.all(
+      allPeople.map(async (person) => {
+        const personRelationships = await db
+          .select({
+            id: relationships.id,
+            fromPersonId: relationships.fromPersonId,
+            toPersonId: relationships.toPersonId,
+            level: relationships.level,
+            notes: relationships.notes,
+            createdAt: relationships.createdAt,
+            toPerson: people,
+          })
+          .from(relationships)
+          .innerJoin(people, eq(relationships.toPersonId, people.id))
+          .where(eq(relationships.fromPersonId, person.id));
+
+        return {
+          ...person,
+          relationships: personRelationships,
+        };
+      })
+    );
+
+    return peopleWithRelationships;
   }
 
   async getPersonById(id: string): Promise<PersonWithRelations | undefined> {

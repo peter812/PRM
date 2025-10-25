@@ -13,8 +13,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/people", async (req, res) => {
     try {
       const searchQuery = req.query.search as string | undefined;
-      const people = await storage.getAllPeople(searchQuery);
-      res.json(people);
+      const includeRelationships = req.query.includeRelationships === 'true';
+      
+      if (includeRelationships) {
+        const people = await storage.getAllPeopleWithRelationships();
+        res.json(people);
+      } else {
+        const people = await storage.getAllPeople(searchQuery);
+        res.json(people);
+      }
     } catch (error) {
       console.error("Error fetching people:", error);
       res.status(500).json({ error: "Failed to fetch people" });
