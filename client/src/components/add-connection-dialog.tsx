@@ -75,6 +75,7 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people?includeRelationships=true"] });
       toast({
         title: "Success",
         description: "Connection created successfully",
