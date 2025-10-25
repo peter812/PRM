@@ -8,6 +8,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
+import Graph from "@/pages/graph";
 import ApiDocs from "@/pages/api-docs";
 import NotFound from "@/pages/not-found";
 
@@ -16,6 +17,7 @@ function Router() {
     <Switch>
       <Route path="/" component={PeopleList} />
       <Route path="/person/:id" component={PersonProfile} />
+      <Route path="/graph" component={Graph} />
       <Route path="/search" component={PeopleList} />
       <Route path="/api" component={ApiDocs} />
       <Route component={NotFound} />
