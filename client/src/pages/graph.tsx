@@ -77,53 +77,55 @@ export default function Graph() {
     if (!canvasRef.current || !people.length) return;
 
     const initPixi = async () => {
-      // Clean up existing app
-      if (appRef.current) {
-        appRef.current.destroy(true, { children: true, texture: true });
-      }
+      try {
+        // Clean up existing app
+        if (appRef.current) {
+          appRef.current.destroy(true, { children: true, texture: true });
+        }
 
-      // Get theme colors from CSS variables
-      const styles = getComputedStyle(document.documentElement);
-      const backgroundHSL = styles.getPropertyValue('--background').trim();
-      const foregroundHSL = styles.getPropertyValue('--foreground').trim();
-      
-      const bgColor = parseHSL(backgroundHSL);
-      const fgColor = parseHSL(foregroundHSL);
-      
-      const backgroundColor = hslToHex(bgColor.h, bgColor.s, bgColor.l);
-      const foregroundColor = hslToHex(fgColor.h, fgColor.s, fgColor.l);
-      const lineColor = foregroundColor; // Use foreground color for lines
+        // Get theme colors from CSS variables
+        const styles = getComputedStyle(document.documentElement);
+        const backgroundHSL = styles.getPropertyValue('--background').trim();
+        const foregroundHSL = styles.getPropertyValue('--foreground').trim();
+        
+        const bgColor = parseHSL(backgroundHSL);
+        const fgColor = parseHSL(foregroundHSL);
+        
+        const backgroundColor = hslToHex(bgColor.h, bgColor.s, bgColor.l);
+        const foregroundColor = hslToHex(fgColor.h, fgColor.s, fgColor.l);
+        const lineColor = foregroundColor; // Use foreground color for lines
 
-      // Create PIXI application
-      const app = new Application();
-      await app.init({
-        width: canvasRef.current?.clientWidth || 800,
-        height: canvasRef.current?.clientHeight || 600,
-        backgroundColor: backgroundColor,
-        antialias: true,
-        resolution: window.devicePixelRatio || 1,
-        autoDensity: true,
-      });
+        // Create PIXI application
+        const app = new Application();
+        await app.init({
+          width: canvasRef.current?.clientWidth || 800,
+          height: canvasRef.current?.clientHeight || 600,
+          backgroundColor: backgroundColor,
+          antialias: true,
+          resolution: window.devicePixelRatio || 1,
+          autoDensity: true,
+          preference: 'webgl',
+        });
 
-      if (canvasRef.current) {
-        canvasRef.current.appendChild(app.canvas);
-      }
-      appRef.current = app;
+        if (canvasRef.current) {
+          canvasRef.current.appendChild(app.canvas);
+        }
+        appRef.current = app;
 
-      // Create main container for zooming/panning
-      const container = new Container();
-      app.stage.addChild(container);
-      containerRef.current = container;
+        // Create main container for zooming/panning
+        const container = new Container();
+        app.stage.addChild(container);
+        containerRef.current = container;
 
-      // Center point
-      const centerX = app.screen.width / 2;
-      const centerY = app.screen.height / 2;
+        // Center point
+        const centerX = app.screen.width / 2;
+        const centerY = app.screen.height / 2;
 
-      // Initialize nodes
-      const nodes = new Map<string, Node>();
-      const radius = Math.min(app.screen.width, app.screen.height) / 3;
+        // Initialize nodes
+        const nodes = new Map<string, Node>();
+        const radius = Math.min(app.screen.width, app.screen.height) / 3;
 
-      people.forEach((person, i) => {
+        people.forEach((person, i) => {
         const angle = (i / people.length) * Math.PI * 2;
         const x = centerX + Math.cos(angle) * radius;
         const y = centerY + Math.sin(angle) * radius;
@@ -356,6 +358,18 @@ export default function Graph() {
         isDraggingRef.current = null;
         dragStartRef.current = null;
       });
+      } catch (error) {
+        console.error('Failed to initialize Pixi.js:', error);
+        // Fallback: show error message instead of crashing
+        if (canvasRef.current) {
+          canvasRef.current.innerHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; justify-center; height: 100%; text-align: center; padding: 2rem;">
+              <h3 style="font-size: 1.125rem; font-weight: 500; margin-bottom: 0.5rem;">Graph visualization temporarily unavailable</h3>
+              <p style="font-size: 0.875rem; color: #6b7280;">Unable to initialize WebGL renderer. Try refreshing the page.</p>
+            </div>
+          `;
+        }
+      }
     };
 
     initPixi();
