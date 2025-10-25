@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  people-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: people-manager-crm
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      # Database connection to external PostgreSQL
+      - DATABASE_URL=${DATABASE_URL}
+      # Session secret for express-session
+      - SESSION_SECRET=${SESSION_SECRET}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/api/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
