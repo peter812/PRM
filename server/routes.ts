@@ -13,6 +13,10 @@ import {
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { hashPassword } from "./auth";
+import { scrypt, timingSafeEqual } from "crypto";
+import { promisify } from "util";
+
+const scryptAsync = promisify(scrypt);
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -91,6 +95,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error initializing setup:", error);
       res.status(400).json({ error: "Failed to initialize setup" });
+    }
+  });
+
+  // User endpoints
+  app.patch("/api/user", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { name, nickname, username, currentPassword, newPassword } = req.body;
+      const updateData: any = {};
+
+      // Validate and add basic fields
+      if (name !== undefined) updateData.name = name;
+      if (nickname !== undefined) updateData.nickname = nickname;
+      if (username !== undefined) {
+        // Check if username is already taken by another user
+        const existingUser = await storage.getUserByUsername(username);
+        if (existingUser && existingUser.id !== req.user.id) {
+          return res.status(400).json({ error: "Username already taken" });
+        }
+        updateData.username = username;
+      }
+
+      // Handle password change
+      if (newPassword && currentPassword) {
+        // Verify current password
+        const user = await storage.getUser(req.user.id);
+        if (!user) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        const [hashed, salt] = user.password.split(".");
+        const hashedBuf = Buffer.from(hashed, "hex");
+        const suppliedBuf = (await scryptAsync(currentPassword, salt, 64)) as Buffer;
+        
+        if (!timingSafeEqual(hashedBuf, suppliedBuf)) {
+          return res.status(400).json({ error: "Current password is incorrect" });
+        }
+
+        // Hash new password
+        updateData.password = await hashPassword(newPassword);
+      } else if (newPassword || currentPassword) {
+        return res.status(400).json({ error: "Both current and new password are required to change password" });
+      }
+
+      const updatedUser = await storage.updateUser(req.user.id, updateData);
+      if (!updatedUser) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      res.json(updatedUser);
+    } catch (error) {
+      console.error("Error updating user:", error);
+      res.status(400).json({ error: "Failed to update user" });
     }
   });
 
