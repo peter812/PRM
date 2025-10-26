@@ -20,6 +20,17 @@ app.use(express.urlencoded({ extended: false }));
 // Setup auth after body parsers
 setupAuth(app);
 
+// Middleware to bypass auth if DISABLE_AUTH is set
+app.use((req, res, next) => {
+  if (process.env.DISABLE_AUTH === 'true') {
+    // Mock authenticated user for development
+    if (!req.isAuthenticated()) {
+      (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev' };
+    }
+  }
+  next();
+});
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
