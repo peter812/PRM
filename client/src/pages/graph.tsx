@@ -244,7 +244,7 @@ export default function Graph() {
             graphics.x = x;
             graphics.y = y;
             graphics.eventMode = 'static';
-            graphics.cursor = 'pointer';
+            graphics.cursor = 'grab';
 
             const textStyle = new TextStyle({
               fontFamily: 'Inter, sans-serif',
@@ -261,9 +261,28 @@ export default function Graph() {
             text.x = x;
             text.y = y;
 
-            // Interaction handlers for groups
+            // Interaction handlers for groups (with drag support)
+            graphics.on('pointerdown', (e) => {
+              isDraggingRef.current = `group-${group.id}`;
+              dragStartRef.current = { x: e.global.x, y: e.global.y };
+              graphics.cursor = 'grabbing';
+              e.stopPropagation();
+            });
+
             graphics.on('pointerup', (e) => {
-              navigate(`/group/${group.id}`);
+              if (isDraggingRef.current === `group-${group.id}` && dragStartRef.current) {
+                // Only navigate if drag distance is small (click vs drag)
+                const dx = e.global.x - dragStartRef.current.x;
+                const dy = e.global.y - dragStartRef.current.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance < 5) {
+                  navigate(`/group/${group.id}`);
+                }
+              }
+              isDraggingRef.current = null;
+              dragStartRef.current = null;
+              graphics.cursor = 'grab';
             });
 
             graphics.on('pointerover', () => {
