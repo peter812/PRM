@@ -6,7 +6,26 @@ A professional CRM application for managing contacts, tracking interactions, and
 
 ## Recent Changes (October 26, 2025)
 
-- **First-Time Setup Flow** ✨ NEW:
+- **Settings Page Feature** ✨ NEW:
+  - **Settings Layout**: Separate settings interface at `/settings` with its own sidebar navigation
+  - **Settings Sidebar Menu**:
+    - "Back to Site" - Returns to main app (/people)
+    - "User Options" - User profile editor (/settings/user)
+    - "App Options" - App-wide settings placeholder (/settings/app)
+  - **User Options Page**: 
+    - Editable profile fields: name, nickname, username
+    - Password change with current password verification
+    - Form validation with real-time feedback
+    - Pre-populated from current user data
+  - **App Options Page**: Work in progress placeholder for future settings
+  - **Backend Endpoint**: PATCH `/api/user` for updating user information
+    - Password verification using scrypt comparison
+    - Username uniqueness validation
+    - Secure password hashing with salt
+  - **Routing**: Settings completely isolated from main app layout
+  - **Navigation**: Settings link added to main app sidebar
+
+- **First-Time Setup Flow**:
   - **Welcome Page**: New `/welcome` route displays on first launch when no users exist
   - **Setup Endpoints**:
     - GET `/api/setup/status` returns `{ isSetupNeeded: boolean }` based on user count
