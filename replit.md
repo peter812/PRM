@@ -16,9 +16,14 @@ A professional CRM application for managing contacts, tracking interactions, and
     - Direct 1st-degree person connections
     - Group memberships
     - All related edges
-  - **Physics Simulation**: Group-to-person edges use lower attraction force (0.003 vs 0.01) to prevent cluster collapse
+  - **Physics & Appearance Sliders**: Four adjustable controls for customizing graph behavior:
+    - Person-to-Person Line Opacity (0-1, default: 0.30)
+    - Group-to-Person Line Opacity (0-1, default: 0.20)
+    - Person-to-Person Pull (0-0.05, default: 0.010) - controls attraction force
+    - Group-to-Person Pull (0-0.05, default: 0.003) - controls attraction force
   - **Draggable Groups**: Both person and group nodes are fully draggable with grab cursors
   - **Camera Centering**: When highlighting a user, graph camera centers on the selected person node
+  - **Robust Re-rendering**: Safety checks prevent errors when adjusting sliders during graph updates
 
 - **Groups Feature Complete**: 
   - Groups list page (`/groups`) with dual-view mode (List/Wide)
