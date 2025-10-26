@@ -74,6 +74,10 @@ export default function Graph() {
   const [showGroups, setShowGroups] = useState(true);
   const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
   const [isOptionsPanelOpen, setIsOptionsPanelOpen] = useState(false);
+  const [personLineOpacity, setPersonLineOpacity] = useState(0.3);
+  const [groupLineOpacity, setGroupLineOpacity] = useState(0.2);
+  const [personPull, setPersonPull] = useState(0.01);
+  const [groupPull, setGroupPull] = useState(0.003);
 
   const { data: people = [] } = useQuery<PersonWithRelationships[]>({
     queryKey: ["/api/people?includeRelationships=true"],
@@ -333,7 +337,7 @@ export default function Graph() {
                 
                 graphics.moveTo(fromNode.x, fromNode.y);
                 graphics.lineTo(toNode.x, toNode.y);
-                graphics.stroke({ color: lineColor, width: 2, alpha: 0.3 });
+                graphics.stroke({ color: lineColor, width: 2, alpha: personLineOpacity });
 
                 container.addChildAt(graphics, 0); // Add edges behind nodes
                 edges.push({
@@ -362,7 +366,7 @@ export default function Graph() {
                   graphics.moveTo(groupNode.x, groupNode.y);
                   graphics.lineTo(personNode.x, personNode.y);
                   const groupColor = group.color ? hexToNumber(group.color) : 0x8b5cf6;
-                  graphics.stroke({ color: groupColor, width: 1, alpha: 0.2 });
+                  graphics.stroke({ color: groupColor, width: 1, alpha: groupLineOpacity });
 
                   container.addChildAt(graphics, 0); // Add edges behind nodes
                   edges.push({
@@ -447,8 +451,8 @@ export default function Graph() {
           const nodes = Array.from(nodesRef.current.values());
           const damping = 0.9;
           const repulsion = 3000;
-          const personAttraction = 0.01;
-          const groupAttraction = 0.003; // Lower attraction for group edges
+          const personAttraction = personPull;
+          const groupAttraction = groupPull;
           const centerForce = 0.001;
 
           // Apply forces
@@ -529,11 +533,11 @@ export default function Graph() {
               edge.graphics.lineTo(toNode.x, toNode.y);
               
               if (edge.type === 'relationship') {
-                edge.graphics.stroke({ color: lineColor, width: 2, alpha: 0.3 });
+                edge.graphics.stroke({ color: lineColor, width: 2, alpha: personLineOpacity });
               } else if (edge.type === 'group-member') {
                 const groupNode = fromNode.type === 'group' ? fromNode : toNode;
                 const groupColor = groupNode.group?.color ? hexToNumber(groupNode.group.color) : 0x8b5cf6;
-                edge.graphics.stroke({ color: groupColor, width: 1, alpha: 0.2 });
+                edge.graphics.stroke({ color: groupColor, width: 1, alpha: groupLineOpacity });
               }
             }
           });
@@ -606,7 +610,7 @@ export default function Graph() {
         appRef.current = null;
       }
     };
-  }, [people, groups, navigate, showGroups, highlightedPersonId]);
+  }, [people, groups, navigate, showGroups, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull]);
 
   return (
     <div className="h-full flex flex-col">
@@ -655,6 +659,14 @@ export default function Graph() {
               highlightedPersonId={highlightedPersonId}
               onHighlightedPersonChange={setHighlightedPersonId}
               people={people}
+              personLineOpacity={personLineOpacity}
+              onPersonLineOpacityChange={setPersonLineOpacity}
+              groupLineOpacity={groupLineOpacity}
+              onGroupLineOpacityChange={setGroupLineOpacity}
+              personPull={personPull}
+              onPersonPullChange={setPersonPull}
+              groupPull={groupPull}
+              onGroupPullChange={setGroupPull}
             />
           </>
         )}

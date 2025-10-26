@@ -3,6 +3,7 @@ import { X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
 import {
   Command,
   CommandEmpty,
@@ -26,6 +27,14 @@ interface OptionsPanelProps {
   highlightedPersonId: string | null;
   onHighlightedPersonChange: (personId: string | null) => void;
   people: Person[];
+  personLineOpacity: number;
+  onPersonLineOpacityChange: (value: number) => void;
+  groupLineOpacity: number;
+  onGroupLineOpacityChange: (value: number) => void;
+  personPull: number;
+  onPersonPullChange: (value: number) => void;
+  groupPull: number;
+  onGroupPullChange: (value: number) => void;
 }
 
 export function OptionsPanel({
@@ -36,6 +45,14 @@ export function OptionsPanel({
   highlightedPersonId,
   onHighlightedPersonChange,
   people,
+  personLineOpacity,
+  onPersonLineOpacityChange,
+  groupLineOpacity,
+  onGroupLineOpacityChange,
+  personPull,
+  onPersonPullChange,
+  groupPull,
+  onGroupPullChange,
 }: OptionsPanelProps) {
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -132,6 +149,95 @@ export function OptionsPanel({
                 Clear Filter
               </Button>
             )}
+          </div>
+
+          {/* Sliders Section */}
+          <div className="space-y-6 pt-4 border-t">
+            <h4 className="font-medium text-sm text-muted-foreground">Physics & Appearance</h4>
+            
+            {/* Person to Person Line Opacity */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="person-opacity" className="text-sm">
+                  Person-to-Person Line Opacity
+                </Label>
+                <span className="text-xs text-muted-foreground font-mono">
+                  {personLineOpacity.toFixed(2)}
+                </span>
+              </div>
+              <Slider
+                id="person-opacity"
+                min={0}
+                max={1}
+                step={0.05}
+                value={[personLineOpacity]}
+                onValueChange={(values) => onPersonLineOpacityChange(values[0])}
+                data-testid="slider-person-opacity"
+              />
+            </div>
+
+            {/* Group to Person Line Opacity */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="group-opacity" className="text-sm">
+                  Group-to-Person Line Opacity
+                </Label>
+                <span className="text-xs text-muted-foreground font-mono">
+                  {groupLineOpacity.toFixed(2)}
+                </span>
+              </div>
+              <Slider
+                id="group-opacity"
+                min={0}
+                max={1}
+                step={0.05}
+                value={[groupLineOpacity]}
+                onValueChange={(values) => onGroupLineOpacityChange(values[0])}
+                data-testid="slider-group-opacity"
+              />
+            </div>
+
+            {/* Person to Person Pull */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="person-pull" className="text-sm">
+                  Person-to-Person Pull
+                </Label>
+                <span className="text-xs text-muted-foreground font-mono">
+                  {personPull.toFixed(3)}
+                </span>
+              </div>
+              <Slider
+                id="person-pull"
+                min={0}
+                max={0.05}
+                step={0.001}
+                value={[personPull]}
+                onValueChange={(values) => onPersonPullChange(values[0])}
+                data-testid="slider-person-pull"
+              />
+            </div>
+
+            {/* Group to Person Pull */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="group-pull" className="text-sm">
+                  Group-to-Person Pull
+                </Label>
+                <span className="text-xs text-muted-foreground font-mono">
+                  {groupPull.toFixed(3)}
+                </span>
+              </div>
+              <Slider
+                id="group-pull"
+                min={0}
+                max={0.05}
+                step={0.001}
+                value={[groupPull]}
+                onValueChange={(values) => onGroupPullChange(values[0])}
+                data-testid="slider-group-pull"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -239,6 +345,95 @@ export function OptionsPanel({
                     Clear Filter
                   </Button>
                 )}
+              </div>
+
+              {/* Sliders Section - Mobile */}
+              <div className="space-y-6 pt-4 border-t">
+                <h4 className="font-medium text-sm text-muted-foreground">Physics & Appearance</h4>
+                
+                {/* Person to Person Line Opacity */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="person-opacity-mobile" className="text-sm">
+                      Person-to-Person Line Opacity
+                    </Label>
+                    <span className="text-xs text-muted-foreground font-mono">
+                      {personLineOpacity.toFixed(2)}
+                    </span>
+                  </div>
+                  <Slider
+                    id="person-opacity-mobile"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={[personLineOpacity]}
+                    onValueChange={(values) => onPersonLineOpacityChange(values[0])}
+                    data-testid="slider-person-opacity-mobile"
+                  />
+                </div>
+
+                {/* Group to Person Line Opacity */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="group-opacity-mobile" className="text-sm">
+                      Group-to-Person Line Opacity
+                    </Label>
+                    <span className="text-xs text-muted-foreground font-mono">
+                      {groupLineOpacity.toFixed(2)}
+                    </span>
+                  </div>
+                  <Slider
+                    id="group-opacity-mobile"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={[groupLineOpacity]}
+                    onValueChange={(values) => onGroupLineOpacityChange(values[0])}
+                    data-testid="slider-group-opacity-mobile"
+                  />
+                </div>
+
+                {/* Person to Person Pull */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="person-pull-mobile" className="text-sm">
+                      Person-to-Person Pull
+                    </Label>
+                    <span className="text-xs text-muted-foreground font-mono">
+                      {personPull.toFixed(3)}
+                    </span>
+                  </div>
+                  <Slider
+                    id="person-pull-mobile"
+                    min={0}
+                    max={0.05}
+                    step={0.001}
+                    value={[personPull]}
+                    onValueChange={(values) => onPersonPullChange(values[0])}
+                    data-testid="slider-person-pull-mobile"
+                  />
+                </div>
+
+                {/* Group to Person Pull */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="group-pull-mobile" className="text-sm">
+                      Group-to-Person Pull
+                    </Label>
+                    <span className="text-xs text-muted-foreground font-mono">
+                      {groupPull.toFixed(3)}
+                    </span>
+                  </div>
+                  <Slider
+                    id="group-pull-mobile"
+                    min={0}
+                    max={0.05}
+                    step={0.001}
+                    value={[groupPull]}
+                    onValueChange={(values) => onGroupPullChange(values[0])}
+                    data-testid="slider-group-pull-mobile"
+                  />
+                </div>
               </div>
             </div>
           </div>
