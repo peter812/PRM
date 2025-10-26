@@ -23,6 +23,7 @@ export default function ApiDocs() {
       description: "Get all people with optional search query",
       queryParams: [
         { name: "search", type: "string", description: "Search by name, company, email, or tags" },
+        { name: "includeRelationships", type: "boolean", description: "Include relationships in the response (default: false)" },
       ],
       response: `[
   {
@@ -148,6 +149,157 @@ export default function ApiDocs() {
       method: "DELETE",
       path: "/api/interactions/:id",
       description: "Delete an interaction",
+      response: `{ "success": true }`,
+    },
+    {
+      id: "create-relationship",
+      method: "POST",
+      path: "/api/relationships",
+      description: "Create a relationship between two people",
+      body: `{
+  "fromPersonId": "uuid-1",
+  "toPersonId": "uuid-2",
+  "level": "colleague",
+  "notes": "Met at conference"
+}`,
+      response: `{
+  "id": "uuid-3",
+  "fromPersonId": "uuid-1",
+  "toPersonId": "uuid-2",
+  "level": "colleague",
+  "notes": "Met at conference",
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}`,
+    },
+    {
+      id: "update-relationship",
+      method: "PATCH",
+      path: "/api/relationships/:id",
+      description: "Update a relationship",
+      body: `{
+  "level": "friend",
+  "notes": "Now good friends"
+}`,
+      response: `{
+  "id": "uuid-3",
+  "fromPersonId": "uuid-1",
+  "toPersonId": "uuid-2",
+  "level": "friend",
+  "notes": "Now good friends",
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}`,
+    },
+    {
+      id: "delete-relationship",
+      method: "DELETE",
+      path: "/api/relationships/:id",
+      description: "Delete a relationship",
+      response: `{ "success": true }`,
+    },
+    {
+      id: "get-groups",
+      method: "GET",
+      path: "/api/groups",
+      description: "Get all groups",
+      response: `[
+  {
+    "id": "uuid-1",
+    "name": "Engineering Team",
+    "color": "#3b82f6",
+    "type": ["department", "technical"],
+    "members": ["person-uuid-1", "person-uuid-2"],
+    "createdAt": "2024-01-01T00:00:00.000Z"
+  }
+]`,
+    },
+    {
+      id: "get-group",
+      method: "GET",
+      path: "/api/groups/:id",
+      description: "Get a single group with all notes",
+      response: `{
+  "id": "uuid-1",
+  "name": "Engineering Team",
+  "color": "#3b82f6",
+  "type": ["department", "technical"],
+  "members": ["person-uuid-1", "person-uuid-2"],
+  "createdAt": "2024-01-01T00:00:00.000Z",
+  "notes": [
+    {
+      "id": "note-uuid-1",
+      "groupId": "uuid-1",
+      "content": "Kickoff meeting scheduled",
+      "createdAt": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}`,
+    },
+    {
+      id: "create-group",
+      method: "POST",
+      path: "/api/groups",
+      description: "Create a new group",
+      body: `{
+  "name": "Engineering Team",
+  "color": "#3b82f6",
+  "type": ["department", "technical"],
+  "members": ["person-uuid-1", "person-uuid-2"]
+}`,
+      response: `{
+  "id": "uuid-1",
+  "name": "Engineering Team",
+  "color": "#3b82f6",
+  "type": ["department", "technical"],
+  "members": ["person-uuid-1", "person-uuid-2"],
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}`,
+    },
+    {
+      id: "update-group",
+      method: "PATCH",
+      path: "/api/groups/:id",
+      description: "Update a group",
+      body: `{
+  "name": "Senior Engineering Team",
+  "members": ["person-uuid-1", "person-uuid-2", "person-uuid-3"]
+}`,
+      response: `{
+  "id": "uuid-1",
+  "name": "Senior Engineering Team",
+  "color": "#3b82f6",
+  "type": ["department", "technical"],
+  "members": ["person-uuid-1", "person-uuid-2", "person-uuid-3"],
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}`,
+    },
+    {
+      id: "delete-group",
+      method: "DELETE",
+      path: "/api/groups/:id",
+      description: "Delete a group and all associated notes",
+      response: `{ "success": true }`,
+    },
+    {
+      id: "create-group-note",
+      method: "POST",
+      path: "/api/group-notes",
+      description: "Create a new note for a group",
+      body: `{
+  "groupId": "uuid-1",
+  "content": "Kickoff meeting scheduled for next Monday"
+}`,
+      response: `{
+  "id": "note-uuid-1",
+  "groupId": "uuid-1",
+  "content": "Kickoff meeting scheduled for next Monday",
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}`,
+    },
+    {
+      id: "delete-group-note",
+      method: "DELETE",
+      path: "/api/group-notes/:id",
+      description: "Delete a group note",
       response: `{ "success": true }`,
     },
   ];
@@ -294,15 +446,35 @@ export default function ApiDocs() {
         </div>
 
         <Card className="p-6">
-          <h2 className="text-xl font-semibold mb-4">Interaction Types</h2>
-          <p className="text-sm text-muted-foreground mb-4">
-            Valid values for the <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">type</code> field in interactions:
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">meeting</Badge>
-            <Badge variant="secondary">call</Badge>
-            <Badge variant="secondary">email</Badge>
-            <Badge variant="secondary">other</Badge>
+          <h2 className="text-xl font-semibold mb-4">Reference Values</h2>
+          
+          <div className="mb-6">
+            <h3 className="text-sm font-medium mb-2">Interaction Types</h3>
+            <p className="text-sm text-muted-foreground mb-2">
+              Valid values for the <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">type</code> field in interactions:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">meeting</Badge>
+              <Badge variant="secondary">call</Badge>
+              <Badge variant="secondary">email</Badge>
+              <Badge variant="secondary">other</Badge>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-medium mb-2">Relationship Levels</h3>
+            <p className="text-sm text-muted-foreground mb-2">
+              Valid values for the <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">level</code> field in relationships:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary">colleague</Badge>
+              <Badge variant="secondary">friend</Badge>
+              <Badge variant="secondary">family</Badge>
+              <Badge variant="secondary">client</Badge>
+              <Badge variant="secondary">partner</Badge>
+              <Badge variant="secondary">mentor</Badge>
+              <Badge variant="secondary">other</Badge>
+            </div>
           </div>
         </Card>
       </div>
