@@ -5,6 +5,8 @@ import {
   interactions,
   relationships,
   users,
+  groups,
+  groupNotes,
   type Person,
   type InsertPerson,
   type Note,
@@ -17,6 +19,11 @@ import {
   type RelationshipWithPerson,
   type User,
   type InsertUser,
+  type Group,
+  type InsertGroup,
+  type GroupNote,
+  type InsertGroupNote,
+  type GroupWithNotes,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, ilike, sql } from "drizzle-orm";
@@ -51,6 +58,17 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+
+  // Group operations
+  getAllGroups(): Promise<Group[]>;
+  getGroupById(id: string): Promise<GroupWithNotes | undefined>;
+  createGroup(group: InsertGroup): Promise<Group>;
+  updateGroup(id: string, group: Partial<InsertGroup>): Promise<Group | undefined>;
+  deleteGroup(id: string): Promise<void>;
+
+  // Group note operations
+  createGroupNote(note: InsertGroupNote): Promise<GroupNote>;
+  deleteGroupNote(id: string): Promise<void>;
   
   // Session store
   sessionStore: session.Store;
@@ -236,6 +254,57 @@ export class DatabaseStorage implements IStorage {
   async createUser(insertUser: InsertUser): Promise<User> {
     const [user] = await db.insert(users).values(insertUser).returning();
     return user;
+  }
+
+  // Group operations
+  async getAllGroups(): Promise<Group[]> {
+    return await db.select().from(groups);
+  }
+
+  async getGroupById(id: string): Promise<GroupWithNotes | undefined> {
+    const [group] = await db.select().from(groups).where(eq(groups.id, id));
+    if (!group) return undefined;
+
+    const groupNotesList = await db
+      .select()
+      .from(groupNotes)
+      .where(eq(groupNotes.groupId, id));
+
+    return {
+      ...group,
+      notes: groupNotesList,
+    };
+  }
+
+  async createGroup(insertGroup: InsertGroup): Promise<Group> {
+    const [group] = await db.insert(groups).values(insertGroup).returning();
+    return group;
+  }
+
+  async updateGroup(
+    id: string,
+    groupData: Partial<InsertGroup>
+  ): Promise<Group | undefined> {
+    const [group] = await db
+      .update(groups)
+      .set(groupData)
+      .where(eq(groups.id, id))
+      .returning();
+    return group || undefined;
+  }
+
+  async deleteGroup(id: string): Promise<void> {
+    await db.delete(groups).where(eq(groups.id, id));
+  }
+
+  // Group note operations
+  async createGroupNote(insertGroupNote: InsertGroupNote): Promise<GroupNote> {
+    const [groupNote] = await db.insert(groupNotes).values(insertGroupNote).returning();
+    return groupNote;
+  }
+
+  async deleteGroupNote(id: string): Promise<void> {
+    await db.delete(groupNotes).where(eq(groupNotes.id, id));
   }
 }
 
