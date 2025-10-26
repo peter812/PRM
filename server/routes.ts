@@ -9,8 +9,48 @@ import {
   insertGroupSchema,
   insertGroupNoteSchema,
 } from "@shared/schema";
+import multer from "multer";
+import { uploadImageToS3, deleteImageFromS3 } from "./s3";
+
+const upload = multer({ storage: multer.memoryStorage() });
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Image upload endpoint
+  app.post("/api/upload-image", upload.single("image"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No image file provided" });
+      }
+
+      const imageUrl = await uploadImageToS3(
+        req.file.buffer,
+        req.file.originalname,
+        req.file.mimetype
+      );
+
+      res.json({ imageUrl });
+    } catch (error) {
+      console.error("Error uploading image:", error);
+      res.status(500).json({ error: "Failed to upload image" });
+    }
+  });
+
+  // Delete image endpoint
+  app.delete("/api/delete-image", async (req, res) => {
+    try {
+      const { imageUrl } = req.body;
+      if (!imageUrl) {
+        return res.status(400).json({ error: "No image URL provided" });
+      }
+
+      await deleteImageFromS3(imageUrl);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting image:", error);
+      res.status(500).json({ error: "Failed to delete image" });
+    }
+  });
+
   // People endpoints
   app.get("/api/people", async (req, res) => {
     try {
