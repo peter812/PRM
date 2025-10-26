@@ -22,6 +22,7 @@ export const people = pgTable("people", {
   company: text("company"),
   title: text("title"),
   tags: text("tags").array().default(sql`ARRAY[]::text[]`),
+  imageUrl: text("image_url"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -30,6 +31,7 @@ export const notes = pgTable("notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   content: text("content").notNull(),
+  imageUrl: text("image_url"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -40,6 +42,7 @@ export const interactions = pgTable("interactions", {
   type: text("type").notNull(), // "meeting", "call", "email", "other"
   date: timestamp("date").notNull(),
   description: text("description").notNull(),
+  imageUrl: text("image_url"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -60,6 +63,7 @@ export const groups = pgTable("groups", {
   color: text("color").notNull(), // hex color code
   type: text("type").array().default(sql`ARRAY[]::text[]`), // list of group types
   members: text("members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs
+  imageUrl: text("image_url"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
