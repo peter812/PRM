@@ -1,4 +1,4 @@
-import { Users, Search, Book, Network, Users2 } from "lucide-react";
+import { Users, Search, Book, Network, Users2, Settings } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -36,6 +36,11 @@ const menuItems = [
     title: "API",
     url: "/api",
     icon: Book,
+  },
+  {
+    title: "Settings",
+    url: "/settings",
+    icon: Settings,
   },
 ];
 

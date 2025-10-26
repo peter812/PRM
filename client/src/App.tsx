@@ -18,6 +18,7 @@ import Graph from "@/pages/graph";
 import ApiDocs from "@/pages/api-docs";
 import AuthPage from "@/pages/auth-page";
 import WelcomePage from "@/pages/welcome-page";
+import SettingsLayout from "@/pages/settings-layout";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -33,6 +34,7 @@ function Router() {
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/search" component={PeopleList} />
       <ProtectedRoute path="/api" component={ApiDocs} />
+      <ProtectedRoute path="/settings/:rest*" component={SettingsLayout} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -43,11 +45,12 @@ function AppLayout() {
   const { user, logoutMutation } = useAuth();
   const isAuthPage = location === "/auth";
   const isWelcomePage = location === "/welcome";
+  const isSettingsPage = location.startsWith("/settings");
 
   // Check if setup is needed
   const { data: setupStatus } = useQuery<{ isSetupNeeded: boolean }>({
     queryKey: ["/api/setup/status"],
-    enabled: !isWelcomePage && !isAuthPage,
+    enabled: !isWelcomePage && !isAuthPage && !isSettingsPage,
   });
 
   const handleLogout = () => {
@@ -64,7 +67,7 @@ function AppLayout() {
     return <Redirect to="/welcome" />;
   }
 
-  if (isAuthPage || isWelcomePage) {
+  if (isAuthPage || isWelcomePage || isSettingsPage) {
     return <Router />;
   }
 
