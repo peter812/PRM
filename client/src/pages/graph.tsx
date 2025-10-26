@@ -457,6 +457,7 @@ export default function Graph() {
 
           // Apply forces
           nodes.forEach((node) => {
+            if (!node.graphics || !node.text) return; // Skip if graphics destroyed
             if (!node.graphics.visible) return; // Skip hidden nodes
             
             let fx = 0;
@@ -464,6 +465,7 @@ export default function Graph() {
 
             // Repulsion between nodes
             nodes.forEach((other) => {
+              if (!other.graphics) return; // Skip if graphics destroyed
               if (node.id !== other.id && other.graphics.visible) {
                 const dx = node.x - other.x;
                 const dy = node.y - other.y;
@@ -476,7 +478,7 @@ export default function Graph() {
 
             // Attraction along edges
             edgesRef.current.forEach((edge) => {
-              if (!edge.graphics.visible) return; // Skip hidden edges
+              if (!edge.graphics || !edge.graphics.visible) return; // Skip hidden/destroyed edges
               
               let other: Node | undefined;
               let attraction = personAttraction;
@@ -489,7 +491,7 @@ export default function Graph() {
                 if (edge.type === 'group-member') attraction = groupAttraction;
               }
 
-              if (other && other.graphics.visible) {
+              if (other && other.graphics && other.graphics.visible) {
                 const dx = other.x - node.x;
                 const dy = other.y - node.y;
                 fx += dx * attraction;
@@ -509,6 +511,7 @@ export default function Graph() {
 
           // Update positions (skip if dragging)
           nodes.forEach((node) => {
+            if (!node.graphics || !node.text) return; // Skip if graphics destroyed
             if (!node.graphics.visible) return; // Skip hidden nodes
             
             if (isDraggingRef.current !== node.id) {
@@ -523,11 +526,12 @@ export default function Graph() {
 
           // Update edge positions
           edgesRef.current.forEach((edge) => {
+            if (!edge.graphics) return; // Skip if graphics destroyed
             if (!edge.graphics.visible) return; // Skip hidden edges
             
             const fromNode = nodesRef.current.get(edge.from);
             const toNode = nodesRef.current.get(edge.to);
-            if (fromNode && toNode && fromNode.graphics.visible && toNode.graphics.visible) {
+            if (fromNode && toNode && fromNode.graphics && toNode.graphics && fromNode.graphics.visible && toNode.graphics.visible) {
               edge.graphics.clear();
               edge.graphics.moveTo(fromNode.x, fromNode.y);
               edge.graphics.lineTo(toNode.x, toNode.y);
