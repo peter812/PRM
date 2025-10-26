@@ -26,6 +26,7 @@ function Router() {
       <Route path="/welcome" component={WelcomePage} />
       <Route path="/auth" component={AuthPage} />
       <ProtectedRoute path="/" component={PeopleList} />
+      <ProtectedRoute path="/people" component={PeopleList} />
       <ProtectedRoute path="/person/:id" component={PersonProfile} />
       <ProtectedRoute path="/groups" component={GroupsList} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
