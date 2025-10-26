@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, Search } from "lucide-react";
+import { X, Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -22,6 +22,8 @@ import type { Person } from "@shared/schema";
 interface OptionsPanelProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
+  isCollapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
   showGroups: boolean;
   onShowGroupsChange: (show: boolean) => void;
   highlightedPersonId: string | null;
@@ -40,6 +42,8 @@ interface OptionsPanelProps {
 export function OptionsPanel({
   isOpen,
   onOpenChange,
+  isCollapsed,
+  onCollapsedChange,
   showGroups,
   onShowGroupsChange,
   highlightedPersonId,
@@ -62,12 +66,36 @@ export function OptionsPanel({
 
   return (
     <>
-      {/* Desktop: Always visible sidebar on the right */}
-      <div className="hidden lg:flex lg:flex-col lg:w-80 lg:border-l lg:bg-card">
-        <div className="p-4 border-b">
-          <h3 className="font-semibold text-lg">Graph Options</h3>
+      {/* Desktop: Toggle button when collapsed */}
+      {isCollapsed && (
+        <div className="hidden lg:block absolute top-4 right-4 z-10">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => onCollapsedChange(false)}
+            data-testid="button-expand-sidebar"
+            className="bg-card shadow-md"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </Button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+      )}
+
+      {/* Desktop: Sidebar panel */}
+      {!isCollapsed && (
+        <div className="hidden lg:flex lg:flex-col lg:w-80 lg:border-l lg:bg-card">
+          <div className="p-4 border-b flex items-center justify-between">
+            <h3 className="font-semibold text-lg">Graph Options</h3>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onCollapsedChange(true)}
+              data-testid="button-collapse-sidebar"
+            >
+              <ChevronRight className="h-5 w-5" />
+            </Button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-6">
           {/* Show Groups Toggle */}
           <div className="space-y-3">
             <Label htmlFor="show-groups" className="text-base font-medium">
@@ -240,7 +268,8 @@ export function OptionsPanel({
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      )}
 
       {/* Mobile: Overlay panel */}
       {isOpen && (
