@@ -6,6 +6,17 @@ A professional CRM application for managing contacts, tracking interactions, and
 
 ## Recent Changes (October 26, 2025)
 
+- **First-Time Setup Flow** ✨ NEW:
+  - **Welcome Page**: New `/welcome` route displays on first launch when no users exist
+  - **Setup Endpoints**:
+    - GET `/api/setup/status` returns `{ isSetupNeeded: boolean }` based on user count
+    - POST `/api/setup/initialize` creates first user with name, nickname, username, password
+    - Auto-login after setup completion
+  - **Users Table Enhanced**: Added nullable `name` and `nickname` fields for personalization
+  - **Routing Logic**: App checks setup status on mount and redirects to welcome page if needed
+  - **Development Mode**: DISABLE_AUTH environment variable bypasses authentication entirely
+  - **Database Sync**: Fixed schema synchronization between Drizzle config and external database (pbe.im:3306)
+
 - **Graph Visualization Enhancement**:
   - **New Group Node Type**: Groups now appear as draggable rectangular nodes on the graph
   - **OptionsPanel Component**: 
