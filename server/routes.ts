@@ -6,6 +6,8 @@ import {
   insertNoteSchema,
   insertInteractionSchema,
   insertRelationshipSchema,
+  insertGroupSchema,
+  insertGroupNoteSchema,
 } from "@shared/schema";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -180,6 +182,93 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting relationship:", error);
       res.status(500).json({ error: "Failed to delete relationship" });
+    }
+  });
+
+  // Groups endpoints
+  app.get("/api/groups", async (req, res) => {
+    try {
+      const groups = await storage.getAllGroups();
+      res.json(groups);
+    } catch (error) {
+      console.error("Error fetching groups:", error);
+      res.status(500).json({ error: "Failed to fetch groups" });
+    }
+  });
+
+  app.get("/api/groups/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const group = await storage.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: "Group not found" });
+      }
+      res.json(group);
+    } catch (error) {
+      console.error("Error fetching group:", error);
+      res.status(500).json({ error: "Failed to fetch group" });
+    }
+  });
+
+  app.post("/api/groups", async (req, res) => {
+    try {
+      const validatedData = insertGroupSchema.parse(req.body);
+      const group = await storage.createGroup(validatedData);
+      res.status(201).json(group);
+    } catch (error) {
+      console.error("Error creating group:", error);
+      res.status(400).json({ error: "Failed to create group" });
+    }
+  });
+
+  app.patch("/api/groups/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const validatedData = insertGroupSchema.partial().parse(req.body);
+      const group = await storage.updateGroup(id, validatedData);
+
+      if (!group) {
+        return res.status(404).json({ error: "Group not found" });
+      }
+
+      res.json(group);
+    } catch (error) {
+      console.error("Error updating group:", error);
+      res.status(400).json({ error: "Failed to update group" });
+    }
+  });
+
+  app.delete("/api/groups/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteGroup(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting group:", error);
+      res.status(500).json({ error: "Failed to delete group" });
+    }
+  });
+
+  // Group notes endpoints
+  app.post("/api/group-notes", async (req, res) => {
+    try {
+      const validatedData = insertGroupNoteSchema.parse(req.body);
+      const groupNote = await storage.createGroupNote(validatedData);
+      res.status(201).json(groupNote);
+    } catch (error) {
+      console.error("Error creating group note:", error);
+      res.status(400).json({ error: "Failed to create group note" });
+    }
+  });
+
+  app.delete("/api/group-notes/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteGroupNote(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting group note:", error);
+      res.status(500).json({ error: "Failed to delete group note" });
     }
   });
 
