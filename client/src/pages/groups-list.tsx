@@ -153,13 +153,13 @@ export default function GroupsList() {
                   data-testid={`card-group-${group.id}`}
                 >
                   <div className="flex flex-col items-center text-center">
-                    <Avatar className="w-20 h-20 mb-4" style={{ borderColor: group.color, borderWidth: '3px' }}>
+                    <Avatar className="w-32 h-32 mb-4" style={{ borderColor: group.color, borderWidth: '3px' }}>
                       {group.imageUrl && (
                         <AvatarImage src={group.imageUrl} alt={group.name} />
                       )}
                       <AvatarFallback 
                         style={{ backgroundColor: `${group.color}20` }}
-                        className="text-xl"
+                        className="text-3xl"
                       >
                         {getInitials(group.name)}
                       </AvatarFallback>
