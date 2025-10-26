@@ -34,6 +34,7 @@ function Router() {
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/search" component={PeopleList} />
       <ProtectedRoute path="/api" component={ApiDocs} />
+      <ProtectedRoute path="/settings" component={SettingsLayout} />
       <ProtectedRoute path="/settings/:rest*" component={SettingsLayout} />
       <Route component={NotFound} />
     </Switch>
