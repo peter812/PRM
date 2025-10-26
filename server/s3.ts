@@ -26,6 +26,7 @@ export async function uploadImageToS3(
     Key: key,
     Body: buffer,
     ContentType: mimeType,
+    ACL: "public-read",
   });
 
   await s3Client.send(command);
