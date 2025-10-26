@@ -4,6 +4,15 @@
 
 A professional CRM application for managing contacts, tracking interactions, and maintaining relationships. Built with a modern React frontend and Express backend, the application provides a clean, data-focused interface inspired by productivity tools like Linear and Notion. Users can create and manage people profiles, add notes, track interactions (meetings, calls, emails), organize contacts with tags, create groups with members, and use powerful search capabilities.
 
+## Recent Changes (October 26, 2025)
+
+- **Groups Page Added**: New `/groups` route with dual-view mode
+  - List View: Data-dense table view (default for desktop)
+  - Wide View: 3-column card grid on desktop, 1-column on mobile (default for mobile)
+  - View toggle button in header
+  - Add Group dialog with image upload, color picker, types, and member selection
+  - Groups display images with fallback to colored avatars showing initials
+
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
