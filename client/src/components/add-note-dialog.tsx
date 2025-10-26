@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
@@ -21,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertNoteSchema, type InsertNote } from "@shared/schema";
 import { z } from "zod";
+import { ImageUpload } from "./image-upload";
 
 interface AddNoteDialogProps {
   open: boolean;
@@ -40,12 +42,14 @@ export function AddNoteDialog({
   personId,
 }: AddNoteDialogProps) {
   const { toast } = useToast();
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   const form = useForm<NoteForm>({
     resolver: zodResolver(noteFormSchema),
     defaultValues: {
       personId,
       content: "",
+      imageUrl: null,
     },
   });
 
@@ -72,7 +76,7 @@ export function AddNoteDialog({
   });
 
   const onSubmit = (data: NoteForm) => {
-    createMutation.mutate(data);
+    createMutation.mutate({ ...data, imageUrl });
   };
 
   return (
@@ -102,6 +106,17 @@ export function AddNoteDialog({
                 </FormItem>
               )}
             />
+
+            <div>
+              <FormLabel>Attach Image (Optional)</FormLabel>
+              <div className="mt-2">
+                <ImageUpload
+                  currentImageUrl={imageUrl}
+                  onImageChange={setImageUrl}
+                  aspectRatio={4 / 3}
+                />
+              </div>
+            </div>
 
             <div className="flex gap-2 justify-end">
               <Button
