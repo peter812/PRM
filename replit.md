@@ -9,7 +9,9 @@ A professional CRM application for managing contacts, tracking interactions, and
 - **Graph Visualization Enhancement**:
   - **New Group Node Type**: Groups now appear as draggable rectangular nodes on the graph
   - **OptionsPanel Component**: 
-    - Desktop (>1024px): Always visible sidebar on the right
+    - Desktop (>1024px): Collapsible sidebar on the right with arrow toggle buttons
+      - Collapse button (ChevronRight): Located in sidebar header, hides the panel
+      - Expand button (ChevronLeft): Appears at top-right when collapsed, shows the panel
     - Mobile (<1024px): Overlay panel toggled via settings icon
   - **Show Groups Toggle**: ON by default, controls visibility of group nodes and group-to-person edges
   - **User Highlight Feature**: Searchable dropdown to filter graph to show only a selected person and their:
