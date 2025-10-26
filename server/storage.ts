@@ -26,7 +26,7 @@ import {
   type GroupWithNotes,
 } from "@shared/schema";
 import { db, pool } from "./db";
-import { eq, or, ilike, sql } from "drizzle-orm";
+import { eq, or, ilike, sql, inArray } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 
@@ -276,7 +276,7 @@ export class DatabaseStorage implements IStorage {
       const membersData = await db
         .select()
         .from(people)
-        .where(sql`${people.id} = ANY(${group.members})`);
+        .where(inArray(people.id, group.members));
       memberDetails.push(...membersData);
     }
 
