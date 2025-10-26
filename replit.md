@@ -6,6 +6,15 @@ A professional CRM application for managing contacts, tracking interactions, and
 
 ## Recent Changes (October 26, 2025)
 
+- **API Documentation Overhaul** ✨ NEW:
+  - **Expandable Endpoint Blocks**: All API endpoints now use collapsible cards for better organization
+  - **Condensed View**: Shows HTTP method badge, endpoint path, and summary description
+  - **Expanded View**: Reveals request body, response format, and example API calls
+  - **Interactive Toggles**: Chevron icons on the left (right arrow = collapsed, down arrow = expanded)
+  - **Example Code**: Each endpoint includes practical fetch() examples with live base URL
+  - **Copy Functionality**: Copy buttons for request bodies, responses, and examples
+  - **Multiple Expansion**: Users can expand multiple endpoint blocks simultaneously
+
 - **Settings Page Feature** ✨ NEW:
   - **Settings Layout**: Separate settings interface at `/settings` with its own sidebar navigation
   - **Settings Sidebar Menu**:
