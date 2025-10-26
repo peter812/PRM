@@ -13,6 +13,7 @@ import { LogOut } from "lucide-react";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import GroupsList from "@/pages/groups-list";
+import GroupProfile from "@/pages/group-profile";
 import Graph from "@/pages/graph";
 import ApiDocs from "@/pages/api-docs";
 import AuthPage from "@/pages/auth-page";
@@ -25,6 +26,7 @@ function Router() {
       <ProtectedRoute path="/" component={PeopleList} />
       <ProtectedRoute path="/person/:id" component={PersonProfile} />
       <ProtectedRoute path="/groups" component={GroupsList} />
+      <ProtectedRoute path="/group/:id" component={GroupProfile} />
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/search" component={PeopleList} />
       <ProtectedRoute path="/api" component={ApiDocs} />

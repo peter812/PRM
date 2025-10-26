@@ -61,7 +61,7 @@ export interface IStorage {
 
   // Group operations
   getAllGroups(): Promise<Group[]>;
-  getGroupById(id: string): Promise<GroupWithNotes | undefined>;
+  getGroupById(id: string): Promise<any>;
   createGroup(group: InsertGroup): Promise<Group>;
   updateGroup(id: string, group: Partial<InsertGroup>): Promise<Group | undefined>;
   deleteGroup(id: string): Promise<void>;
@@ -261,7 +261,7 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(groups);
   }
 
-  async getGroupById(id: string): Promise<GroupWithNotes | undefined> {
+  async getGroupById(id: string): Promise<any> {
     const [group] = await db.select().from(groups).where(eq(groups.id, id));
     if (!group) return undefined;
 
@@ -270,9 +270,20 @@ export class DatabaseStorage implements IStorage {
       .from(groupNotes)
       .where(eq(groupNotes.groupId, id));
 
+    // Fetch member details
+    const memberDetails: Person[] = [];
+    if (group.members && group.members.length > 0) {
+      const membersData = await db
+        .select()
+        .from(people)
+        .where(sql`${people.id} = ANY(${group.members})`);
+      memberDetails.push(...membersData);
+    }
+
     return {
       ...group,
       notes: groupNotesList,
+      memberDetails,
     };
   }
 

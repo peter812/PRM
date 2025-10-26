@@ -6,12 +6,16 @@ A professional CRM application for managing contacts, tracking interactions, and
 
 ## Recent Changes (October 26, 2025)
 
-- **Groups Page Added**: New `/groups` route with dual-view mode
-  - List View: Data-dense table view (default for desktop)
-  - Wide View: 3-column card grid on desktop, 1-column on mobile (default for mobile)
-  - View toggle button in header
-  - Add Group dialog with image upload, color picker, types, and member selection
+- **Groups Feature Complete**: 
+  - Groups list page (`/groups`) with dual-view mode (List/Wide)
+  - Individual group profile pages (`/group/:id`) modeled after person profiles
+  - Edit Group dialog (name, color, types, image - member management in Members tab)
+  - Members tab with add/remove functionality
+    - Dual view modes: List (default desktop) and Wide (4 columns desktop, 1 mobile)
+    - Add Members button for bulk member selection
+    - Red X to remove members (right side in list view, lower left in wide view)
   - Groups display images with fallback to colored avatars showing initials
+  - Backend support for fetching groups with populated member details
 
 ## User Preferences
 

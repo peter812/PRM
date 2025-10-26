@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, LayoutList, LayoutGrid } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -96,11 +97,11 @@ export default function GroupsList() {
           viewMode === "list" ? (
             <div className="space-y-3">
               {groups.map((group) => (
-                <Card
-                  key={group.id}
-                  className="p-4 hover-elevate transition-all cursor-pointer"
-                  data-testid={`card-group-${group.id}`}
-                >
+                <Link key={group.id} href={`/group/${group.id}`}>
+                  <Card
+                    className="p-4 hover-elevate transition-all cursor-pointer"
+                    data-testid={`card-group-${group.id}`}
+                  >
                   <div className="flex items-center gap-4">
                     <Avatar className="w-12 h-12" style={{ borderColor: group.color }}>
                       {group.imageUrl && (
@@ -142,16 +143,17 @@ export default function GroupsList() {
                     </div>
                   </div>
                 </Card>
+                </Link>
               ))}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {groups.map((group) => (
-                <Card
-                  key={group.id}
-                  className="p-6 hover-elevate transition-all cursor-pointer"
-                  data-testid={`card-group-${group.id}`}
-                >
+                <Link key={group.id} href={`/group/${group.id}`}>
+                  <Card
+                    className="p-6 hover-elevate transition-all cursor-pointer"
+                    data-testid={`card-group-${group.id}`}
+                  >
                   <div className="flex flex-col items-center text-center">
                     <Avatar className="w-32 h-32 mb-4" style={{ borderColor: group.color, borderWidth: '3px' }}>
                       {group.imageUrl && (
@@ -191,6 +193,7 @@ export default function GroupsList() {
                     )}
                   </div>
                 </Card>
+                </Link>
               ))}
             </div>
           )
