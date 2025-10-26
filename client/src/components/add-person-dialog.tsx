@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertPersonSchema, type InsertPerson } from "@shared/schema";
+import { ImageUpload } from "./image-upload";
 
 interface AddPersonDialogProps {
   open: boolean;
@@ -32,6 +33,7 @@ interface AddPersonDialogProps {
 export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
   const { toast } = useToast();
   const [tagInput, setTagInput] = useState("");
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
 
   const form = useForm<InsertPerson>({
     resolver: zodResolver(insertPersonSchema),
@@ -43,6 +45,7 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
       company: "",
       title: "",
       tags: [],
+      imageUrl: null,
     },
   });
 
@@ -88,7 +91,7 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
   };
 
   const onSubmit = (data: InsertPerson) => {
-    createMutation.mutate(data);
+    createMutation.mutate({ ...data, imageUrl });
   };
 
   return (
@@ -100,6 +103,17 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div>
+              <FormLabel>Photo</FormLabel>
+              <div className="mt-2">
+                <ImageUpload
+                  currentImageUrl={imageUrl}
+                  onImageChange={setImageUrl}
+                  aspectRatio={1}
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}

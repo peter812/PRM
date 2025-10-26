@@ -24,6 +24,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertPersonSchema, type Person } from "@shared/schema";
 import { z } from "zod";
+import { ImageUpload } from "./image-upload";
 
 interface EditPersonDialogProps {
   open: boolean;
@@ -41,6 +42,7 @@ export function EditPersonDialog({
 }: EditPersonDialogProps) {
   const { toast } = useToast();
   const [tagInput, setTagInput] = useState("");
+  const [imageUrl, setImageUrl] = useState<string | null>(person.imageUrl || null);
 
   const form = useForm<UpdatePerson>({
     resolver: zodResolver(updatePersonSchema),
@@ -52,11 +54,13 @@ export function EditPersonDialog({
       company: person.company || "",
       title: person.title || "",
       tags: person.tags || [],
+      imageUrl: person.imageUrl || null,
     },
   });
 
   useEffect(() => {
     if (open) {
+      setImageUrl(person.imageUrl || null);
       form.reset({
         firstName: person.firstName,
         lastName: person.lastName,
@@ -65,6 +69,7 @@ export function EditPersonDialog({
         company: person.company || "",
         title: person.title || "",
         tags: person.tags || [],
+        imageUrl: person.imageUrl || null,
       });
     }
   }, [open, person, form]);
@@ -111,7 +116,7 @@ export function EditPersonDialog({
   };
 
   const onSubmit = (data: UpdatePerson) => {
-    updateMutation.mutate(data);
+    updateMutation.mutate({ ...data, imageUrl });
   };
 
   return (
@@ -123,6 +128,17 @@ export function EditPersonDialog({
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div>
+              <FormLabel>Photo</FormLabel>
+              <div className="mt-2">
+                <ImageUpload
+                  currentImageUrl={imageUrl}
+                  onImageChange={setImageUrl}
+                  aspectRatio={1}
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}

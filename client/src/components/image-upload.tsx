@@ -1,8 +1,7 @@
 import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Upload, X, Image as ImageIcon } from "lucide-react";
+import { X, Image as ImageIcon } from "lucide-react";
 import { ImageCropModal } from "./image-crop-modal";
-import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface ImageUploadProps {
@@ -51,12 +50,18 @@ export function ImageUpload({
       const formData = new FormData();
       formData.append("image", croppedBlob, "cropped-image.jpg");
 
-      const response = await apiRequest<{ imageUrl: string }>("/api/upload-image", {
+      const response = await fetch("/api/upload-image", {
         method: "POST",
         body: formData,
+        credentials: "include",
       });
 
-      onImageChange(response.imageUrl);
+      if (!response.ok) {
+        throw new Error("Failed to upload image");
+      }
+
+      const data = await response.json();
+      onImageChange(data.imageUrl);
       toast({
         title: "Success",
         description: "Image uploaded successfully",
@@ -80,12 +85,13 @@ export function ImageUpload({
   const handleRemoveImage = async () => {
     if (currentImageUrl) {
       try {
-        await apiRequest("/api/delete-image", {
+        await fetch("/api/delete-image", {
           method: "DELETE",
           body: JSON.stringify({ imageUrl: currentImageUrl }),
           headers: {
             "Content-Type": "application/json",
           },
+          credentials: "include",
         });
       } catch (error) {
         console.error("Error deleting image from S3:", error);
