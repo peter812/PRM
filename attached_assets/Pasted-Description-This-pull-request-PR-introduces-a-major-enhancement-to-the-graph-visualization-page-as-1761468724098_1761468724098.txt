@@ -1,0 +1,53 @@
+Description
+This pull request (PR) introduces a major enhancement to the graph visualization page as discussed in the recent planning meeting. The primary goals of this update are:
+
+To introduce "Groups" as a new node type on the graph.
+
+To provide users with more granular control over the graph display via a new options panel.
+
+To implement a "User Highlight" filter to isolate specific nodes and their connections.
+
+This PR establishes the new UI framework for the options panel and implements the first two major features: the group toggle and the user highlight functionality.
+
+Changes Implemented
+1. Graph Engine & Data Model
+New "Group" Node Type: The graph rendering engine now supports a group node type in addition to the existing person type.
+
+New Edge Type: Added a group-to-person edge type to connect group nodes to their members.
+
+Physics Adjustment: As per the requirements, the physics simulation has been updated. The group-to-person edges have a significantly lower force constant (less "gravity") than person-to-person edges. This prevents the group nodes from unnaturally collapsing the cluster of people and ensures they act more as loose categorical labels.
+
+2. New UI: Options Panel
+Desktop View: A new OptionsPanel component is rendered by default on the right-hand side of the screen on desktop viewports (e.g., width > 1024px).
+
+Mobile View: On mobile viewports, the OptionsPanel is hidden by default. A new "out arrow" icon (or "settings" icon) is added to the upper-right corner of the graph view. Tapping this icon toggles the visibility of the OptionsPanel, which slides in as an overlay.
+
+3. Feature: Group Visibility Toggle
+A new toggle switch labeled "Show Groups" has been added to the OptionsPanel.
+
+This toggle is ON by default.
+
+When ON, all group nodes and their corresponding group-to-person edges are rendered on the graph.
+
+When toggled OFF, all group nodes and their edges are hidden, and the graph layout re-renders without them.
+
+4. Feature: User Highlight
+A "User Highlight" feature section has been added to the OptionsPanel.
+
+This feature includes a searchable dropdown/dialog box to select a "person" node currently on the graph.
+
+When a user is selected:
+
+The graph camera/viewport centers on the selected user node.
+
+A display filter is activated, showing only:
+
+The selected "person" node.
+
+All "person" nodes with a direct 1st-degree connection to the selected user.
+
+All "group" nodes the selected user is a member of.
+
+All other nodes and edges are hidden.
+
+Deselecting the user (e.g., clicking an "X" or clearing the selection) disables the filter and restores the full graph view.
