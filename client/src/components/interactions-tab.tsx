@@ -117,6 +117,16 @@ export function InteractionsTab({
                     <p className="text-base whitespace-pre-wrap" data-testid={`text-interaction-description-${interaction.id}`}>
                       {interaction.description}
                     </p>
+                    {interaction.imageUrl && (
+                      <div className="mt-4">
+                        <img
+                          src={interaction.imageUrl}
+                          alt="Interaction attachment"
+                          className="rounded-md max-w-md w-full border"
+                          data-testid={`img-interaction-${interaction.id}`}
+                        />
+                      </div>
+                    )}
                   </Card>
                 </div>
               );

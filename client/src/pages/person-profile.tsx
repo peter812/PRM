@@ -4,7 +4,7 @@ import { Mail, Phone, Building2, Briefcase, ArrowLeft, Plus, Edit } from "lucide
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations } from "@shared/schema";
@@ -99,6 +99,9 @@ export default function PersonProfile() {
 
         <div className="flex items-start gap-6">
           <Avatar className="w-24 h-24">
+            {person.imageUrl && (
+              <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+            )}
             <AvatarFallback className="text-2xl">
               {getInitials(person.firstName, person.lastName)}
             </AvatarFallback>

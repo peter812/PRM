@@ -5,7 +5,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import type { Person } from "@shared/schema";
 import { AddPersonDialog } from "@/components/add-person-dialog";
@@ -85,6 +85,9 @@ export default function PeopleList() {
                 >
                   <div className="flex items-center gap-4">
                     <Avatar className="w-12 h-12">
+                      {person.imageUrl && (
+                        <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                      )}
                       <AvatarFallback>
                         {getInitials(person.firstName, person.lastName)}
                       </AvatarFallback>

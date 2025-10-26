@@ -3,7 +3,7 @@ import { Plus, Trash2, Users2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { RelationshipWithPerson } from "@shared/schema";
@@ -84,6 +84,12 @@ export function RelationshipsTab({
             >
               <div className="flex items-start gap-4">
                 <Avatar className="w-12 h-12">
+                  {relationship.toPerson.imageUrl && (
+                    <AvatarImage 
+                      src={relationship.toPerson.imageUrl} 
+                      alt={`${relationship.toPerson.firstName} ${relationship.toPerson.lastName}`} 
+                    />
+                  )}
                   <AvatarFallback>
                     {getInitials(
                       relationship.toPerson.firstName,

@@ -74,6 +74,16 @@ export function NotesTab({ notes, personId, onAddNote }: NotesTabProps) {
               <p className="text-base whitespace-pre-wrap" data-testid={`text-note-content-${note.id}`}>
                 {note.content}
               </p>
+              {note.imageUrl && (
+                <div className="mt-4">
+                  <img
+                    src={note.imageUrl}
+                    alt="Note attachment"
+                    className="rounded-md max-w-md w-full border"
+                    data-testid={`img-note-${note.id}`}
+                  />
+                </div>
+              )}
             </Card>
           ))}
         </div>
