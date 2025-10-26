@@ -7,6 +7,8 @@ import { z } from "zod";
 // Users table for authentication
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
+  name: text("name"),
+  nickname: text("nickname"),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
