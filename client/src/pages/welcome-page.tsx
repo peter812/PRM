@@ -37,13 +37,8 @@ export default function WelcomePage() {
 
   const setupMutation = useMutation({
     mutationFn: async (data: SetupFormData) => {
-      return await apiRequest("/api/setup/initialize", {
-        method: "POST",
-        body: JSON.stringify(data),
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
+      const response = await apiRequest("POST", "/api/setup/initialize", data);
+      return await response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/user"] });

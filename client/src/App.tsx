@@ -1,6 +1,6 @@
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route, useLocation, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -17,11 +17,13 @@ import GroupProfile from "@/pages/group-profile";
 import Graph from "@/pages/graph";
 import ApiDocs from "@/pages/api-docs";
 import AuthPage from "@/pages/auth-page";
+import WelcomePage from "@/pages/welcome-page";
 import NotFound from "@/pages/not-found";
 
 function Router() {
   return (
     <Switch>
+      <Route path="/welcome" component={WelcomePage} />
       <Route path="/auth" component={AuthPage} />
       <ProtectedRoute path="/" component={PeopleList} />
       <ProtectedRoute path="/person/:id" component={PersonProfile} />
@@ -39,6 +41,13 @@ function AppLayout() {
   const [location] = useLocation();
   const { user, logoutMutation } = useAuth();
   const isAuthPage = location === "/auth";
+  const isWelcomePage = location === "/welcome";
+
+  // Check if setup is needed
+  const { data: setupStatus } = useQuery<{ isSetupNeeded: boolean }>({
+    queryKey: ["/api/setup/status"],
+    enabled: !isWelcomePage && !isAuthPage,
+  });
 
   const handleLogout = () => {
     logoutMutation.mutate();
@@ -49,7 +58,12 @@ function AppLayout() {
     "--sidebar-width-icon": "3rem",
   };
 
-  if (isAuthPage) {
+  // Redirect to welcome page if setup is needed
+  if (setupStatus?.isSetupNeeded && !isWelcomePage) {
+    return <Redirect to="/welcome" />;
+  }
+
+  if (isAuthPage || isWelcomePage) {
     return <Router />;
   }
 
