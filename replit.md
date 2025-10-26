@@ -6,6 +6,20 @@ A professional CRM application for managing contacts, tracking interactions, and
 
 ## Recent Changes (October 26, 2025)
 
+- **Graph Visualization Enhancement**:
+  - **New Group Node Type**: Groups now appear as draggable rectangular nodes on the graph
+  - **OptionsPanel Component**: 
+    - Desktop (>1024px): Always visible sidebar on the right
+    - Mobile (<1024px): Overlay panel toggled via settings icon
+  - **Show Groups Toggle**: ON by default, controls visibility of group nodes and group-to-person edges
+  - **User Highlight Feature**: Searchable dropdown to filter graph to show only a selected person and their:
+    - Direct 1st-degree person connections
+    - Group memberships
+    - All related edges
+  - **Physics Simulation**: Group-to-person edges use lower attraction force (0.003 vs 0.01) to prevent cluster collapse
+  - **Draggable Groups**: Both person and group nodes are fully draggable with grab cursors
+  - **Camera Centering**: When highlighting a user, graph camera centers on the selected person node
+
 - **Groups Feature Complete**: 
   - Groups list page (`/groups`) with dual-view mode (List/Wide)
   - Individual group profile pages (`/group/:id`) modeled after person profiles
@@ -149,6 +163,13 @@ Session-based authentication implemented using express-session with PostgreSQL s
 - embla-carousel-react for carousel components
 - vaul for drawer components
 - react-easy-crop for client-side image cropping with zoom controls
+
+**Graph Visualization:**
+- Pixi.js (pixi.js) for WebGL-based interactive graph rendering
+- Force-directed physics simulation for node positioning
+- Interactive nodes with drag-and-drop, hover effects, and click navigation
+- Dynamic edge rendering for relationships and group memberships
+- Theme-aware colors using CSS variables (HSL to hex conversion)
 
 **File Upload:**
 - Multer for handling multipart/form-data file uploads
