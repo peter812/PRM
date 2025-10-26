@@ -8,9 +8,11 @@ import {
   insertRelationshipSchema,
   insertGroupSchema,
   insertGroupNoteSchema,
+  insertUserSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
+import { hashPassword } from "./auth";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -48,6 +50,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting image:", error);
       res.status(500).json({ error: "Failed to delete image" });
+    }
+  });
+
+  // Setup endpoints
+  app.get("/api/setup/status", async (req, res) => {
+    try {
+      const userCount = await storage.getUserCount();
+      res.json({ isSetupNeeded: userCount === 0 });
+    } catch (error) {
+      console.error("Error checking setup status:", error);
+      res.status(500).json({ error: "Failed to check setup status" });
+    }
+  });
+
+  app.post("/api/setup/initialize", async (req, res) => {
+    try {
+      const userCount = await storage.getUserCount();
+      if (userCount > 0) {
+        return res.status(400).json({ error: "Setup already completed" });
+      }
+
+      const validatedData = insertUserSchema.parse({
+        name: req.body.name,
+        nickname: req.body.nickname,
+        username: req.body.username,
+        password: await hashPassword(req.body.password),
+      });
+
+      const user = await storage.createUser(validatedData);
+      
+      // Log the user in automatically
+      req.login(user, (err) => {
+        if (err) {
+          console.error("Error logging in after setup:", err);
+          return res.status(500).json({ error: "Setup completed but login failed" });
+        }
+        res.status(201).json(user);
+      });
+    } catch (error) {
+      console.error("Error initializing setup:", error);
+      res.status(400).json({ error: "Failed to initialize setup" });
     }
   });
 
