@@ -162,7 +162,7 @@ export function OptionsPanel({
                   Person-to-Person Line Opacity
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {personLineOpacity.toFixed(2)}
+                  {personLineOpacity?.toFixed(2) ?? '0.30'}
                 </span>
               </div>
               <Slider
@@ -183,7 +183,7 @@ export function OptionsPanel({
                   Group-to-Person Line Opacity
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {groupLineOpacity.toFixed(2)}
+                  {groupLineOpacity?.toFixed(2) ?? '0.20'}
                 </span>
               </div>
               <Slider
@@ -204,7 +204,7 @@ export function OptionsPanel({
                   Person-to-Person Pull
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {personPull.toFixed(3)}
+                  {personPull?.toFixed(3) ?? '0.010'}
                 </span>
               </div>
               <Slider
@@ -225,7 +225,7 @@ export function OptionsPanel({
                   Group-to-Person Pull
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {groupPull.toFixed(3)}
+                  {groupPull?.toFixed(3) ?? '0.003'}
                 </span>
               </div>
               <Slider
@@ -358,7 +358,7 @@ export function OptionsPanel({
                       Person-to-Person Line Opacity
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {personLineOpacity.toFixed(2)}
+                      {personLineOpacity?.toFixed(2) ?? '0.30'}
                     </span>
                   </div>
                   <Slider
@@ -379,7 +379,7 @@ export function OptionsPanel({
                       Group-to-Person Line Opacity
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {groupLineOpacity.toFixed(2)}
+                      {groupLineOpacity?.toFixed(2) ?? '0.20'}
                     </span>
                   </div>
                   <Slider
@@ -400,7 +400,7 @@ export function OptionsPanel({
                       Person-to-Person Pull
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {personPull.toFixed(3)}
+                      {personPull?.toFixed(3) ?? '0.010'}
                     </span>
                   </div>
                   <Slider
@@ -421,7 +421,7 @@ export function OptionsPanel({
                       Group-to-Person Pull
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {groupPull.toFixed(3)}
+                      {groupPull?.toFixed(3) ?? '0.003'}
                     </span>
                   </div>
                   <Slider
