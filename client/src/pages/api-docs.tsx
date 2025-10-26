@@ -1,16 +1,27 @@
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Copy, CheckCheck } from "lucide-react";
+import { Copy, CheckCheck, ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
 export default function ApiDocs() {
   const [copiedEndpoint, setCopiedEndpoint] = useState<string | null>(null);
+  const [expandedEndpoints, setExpandedEndpoints] = useState<Set<string>>(new Set());
 
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedEndpoint(id);
     setTimeout(() => setCopiedEndpoint(null), 2000);
+  };
+
+  const toggleEndpoint = (id: string) => {
+    const newExpanded = new Set(expandedEndpoints);
+    if (newExpanded.has(id)) {
+      newExpanded.delete(id);
+    } else {
+      newExpanded.add(id);
+    }
+    setExpandedEndpoints(newExpanded);
   };
 
   const baseUrl = window.location.origin;
@@ -20,6 +31,7 @@ export default function ApiDocs() {
       id: "get-people",
       method: "GET",
       path: "/api/people",
+      summary: "Get all people",
       description: "Get all people with optional search query",
       queryParams: [
         { name: "search", type: "string", description: "Search by name, company, email, or tags" },
@@ -38,11 +50,26 @@ export default function ApiDocs() {
     "createdAt": "2024-01-01T00:00:00.000Z"
   }
 ]`,
+      example: `// Get all people
+fetch('${baseUrl}/api/people')
+  .then(res => res.json())
+  .then(data => console.log(data));
+
+// Search for people
+fetch('${baseUrl}/api/people?search=john')
+  .then(res => res.json())
+  .then(data => console.log(data));
+
+// Get people with relationships
+fetch('${baseUrl}/api/people?includeRelationships=true')
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "get-person",
       method: "GET",
       path: "/api/people/:id",
+      summary: "Get a single person",
       description: "Get a single person with all notes and interactions",
       response: `{
   "id": 1,
@@ -57,11 +84,17 @@ export default function ApiDocs() {
   "notes": [...],
   "interactions": [...]
 }`,
+      example: `// Get person with ID
+const personId = '123e4567-e89b-12d3-a456-426614174000';
+fetch(\`${baseUrl}/api/people/\${personId}\`)
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "create-person",
       method: "POST",
       path: "/api/people",
+      summary: "Create a new person",
       description: "Create a new person",
       body: `{
   "firstName": "John",
@@ -78,11 +111,28 @@ export default function ApiDocs() {
   "lastName": "Doe",
   ...
 }`,
+      example: `// Create a new person
+fetch('${baseUrl}/api/people', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    firstName: 'John',
+    lastName: 'Doe',
+    email: 'john@example.com',
+    phone: '+1234567890',
+    company: 'Acme Corp',
+    title: 'CEO',
+    tags: ['partner', 'vip']
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "update-person",
       method: "PATCH",
       path: "/api/people/:id",
+      summary: "Update a person",
       description: "Update a person",
       body: `{
   "firstName": "Jane",
@@ -93,18 +143,39 @@ export default function ApiDocs() {
   "firstName": "Jane",
   ...
 }`,
+      example: `// Update a person
+const personId = '123e4567-e89b-12d3-a456-426614174000';
+fetch(\`${baseUrl}/api/people/\${personId}\`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    firstName: 'Jane',
+    email: 'jane@example.com'
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "delete-person",
       method: "DELETE",
       path: "/api/people/:id",
+      summary: "Delete a person",
       description: "Delete a person and all associated notes and interactions",
       response: `{ "success": true }`,
+      example: `// Delete a person
+const personId = '123e4567-e89b-12d3-a456-426614174000';
+fetch(\`${baseUrl}/api/people/\${personId}\`, {
+  method: 'DELETE'
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "create-note",
       method: "POST",
       path: "/api/notes",
+      summary: "Create a note",
       description: "Create a new note for a person",
       body: `{
   "personId": 1,
@@ -116,18 +187,38 @@ export default function ApiDocs() {
   "content": "Met at conference...",
   "createdAt": "2024-01-01T00:00:00.000Z"
 }`,
+      example: `// Create a note for a person
+fetch('${baseUrl}/api/notes', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    personId: '123e4567-e89b-12d3-a456-426614174000',
+    content: 'Met at conference, interested in partnership'
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "delete-note",
       method: "DELETE",
       path: "/api/notes/:id",
+      summary: "Delete a note",
       description: "Delete a note",
       response: `{ "success": true }`,
+      example: `// Delete a note
+const noteId = '123e4567-e89b-12d3-a456-426614174000';
+fetch(\`${baseUrl}/api/notes/\${noteId}\`, {
+  method: 'DELETE'
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "create-interaction",
       method: "POST",
       path: "/api/interactions",
+      summary: "Create an interaction",
       description: "Create a new interaction for a person",
       body: `{
   "personId": 1,
@@ -143,18 +234,40 @@ export default function ApiDocs() {
   "description": "Discussed Q1 partnership opportunities",
   "createdAt": "2024-01-01T00:00:00.000Z"
 }`,
+      example: `// Create an interaction
+fetch('${baseUrl}/api/interactions', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    personId: '123e4567-e89b-12d3-a456-426614174000',
+    type: 'meeting',
+    date: new Date().toISOString(),
+    description: 'Discussed Q1 partnership opportunities'
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "delete-interaction",
       method: "DELETE",
       path: "/api/interactions/:id",
+      summary: "Delete an interaction",
       description: "Delete an interaction",
       response: `{ "success": true }`,
+      example: `// Delete an interaction
+const interactionId = '123e4567-e89b-12d3-a456-426614174000';
+fetch(\`${baseUrl}/api/interactions/\${interactionId}\`, {
+  method: 'DELETE'
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "create-relationship",
       method: "POST",
       path: "/api/relationships",
+      summary: "Create a relationship",
       description: "Create a relationship between two people",
       body: `{
   "fromPersonId": "uuid-1",
@@ -170,11 +283,25 @@ export default function ApiDocs() {
   "notes": "Met at conference",
   "createdAt": "2024-01-01T00:00:00.000Z"
 }`,
+      example: `// Create a relationship
+fetch('${baseUrl}/api/relationships', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    fromPersonId: 'uuid-1',
+    toPersonId: 'uuid-2',
+    level: 'colleague',
+    notes: 'Met at conference'
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "update-relationship",
       method: "PATCH",
       path: "/api/relationships/:id",
+      summary: "Update a relationship",
       description: "Update a relationship",
       body: `{
   "level": "friend",
@@ -188,18 +315,39 @@ export default function ApiDocs() {
   "notes": "Now good friends",
   "createdAt": "2024-01-01T00:00:00.000Z"
 }`,
+      example: `// Update a relationship
+const relationshipId = 'uuid-3';
+fetch(\`${baseUrl}/api/relationships/\${relationshipId}\`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    level: 'friend',
+    notes: 'Now good friends'
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "delete-relationship",
       method: "DELETE",
       path: "/api/relationships/:id",
+      summary: "Delete a relationship",
       description: "Delete a relationship",
       response: `{ "success": true }`,
+      example: `// Delete a relationship
+const relationshipId = 'uuid-3';
+fetch(\`${baseUrl}/api/relationships/\${relationshipId}\`, {
+  method: 'DELETE'
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "get-groups",
       method: "GET",
       path: "/api/groups",
+      summary: "Get all groups",
       description: "Get all groups",
       response: `[
   {
@@ -211,11 +359,16 @@ export default function ApiDocs() {
     "createdAt": "2024-01-01T00:00:00.000Z"
   }
 ]`,
+      example: `// Get all groups
+fetch('${baseUrl}/api/groups')
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "get-group",
       method: "GET",
       path: "/api/groups/:id",
+      summary: "Get a single group",
       description: "Get a single group with all notes",
       response: `{
   "id": "uuid-1",
@@ -233,11 +386,17 @@ export default function ApiDocs() {
     }
   ]
 }`,
+      example: `// Get group with ID
+const groupId = 'uuid-1';
+fetch(\`${baseUrl}/api/groups/\${groupId}\`)
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "create-group",
       method: "POST",
       path: "/api/groups",
+      summary: "Create a new group",
       description: "Create a new group",
       body: `{
   "name": "Engineering Team",
@@ -253,11 +412,25 @@ export default function ApiDocs() {
   "members": ["person-uuid-1", "person-uuid-2"],
   "createdAt": "2024-01-01T00:00:00.000Z"
 }`,
+      example: `// Create a new group
+fetch('${baseUrl}/api/groups', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    name: 'Engineering Team',
+    color: '#3b82f6',
+    type: ['department', 'technical'],
+    members: ['person-uuid-1', 'person-uuid-2']
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "update-group",
       method: "PATCH",
       path: "/api/groups/:id",
+      summary: "Update a group",
       description: "Update a group",
       body: `{
   "name": "Senior Engineering Team",
@@ -271,18 +444,39 @@ export default function ApiDocs() {
   "members": ["person-uuid-1", "person-uuid-2", "person-uuid-3"],
   "createdAt": "2024-01-01T00:00:00.000Z"
 }`,
+      example: `// Update a group
+const groupId = 'uuid-1';
+fetch(\`${baseUrl}/api/groups/\${groupId}\`, {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    name: 'Senior Engineering Team',
+    members: ['person-uuid-1', 'person-uuid-2', 'person-uuid-3']
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "delete-group",
       method: "DELETE",
       path: "/api/groups/:id",
+      summary: "Delete a group",
       description: "Delete a group and all associated notes",
       response: `{ "success": true }`,
+      example: `// Delete a group
+const groupId = 'uuid-1';
+fetch(\`${baseUrl}/api/groups/\${groupId}\`, {
+  method: 'DELETE'
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "create-group-note",
       method: "POST",
       path: "/api/group-notes",
+      summary: "Create a group note",
       description: "Create a new note for a group",
       body: `{
   "groupId": "uuid-1",
@@ -294,13 +488,32 @@ export default function ApiDocs() {
   "content": "Kickoff meeting scheduled for next Monday",
   "createdAt": "2024-01-01T00:00:00.000Z"
 }`,
+      example: `// Create a note for a group
+fetch('${baseUrl}/api/group-notes', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    groupId: 'uuid-1',
+    content: 'Kickoff meeting scheduled for next Monday'
+  })
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
     {
       id: "delete-group-note",
       method: "DELETE",
       path: "/api/group-notes/:id",
+      summary: "Delete a group note",
       description: "Delete a group note",
       response: `{ "success": true }`,
+      example: `// Delete a group note
+const noteId = 'note-uuid-1';
+fetch(\`${baseUrl}/api/group-notes/\${noteId}\`, {
+  method: 'DELETE'
+})
+  .then(res => res.json())
+  .then(data => console.log(data));`,
     },
   ];
 
@@ -352,97 +565,145 @@ export default function ApiDocs() {
           </div>
         </Card>
 
-        <div className="space-y-6">
+        <div className="space-y-3">
           <h2 className="text-2xl font-semibold">Endpoints</h2>
 
-          {endpoints.map((endpoint) => (
-            <Card key={endpoint.id} className="p-6" data-testid={`card-endpoint-${endpoint.id}`}>
-              <div className="flex items-start gap-3 mb-4">
-                <Badge className={`${getMethodColor(endpoint.method)} border font-mono`}>
-                  {endpoint.method}
-                </Badge>
-                <div className="flex-1">
-                  <code className="font-mono text-sm font-medium">
+          {endpoints.map((endpoint) => {
+            const isExpanded = expandedEndpoints.has(endpoint.id);
+
+            return (
+              <Card 
+                key={endpoint.id} 
+                className="overflow-hidden hover-elevate active-elevate-2" 
+                data-testid={`card-endpoint-${endpoint.id}`}
+              >
+                <button
+                  onClick={() => toggleEndpoint(endpoint.id)}
+                  className="w-full p-4 flex items-center gap-3 text-left"
+                  data-testid={`button-toggle-${endpoint.id}`}
+                >
+                  {isExpanded ? (
+                    <ChevronDown className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+                  ) : (
+                    <ChevronRight className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+                  )}
+                  <Badge className={`${getMethodColor(endpoint.method)} border font-mono flex-shrink-0`}>
+                    {endpoint.method}
+                  </Badge>
+                  <code className="font-mono text-sm font-medium flex-shrink-0">
                     {endpoint.path}
                   </code>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {endpoint.description}
-                  </p>
-                </div>
-              </div>
+                  <span className="text-sm text-muted-foreground truncate">
+                    {endpoint.summary}
+                  </span>
+                </button>
 
-              {endpoint.queryParams && (
-                <div className="mb-4">
-                  <h4 className="text-sm font-medium mb-2">Query Parameters</h4>
-                  <div className="space-y-2">
-                    {endpoint.queryParams.map((param) => (
-                      <div
-                        key={param.name}
-                        className="flex items-start gap-2 text-sm"
-                      >
-                        <code className="font-mono text-xs bg-muted px-2 py-1 rounded">
-                          {param.name}
-                        </code>
-                        <span className="text-muted-foreground text-xs">
-                          ({param.type})
-                        </span>
-                        <span className="text-muted-foreground">-</span>
-                        <span>{param.description}</span>
+                {isExpanded && (
+                  <div className="px-4 pb-4 space-y-4 border-t pt-4">
+                    <p className="text-sm text-muted-foreground">
+                      {endpoint.description}
+                    </p>
+
+                    {endpoint.queryParams && (
+                      <div>
+                        <h4 className="text-sm font-medium mb-2">Query Parameters</h4>
+                        <div className="space-y-2">
+                          {endpoint.queryParams.map((param) => (
+                            <div
+                              key={param.name}
+                              className="flex items-start gap-2 text-sm"
+                            >
+                              <code className="font-mono text-xs bg-muted px-2 py-1 rounded">
+                                {param.name}
+                              </code>
+                              <span className="text-muted-foreground text-xs">
+                                ({param.type})
+                              </span>
+                              <span className="text-muted-foreground">-</span>
+                              <span>{param.description}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {endpoint.body && (
-                <div className="mb-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="text-sm font-medium">Request Body</h4>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        copyToClipboard(endpoint.body!, `${endpoint.id}-body`)
-                      }
-                      data-testid={`button-copy-body-${endpoint.id}`}
-                    >
-                      {copiedEndpoint === `${endpoint.id}-body` ? (
-                        <CheckCheck className="h-3 w-3 text-green-600" />
-                      ) : (
-                        <Copy className="h-3 w-3" />
-                      )}
-                    </Button>
-                  </div>
-                  <pre className="font-mono text-xs bg-muted p-4 rounded overflow-x-auto">
-                    {endpoint.body}
-                  </pre>
-                </div>
-              )}
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-medium">Response</h4>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      copyToClipboard(endpoint.response, `${endpoint.id}-response`)
-                    }
-                    data-testid={`button-copy-response-${endpoint.id}`}
-                  >
-                    {copiedEndpoint === `${endpoint.id}-response` ? (
-                      <CheckCheck className="h-3 w-3 text-green-600" />
-                    ) : (
-                      <Copy className="h-3 w-3" />
                     )}
-                  </Button>
-                </div>
-                <pre className="font-mono text-xs bg-muted p-4 rounded overflow-x-auto">
-                  {endpoint.response}
-                </pre>
-              </div>
-            </Card>
-          ))}
+
+                    {endpoint.body && (
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-medium">Request Body</h4>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              copyToClipboard(endpoint.body!, `${endpoint.id}-body`)
+                            }
+                            data-testid={`button-copy-body-${endpoint.id}`}
+                          >
+                            {copiedEndpoint === `${endpoint.id}-body` ? (
+                              <CheckCheck className="h-3 w-3 text-green-600" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </Button>
+                        </div>
+                        <pre className="font-mono text-xs bg-muted p-4 rounded overflow-x-auto">
+                          {endpoint.body}
+                        </pre>
+                      </div>
+                    )}
+
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-sm font-medium">Response</h4>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            copyToClipboard(endpoint.response, `${endpoint.id}-response`)
+                          }
+                          data-testid={`button-copy-response-${endpoint.id}`}
+                        >
+                          {copiedEndpoint === `${endpoint.id}-response` ? (
+                            <CheckCheck className="h-3 w-3 text-green-600" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </Button>
+                      </div>
+                      <pre className="font-mono text-xs bg-muted p-4 rounded overflow-x-auto">
+                        {endpoint.response}
+                      </pre>
+                    </div>
+
+                    {endpoint.example && (
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-medium">Example API Call</h4>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              copyToClipboard(endpoint.example!, `${endpoint.id}-example`)
+                            }
+                            data-testid={`button-copy-example-${endpoint.id}`}
+                          >
+                            {copiedEndpoint === `${endpoint.id}-example` ? (
+                              <CheckCheck className="h-3 w-3 text-green-600" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </Button>
+                        </div>
+                        <pre className="font-mono text-xs bg-muted p-4 rounded overflow-x-auto">
+                          {endpoint.example}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
         </div>
 
         <Card className="p-6">
