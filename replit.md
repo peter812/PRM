@@ -2,7 +2,7 @@
 
 ## Overview
 
-A professional CRM application for managing contacts, tracking interactions, and maintaining relationships. Built with a modern React frontend and Express backend, the application provides a clean, data-focused interface inspired by productivity tools like Linear and Notion. Users can create and manage people profiles, add notes, track interactions (meetings, calls, emails), and organize contacts with tags and search capabilities.
+A professional CRM application for managing contacts, tracking interactions, and maintaining relationships. Built with a modern React frontend and Express backend, the application provides a clean, data-focused interface inspired by productivity tools like Linear and Notion. Users can create and manage people profiles, add notes, track interactions (meetings, calls, emails), organize contacts with tags, create groups with members, and use powerful search capabilities.
 
 ## User Preferences
 
@@ -47,6 +47,9 @@ Preferred communication style: Simple, everyday language.
   - `/api/people` - CRUD operations for contacts
   - `/api/notes` - Note management for people
   - `/api/interactions` - Interaction tracking (meetings, calls, emails)
+  - `/api/relationships` - Relationship management between people
+  - `/api/groups` - CRUD operations for groups
+  - `/api/group-notes` - Note management for groups
 - Route handlers in `server/routes.ts` with validation using Zod schemas
 - Business logic abstracted into storage layer (`server/storage.ts`)
 
@@ -66,12 +69,16 @@ Preferred communication style: Simple, everyday language.
 **ORM & Schema:**
 - Drizzle ORM for type-safe database queries and migrations
 - Schema-first approach with TypeScript types generated from database schema
-- Three main tables:
+- Database tables:
+  - `users`: Authentication (username, password)
   - `people`: Contact information (name, email, phone, company, title, tags)
   - `notes`: Text notes associated with people
   - `interactions`: Tracked interactions with type (meeting/call/email/other), date, description
+  - `relationships`: Connections between people with relationship levels
+  - `groups`: Group information (name, color, type, members list)
+  - `group_notes`: Text notes associated with groups
 - Foreign key relationships with cascade deletion
-- Array type support for tags on people
+- Array type support for tags on people, group types, and group members
 
 **Data Validation:**
 - Drizzle-Zod integration for runtime validation
@@ -80,7 +87,7 @@ Preferred communication style: Simple, everyday language.
 
 ### Authentication and Authorization
 
-Currently not implemented - application operates without user authentication. All data is accessible to anyone with access to the application.
+Session-based authentication implemented using express-session with PostgreSQL session store. Login required to access the application - sidebar hidden on login page. Registration is disabled. Current authentication is single-user based.
 
 ## External Dependencies
 
