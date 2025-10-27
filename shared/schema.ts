@@ -48,12 +48,22 @@ export const interactions = pgTable("interactions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Relationship types table
+export const relationshipTypes = pgTable("relationship_types", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  color: text("color").notNull(), // hex color code
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Relationships table
 export const relationships = pgTable("relationships", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   fromPersonId: varchar("from_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   toPersonId: varchar("to_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
-  level: text("level").notNull(), // "colleague", "friend", "family", "client", "partner", etc.
+  typeId: varchar("type_id").references(() => relationshipTypes.id, { onDelete: "set null" }),
+  level: text("level"), // Legacy field, kept for backwards compatibility
   notes: text("notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -110,6 +120,14 @@ export const relationshipsRelations = relations(relationships, ({ one }) => ({
     references: [people.id],
     relationName: "relationshipsTo",
   }),
+  type: one(relationshipTypes, {
+    fields: [relationships.typeId],
+    references: [relationshipTypes.id],
+  }),
+}));
+
+export const relationshipTypesRelations = relations(relationshipTypes, ({ many }) => ({
+  relationships: many(relationships),
 }));
 
 export const groupsRelations = relations(groups, ({ many }) => ({
@@ -163,6 +181,11 @@ export const insertGroupNoteSchema = createInsertSchema(groupNotes).omit({
   createdAt: true,
 });
 
+export const insertRelationshipTypeSchema = createInsertSchema(relationshipTypes).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -184,9 +207,13 @@ export type InsertGroup = z.infer<typeof insertGroupSchema>;
 export type GroupNote = typeof groupNotes.$inferSelect;
 export type InsertGroupNote = z.infer<typeof insertGroupNoteSchema>;
 
+export type RelationshipType = typeof relationshipTypes.$inferSelect;
+export type InsertRelationshipType = z.infer<typeof insertRelationshipTypeSchema>;
+
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {
   toPerson: Person;
+  type?: RelationshipType;
 };
 
 export type PersonWithRelations = Person & {
