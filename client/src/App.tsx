@@ -10,6 +10,7 @@ import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/lib/protected-route";
 import { Button } from "@/components/ui/button";
 import { LogOut } from "lucide-react";
+import { GlobalSearch } from "@/components/global-search";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import GroupsList from "@/pages/groups-list";
@@ -32,7 +33,6 @@ function Router() {
       <ProtectedRoute path="/groups" component={GroupsList} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
       <ProtectedRoute path="/graph" component={Graph} />
-      <ProtectedRoute path="/search" component={PeopleList} />
       <ProtectedRoute path="/api" component={ApiDocs} />
       <ProtectedRoute path="/settings" component={SettingsLayout} />
       <ProtectedRoute path="/settings/:rest*" component={SettingsLayout} />
@@ -79,6 +79,7 @@ function AppLayout() {
         <div className="flex flex-col flex-1 overflow-hidden">
           <header className="flex items-center justify-between gap-2 px-4 py-2 border-b">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
+            <GlobalSearch />
             <div className="flex items-center gap-2">
               {user && (
                 <Button

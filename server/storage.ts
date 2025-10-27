@@ -62,7 +62,7 @@ export interface IStorage {
   getUserCount(): Promise<number>;
 
   // Group operations
-  getAllGroups(): Promise<Group[]>;
+  getAllGroups(searchQuery?: string): Promise<Group[]>;
   getGroupById(id: string): Promise<any>;
   createGroup(group: InsertGroup): Promise<Group>;
   updateGroup(id: string, group: Partial<InsertGroup>): Promise<Group | undefined>;
@@ -273,8 +273,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Group operations
-  async getAllGroups(): Promise<Group[]> {
-    return await db.select().from(groups);
+  async getAllGroups(searchQuery?: string): Promise<Group[]> {
+    if (!searchQuery) {
+      return await db.select().from(groups);
+    }
+
+    const query = `%${searchQuery}%`;
+    return await db
+      .select()
+      .from(groups)
+      .where(
+        or(
+          ilike(groups.name, query),
+        )
+      );
   }
 
   async getGroupById(id: string): Promise<any> {

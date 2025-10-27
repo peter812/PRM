@@ -98,6 +98,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Search endpoint
+  app.get("/api/search", async (req, res) => {
+    try {
+      const query = req.query.q as string | undefined;
+      
+      if (!query) {
+        return res.json({ people: [], groups: [] });
+      }
+
+      const [people, groups] = await Promise.all([
+        storage.getAllPeople(query),
+        storage.getAllGroups(query),
+      ]);
+
+      res.json({ people, groups });
+    } catch (error) {
+      console.error("Error searching:", error);
+      res.status(500).json({ error: "Failed to search" });
+    }
+  });
+
   // User endpoints
   app.patch("/api/user", async (req, res) => {
     try {

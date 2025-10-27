@@ -1,9 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { Plus, Search as SearchIcon } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -11,11 +10,10 @@ import type { Person } from "@shared/schema";
 import { AddPersonDialog } from "@/components/add-person-dialog";
 
 export default function PeopleList() {
-  const [searchQuery, setSearchQuery] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
 
   const { data: people, isLoading, isError, error } = useQuery<Person[]>({
-    queryKey: searchQuery ? [`/api/people?search=${searchQuery}`] : ["/api/people"],
+    queryKey: ["/api/people"],
   });
 
   const getInitials = (firstName: string, lastName: string) => {
@@ -25,7 +23,7 @@ export default function PeopleList() {
   return (
     <div className="flex flex-col h-full">
       <div className="border-b px-6 py-4">
-        <div className="flex items-center justify-between gap-4 mb-4">
+        <div className="flex items-center justify-between gap-4">
           <h1 className="text-3xl font-semibold" data-testid="text-page-title">
             People
           </h1>
@@ -33,17 +31,6 @@ export default function PeopleList() {
             <Plus className="h-4 w-4" />
             Add Person
           </Button>
-        </div>
-        <div className="relative max-w-md">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            type="search"
-            placeholder="Search people by name, company, or tags..."
-            className="pl-9"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            data-testid="input-search"
-          />
         </div>
       </div>
 
@@ -129,16 +116,12 @@ export default function PeopleList() {
             <Users className="h-16 w-16 text-muted-foreground mb-4" />
             <h3 className="text-lg font-medium mb-2">No people found</h3>
             <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-              {searchQuery
-                ? "Try adjusting your search query"
-                : "Get started by adding your first contact"}
+              Get started by adding your first contact
             </p>
-            {!searchQuery && (
-              <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person-empty">
-                <Plus className="h-4 w-4" />
-                Add Person
-              </Button>
-            )}
+            <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person-empty">
+              <Plus className="h-4 w-4" />
+              Add Person
+            </Button>
           </div>
         )}
       </div>

@@ -4,6 +4,22 @@
 
 A professional CRM application for managing contacts, tracking interactions, and maintaining relationships. Built with a modern React frontend and Express backend, the application provides a clean, data-focused interface inspired by productivity tools like Linear and Notion. Users can create and manage people profiles, add notes, track interactions (meetings, calls, emails), organize contacts with tags, create groups with members, and use powerful search capabilities.
 
+## Recent Changes (October 27, 2025)
+
+- **Global Search Overhaul** ✨ NEW:
+  - **Top Bar Search**: Search now located in application header (not a dedicated page)
+  - **Dropdown Results**: Shows up to 6 combined results (people + groups) in overlay below search bar
+  - **Real-time Search**: Results update as user types, with click-to-navigate functionality
+  - **Combined Results**: Searches both people (by name, company, tags) and groups (by name)
+  - **Smart Display**: People shown first, groups second with visual separation and icons
+  - **Backend Endpoint**: GET `/api/search?q={query}` returns `{ people: Person[], groups: Group[] }`
+  - **Removed Components**:
+    - Dedicated `/search` page and route
+    - "Search" link from sidebar navigation
+    - Search bar from people-list page content area
+  - **Click Outside**: Dropdown dismisses when clicking outside search area
+  - **Navigation**: Click any result to navigate to person or group profile
+
 ## Recent Changes (October 26, 2025)
 
 - **API Documentation Overhaul** ✨ NEW:
