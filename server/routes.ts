@@ -61,6 +61,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Setup endpoints
   app.get("/api/setup/status", async (req, res) => {
     try {
+      // Prevent caching to ensure fresh user count check
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      
       const userCount = await storage.getUserCount();
       res.json({ isSetupNeeded: userCount === 0 });
     } catch (error) {

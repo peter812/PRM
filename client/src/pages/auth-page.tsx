@@ -8,9 +8,17 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { Users, Network, Search } from "lucide-react";
 import { Redirect } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 
 export default function AuthPage() {
   const { user, loginMutation } = useAuth();
+
+  // Check if setup is needed (0 users in database)
+  const { data: setupStatus } = useQuery<{ isSetupNeeded: boolean }>({
+    queryKey: ["/api/setup/status"],
+    refetchInterval: false,
+    staleTime: 0, // Always fetch fresh
+  });
 
   const loginForm = useForm<InsertUser>({
     resolver: zodResolver(insertUserSchema),
@@ -19,6 +27,11 @@ export default function AuthPage() {
       password: "",
     },
   });
+
+  // Redirect to welcome page if setup is needed
+  if (setupStatus?.isSetupNeeded) {
+    return <Redirect to="/welcome" />;
+  }
 
   if (user) {
     return <Redirect to="/" />;
