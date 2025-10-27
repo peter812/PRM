@@ -552,10 +552,14 @@ export default function Graph() {
         app.stage.on('pointermove', (e) => {
           if (isDraggingRef.current) {
             const node = nodesRef.current.get(isDraggingRef.current);
-            if (node) {
-              const pos = e.global;
-              node.x = pos.x;
-              node.y = pos.y;
+            if (node && containerRef.current) {
+              // Convert screen coordinates to world coordinates accounting for zoom
+              const currentScale = containerRef.current.scale.x;
+              const worldX = (e.global.x - containerRef.current.x) / currentScale;
+              const worldY = (e.global.y - containerRef.current.y) / currentScale;
+              
+              node.x = worldX;
+              node.y = worldY;
               node.vx = 0;
               node.vy = 0;
               node.graphics.x = node.x;
