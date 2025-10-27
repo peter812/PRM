@@ -400,6 +400,8 @@ export class DatabaseStorage implements IStorage {
     }
 
     const query = `%${searchQuery}%`;
+    const startQuery = `${searchQuery}%`;
+    
     return await db
       .select()
       .from(groups)
@@ -407,6 +409,13 @@ export class DatabaseStorage implements IStorage {
         or(
           ilike(groups.name, query),
         )
+      )
+      .orderBy(
+        sql`CASE
+          WHEN ${groups.name} ILIKE ${startQuery} THEN 0
+          ELSE 1
+        END`,
+        groups.name
       );
   }
 
