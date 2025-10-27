@@ -6,8 +6,16 @@ A professional CRM application for managing contacts, tracking interactions, and
 
 ## Recent Changes (October 27, 2025)
 
+- **Delete Group Feature** ✨ NEW:
+  - **Red X Button**: Each group card now has a red X button (list view: far right, wide view: top-right corner)
+  - **Confirmation Dialog**: Warns user about permanent deletion of group and all associated notes
+  - **Cascade Deletion**: Automatically removes all group notes via database cascade
+  - **Toast Notifications**: Success and error messages after deletion
+  - **Cache Invalidation**: Groups list updates immediately after deletion
+  - **Both View Modes**: Delete button available in both list and wide/grid view modes
+
 - **Delete Person Feature** ✨ NEW:
-  - **Red X Button**: Each person card now has a red X button in the top-right corner
+  - **Red X Button**: Each person card now has a red X button on the far right side
   - **Confirmation Dialog**: Warns user about permanent deletion of all associated data
   - **Cascade Deletion**: Automatically removes all notes, interactions, and relationships
   - **Toast Notifications**: Success and error messages after deletion
