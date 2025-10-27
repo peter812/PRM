@@ -1,19 +1,54 @@
-import { useQuery } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Plus, X } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import type { Person } from "@shared/schema";
 import { AddPersonDialog } from "@/components/add-person-dialog";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 
 export default function PeopleList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [personToDelete, setPersonToDelete] = useState<Person | null>(null);
+  const { toast } = useToast();
 
   const { data: people, isLoading, isError, error } = useQuery<Person[]>({
     queryKey: ["/api/people"],
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (personId: string) => {
+      await apiRequest("DELETE", `/api/people/${personId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      toast({
+        title: "Person deleted",
+        description: "The person and all associated data have been removed.",
+      });
+      setPersonToDelete(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete person",
+        variant: "destructive",
+      });
+    },
   });
 
   const getInitials = (firstName: string, lastName: string) => {
@@ -65,50 +100,65 @@ export default function PeopleList() {
         ) : people && people.length > 0 ? (
           <div className="space-y-4">
             {people.map((person) => (
-              <Link key={person.id} href={`/person/${person.id}`}>
-                <Card
-                  className="p-4 hover-elevate transition-all cursor-pointer"
-                  data-testid={`card-person-${person.id}`}
-                >
-                  <div className="flex items-center gap-4">
-                    <Avatar className="w-12 h-12">
-                      {person.imageUrl && (
-                        <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
-                      )}
-                      <AvatarFallback>
-                        {getInitials(person.firstName, person.lastName)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
-                        {person.firstName} {person.lastName}
-                      </h3>
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        {person.company && (
-                          <span data-testid={`text-company-${person.id}`}>
-                            {person.company}
-                          </span>
+              <div key={person.id} className="relative">
+                <Link href={`/person/${person.id}`}>
+                  <Card
+                    className="p-4 hover-elevate transition-all cursor-pointer"
+                    data-testid={`card-person-${person.id}`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <Avatar className="w-12 h-12">
+                        {person.imageUrl && (
+                          <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
                         )}
-                        {person.title && person.company && <span>•</span>}
-                        {person.title && (
-                          <span data-testid={`text-title-${person.id}`}>
-                            {person.title}
-                          </span>
+                        <AvatarFallback>
+                          {getInitials(person.firstName, person.lastName)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
+                          {person.firstName} {person.lastName}
+                        </h3>
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          {person.company && (
+                            <span data-testid={`text-company-${person.id}`}>
+                              {person.company}
+                            </span>
+                          )}
+                          {person.title && person.company && <span>•</span>}
+                          {person.title && (
+                            <span data-testid={`text-title-${person.id}`}>
+                              {person.title}
+                            </span>
+                          )}
+                        </div>
+                        {person.tags && person.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {person.tags.map((tag, idx) => (
+                              <Badge key={idx} variant="secondary" className="text-xs">
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
                         )}
                       </div>
-                      {person.tags && person.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {person.tags.map((tag, idx) => (
-                            <Badge key={idx} variant="secondary" className="text-xs">
-                              {tag}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
                     </div>
-                  </div>
-                </Card>
-              </Link>
+                  </Card>
+                </Link>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setPersonToDelete(person);
+                  }}
+                  data-testid={`button-delete-${person.id}`}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
             ))}
           </div>
         ) : (
@@ -127,6 +177,32 @@ export default function PeopleList() {
       </div>
 
       <AddPersonDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+
+      <AlertDialog open={!!personToDelete} onOpenChange={(open) => !open && setPersonToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Person</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {personToDelete?.firstName} {personToDelete?.lastName}? This will permanently remove this person and all associated notes, interactions, and relationships. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (personToDelete) {
+                  deleteMutation.mutate(personToDelete.id);
+                }
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteMutation.isPending}
+              data-testid="button-confirm-delete"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
