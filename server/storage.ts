@@ -38,7 +38,7 @@ const PostgresSessionStore = connectPg(session);
 export interface IStorage {
   // Graph operations
   getGraphData(): Promise<{
-    people: Array<{ id: string; firstName: string; lastName: string }>;
+    people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
     relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
     groups: Array<{ id: string; name: string; color: string; members: string[] }>;
   }>;
@@ -102,7 +102,7 @@ export class DatabaseStorage implements IStorage {
 
   // Graph operations
   async getGraphData(): Promise<{
-    people: Array<{ id: string; firstName: string; lastName: string }>;
+    people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
     relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
     groups: Array<{ id: string; name: string; color: string; members: string[] }>;
   }> {
@@ -112,6 +112,7 @@ export class DatabaseStorage implements IStorage {
         id: people.id,
         firstName: people.firstName,
         lastName: people.lastName,
+        company: people.company,
       })
       .from(people);
 

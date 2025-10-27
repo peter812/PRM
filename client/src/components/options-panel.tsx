@@ -17,8 +17,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import type { Person } from "@shared/schema";
-
 interface OptionsPanelProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -28,7 +26,7 @@ interface OptionsPanelProps {
   onShowGroupsChange: (show: boolean) => void;
   highlightedPersonId: string | null;
   onHighlightedPersonChange: (personId: string | null) => void;
-  people: Person[];
+  people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
   personLineOpacity: number;
   onPersonLineOpacityChange: (value: number) => void;
   groupLineOpacity: number;

@@ -4,23 +4,34 @@ import { Application, Graphics, Container, Text, TextStyle } from "pixi.js";
 import { Button } from "@/components/ui/button";
 import { Plus, Settings } from "lucide-react";
 import { useLocation } from "wouter";
-import type { Person, RelationshipWithPerson, Group } from "@shared/schema";
 import { AddConnectionDialog } from "@/components/add-connection-dialog";
 import { OptionsPanel } from "@/components/options-panel";
 
-interface PersonWithRelationships extends Person {
-  relationships?: RelationshipWithPerson[];
+interface GraphData {
+  people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
+  relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
+  groups: Array<{ id: string; name: string; color: string; members: string[] }>;
 }
 
-type GroupWithMembers = Group & {
-  memberDetails: Person[];
-};
+interface GraphPerson {
+  id: string;
+  firstName: string;
+  lastName: string;
+  company: string | null;
+}
+
+interface GraphGroup {
+  id: string;
+  name: string;
+  color: string;
+  members: string[];
+}
 
 interface Node {
   id: string;
   type: 'person' | 'group';
-  person?: PersonWithRelationships;
-  group?: GroupWithMembers;
+  person?: GraphPerson;
+  group?: GraphGroup;
   x: number;
   y: number;
   vx: number;
@@ -33,7 +44,6 @@ interface Edge {
   from: string;
   to: string;
   type: 'relationship' | 'group-member';
-  level?: string;
   color: number;
   graphics: Graphics;
 }
@@ -82,13 +92,13 @@ export default function Graph() {
   const [personPull, setPersonPull] = useState(0.01);
   const [groupPull, setGroupPull] = useState(0.003);
 
-  const { data: people = [] } = useQuery<PersonWithRelationships[]>({
-    queryKey: ["/api/people?includeRelationships=true"],
+  const { data: graphData } = useQuery<GraphData>({
+    queryKey: ["/api/graph"],
   });
 
-  const { data: groups = [] } = useQuery<GroupWithMembers[]>({
-    queryKey: ["/api/groups"],
-  });
+  const people = graphData?.people || [];
+  const groups = graphData?.groups || [];
+  const relationships = graphData?.relationships || [];
 
   useEffect(() => {
     if (!canvasRef.current || !people.length) return;
@@ -319,32 +329,27 @@ export default function Graph() {
         const edges: Edge[] = [];
 
         // Person-to-person relationship edges
-        people.forEach((person) => {
-          if (person.relationships) {
-            person.relationships.forEach((rel) => {
-              const fromNode = nodes.get(person.id);
-              const toNode = nodes.get(rel.toPersonId);
+        relationships.forEach((rel) => {
+          const fromNode = nodes.get(rel.fromPersonId);
+          const toNode = nodes.get(rel.toPersonId);
 
-              if (fromNode && toNode) {
-                const graphics = new Graphics();
-                
-                // Use relationship type color if available, otherwise default to gray
-                const edgeColor = rel.type?.color ? hexToNumber(rel.type.color) : defaultRelationshipColor;
-                
-                graphics.moveTo(fromNode.x, fromNode.y);
-                graphics.lineTo(toNode.x, toNode.y);
-                graphics.stroke({ color: edgeColor, width: 2, alpha: personLineOpacity });
+          if (fromNode && toNode) {
+            const graphics = new Graphics();
+            
+            // Use relationship type color if available, otherwise default to gray
+            const edgeColor = rel.typeColor ? hexToNumber(rel.typeColor) : defaultRelationshipColor;
+            
+            graphics.moveTo(fromNode.x, fromNode.y);
+            graphics.lineTo(toNode.x, toNode.y);
+            graphics.stroke({ color: edgeColor, width: 2, alpha: personLineOpacity });
 
-                container.addChildAt(graphics, 0); // Add edges behind nodes
-                edges.push({
-                  from: person.id,
-                  to: rel.toPersonId,
-                  type: 'relationship',
-                  level: rel.level || undefined,
-                  color: edgeColor,
-                  graphics,
-                });
-              }
+            container.addChildAt(graphics, 0); // Add edges behind nodes
+            edges.push({
+              from: rel.fromPersonId,
+              to: rel.toPersonId,
+              type: 'relationship',
+              color: edgeColor,
+              graphics,
             });
           }
         });
@@ -389,19 +394,12 @@ export default function Graph() {
             const connectedPersonIds = new Set<string>();
             connectedPersonIds.add(highlightedPersonId);
             
-            // Add people with direct relationships
-            highlightedNode.person.relationships?.forEach((rel) => {
-              connectedPersonIds.add(rel.toPersonId);
-            });
-            
-            // Find relationships where highlighted person is the target
-            people.forEach((person) => {
-              if (person.relationships) {
-                person.relationships.forEach((rel) => {
-                  if (rel.toPersonId === highlightedPersonId) {
-                    connectedPersonIds.add(person.id);
-                  }
-                });
+            // Add people with direct relationships (both directions)
+            relationships.forEach((rel) => {
+              if (rel.fromPersonId === highlightedPersonId) {
+                connectedPersonIds.add(rel.toPersonId);
+              } else if (rel.toPersonId === highlightedPersonId) {
+                connectedPersonIds.add(rel.fromPersonId);
               }
             });
             
