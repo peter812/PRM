@@ -7,6 +7,7 @@ This guide explains how to run the People Manager CRM in a Docker container.
 - Docker installed on your system
 - Docker Compose installed (optional, but recommended)
 - Access to the PostgreSQL database at `pbe.im:3306`
+- S3-compatible storage configured
 
 ## Quick Start
 
@@ -21,7 +22,11 @@ This guide explains how to run the People Manager CRM in a Docker container.
    ```env
    DATABASE_URL=postgresql://people:people812@pbe.im:3306/people_crm
    SESSION_SECRET=your-random-secret-key-here
-   NODE_ENV=production
+   NODE_ENV=development
+   S3_ENDPOINT=https://hel1.your-objectstorage.com
+   S3_BUCKET=your-bucket-name
+   S3_ACCESS_KEY=your-access-key
+   S3_SECRET_KEY=your-secret-key
    ```
 
 3. **Build and run:**
@@ -44,9 +49,7 @@ This guide explains how to run the People Manager CRM in a Docker container.
    docker run -d \
      --name people-manager \
      -p 5000:5000 \
-     -e DATABASE_URL="postgresql://people:people812@pbe.im:3306/people_crm" \
-     -e SESSION_SECRET="your-random-secret-key-here" \
-     -e NODE_ENV=production \
+     --env-file .env \
      people-manager-crm
    ```
 
@@ -95,11 +98,16 @@ docker ps
 
 ## Environment Variables
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://user:pass@host:port/db` |
-| `SESSION_SECRET` | Secret key for session encryption | Generate with `openssl rand -base64 32` |
-| `NODE_ENV` | Node environment (always use `production`) | `production` |
+| Variable | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string | `postgresql://user:pass@host:port/db` |
+| `SESSION_SECRET` | Yes | Secret key for session encryption | Generate with `openssl rand -base64 32` |
+| `NODE_ENV` | Yes | Node environment | `development` or `production` |
+| `S3_ENDPOINT` | Yes | S3-compatible storage endpoint | `https://hel1.your-objectstorage.com` |
+| `S3_BUCKET` | Yes | S3 bucket name | `peoplewild` |
+| `S3_ACCESS_KEY` | Yes | S3 access key | Your S3 access key |
+| `S3_SECRET_KEY` | Yes | S3 secret key | Your S3 secret key |
+| `DISABLE_AUTH` | No | Disable authentication (dev only) | `true` or `false` |
 
 ## Security Notes
 
@@ -118,10 +126,45 @@ docker-compose logs
 docker logs people-manager
 ```
 
+### "Cannot find package 'vite'" Error
+
+If you see this error:
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'vite' imported from /app/dist/index.js
+```
+
+**Cause**: This happens when `NODE_ENV` doesn't match the Dockerfile being used.
+
+**Solution**:
+- For `NODE_ENV=development` → Use `Dockerfile` (default)
+- For `NODE_ENV=production` → Use `Dockerfile.production`
+
+Update `docker-compose.yml` if using production:
+```yaml
+services:
+  people-manager:
+    build:
+      dockerfile: Dockerfile.production  # Add this line
+```
+
+Or rebuild without cache:
+```bash
+docker-compose build --no-cache
+docker-compose up
+```
+
 ### Database connection issues
 - Verify `DATABASE_URL` is correct
 - Ensure the database server allows connections from your Docker host
 - Check network connectivity to `pbe.im:3306`
+
+### S3 Upload Issues
+
+If image uploads fail:
+1. Verify all S3 environment variables are set correctly
+2. Check that your S3 bucket exists and is accessible
+3. Ensure the bucket has proper permissions for uploads
+4. Test S3 credentials outside Docker first
 
 ### Port already in use
 If port 5000 is taken, edit `docker-compose.yml`:
@@ -148,9 +191,40 @@ The container includes a health check that runs every 30 seconds:
 docker inspect --format='{{.State.Health.Status}}' people-manager
 ```
 
+## Docker Files Explained
+
+This project includes two Dockerfile options:
+
+### `Dockerfile` (Development - Default)
+- **Use when**: `NODE_ENV=development`
+- **Features**:
+  - Runs development server with hot reload
+  - Includes all dependencies (dev + production)
+  - Faster to build, larger image size (~500MB)
+  - Source code mounted as volume for live updates
+- **Best for**: Development, testing, debugging
+
+### `Dockerfile.production` (Production)
+- **Use when**: `NODE_ENV=production`
+- **Features**:
+  - Multi-stage build for optimized image
+  - Only production dependencies
+  - Pre-built, bundled application
+  - Smaller image size (~200MB)
+  - Non-root user for security
+- **Best for**: Production deployments, staging environments
+
+To use the production Dockerfile, update `docker-compose.yml`:
+```yaml
+services:
+  people-manager:
+    build:
+      dockerfile: Dockerfile.production
+```
+
 ## Build Details
 
-The Dockerfile uses a **multi-stage build**:
+The production Dockerfile uses a **multi-stage build**:
 - **Stage 1 (builder)**: Installs dependencies and builds the application
 - **Stage 2 (production)**: Creates minimal runtime image with only production dependencies
 
