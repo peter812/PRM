@@ -34,6 +34,7 @@ interface Edge {
   to: string;
   type: 'relationship' | 'group-member';
   level?: string;
+  color: number;
   graphics: Graphics;
 }
 
@@ -336,16 +337,20 @@ export default function Graph() {
               if (fromNode && toNode) {
                 const graphics = new Graphics();
                 
+                // Use relationship type color if available, otherwise default to lineColor
+                const edgeColor = rel.type?.color ? hexToNumber(rel.type.color) : lineColor;
+                
                 graphics.moveTo(fromNode.x, fromNode.y);
                 graphics.lineTo(toNode.x, toNode.y);
-                graphics.stroke({ color: lineColor, width: 2, alpha: personLineOpacity });
+                graphics.stroke({ color: edgeColor, width: 2, alpha: personLineOpacity });
 
                 container.addChildAt(graphics, 0); // Add edges behind nodes
                 edges.push({
                   from: person.id,
                   to: rel.toPersonId,
                   type: 'relationship',
-                  level: rel.level,
+                  level: rel.level || undefined,
+                  color: edgeColor,
                   graphics,
                 });
               }
@@ -374,6 +379,7 @@ export default function Graph() {
                     from: `group-${group.id}`,
                     to: memberId,
                     type: 'group-member',
+                    color: groupColor,
                     graphics,
                   });
                 }
@@ -538,11 +544,9 @@ export default function Graph() {
               edge.graphics.lineTo(toNode.x, toNode.y);
               
               if (edge.type === 'relationship') {
-                edge.graphics.stroke({ color: lineColor, width: 2, alpha: personLineOpacity });
+                edge.graphics.stroke({ color: edge.color, width: 2, alpha: personLineOpacity });
               } else if (edge.type === 'group-member') {
-                const groupNode = fromNode.type === 'group' ? fromNode : toNode;
-                const groupColor = groupNode.group?.color ? hexToNumber(groupNode.group.color) : 0x8b5cf6;
-                edge.graphics.stroke({ color: groupColor, width: 1, alpha: groupLineOpacity });
+                edge.graphics.stroke({ color: edge.color, width: 1, alpha: groupLineOpacity });
               }
             }
           });

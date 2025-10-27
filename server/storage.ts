@@ -131,14 +131,19 @@ export class DatabaseStorage implements IStorage {
             notes: relationships.notes,
             createdAt: relationships.createdAt,
             toPerson: people,
+            type: relationshipTypes,
           })
           .from(relationships)
           .innerJoin(people, eq(relationships.toPersonId, people.id))
+          .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
           .where(eq(relationships.fromPersonId, person.id));
 
         return {
           ...person,
-          relationships: personRelationships,
+          relationships: personRelationships.map(rel => ({
+            ...rel,
+            type: rel.type || undefined,
+          })),
         };
       })
     );
@@ -170,16 +175,21 @@ export class DatabaseStorage implements IStorage {
         notes: relationships.notes,
         createdAt: relationships.createdAt,
         toPerson: people,
+        type: relationshipTypes,
       })
       .from(relationships)
       .innerJoin(people, eq(relationships.toPersonId, people.id))
+      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
       .where(eq(relationships.fromPersonId, id));
 
     return {
       ...person,
       notes: personNotes,
       interactions: personInteractions,
-      relationships: personRelationships,
+      relationships: personRelationships.map(rel => ({
+        ...rel,
+        type: rel.type || undefined,
+      })),
     };
   }
 
