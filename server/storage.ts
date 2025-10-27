@@ -120,7 +120,16 @@ export class DatabaseStorage implements IStorage {
             WHEN ${people.lastName} ILIKE ${startQuery} THEN 1
             ELSE 2
           END`,
-          people.firstName
+          sql`CASE
+            WHEN ${people.firstName} ILIKE ${startQuery} THEN ${people.firstName}
+            WHEN ${people.lastName} ILIKE ${startQuery} THEN ${people.lastName}
+            ELSE ${people.firstName}
+          END`,
+          sql`CASE
+            WHEN ${people.firstName} ILIKE ${startQuery} THEN ${people.lastName}
+            WHEN ${people.lastName} ILIKE ${startQuery} THEN ${people.firstName}
+            ELSE ${people.lastName}
+          END`
         );
     }
     return await db.select().from(people);
