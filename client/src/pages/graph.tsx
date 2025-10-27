@@ -89,16 +89,6 @@ export default function Graph() {
     queryKey: ["/api/groups"],
   });
 
-  const relationshipColors: Record<string, number> = {
-    colleague: 0x3b82f6, // blue
-    friend: 0x10b981, // green
-    family: 0xef4444, // red
-    client: 0xf59e0b, // amber
-    partner: 0x8b5cf6, // purple
-    mentor: 0x06b6d4, // cyan
-    other: 0x6b7280, // gray
-  };
-
   useEffect(() => {
     if (!canvasRef.current || !people.length) return;
 
@@ -119,7 +109,7 @@ export default function Graph() {
         
         const backgroundColor = hslToHex(bgColor.h, bgColor.s, bgColor.l);
         const foregroundColor = hslToHex(fgColor.h, fgColor.s, fgColor.l);
-        const lineColor = foregroundColor; // Use foreground color for lines
+        const defaultRelationshipColor = 0x6b7280; // Gray for relationships without a type
 
         // Create PIXI application
         const app = new Application();
@@ -337,8 +327,8 @@ export default function Graph() {
               if (fromNode && toNode) {
                 const graphics = new Graphics();
                 
-                // Use relationship type color if available, otherwise default to lineColor
-                const edgeColor = rel.type?.color ? hexToNumber(rel.type.color) : lineColor;
+                // Use relationship type color if available, otherwise default to gray
+                const edgeColor = rel.type?.color ? hexToNumber(rel.type.color) : defaultRelationshipColor;
                 
                 graphics.moveTo(fromNode.x, fromNode.y);
                 graphics.lineTo(toNode.x, toNode.y);
