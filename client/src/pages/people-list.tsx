@@ -100,65 +100,63 @@ export default function PeopleList() {
         ) : people && people.length > 0 ? (
           <div className="space-y-4">
             {people.map((person) => (
-              <div key={person.id} className="relative">
-                <Link href={`/person/${person.id}`}>
-                  <Card
-                    className="p-4 hover-elevate transition-all cursor-pointer"
-                    data-testid={`card-person-${person.id}`}
-                  >
-                    <div className="flex items-center gap-4">
-                      <Avatar className="w-12 h-12">
-                        {person.imageUrl && (
-                          <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+              <Link key={person.id} href={`/person/${person.id}`}>
+                <Card
+                  className="p-4 hover-elevate transition-all cursor-pointer"
+                  data-testid={`card-person-${person.id}`}
+                >
+                  <div className="flex items-center gap-4">
+                    <Avatar className="w-12 h-12">
+                      {person.imageUrl && (
+                        <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                      )}
+                      <AvatarFallback>
+                        {getInitials(person.firstName, person.lastName)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
+                        {person.firstName} {person.lastName}
+                      </h3>
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        {person.company && (
+                          <span data-testid={`text-company-${person.id}`}>
+                            {person.company}
+                          </span>
                         )}
-                        <AvatarFallback>
-                          {getInitials(person.firstName, person.lastName)}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
-                          {person.firstName} {person.lastName}
-                        </h3>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          {person.company && (
-                            <span data-testid={`text-company-${person.id}`}>
-                              {person.company}
-                            </span>
-                          )}
-                          {person.title && person.company && <span>•</span>}
-                          {person.title && (
-                            <span data-testid={`text-title-${person.id}`}>
-                              {person.title}
-                            </span>
-                          )}
-                        </div>
-                        {person.tags && person.tags.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mt-2">
-                            {person.tags.map((tag, idx) => (
-                              <Badge key={idx} variant="secondary" className="text-xs">
-                                {tag}
-                              </Badge>
-                            ))}
-                          </div>
+                        {person.title && person.company && <span>•</span>}
+                        {person.title && (
+                          <span data-testid={`text-title-${person.id}`}>
+                            {person.title}
+                          </span>
                         )}
                       </div>
+                      {person.tags && person.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {person.tags.map((tag, idx) => (
+                            <Badge key={idx} variant="secondary" className="text-xs">
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </Card>
-                </Link>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute top-2 right-2 h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setPersonToDelete(person);
-                  }}
-                  data-testid={`button-delete-${person.id}`}
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setPersonToDelete(person);
+                      }}
+                      data-testid={`button-delete-${person.id}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </Card>
+              </Link>
             ))}
           </div>
         ) : (
