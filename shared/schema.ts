@@ -63,7 +63,6 @@ export const relationships = pgTable("relationships", {
   fromPersonId: varchar("from_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   toPersonId: varchar("to_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   typeId: varchar("type_id").references(() => relationshipTypes.id, { onDelete: "set null" }),
-  level: text("level"), // Legacy field, kept for backwards compatibility
   notes: text("notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

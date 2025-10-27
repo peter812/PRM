@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertRelationshipSchema, type InsertRelationship, type Person } from "@shared/schema";
+import { insertRelationshipSchema, type InsertRelationship, type Person, type RelationshipType } from "@shared/schema";
 import { z } from "zod";
 
 interface AddRelationshipDialogProps {
@@ -36,20 +36,10 @@ interface AddRelationshipDialogProps {
 }
 
 const relationshipFormSchema = insertRelationshipSchema.extend({
-  level: z.string().min(1, "Relationship level is required"),
+  typeId: z.string().min(1, "Relationship type is required"),
 });
 
 type RelationshipForm = z.infer<typeof relationshipFormSchema>;
-
-const RELATIONSHIP_LEVELS = [
-  { value: "colleague", label: "Colleague" },
-  { value: "friend", label: "Friend" },
-  { value: "family", label: "Family" },
-  { value: "client", label: "Client" },
-  { value: "partner", label: "Partner" },
-  { value: "mentor", label: "Mentor" },
-  { value: "other", label: "Other" },
-];
 
 export function AddRelationshipDialog({
   open,
@@ -63,6 +53,11 @@ export function AddRelationshipDialog({
     enabled: open,
   });
 
+  const { data: relationshipTypes } = useQuery<RelationshipType[]>({
+    queryKey: ["/api/relationship-types"],
+    enabled: open,
+  });
+
   const availablePeople = allPeople?.filter((p) => p.id !== personId) || [];
 
   const form = useForm<RelationshipForm>({
@@ -70,7 +65,7 @@ export function AddRelationshipDialog({
     defaultValues: {
       fromPersonId: personId,
       toPersonId: undefined,
-      level: "",
+      typeId: "",
       notes: "",
     },
   });
@@ -85,7 +80,7 @@ export function AddRelationshipDialog({
         title: "Success",
         description: "Relationship added successfully",
       });
-      form.reset({ fromPersonId: personId, toPersonId: undefined, level: "", notes: "" });
+      form.reset({ fromPersonId: personId, toPersonId: undefined, typeId: "", notes: "" });
       onOpenChange(false);
     },
     onError: () => {
@@ -141,20 +136,26 @@ export function AddRelationshipDialog({
 
             <FormField
               control={form.control}
-              name="level"
+              name="typeId"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Relationship Level</FormLabel>
+                  <FormLabel>Relationship Type</FormLabel>
                   <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
-                      <SelectTrigger data-testid="select-relationship-level">
-                        <SelectValue placeholder="Select relationship level" />
+                      <SelectTrigger data-testid="select-relationship-type">
+                        <SelectValue placeholder="Select relationship type" />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {RELATIONSHIP_LEVELS.map((level) => (
-                        <SelectItem key={level.value} value={level.value}>
-                          {level.label}
+                      {relationshipTypes?.map((type) => (
+                        <SelectItem key={type.id} value={type.id}>
+                          <div className="flex items-center gap-2">
+                            <div
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: type.color }}
+                            />
+                            {type.name}
+                          </div>
                         </SelectItem>
                       ))}
                     </SelectContent>

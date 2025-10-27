@@ -45,25 +45,6 @@ export function RelationshipsTab({
     return `${firstName[0]}${lastName[0]}`.toUpperCase();
   };
 
-  const getLevelColor = (level: string) => {
-    switch (level) {
-      case "friend":
-        return "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20";
-      case "family":
-        return "bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20";
-      case "colleague":
-        return "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20";
-      case "client":
-        return "bg-orange-500/10 text-orange-700 dark:text-orange-400 border-orange-500/20";
-      case "partner":
-        return "bg-pink-500/10 text-pink-700 dark:text-pink-400 border-pink-500/20";
-      case "mentor":
-        return "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/20";
-      default:
-        return "bg-gray-500/10 text-gray-700 dark:text-gray-400 border-gray-500/20";
-    }
-  };
-
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
@@ -130,11 +111,21 @@ export function RelationshipsTab({
                     </Button>
                   </div>
 
-                  <Badge
-                    className={`${getLevelColor(relationship.level)} border capitalize mb-3`}
-                  >
-                    {relationship.level}
-                  </Badge>
+                  {relationship.type && (
+                    <div className="flex items-center gap-2 mb-3">
+                      <div
+                        className="w-3 h-3 rounded-full"
+                        style={{ backgroundColor: relationship.type.color }}
+                      />
+                      <Badge
+                        variant="outline"
+                        className="border-0 px-0 font-medium"
+                        style={{ color: relationship.type.color }}
+                      >
+                        {relationship.type.name}
+                      </Badge>
+                    </div>
+                  )}
 
                   {relationship.notes && (
                     <p className="text-sm text-muted-foreground whitespace-pre-wrap" data-testid={`text-relationship-notes-${relationship.id}`}>

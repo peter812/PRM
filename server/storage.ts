@@ -121,13 +121,13 @@ export class DatabaseStorage implements IStorage {
     
     const peopleWithRelationships = await Promise.all(
       allPeople.map(async (person) => {
-        const personRelationships = await db
+        // Get relationships where this person is the "from" person
+        const relationshipsFrom = await db
           .select({
             id: relationships.id,
             fromPersonId: relationships.fromPersonId,
             toPersonId: relationships.toPersonId,
             typeId: relationships.typeId,
-            level: relationships.level,
             notes: relationships.notes,
             createdAt: relationships.createdAt,
             toPerson: people,
@@ -138,12 +138,38 @@ export class DatabaseStorage implements IStorage {
           .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
           .where(eq(relationships.fromPersonId, person.id));
 
-        return {
-          ...person,
-          relationships: personRelationships.map(rel => ({
+        // Get relationships where this person is the "to" person (bidirectional)
+        const relationshipsTo = await db
+          .select({
+            id: relationships.id,
+            fromPersonId: relationships.fromPersonId,
+            toPersonId: relationships.toPersonId,
+            typeId: relationships.typeId,
+            notes: relationships.notes,
+            createdAt: relationships.createdAt,
+            toPerson: people,
+            type: relationshipTypes,
+          })
+          .from(relationships)
+          .innerJoin(people, eq(relationships.fromPersonId, people.id))
+          .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+          .where(eq(relationships.toPersonId, person.id));
+
+        // Combine both directions
+        const allRelationships = [
+          ...relationshipsFrom.map(rel => ({
             ...rel,
             type: rel.type || undefined,
           })),
+          ...relationshipsTo.map(rel => ({
+            ...rel,
+            type: rel.type || undefined,
+          }))
+        ];
+
+        return {
+          ...person,
+          relationships: allRelationships,
         };
       })
     );
@@ -165,13 +191,13 @@ export class DatabaseStorage implements IStorage {
       .from(interactions)
       .where(eq(interactions.personId, id));
 
-    const personRelationships = await db
+    // Get relationships where this person is the "from" person
+    const relationshipsFrom = await db
       .select({
         id: relationships.id,
         fromPersonId: relationships.fromPersonId,
         toPersonId: relationships.toPersonId,
         typeId: relationships.typeId,
-        level: relationships.level,
         notes: relationships.notes,
         createdAt: relationships.createdAt,
         toPerson: people,
@@ -182,14 +208,40 @@ export class DatabaseStorage implements IStorage {
       .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
       .where(eq(relationships.fromPersonId, id));
 
+    // Get relationships where this person is the "to" person (bidirectional)
+    const relationshipsTo = await db
+      .select({
+        id: relationships.id,
+        fromPersonId: relationships.fromPersonId,
+        toPersonId: relationships.toPersonId,
+        typeId: relationships.typeId,
+        notes: relationships.notes,
+        createdAt: relationships.createdAt,
+        toPerson: people,
+        type: relationshipTypes,
+      })
+      .from(relationships)
+      .innerJoin(people, eq(relationships.fromPersonId, people.id))
+      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+      .where(eq(relationships.toPersonId, id));
+
+    // Combine both directions
+    const allRelationships = [
+      ...relationshipsFrom.map(rel => ({
+        ...rel,
+        type: rel.type || undefined,
+      })),
+      ...relationshipsTo.map(rel => ({
+        ...rel,
+        type: rel.type || undefined,
+      }))
+    ];
+
     return {
       ...person,
       notes: personNotes,
       interactions: personInteractions,
-      relationships: personRelationships.map(rel => ({
-        ...rel,
-        type: rel.type || undefined,
-      })),
+      relationships: allRelationships,
     };
   }
 
