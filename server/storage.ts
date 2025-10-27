@@ -1,4 +1,4 @@
-// Referenced from javascript_database blueprint - adapted for people management schema
+// Storage layer for People Management CRM using external PostgreSQL database
 import {
   people,
   notes,

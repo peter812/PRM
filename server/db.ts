@@ -4,10 +4,14 @@ import * as schema from "@shared/schema";
 
 const { Pool } = pg;
 
-const connectionString = 'postgresql://people:people812@pbe.im:3306/people';
+// External PostgreSQL database connection
+// Note: Despite port 3306 (typically MySQL), this is a PostgreSQL database at pbe.im
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL environment variable is required. Configure your external PostgreSQL database connection.");
+}
 
 export const pool = new Pool({ 
-  connectionString,
+  connectionString: process.env.DATABASE_URL,
   ssl: false,
   connectionTimeoutMillis: 10000,
 });
