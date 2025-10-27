@@ -6,6 +6,7 @@ import {
   insertNoteSchema,
   insertInteractionSchema,
   insertRelationshipSchema,
+  insertRelationshipTypeSchema,
   insertGroupSchema,
   insertGroupNoteSchema,
   insertUserSchema,
@@ -433,6 +434,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting group note:", error);
       res.status(500).json({ error: "Failed to delete group note" });
+    }
+  });
+
+  // Relationship types endpoints
+  app.get("/api/relationship-types", async (req, res) => {
+    try {
+      const relationshipTypes = await storage.getAllRelationshipTypes();
+      res.json(relationshipTypes);
+    } catch (error) {
+      console.error("Error fetching relationship types:", error);
+      res.status(500).json({ error: "Failed to fetch relationship types" });
+    }
+  });
+
+  app.get("/api/relationship-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const relationshipType = await storage.getRelationshipTypeById(id);
+
+      if (!relationshipType) {
+        return res.status(404).json({ error: "Relationship type not found" });
+      }
+
+      res.json(relationshipType);
+    } catch (error) {
+      console.error("Error fetching relationship type:", error);
+      res.status(500).json({ error: "Failed to fetch relationship type" });
+    }
+  });
+
+  app.post("/api/relationship-types", async (req, res) => {
+    try {
+      const validatedData = insertRelationshipTypeSchema.parse(req.body);
+      const relationshipType = await storage.createRelationshipType(validatedData);
+      res.status(201).json(relationshipType);
+    } catch (error) {
+      console.error("Error creating relationship type:", error);
+      res.status(400).json({ error: "Failed to create relationship type" });
+    }
+  });
+
+  app.patch("/api/relationship-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const validatedData = insertRelationshipTypeSchema.partial().parse(req.body);
+      const relationshipType = await storage.updateRelationshipType(id, validatedData);
+
+      if (!relationshipType) {
+        return res.status(404).json({ error: "Relationship type not found" });
+      }
+
+      res.json(relationshipType);
+    } catch (error) {
+      console.error("Error updating relationship type:", error);
+      res.status(400).json({ error: "Failed to update relationship type" });
+    }
+  });
+
+  app.delete("/api/relationship-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteRelationshipType(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting relationship type:", error);
+      res.status(500).json({ error: "Failed to delete relationship type" });
     }
   });
 
