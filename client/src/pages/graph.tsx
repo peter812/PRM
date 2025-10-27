@@ -75,8 +75,8 @@ export default function Graph() {
   const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
   const [isOptionsPanelOpen, setIsOptionsPanelOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [personLineOpacity, setPersonLineOpacity] = useState(0.3);
-  const [groupLineOpacity, setGroupLineOpacity] = useState(0.2);
+  const [personLineOpacity, setPersonLineOpacity] = useState(0.7);
+  const [groupLineOpacity, setGroupLineOpacity] = useState(0.7);
   const [personPull, setPersonPull] = useState(0.01);
   const [groupPull, setGroupPull] = useState(0.003);
 
