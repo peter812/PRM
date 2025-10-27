@@ -97,6 +97,8 @@ export class DatabaseStorage implements IStorage {
   async getAllPeople(searchQuery?: string): Promise<Person[]> {
     if (searchQuery) {
       const query = `%${searchQuery}%`;
+      const startQuery = `${searchQuery}%`;
+      
       return await db
         .select()
         .from(people)
@@ -111,6 +113,14 @@ export class DatabaseStorage implements IStorage {
               WHERE tag ILIKE ${query}
             )`
           )
+        )
+        .orderBy(
+          sql`CASE
+            WHEN ${people.firstName} ILIKE ${startQuery} THEN 0
+            WHEN ${people.lastName} ILIKE ${startQuery} THEN 1
+            ELSE 2
+          END`,
+          people.firstName
         );
     }
     return await db.select().from(people);
