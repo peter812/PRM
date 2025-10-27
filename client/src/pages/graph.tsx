@@ -70,6 +70,7 @@ export default function Graph() {
   const animationRef = useRef<number>(0);
   const isDraggingRef = useRef<string | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const wheelHandlerRef = useRef<((e: WheelEvent) => void) | null>(null);
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showGroups, setShowGroups] = useState(true);
@@ -586,6 +587,41 @@ export default function Graph() {
           isDraggingRef.current = null;
           dragStartRef.current = null;
         });
+
+        // Scroll wheel zoom
+        const handleWheel = (e: WheelEvent) => {
+          e.preventDefault();
+          
+          if (!containerRef.current) return;
+          
+          const zoomSpeed = 0.001;
+          const minZoom = 0.1;
+          const maxZoom = 5;
+          
+          // Calculate zoom delta
+          const delta = -e.deltaY * zoomSpeed;
+          const currentScale = containerRef.current.scale.x;
+          const newScale = Math.min(Math.max(currentScale * (1 + delta), minZoom), maxZoom);
+          
+          // Get mouse position relative to canvas
+          const rect = app.canvas.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+          
+          // Calculate world position before zoom
+          const worldX = (mouseX - containerRef.current.x) / currentScale;
+          const worldY = (mouseY - containerRef.current.y) / currentScale;
+          
+          // Apply new scale
+          containerRef.current.scale.set(newScale);
+          
+          // Adjust position to zoom towards mouse
+          containerRef.current.x = mouseX - worldX * newScale;
+          containerRef.current.y = mouseY - worldY * newScale;
+        };
+        
+        wheelHandlerRef.current = handleWheel;
+        app.canvas.addEventListener('wheel', handleWheel, { passive: false });
       } catch (error) {
         console.error('Failed to initialize Pixi.js:', error);
         // Fallback: show error message instead of crashing
@@ -604,6 +640,13 @@ export default function Graph() {
 
     return () => {
       cancelAnimationFrame(animationRef.current);
+      
+      // Remove wheel event listener
+      if (appRef.current?.canvas && wheelHandlerRef.current) {
+        appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
+        wheelHandlerRef.current = null;
+      }
+      
       if (appRef.current) {
         appRef.current.destroy(true, { children: true, texture: true });
         appRef.current = null;
