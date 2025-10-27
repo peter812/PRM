@@ -28,9 +28,34 @@ The application uses an **external PostgreSQL database** (pbe.im:3306) for all p
 -   **Settings Page:** Dedicated `/settings` route with user profile editing (name, nickname, username, password change) and a placeholder for app-wide settings.
 -   **First-Time Setup:** A `/welcome` route guides initial user creation when no users exist, with an API to check and initialize setup status.
 -   **Graph Visualization:** Interactive graph displaying people and groups as draggable nodes using Pixi.js. Features include an `OptionsPanel` for controlling visibility of group nodes, a user highlight feature to focus on specific connections, and adjustable physics sliders for graph behavior.
--   **Relationship Types:** Customizable relationship types (e.g., Acquaintance, Friend) with names, colors, and notes, integrated into relationships and graph visualization.
+-   **Unified Relationship System:** Person-to-person relationships use customizable relationship types from the database. Relationships are bidirectional - creating a relationship from Person A to Person B automatically makes it visible on both people's profiles. Relationship types include name, color (for UI/graph visualization), and optional notes. Default types include: Acquaintance (#10b981), Friend (#3b82f6), Good Friend (#8b5cf6), Best Friend (#ec4899), Colleague (#f59e0b), Family (#ef4444), and Partner (#06b6d4).
 -   **Deletion Features:** Comprehensive delete functionality for people and groups, including confirmation dialogs, cascade deletion of related data (notes, interactions, relationships), and toast notifications.
 -   **API Documentation:** Collapsible, interactive API documentation with example code and copy functionality.
+
+### Relationship System Architecture
+
+The application uses a unified relationship system with the following components:
+
+**Database Tables:**
+- `relationship_types`: Stores customizable relationship types with UUID, name, color (hex), and optional notes
+- `relationships`: Stores person-to-person connections with `fromPersonId`, `toPersonId`, `typeId` (foreign key), and optional notes
+
+**Bidirectional Display:**
+Relationships are stored once in the database but displayed on both people's profiles. The storage layer queries relationships in both directions:
+1. Where the person is `fromPersonId` (outgoing relationships)
+2. Where the person is `toPersonId` (incoming relationships)
+
+This ensures mutual visibility - if Bob is friends with Ryan, the friendship appears on both Bob's and Ryan's profiles.
+
+**UI Integration:**
+- `AddRelationshipDialog`: Fetches relationship types from database and displays them with color indicators
+- `RelationshipsTab`: Shows all bidirectional relationships with colored type badges
+- `Graph Visualization`: Uses relationship type colors for edge rendering in the network graph
+
+**API Endpoints:**
+- `GET /api/relationship-types`: Fetch all relationship types
+- `POST /api/relationships`: Create a new relationship (automatically bidirectional)
+- `DELETE /api/relationships/:id`: Remove a relationship (affects both people)
 
 ## External Dependencies
 
