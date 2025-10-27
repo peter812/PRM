@@ -2,6 +2,24 @@
 
 The People Manager CRM requires a PostgreSQL database. This guide will help you set it up.
 
+## Automatic Database Reset (New!)
+
+🎯 **The application now automatically resets the database when there are no users!**
+
+When you start the application:
+- ✅ If **users exist**: Normal startup, no changes to database
+- 🔄 If **no users exist**: Automatically drops all tables and recreates them from schema
+
+This means:
+- First-time setup is automatic - just create the database and start the app!
+- You can reset your database by deleting all users
+- Great for development and testing
+
+**How it works:**
+1. App starts → Checks for users in database
+2. No users found → Drops all tables → Runs migrations → Seeds default data
+3. Users found → Skips initialization, normal startup
+
 ## Quick Setup
 
 ### Option 1: Using the Setup Script (Recommended)

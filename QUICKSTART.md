@@ -39,17 +39,21 @@ chmod +x setup-database.sh
 psql -h pbe.im -p 3306 -U people -d postgres -c "CREATE DATABASE people_crm;"
 ```
 
-### 3. Run Database Migrations
+### 3. ✨ Automatic Database Setup (New!)
 
-This creates all the necessary tables:
+The application now **automatically sets up the database** when there are no users!
+
+Just start the app - it will:
+- ✅ Check if users exist
+- ✅ If no users: Drop all tables and recreate them
+- ✅ Seed default relationship types
+- ✅ Ready to use!
+
+**Manual migration (optional):**
+If you prefer to run migrations manually before starting:
 
 ```bash
 npm install
-npm run db:push
-```
-
-If you see warnings about data loss:
-```bash
 npm run db:push --force
 ```
 

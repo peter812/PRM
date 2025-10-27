@@ -14,6 +14,18 @@ This guide explains how to run the People Manager CRM in a Docker container.
 
 ⚠️ **Important**: You must create the PostgreSQL database before running the application for the first time.
 
+### ✨ Automatic Database Initialization (New!)
+
+The application now **automatically sets up the database** when there are no users!
+
+When you start the app:
+- ✅ If **users exist**: Normal startup
+- 🔄 If **no users**: Automatically drops all tables, runs migrations, and seeds default data
+
+This means you only need to:
+1. Create the empty database (see below)
+2. Start the application - it handles the rest!
+
 ### Quick Database Setup
 
 Use the provided setup script to create the database automatically:
@@ -41,9 +53,9 @@ CREATE DATABASE people_crm;
 \q
 ```
 
-### After Creating the Database
+### Manual Migration (Optional)
 
-Once the database exists, run the migrations to create all tables:
+The app automatically runs migrations on first startup, but you can also run them manually:
 
 ```bash
 # Push the database schema
