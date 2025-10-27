@@ -8,6 +8,52 @@ This guide explains how to run the People Manager CRM in a Docker container.
 - Docker Compose installed (optional, but recommended)
 - Access to the PostgreSQL database at `pbe.im:3306`
 - S3-compatible storage configured
+- PostgreSQL database created (see Database Setup below)
+
+## Database Setup (Required First Step!)
+
+⚠️ **Important**: You must create the PostgreSQL database before running the application for the first time.
+
+### Quick Database Setup
+
+Use the provided setup script to create the database automatically:
+
+```bash
+# Make the script executable
+chmod +x setup-database.sh
+
+# Run the setup
+./setup-database.sh
+```
+
+### Manual Database Setup
+
+If you prefer manual setup or the script doesn't work:
+
+```bash
+# Connect to PostgreSQL
+psql -h pbe.im -p 3306 -U people -d postgres
+
+# Create the database
+CREATE DATABASE people_crm;
+
+# Exit
+\q
+```
+
+### After Creating the Database
+
+Once the database exists, run the migrations to create all tables:
+
+```bash
+# Push the database schema
+npm run db:push
+
+# If there are warnings, force the push
+npm run db:push --force
+```
+
+**Note**: See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed database setup instructions and troubleshooting.
 
 ## Quick Start
 
@@ -117,6 +163,40 @@ docker ps
 4. **Keep database credentials secure** - Use environment variables, never hardcode
 
 ## Troubleshooting
+
+### "database does not exist" Error
+
+If you see this error:
+```
+Error checking setup status: error: database "people_crm" does not exist
+```
+
+**Cause**: The PostgreSQL database hasn't been created yet.
+
+**Solution**:
+
+1. Create the database using the setup script:
+   ```bash
+   chmod +x setup-database.sh
+   ./setup-database.sh
+   ```
+
+2. Or create it manually:
+   ```bash
+   psql -h pbe.im -p 3306 -U people -d postgres -c "CREATE DATABASE people_crm;"
+   ```
+
+3. Run database migrations:
+   ```bash
+   npm run db:push
+   ```
+
+4. Restart Docker:
+   ```bash
+   docker-compose restart
+   ```
+
+See [DATABASE_SETUP.md](DATABASE_SETUP.md) for detailed instructions.
 
 ### Container won't start
 ```bash
