@@ -169,6 +169,10 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
                                 value={`${person.firstName} ${person.lastName} ${person.company || ""}`}
                                 onSelect={() => {
                                   form.setValue("fromPersonId", person.id);
+                                  // Clear person 2 to prevent stale values
+                                  if (form.getValues("toPersonId") === person.id) {
+                                    form.setValue("toPersonId", "");
+                                  }
                                   setPerson1Open(false);
                                 }}
                                 data-testid={`option-person-1-${person.id}`}
