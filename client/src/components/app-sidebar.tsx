@@ -1,4 +1,4 @@
-import { Users, Book, Network, Users2, Settings } from "lucide-react";
+import { Users, Book, Network, Users2, Settings, Heart } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -21,6 +21,11 @@ const menuItems = [
     title: "Groups",
     url: "/groups",
     icon: Users2,
+  },
+  {
+    title: "Relationship Types",
+    url: "/relationship-types",
+    icon: Heart,
   },
   {
     title: "Graph",

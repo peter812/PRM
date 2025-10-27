@@ -15,6 +15,7 @@ import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import GroupsList from "@/pages/groups-list";
 import GroupProfile from "@/pages/group-profile";
+import RelationshipTypesList from "@/pages/relationship-types-list";
 import Graph from "@/pages/graph";
 import ApiDocs from "@/pages/api-docs";
 import AuthPage from "@/pages/auth-page";
@@ -32,6 +33,7 @@ function Router() {
       <ProtectedRoute path="/person/:id" component={PersonProfile} />
       <ProtectedRoute path="/groups" component={GroupsList} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
+      <ProtectedRoute path="/relationship-types" component={RelationshipTypesList} />
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/api" component={ApiDocs} />
       <ProtectedRoute path="/settings" component={SettingsLayout} />
