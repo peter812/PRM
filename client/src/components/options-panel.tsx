@@ -24,6 +24,8 @@ interface OptionsPanelProps {
   onCollapsedChange: (collapsed: boolean) => void;
   showGroups: boolean;
   onShowGroupsChange: (show: boolean) => void;
+  hideOrphans: boolean;
+  onHideOrphansChange: (hide: boolean) => void;
   highlightedPersonId: string | null;
   onHighlightedPersonChange: (personId: string | null) => void;
   people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
@@ -44,6 +46,8 @@ export function OptionsPanel({
   onCollapsedChange,
   showGroups,
   onShowGroupsChange,
+  hideOrphans,
+  onHideOrphansChange,
   highlightedPersonId,
   onHighlightedPersonChange,
   people,
@@ -108,6 +112,24 @@ export function OptionsPanel({
                 checked={showGroups}
                 onCheckedChange={onShowGroupsChange}
                 data-testid="switch-show-groups"
+              />
+            </div>
+          </div>
+
+          {/* Hide Orphans Toggle */}
+          <div className="space-y-3">
+            <Label htmlFor="hide-orphans" className="text-base font-medium">
+              Hide Orphans
+            </Label>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                Hide people with no connections
+              </span>
+              <Switch
+                id="hide-orphans"
+                checked={hideOrphans}
+                onCheckedChange={onHideOrphansChange}
+                data-testid="switch-hide-orphans"
               />
             </div>
           </div>
@@ -305,6 +327,24 @@ export function OptionsPanel({
                     checked={showGroups}
                     onCheckedChange={onShowGroupsChange}
                     data-testid="switch-show-groups-mobile"
+                  />
+                </div>
+              </div>
+
+              {/* Hide Orphans Toggle */}
+              <div className="space-y-3">
+                <Label htmlFor="hide-orphans-mobile" className="text-base font-medium">
+                  Hide Orphans
+                </Label>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">
+                    Hide people with no connections
+                  </span>
+                  <Switch
+                    id="hide-orphans-mobile"
+                    checked={hideOrphans}
+                    onCheckedChange={onHideOrphansChange}
+                    data-testid="switch-hide-orphans-mobile"
                   />
                 </div>
               </div>
