@@ -16,6 +16,7 @@ import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { hashPassword } from "./auth";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
+import Papa from "papaparse";
 
 const scryptAsync = promisify(scrypt);
 
@@ -55,6 +56,192 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting image:", error);
       res.status(500).json({ error: "Failed to delete image" });
+    }
+  });
+
+  // CSV import endpoint
+  app.post("/api/import-csv", upload.single("csv"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No CSV file provided" });
+      }
+
+      // Parse CSV file
+      const csvText = req.file.buffer.toString("utf-8");
+      const parseResult = Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header: string) => header.trim(),
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.error("CSV parsing errors:", parseResult.errors);
+        return res.status(400).json({ 
+          error: "Failed to parse CSV file",
+          details: parseResult.errors.map(e => e.message)
+        });
+      }
+
+      const rows = parseResult.data as any[];
+      
+      // Skip first row as it's always an example/formatting row
+      const dataRows = rows.slice(1);
+
+      if (dataRows.length === 0) {
+        return res.status(400).json({ error: "CSV file contains no data rows" });
+      }
+
+      // Process each row and create person records
+      const createdPeople = [];
+      const errors = [];
+
+      for (let i = 0; i < dataRows.length; i++) {
+        const row = dataRows[i];
+        
+        try {
+          // Extract basic fields
+          const firstName = row["First Name"]?.trim() || "";
+          const lastName = row["Last Name"]?.trim() || "";
+          
+          if (!firstName && !lastName) {
+            // Skip empty rows
+            continue;
+          }
+
+          // Build notes from all other fields
+          const noteParts: string[] = [];
+
+          // Add middle name if present
+          if (row["Middle Name"]?.trim()) {
+            noteParts.push(`Middle Name: ${row["Middle Name"].trim()}`);
+          }
+
+          // Add nickname if present
+          if (row["Nickname"]?.trim()) {
+            noteParts.push(`Nickname: ${row["Nickname"].trim()}`);
+          }
+
+          // Add organization info
+          if (row["Organization Name"]?.trim()) {
+            noteParts.push(`Organization: ${row["Organization Name"].trim()}`);
+          }
+          if (row["Organization Title"]?.trim()) {
+            noteParts.push(`Title: ${row["Organization Title"].trim()}`);
+          }
+          if (row["Organization Department"]?.trim()) {
+            noteParts.push(`Department: ${row["Organization Department"].trim()}`);
+          }
+
+          // Add birthday
+          if (row["Birthday"]?.trim()) {
+            noteParts.push(`Birthday: ${row["Birthday"].trim()}`);
+          }
+
+          // Add existing notes
+          if (row["Notes"]?.trim()) {
+            noteParts.push(`Notes: ${row["Notes"].trim()}`);
+          }
+
+          // Add emails (skip first one as it goes to main email field)
+          const email1 = row["E-mail 1 - Value"]?.trim();
+          if (row["E-mail 2 - Value"]?.trim()) {
+            const label = row["E-mail 2 - Label"]?.trim() || "Email";
+            noteParts.push(`${label}: ${row["E-mail 2 - Value"].trim()}`);
+          }
+          if (row["E-mail 3 - Value"]?.trim()) {
+            const label = row["E-mail 3 - Label"]?.trim() || "Email";
+            noteParts.push(`${label}: ${row["E-mail 3 - Value"].trim()}`);
+          }
+
+          // Add phones (skip first one as it goes to main phone field)
+          const phone1 = row["Phone 1 - Value"]?.trim();
+          if (row["Phone 2 - Value"]?.trim()) {
+            const label = row["Phone 2 - Label"]?.trim() || "Phone";
+            noteParts.push(`${label}: ${row["Phone 2 - Value"].trim()}`);
+          }
+          if (row["Phone 3 - Value"]?.trim()) {
+            const label = row["Phone 3 - Label"]?.trim() || "Phone";
+            noteParts.push(`${label}: ${row["Phone 3 - Value"].trim()}`);
+          }
+          if (row["Phone 4 - Value"]?.trim()) {
+            const label = row["Phone 4 - Label"]?.trim() || "Phone";
+            noteParts.push(`${label}: ${row["Phone 4 - Value"].trim()}`);
+          }
+
+          // Add addresses
+          if (row["Address 1 - Formatted"]?.trim()) {
+            const label = row["Address 1 - Label"]?.trim() || "Address";
+            noteParts.push(`${label}: ${row["Address 1 - Formatted"].trim()}`);
+          }
+          if (row["Address 2 - Formatted"]?.trim()) {
+            const label = row["Address 2 - Label"]?.trim() || "Address";
+            noteParts.push(`${label}: ${row["Address 2 - Formatted"].trim()}`);
+          }
+
+          // Add websites
+          if (row["Website 1 - Value"]?.trim()) {
+            const label = row["Website 1 - Label"]?.trim() || "Website";
+            noteParts.push(`${label}: ${row["Website 1 - Value"].trim()}`);
+          }
+
+          // Add relations
+          if (row["Relation 1 - Value"]?.trim()) {
+            const label = row["Relation 1 - Label"]?.trim() || "Relation";
+            noteParts.push(`${label}: ${row["Relation 1 - Value"].trim()}`);
+          }
+
+          // Add events
+          if (row["Event 1 - Value"]?.trim()) {
+            const label = row["Event 1 - Label"]?.trim() || "Event";
+            noteParts.push(`${label}: ${row["Event 1 - Value"].trim()}`);
+          }
+
+          // Add labels/tags
+          if (row["Labels"]?.trim()) {
+            noteParts.push(`Labels: ${row["Labels"].trim()}`);
+          }
+
+          // Create person record
+          const personData = {
+            firstName: firstName || "Unknown",
+            lastName: lastName || "Unknown",
+            email: email1 || null,
+            phone: phone1 || null,
+            company: row["Organization Name"]?.trim() || null,
+            title: row["Organization Title"]?.trim() || null,
+            tags: row["Labels"]?.trim() ? row["Labels"].trim().split(/[,;]/).map((t: string) => t.trim()).filter(Boolean) : [],
+          };
+
+          const person = await storage.createPerson(personData);
+
+          // Create a note if there's additional info
+          if (noteParts.length > 0) {
+            await storage.createNote({
+              personId: person.id,
+              content: noteParts.join("\n"),
+            });
+          }
+
+          createdPeople.push(person);
+        } catch (error) {
+          console.error(`Error processing row ${i + 2}:`, error);
+          errors.push({
+            row: i + 2,
+            data: row,
+            error: error instanceof Error ? error.message : "Unknown error",
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        imported: createdPeople.length,
+        errors: errors.length,
+        errorDetails: errors.length > 0 ? errors : undefined,
+      });
+    } catch (error) {
+      console.error("Error importing CSV:", error);
+      res.status(500).json({ error: "Failed to import CSV" });
     }
   });
 
