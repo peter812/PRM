@@ -368,6 +368,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Graph endpoint - optimized for minimal data transfer
+  app.get("/api/graph", async (req, res) => {
+    try {
+      const graphData = await storage.getGraphData();
+      res.json(graphData);
+    } catch (error) {
+      console.error("Error fetching graph data:", error);
+      res.status(500).json({ error: "Failed to fetch graph data" });
+    }
+  });
+
   // People endpoints
   app.get("/api/people", async (req, res) => {
     try {

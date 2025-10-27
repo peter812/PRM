@@ -36,6 +36,13 @@ import connectPg from "connect-pg-simple";
 const PostgresSessionStore = connectPg(session);
 
 export interface IStorage {
+  // Graph operations
+  getGraphData(): Promise<{
+    people: Array<{ id: string; firstName: string; lastName: string }>;
+    relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
+    groups: Array<{ id: string; name: string; color: string; members: string[] }>;
+  }>;
+
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
   getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
@@ -91,6 +98,59 @@ export class DatabaseStorage implements IStorage {
 
   constructor() {
     this.sessionStore = new PostgresSessionStore({ pool, createTableIfMissing: true });
+  }
+
+  // Graph operations
+  async getGraphData(): Promise<{
+    people: Array<{ id: string; firstName: string; lastName: string }>;
+    relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
+    groups: Array<{ id: string; name: string; color: string; members: string[] }>;
+  }> {
+    // Fetch minimal people data
+    const peopleData = await db
+      .select({
+        id: people.id,
+        firstName: people.firstName,
+        lastName: people.lastName,
+      })
+      .from(people);
+
+    // Fetch all relationships with type colors in a single query
+    const relationshipsData = await db
+      .select({
+        id: relationships.id,
+        fromPersonId: relationships.fromPersonId,
+        toPersonId: relationships.toPersonId,
+        typeColor: relationshipTypes.color,
+      })
+      .from(relationships)
+      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id));
+
+    // Fetch minimal groups data
+    const groupsData = await db
+      .select({
+        id: groups.id,
+        name: groups.name,
+        color: groups.color,
+        members: groups.members,
+      })
+      .from(groups);
+
+    return {
+      people: peopleData,
+      relationships: relationshipsData.map(rel => ({
+        id: rel.id,
+        fromPersonId: rel.fromPersonId,
+        toPersonId: rel.toPersonId,
+        typeColor: rel.typeColor || null,
+      })),
+      groups: groupsData.map(g => ({
+        id: g.id,
+        name: g.name,
+        color: g.color,
+        members: g.members || [],
+      })),
+    };
   }
 
   // People operations
