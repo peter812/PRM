@@ -6,6 +6,13 @@ A professional CRM application for managing contacts, tracking interactions, and
 
 ## Recent Changes (October 27, 2025)
 
+- **Delete Person Feature** ✨ NEW:
+  - **Red X Button**: Each person card now has a red X button in the top-right corner
+  - **Confirmation Dialog**: Warns user about permanent deletion of all associated data
+  - **Cascade Deletion**: Automatically removes all notes, interactions, and relationships
+  - **Toast Notifications**: Success and error messages after deletion
+  - **Cache Invalidation**: People list updates immediately after deletion
+
 - **Global Search Overhaul** ✨ NEW:
   - **Top Bar Search**: Search now located in application header (not a dedicated page)
   - **Dropdown Results**: Shows up to 6 combined results (people + groups) in overlay below search bar
