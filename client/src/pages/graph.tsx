@@ -91,14 +91,28 @@ export default function Graph() {
   const [groupLineOpacity, setGroupLineOpacity] = useState(0.7);
   const [personPull, setPersonPull] = useState(0.01);
   const [groupPull, setGroupPull] = useState(0.003);
+  const [hideOrphans, setHideOrphans] = useState(false);
 
   const { data: graphData } = useQuery<GraphData>({
     queryKey: ["/api/graph"],
   });
 
-  const people = graphData?.people || [];
+  const allPeople = graphData?.people || [];
   const groups = graphData?.groups || [];
   const relationships = graphData?.relationships || [];
+
+  // Filter out orphans if hideOrphans is enabled
+  const people = hideOrphans 
+    ? allPeople.filter(person => {
+        // Check if person has any relationships
+        const hasRelationship = relationships.some(
+          rel => rel.fromPersonId === person.id || rel.toPersonId === person.id
+        );
+        // Check if person is a member of any group
+        const isInGroup = groups.some(group => group.members.includes(person.id));
+        return hasRelationship || isInGroup;
+      })
+    : allPeople;
 
   useEffect(() => {
     if (!canvasRef.current || !people.length) return;
@@ -702,6 +716,8 @@ export default function Graph() {
               onCollapsedChange={setIsSidebarCollapsed}
               showGroups={showGroups}
               onShowGroupsChange={setShowGroups}
+              hideOrphans={hideOrphans}
+              onHideOrphansChange={setHideOrphans}
               highlightedPersonId={highlightedPersonId}
               onHighlightedPersonChange={setHighlightedPersonId}
               people={people}
