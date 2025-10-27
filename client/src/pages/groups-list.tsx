@@ -1,12 +1,24 @@
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Plus, LayoutList, LayoutGrid } from "lucide-react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Plus, LayoutList, LayoutGrid, X } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useToast } from "@/hooks/use-toast";
 import { AddGroupDialog } from "@/components/add-group-dialog";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Group } from "@shared/schema";
 
 type ViewMode = "list" | "wide";
@@ -14,6 +26,8 @@ type ViewMode = "list" | "wide";
 export default function GroupsList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [groupToDelete, setGroupToDelete] = useState<Group | null>(null);
+  const { toast } = useToast();
 
   // Set default view based on screen size
   useEffect(() => {
@@ -32,6 +46,27 @@ export default function GroupsList() {
 
   const { data: groups, isLoading } = useQuery<Group[]>({
     queryKey: ["/api/groups"],
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (groupId: string) => {
+      return apiRequest("DELETE", `/api/groups/${groupId}`);
+    },
+    onSuccess: () => {
+      setGroupToDelete(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      toast({
+        title: "Group deleted",
+        description: "The group and all associated data have been removed.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete group",
+        variant: "destructive",
+      });
+    },
   });
 
   const getInitials = (name: string) => {
@@ -141,6 +176,19 @@ export default function GroupsList() {
                         )}
                       </div>
                     </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setGroupToDelete(group);
+                      }}
+                      data-testid={`button-delete-${group.id}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
                   </div>
                 </Card>
                 </Link>
@@ -154,7 +202,20 @@ export default function GroupsList() {
                     className="p-6 hover-elevate transition-all cursor-pointer"
                     data-testid={`card-group-${group.id}`}
                   >
-                  <div className="flex flex-col items-center text-center">
+                  <div className="flex flex-col items-center text-center relative">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10 absolute top-0 right-0"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setGroupToDelete(group);
+                      }}
+                      data-testid={`button-delete-${group.id}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
                     <Avatar className="w-32 h-32 mb-4" style={{ borderColor: group.color, borderWidth: '3px' }}>
                       {group.imageUrl && (
                         <AvatarImage src={group.imageUrl} alt={group.name} />
@@ -215,6 +276,31 @@ export default function GroupsList() {
       </div>
 
       <AddGroupDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+
+      <AlertDialog open={!!groupToDelete} onOpenChange={(open) => !open && setGroupToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Group</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{groupToDelete?.name}"? This will permanently remove this group and all associated notes. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (groupToDelete) {
+                  deleteMutation.mutate(groupToDelete.id);
+                }
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-delete"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
