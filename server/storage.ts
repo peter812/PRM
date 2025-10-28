@@ -656,10 +656,17 @@ export class DatabaseStorage implements IStorage {
       memberDetails.push(...membersData);
     }
 
+    // Fetch interactions involving this group
+    const groupInteractions = await db
+      .select()
+      .from(interactions)
+      .where(arrayContains(interactions.groupIds, [id]));
+
     return {
       ...group,
       notes: groupNotesList,
       memberDetails,
+      interactions: groupInteractions,
     };
   }
 

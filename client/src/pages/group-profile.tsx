@@ -6,18 +6,22 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { Group, Person } from "@shared/schema";
+import type { Group, Person, Interaction } from "@shared/schema";
 import { EditGroupDialog } from "@/components/edit-group-dialog";
 import { MembersTab } from "@/components/members-tab";
+import { InteractionsTab } from "@/components/interactions-tab";
+import { AddInteractionDialog } from "@/components/add-interaction-dialog";
 
 type GroupWithMembers = Group & {
   memberDetails: Person[];
+  interactions?: Interaction[];
 };
 
 export default function GroupProfile() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const [isEditGroupOpen, setIsEditGroupOpen] = useState(false);
+  const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
 
   const { data: group, isLoading, isError, error } = useQuery<GroupWithMembers>({
     queryKey: ["/api/groups", id],
@@ -162,12 +166,26 @@ export default function GroupProfile() {
             >
               Members
             </TabsTrigger>
+            <TabsTrigger
+              value="interactions"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-interactions"
+            >
+              Interactions
+            </TabsTrigger>
           </TabsList>
         </div>
 
         <div className="flex-1 overflow-auto">
           <TabsContent value="members" className="mt-0 h-full">
             <MembersTab members={group.memberDetails || []} groupId={group.id} />
+          </TabsContent>
+          <TabsContent value="interactions" className="mt-0 h-full">
+            <InteractionsTab
+              interactions={group.interactions || []}
+              personId=""
+              onAddInteraction={() => setIsAddInteractionOpen(true)}
+            />
           </TabsContent>
         </div>
       </Tabs>
@@ -176,6 +194,12 @@ export default function GroupProfile() {
         open={isEditGroupOpen}
         onOpenChange={setIsEditGroupOpen}
         group={group}
+      />
+
+      <AddInteractionDialog
+        open={isAddInteractionOpen}
+        onOpenChange={setIsAddInteractionOpen}
+        personId=""
       />
     </div>
   );
