@@ -11,13 +11,15 @@ import { Link } from "wouter";
 
 interface InteractionsTabProps {
   interactions: Interaction[];
-  personId: string;
+  personId?: string;
+  groupId?: string;
   onAddInteraction: () => void;
 }
 
 export function InteractionsTab({
   interactions,
   personId,
+  groupId,
   onAddInteraction,
 }: InteractionsTabProps) {
   const { toast } = useToast();
@@ -34,8 +36,32 @@ export function InteractionsTab({
     mutationFn: async (interactionId: string) => {
       return await apiRequest("DELETE", `/api/interactions/${interactionId}`, undefined);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/people", String(personId)] });
+    onSuccess: (_data, interactionId) => {
+      // Find the deleted interaction to get all involved entities
+      const deletedInteraction = interactions.find((i) => i.id === interactionId);
+      
+      // Invalidate queries for all involved people
+      if (deletedInteraction?.peopleIds) {
+        deletedInteraction.peopleIds.forEach((id) => {
+          queryClient.invalidateQueries({ queryKey: ["/api/people", id] });
+        });
+      }
+      
+      // Invalidate queries for all involved groups
+      if (deletedInteraction?.groupIds) {
+        deletedInteraction.groupIds.forEach((id) => {
+          queryClient.invalidateQueries({ queryKey: ["/api/groups", id] });
+        });
+      }
+      
+      // Also invalidate the current context (person or group)
+      if (personId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
+      }
+      if (groupId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId] });
+      }
+      
       toast({
         title: "Success",
         description: "Interaction deleted successfully",

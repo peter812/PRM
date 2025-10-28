@@ -183,7 +183,7 @@ export default function GroupProfile() {
           <TabsContent value="interactions" className="mt-0 h-full">
             <InteractionsTab
               interactions={group.interactions || []}
-              personId=""
+              groupId={group.id}
               onAddInteraction={() => setIsAddInteractionOpen(true)}
             />
           </TabsContent>
