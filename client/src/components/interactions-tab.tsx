@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { Interaction, Person, Group } from "@shared/schema";
+import type { Interaction, Person, Group, InteractionType } from "@shared/schema";
 import { format } from "date-fns";
 import { Link } from "wouter";
 
@@ -30,6 +30,10 @@ export function InteractionsTab({
 
   const { data: allGroups = [] } = useQuery<Group[]>({
     queryKey: ["/api/groups"],
+  });
+
+  const { data: interactionTypes = [] } = useQuery<InteractionType[]>({
+    queryKey: ["/api/interaction-types"],
   });
 
   const deleteMutation = useMutation({
@@ -80,30 +84,12 @@ export function InteractionsTab({
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   );
 
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case "call":
-        return Phone;
-      case "email":
-        return Mail;
-      case "meeting":
-        return Video;
-      default:
-        return Calendar;
-    }
-  };
-
-  const getTypeBadgeColor = (type: string) => {
-    switch (type) {
-      case "call":
-        return "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20";
-      case "email":
-        return "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20";
-      case "meeting":
-        return "bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20";
-      default:
-        return "bg-gray-500/10 text-gray-700 dark:text-gray-400 border-gray-500/20";
-    }
+  const getTypeIcon = (typeName: string) => {
+    const lowerName = typeName.toLowerCase();
+    if (lowerName.includes("call")) return Phone;
+    if (lowerName.includes("email")) return Mail;
+    if (lowerName.includes("meeting")) return Video;
+    return Calendar;
   };
 
   const getPeopleForInteraction = (interaction: Interaction) => {
@@ -117,6 +103,11 @@ export function InteractionsTab({
     return interaction.groupIds
       .map((id) => allGroups.find((g) => g.id === id))
       .filter((g): g is Group => !!g);
+  };
+
+  const getInteractionType = (typeId: string | null) => {
+    if (!typeId) return null;
+    return interactionTypes.find((t) => t.id === typeId);
   };
 
   return (
@@ -134,22 +125,34 @@ export function InteractionsTab({
           <div className="absolute left-[7px] top-0 bottom-0 w-0.5 bg-border" />
           <div className="space-y-6">
             {sortedInteractions.map((interaction) => {
-              const TypeIcon = getTypeIcon(interaction.type);
+              const interactionType = getInteractionType(interaction.typeId);
+              const TypeIcon = interactionType ? getTypeIcon(interactionType.name) : Calendar;
               const people = getPeopleForInteraction(interaction);
               const groups = getGroupsForInteraction(interaction);
+              const typeColor = interactionType?.color || "#6b7280";
 
               return (
                 <div key={interaction.id} className="relative pl-8" data-testid={`card-interaction-${interaction.id}`}>
-                  <div className="absolute left-0 top-1.5 w-4 h-4 rounded-full bg-primary border-4 border-background" />
+                  <div 
+                    className="absolute left-0 top-1.5 w-4 h-4 rounded-full border-4 border-background" 
+                    style={{ backgroundColor: typeColor }}
+                  />
                   <Card className="p-4">
                     <div className="flex items-start justify-between gap-4 mb-3">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <Badge
-                          className={`${getTypeBadgeColor(interaction.type)} border capitalize`}
-                        >
-                          <TypeIcon className="h-3 w-3 mr-1" />
-                          {interaction.type}
-                        </Badge>
+                        {interactionType && (
+                          <Badge
+                            className="border"
+                            style={{
+                              backgroundColor: `${typeColor}15`,
+                              color: typeColor,
+                              borderColor: `${typeColor}40`,
+                            }}
+                          >
+                            <TypeIcon className="h-3 w-3 mr-1" />
+                            {interactionType.name}
+                          </Badge>
+                        )}
                         <span className="text-sm text-muted-foreground">
                           {format(new Date(interaction.date), "MMM d, yyyy 'at' h:mm a")}
                         </span>
@@ -166,13 +169,19 @@ export function InteractionsTab({
                       </Button>
                     </div>
 
+                    {interaction.title && (
+                      <h3 className="text-lg font-medium mb-2" data-testid={`text-interaction-title-${interaction.id}`}>
+                        {interaction.title}
+                      </h3>
+                    )}
+
                     {people.length > 0 && (
                       <div className="mb-3 flex items-center gap-2 flex-wrap">
                         <Users className="h-4 w-4 text-muted-foreground" />
                         <span className="text-sm text-muted-foreground">With:</span>
                         {people.map((person, idx) => (
                           <span key={person.id} className="text-sm">
-                            <Link href={`/people/${person.id}`} className="text-primary hover:underline">
+                            <Link href={`/person/${person.id}`} className="text-primary hover:underline">
                               {person.firstName} {person.lastName}
                             </Link>
                             {idx < people.length - 1 && <span className="text-muted-foreground">, </span>}
@@ -185,7 +194,7 @@ export function InteractionsTab({
                       <div className="mb-3 flex items-center gap-2 flex-wrap">
                         <span className="text-sm text-muted-foreground">Groups:</span>
                         {groups.map((group) => (
-                          <Link key={group.id} href={`/groups/${group.id}`}>
+                          <Link key={group.id} href={`/group/${group.id}`}>
                             <Badge
                               variant="outline"
                               className="cursor-pointer"

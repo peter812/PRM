@@ -29,10 +29,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertInteractionSchema, type Person, type Group } from "@shared/schema";
+import { insertInteractionSchema, type Person, type Group, type InteractionType } from "@shared/schema";
 import { z } from "zod";
-import { X, Upload, Trash2 } from "lucide-react";
-import { useState, useRef } from "react";
+import { X, Upload, Trash2, Search } from "lucide-react";
+import { useState, useRef, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 
 interface AddInteractionDialogProps {
@@ -42,10 +42,11 @@ interface AddInteractionDialogProps {
 }
 
 const interactionFormSchema = insertInteractionSchema.extend({
-  type: z.enum(["meeting", "call", "email", "other"]),
   description: z.string().min(1, "Description is required"),
   peopleIds: z.array(z.string()).min(2, "At least 2 people are required"),
   groupIds: z.array(z.string()).optional(),
+  title: z.string().optional(),
+  typeId: z.string().optional(),
 });
 
 type InteractionForm = z.infer<typeof interactionFormSchema>;
@@ -60,6 +61,7 @@ export function AddInteractionDialog({
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [peopleSearchQuery, setPeopleSearchQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: people = [] } = useQuery<Person[]>({
@@ -70,12 +72,17 @@ export function AddInteractionDialog({
     queryKey: ["/api/groups"],
   });
 
+  const { data: interactionTypes = [] } = useQuery<InteractionType[]>({
+    queryKey: ["/api/interaction-types"],
+  });
+
   const form = useForm<InteractionForm>({
     resolver: zodResolver(interactionFormSchema),
     defaultValues: {
       peopleIds: [personId],
       groupIds: [],
-      type: "meeting",
+      typeId: interactionTypes[0]?.id,
+      title: "",
       date: new Date(),
       description: "",
     },
@@ -118,10 +125,12 @@ export function AddInteractionDialog({
       setSelectedGroupIds([]);
       setImageFile(null);
       setImagePreview(null);
+      setPeopleSearchQuery("");
       form.reset({ 
         peopleIds: [personId], 
         groupIds: [], 
-        type: "meeting", 
+        typeId: interactionTypes[0]?.id, 
+        title: "",
         date: new Date(), 
         description: "" 
       });
@@ -210,6 +219,20 @@ export function AddInteractionDialog({
   // Filter out "ME" person from the people list
   const availablePeople = people.filter((p) => !p.userId);
 
+  // Filter people based on search query
+  const filteredPeople = useMemo(() => {
+    if (!peopleSearchQuery.trim()) return availablePeople;
+    
+    const query = peopleSearchQuery.toLowerCase();
+    return availablePeople.filter(
+      (person) =>
+        person.firstName.toLowerCase().includes(query) ||
+        person.lastName.toLowerCase().includes(query) ||
+        person.company?.toLowerCase().includes(query) ||
+        person.email?.toLowerCase().includes(query)
+    );
+  }, [availablePeople, peopleSearchQuery]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -221,7 +244,25 @@ export function AddInteractionDialog({
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
             <FormField
               control={form.control}
-              name="type"
+              name="title"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Title (optional)</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      placeholder="e.g., Quarterly Review, Coffee Chat"
+                      data-testid="input-interaction-title"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="typeId"
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Type</FormLabel>
@@ -235,10 +276,17 @@ export function AddInteractionDialog({
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="meeting">Meeting</SelectItem>
-                      <SelectItem value="call">Call</SelectItem>
-                      <SelectItem value="email">Email</SelectItem>
-                      <SelectItem value="other">Other</SelectItem>
+                      {interactionTypes.map((type) => (
+                        <SelectItem key={type.id} value={type.id}>
+                          <div className="flex items-center gap-2">
+                            <div
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: type.color }}
+                            />
+                            {type.name}
+                          </div>
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -274,28 +322,42 @@ export function AddInteractionDialog({
 
             <div className="space-y-2">
               <Label>People Involved (minimum 2)</Label>
+              <div className="relative">
+                <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search people..."
+                  value={peopleSearchQuery}
+                  onChange={(e) => setPeopleSearchQuery(e.target.value)}
+                  className="pl-9"
+                  data-testid="input-people-search"
+                />
+              </div>
               <div className="border rounded-md p-4 max-h-48 overflow-y-auto space-y-2">
-                {availablePeople.map((person) => (
-                  <div key={person.id} className="flex items-center gap-2">
-                    <Checkbox
-                      id={`person-${person.id}`}
-                      checked={selectedPeopleIds.includes(person.id)}
-                      onCheckedChange={() => togglePerson(person.id)}
-                      data-testid={`checkbox-person-${person.id}`}
-                    />
-                    <label
-                      htmlFor={`person-${person.id}`}
-                      className="text-sm cursor-pointer flex-1"
-                    >
-                      {person.firstName} {person.lastName}
-                      {person.company && (
-                        <span className="text-muted-foreground ml-2">
-                          ({person.company})
-                        </span>
-                      )}
-                    </label>
-                  </div>
-                ))}
+                {filteredPeople.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No people found</p>
+                ) : (
+                  filteredPeople.map((person) => (
+                    <div key={person.id} className="flex items-center gap-2">
+                      <Checkbox
+                        id={`person-${person.id}`}
+                        checked={selectedPeopleIds.includes(person.id)}
+                        onCheckedChange={() => togglePerson(person.id)}
+                        data-testid={`checkbox-person-${person.id}`}
+                      />
+                      <label
+                        htmlFor={`person-${person.id}`}
+                        className="text-sm cursor-pointer flex-1"
+                      >
+                        {person.firstName} {person.lastName}
+                        {person.company && (
+                          <span className="text-muted-foreground ml-2">
+                            ({person.company})
+                          </span>
+                        )}
+                      </label>
+                    </div>
+                  ))
+                )}
               </div>
               {selectedPeopleIds.length < 2 && (
                 <p className="text-sm text-destructive">
