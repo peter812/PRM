@@ -32,7 +32,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertInteractionSchema, type Person, type Group, type InteractionType } from "@shared/schema";
 import { z } from "zod";
 import { X, Upload, Trash2, Search } from "lucide-react";
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 
 interface AddInteractionDialogProps {
@@ -87,6 +87,15 @@ export function AddInteractionDialog({
       description: "",
     },
   });
+
+  // Sync state with form fields
+  useEffect(() => {
+    form.setValue("peopleIds", selectedPeopleIds, { shouldValidate: true });
+  }, [selectedPeopleIds, form]);
+
+  useEffect(() => {
+    form.setValue("groupIds", selectedGroupIds.length > 0 ? selectedGroupIds : undefined, { shouldValidate: true });
+  }, [selectedGroupIds, form]);
 
   const uploadImageMutation = useMutation({
     mutationFn: async (file: File) => {
