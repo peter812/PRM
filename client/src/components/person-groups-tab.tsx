@@ -114,7 +114,7 @@ export function PersonGroupsTab({ personId, personGroups }: PersonGroupsTabProps
                 data-testid={`card-group-${group.id}`}
               >
                 <div className="flex items-start justify-between gap-3 mb-3">
-                  <Link href={`/groups/${group.id}`}>
+                  <Link href={`/group/${group.id}`}>
                     <div className="flex items-center gap-3 cursor-pointer">
                       <div
                         className="w-10 h-10 rounded-md flex items-center justify-center"
