@@ -3,6 +3,7 @@ import {
   people,
   notes,
   interactions,
+  interactionTypes,
   relationships,
   relationshipTypes,
   users,
@@ -14,6 +15,8 @@ import {
   type InsertNote,
   type Interaction,
   type InsertInteraction,
+  type InteractionType,
+  type InsertInteractionType,
   type Relationship,
   type InsertRelationship,
   type RelationshipType,
@@ -70,6 +73,13 @@ export interface IStorage {
   createRelationshipType(relationshipType: InsertRelationshipType): Promise<RelationshipType>;
   updateRelationshipType(id: string, relationshipType: Partial<InsertRelationshipType>): Promise<RelationshipType | undefined>;
   deleteRelationshipType(id: string): Promise<void>;
+
+  // Interaction type operations
+  getAllInteractionTypes(): Promise<InteractionType[]>;
+  getInteractionTypeById(id: string): Promise<InteractionType | undefined>;
+  createInteractionType(interactionType: InsertInteractionType): Promise<InteractionType>;
+  updateInteractionType(id: string, interactionType: Partial<InsertInteractionType>): Promise<InteractionType | undefined>;
+  deleteInteractionType(id: string): Promise<void>;
 
   // User operations
   getUser(id: number): Promise<User | undefined>;
@@ -489,6 +499,43 @@ export class DatabaseStorage implements IStorage {
 
   async deleteRelationshipType(id: string): Promise<void> {
     await db.delete(relationshipTypes).where(eq(relationshipTypes.id, id));
+  }
+
+  // Interaction type operations
+  async getAllInteractionTypes(): Promise<InteractionType[]> {
+    return await db.select().from(interactionTypes);
+  }
+
+  async getInteractionTypeById(id: string): Promise<InteractionType | undefined> {
+    const [interactionType] = await db
+      .select()
+      .from(interactionTypes)
+      .where(eq(interactionTypes.id, id));
+    return interactionType || undefined;
+  }
+
+  async createInteractionType(interactionType: InsertInteractionType): Promise<InteractionType> {
+    const [created] = await db
+      .insert(interactionTypes)
+      .values(interactionType)
+      .returning();
+    return created;
+  }
+
+  async updateInteractionType(
+    id: string,
+    interactionType: Partial<InsertInteractionType>
+  ): Promise<InteractionType | undefined> {
+    const [updated] = await db
+      .update(interactionTypes)
+      .set(interactionType)
+      .where(eq(interactionTypes.id, id))
+      .returning();
+    return updated || undefined;
+  }
+
+  async deleteInteractionType(id: string): Promise<void> {
+    await db.delete(interactionTypes).where(eq(interactionTypes.id, id));
   }
 
   // User operations
