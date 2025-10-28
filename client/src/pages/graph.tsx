@@ -437,14 +437,16 @@ export default function Graph() {
             const connectedPersonIds = new Set<string>();
             connectedPersonIds.add(highlightedPersonId);
             
-            // Add people with direct relationships (both directions)
-            relationships.forEach((rel) => {
-              if (rel.fromPersonId === highlightedPersonId) {
-                connectedPersonIds.add(rel.toPersonId);
-              } else if (rel.toPersonId === highlightedPersonId) {
-                connectedPersonIds.add(rel.fromPersonId);
-              }
-            });
+            // Add people with direct relationships (both directions) - only if person lines are not disabled
+            if (!disablePersonLines) {
+              relationships.forEach((rel) => {
+                if (rel.fromPersonId === highlightedPersonId) {
+                  connectedPersonIds.add(rel.toPersonId);
+                } else if (rel.toPersonId === highlightedPersonId) {
+                  connectedPersonIds.add(rel.fromPersonId);
+                }
+              });
+            }
             
             // Get groups the highlighted person is a member of
             const userGroupIds = new Set<string>();
