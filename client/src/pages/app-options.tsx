@@ -2,16 +2,35 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Upload, FileText, AlertCircle, CheckCircle2, Download } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Upload, FileText, AlertCircle, CheckCircle2, Download, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 
 export default function AppOptionsPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedXmlFile, setSelectedXmlFile] = useState<File | null>(null);
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
+  const [resetConfirmName, setResetConfirmName] = useState("");
+  const [includeExamples, setIncludeExamples] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
+
+  // Get current user data
+  const { data: meData } = useQuery({
+    queryKey: ["/api/me"],
+  });
 
   const importMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -171,6 +190,77 @@ export default function AppOptionsPage() {
         variant: "destructive",
       });
     }
+  };
+
+  const resetDatabaseMutation = useMutation({
+    mutationFn: async ({ userName, includeExamples }: { userName: string; includeExamples: boolean }) => {
+      const response = await fetch("/api/reset-database", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ userName, includeExamples }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to reset database");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Database Reset Complete",
+        description: "Your database has been reset successfully. Redirecting...",
+      });
+
+      // Close dialog and reset form
+      setIsResetDialogOpen(false);
+      setResetConfirmName("");
+      setIncludeExamples(false);
+
+      // Invalidate all queries to refresh data
+      queryClient.invalidateQueries();
+
+      // Redirect to people list after a brief delay
+      setTimeout(() => {
+        navigate("/people");
+      }, 1500);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Reset Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleResetDatabase = () => {
+    const userName = (meData as any)?.name;
+    if (!userName) {
+      toast({
+        title: "Error",
+        description: "User data not loaded",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (resetConfirmName.trim().toLowerCase() !== userName.trim().toLowerCase()) {
+      toast({
+        title: "Confirmation Failed",
+        description: "Please enter your name exactly as shown",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    resetDatabaseMutation.mutate({
+      userName: resetConfirmName,
+      includeExamples,
+    });
   };
 
   return (
@@ -400,6 +490,127 @@ export default function AppOptionsPage() {
           )}
         </CardContent>
       </Card>
+
+      <Card className="mt-6 border-destructive/50">
+        <CardHeader>
+          <CardTitle className="text-destructive">Reset Database</CardTitle>
+          <CardDescription>Remove all tables from database and reinstall</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                  <li>All existing data will be permanently deleted</li>
+                  <li>All tables will be dropped and recreated</li>
+                  <li>Default relationship and interaction types will be restored</li>
+                  <li>A new "Me" person entry will be created for your user account</li>
+                  <li>Optionally add example people and groups for testing</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between rounded-md border p-4">
+            <div className="space-y-0.5">
+              <Label htmlFor="include-examples" className="text-base font-medium">
+                Add Example Data
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                Include 6 example people and 2 groups in the reset
+              </p>
+            </div>
+            <Switch
+              id="include-examples"
+              checked={includeExamples}
+              onCheckedChange={setIncludeExamples}
+              data-testid="switch-include-examples"
+            />
+          </div>
+
+          <Button
+            variant="destructive"
+            onClick={() => setIsResetDialogOpen(true)}
+            className="gap-2"
+            data-testid="button-reset-database"
+          >
+            <Trash2 className="h-4 w-4" />
+            Reset Database
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive">Confirm Database Reset</DialogTitle>
+            <DialogDescription>
+              This will permanently delete all your data. Type your name to confirm.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="confirm-name">
+                Type <span className="font-semibold">{(meData as any)?.name || "your name"}</span> to confirm
+              </Label>
+              <Input
+                id="confirm-name"
+                value={resetConfirmName}
+                onChange={(e) => setResetConfirmName(e.target.value)}
+                placeholder="Enter your name"
+                disabled={resetDatabaseMutation.isPending}
+                data-testid="input-confirm-name"
+              />
+            </div>
+
+            {includeExamples && (
+              <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
+                <p className="font-medium mb-1">Example data will include:</p>
+                <ul className="list-disc list-inside space-y-0.5 text-xs">
+                  <li>6 example people (Sarah Johnson, Michael Chen, Emily Rodriguez, David Thompson, Jessica Williams, Alex Martinez)</li>
+                  <li>2 example groups (Work Team, Close Friends)</li>
+                </ul>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsResetDialogOpen(false);
+                setResetConfirmName("");
+              }}
+              disabled={resetDatabaseMutation.isPending}
+              data-testid="button-cancel-reset"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleResetDatabase}
+              disabled={
+                resetDatabaseMutation.isPending ||
+                !resetConfirmName ||
+                resetConfirmName.trim().toLowerCase() !== ((meData as any)?.name || "").trim().toLowerCase()
+              }
+              data-testid="button-confirm-reset"
+            >
+              {resetDatabaseMutation.isPending ? (
+                <>
+                  <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin mr-2" />
+                  Resetting...
+                </>
+              ) : (
+                "Reset Database"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
