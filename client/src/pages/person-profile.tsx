@@ -19,11 +19,26 @@ import { PersonGroupsTab } from "@/components/person-groups-tab";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
+
+  // Parse query parameters to determine where to navigate back to
+  const params = new URLSearchParams(location.split('?')[1] || '');
+  const from = params.get('from');
+  const groupId = params.get('groupId');
+
+  const handleBack = () => {
+    if (from === 'graph') {
+      navigate('/graph');
+    } else if (from === 'group' && groupId) {
+      navigate(`/group/${groupId}`);
+    } else {
+      navigate('/');
+    }
+  };
 
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
     queryKey: ["/api/people", id],
@@ -57,9 +72,9 @@ export default function PersonProfile() {
         <p className="text-muted-foreground mb-6">
           {error?.message || "An error occurred while fetching this person"}
         </p>
-        <Button onClick={() => navigate("/")} data-testid="button-back-to-list-error">
+        <Button onClick={handleBack} data-testid="button-back-to-list-error">
           <ArrowLeft className="h-4 w-4" />
-          Back to People
+          Back
         </Button>
       </div>
     );
@@ -72,9 +87,9 @@ export default function PersonProfile() {
         <p className="text-muted-foreground mb-6">
           The person you're looking for doesn't exist.
         </p>
-        <Button onClick={() => navigate("/")} data-testid="button-back-to-list">
+        <Button onClick={handleBack} data-testid="button-back-to-list">
           <ArrowLeft className="h-4 w-4" />
-          Back to People
+          Back
         </Button>
       </div>
     );
@@ -90,7 +105,7 @@ export default function PersonProfile() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => navigate("/")}
+          onClick={handleBack}
           className="mb-6"
           data-testid="button-back"
         >
