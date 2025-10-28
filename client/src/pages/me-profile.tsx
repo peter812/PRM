@@ -246,6 +246,7 @@ export default function MeProfile() {
         open={isEditPersonOpen}
         onOpenChange={setIsEditPersonOpen}
         person={person}
+        onDelete={() => navigate("/people")}
       />
     </div>
   );

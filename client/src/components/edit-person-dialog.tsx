@@ -2,13 +2,23 @@ import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
-import { X } from "lucide-react";
+import { X, Trash2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -30,6 +40,7 @@ interface EditPersonDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   person: Person;
+  onDelete?: () => void;
 }
 
 const updatePersonSchema = insertPersonSchema.partial();
@@ -39,10 +50,12 @@ export function EditPersonDialog({
   open,
   onOpenChange,
   person,
+  onDelete,
 }: EditPersonDialogProps) {
   const { toast } = useToast();
   const [tagInput, setTagInput] = useState("");
   const [imageUrl, setImageUrl] = useState<string | null>(person.imageUrl || null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const form = useForm<UpdatePerson>({
     resolver: zodResolver(updatePersonSchema),
@@ -91,6 +104,32 @@ export function EditPersonDialog({
       toast({
         title: "Error",
         description: "Failed to update person",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("DELETE", `/api/people/${person.id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      toast({
+        title: "Success",
+        description: "Person deleted successfully",
+      });
+      onOpenChange(false);
+      setShowDeleteConfirm(false);
+      if (onDelete) {
+        onDelete();
+      }
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to delete person",
         variant: "destructive",
       });
     },
@@ -286,26 +325,62 @@ export function EditPersonDialog({
               )}
             </div>
 
-            <div className="flex gap-2 justify-end pt-4">
+            <div className="flex gap-2 justify-between pt-4 border-t">
               <Button
                 type="button"
-                variant="outline"
-                onClick={() => onOpenChange(false)}
-                data-testid="button-edit-cancel"
+                variant="destructive"
+                onClick={() => setShowDeleteConfirm(true)}
+                data-testid="button-delete-person"
+                className="gap-2"
               >
-                Cancel
+                <Trash2 className="h-4 w-4" />
+                Delete Person
               </Button>
-              <Button
-                type="submit"
-                disabled={updateMutation.isPending}
-                data-testid="button-edit-submit"
-              >
-                {updateMutation.isPending ? "Saving..." : "Save Changes"}
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => onOpenChange(false)}
+                  data-testid="button-edit-cancel"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={updateMutation.isPending}
+                  data-testid="button-edit-submit"
+                >
+                  {updateMutation.isPending ? "Saving..." : "Save Changes"}
+                </Button>
+              </div>
             </div>
           </form>
         </Form>
       </DialogContent>
+
+      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Person</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {person.firstName} {person.lastName}? 
+              This will permanently remove this person and all their associated data (notes, interactions, relationships). 
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteMutation.mutate()}
+              disabled={deleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-delete-confirm"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
