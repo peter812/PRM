@@ -205,10 +205,10 @@ export default function AppOptionsPage() {
 
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       toast({
         title: "Database Reset Complete",
-        description: "Your database has been reset successfully. Redirecting...",
+        description: "Your database has been reset successfully. Please log in again.",
       });
 
       // Close dialog and reset form
@@ -219,9 +219,9 @@ export default function AppOptionsPage() {
       // Invalidate all queries to refresh data
       queryClient.invalidateQueries();
 
-      // Redirect to people list after a brief delay
+      // Redirect to login page after a brief delay since session was destroyed
       setTimeout(() => {
-        navigate("/people");
+        window.location.href = "/login";
       }, 1500);
     },
     onError: (error: Error) => {

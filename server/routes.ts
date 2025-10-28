@@ -652,16 +652,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { includeExamples } = req.body;
       
-      // Get the current user
+      // Get the current user data (we need to preserve this before dropping tables)
       const user = req.user as any;
+      const userData = {
+        name: user.name,
+        nickname: user.nickname,
+        username: user.username,
+        password: user.password, // Already hashed
+      };
 
       // Import the resetDatabase function
       const { resetDatabase } = await import("./db-init");
       
       // Reset the database using the authenticated user's info
-      await resetDatabase(user.id, user.name, includeExamples === true);
+      await resetDatabase(userData, includeExamples === true);
 
-      res.json({ success: true });
+      // Destroy the current session since the user ID will change
+      req.logout((err) => {
+        if (err) {
+          console.error("Error logging out after reset:", err);
+        }
+        req.session.destroy((err) => {
+          if (err) {
+            console.error("Error destroying session after reset:", err);
+          }
+          res.json({ success: true, requiresLogin: true });
+        });
+      });
     } catch (error) {
       console.error("Error resetting database:", error);
       res.status(500).json({ error: "Failed to reset database" });

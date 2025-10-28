@@ -188,32 +188,57 @@ async function seedExampleData(userId: number, mePerson: any): Promise<void> {
  * Resets the database and seeds it with default data
  * Optionally seeds example people and groups
  */
-export async function resetDatabase(userId: number, userName: string, includeExamples: boolean): Promise<void> {
+export async function resetDatabase(
+  userData: { name: string; nickname: string | null; username: string; password: string },
+  includeExamples: boolean
+): Promise<void> {
   try {
     log("Resetting database...");
     
-    // Drop all existing tables
+    // Drop all existing tables (including session table)
     await dropAllTables();
     
     // Create new tables from schema
     await runMigrations();
     
+    // Recreate the session table (connect-pg-simple will do this automatically on next access)
+    // But we'll force it now to avoid errors
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS "session" (
+        "sid" varchar NOT NULL COLLATE "default",
+        "sess" json NOT NULL,
+        "expire" timestamp(6) NOT NULL,
+        CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+      ) WITH (OIDS=FALSE);
+      
+      CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+    `);
+    
     // Seed default relationship and interaction types
     await seedRelationshipTypes();
     await seedInteractionTypes();
     
-    // Create the "Me" person for the current user
-    const result = await pool.query(
+    // Recreate the user (will get a new ID, likely 1)
+    const userResult = await pool.query(
+      `INSERT INTO users (name, nickname, username, password)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [userData.name, userData.nickname, userData.username, userData.password]
+    );
+    const newUserId = userResult.rows[0].id;
+    
+    // Create the "Me" person for the recreated user
+    const personResult = await pool.query(
       `INSERT INTO people (user_id, first_name, last_name) 
        VALUES ($1, $2, $3)
        RETURNING *`,
-      [userId, userName, '']
+      [newUserId, userData.name, '']
     );
-    const mePerson = result.rows[0];
+    const mePerson = personResult.rows[0];
     
     // Optionally seed example data
     if (includeExamples) {
-      await seedExampleData(userId, mePerson);
+      await seedExampleData(newUserId, mePerson);
     }
     
     log("Database reset successfully!");
