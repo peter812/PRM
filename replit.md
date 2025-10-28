@@ -33,6 +33,7 @@ The application uses an **external PostgreSQL database** (pbe.im:3306) for all p
 -   **Automatic Database Initialization:** On application startup, the system checks if any users exist. If no users are found, it automatically drops all database tables, runs migrations to recreate them from the schema, and seeds default relationship types. This ensures a clean state for first-time setup or development resets.
 -   **Unified Relationship System:** Person-to-person relationships use customizable relationship types from the database. Relationships are bidirectional - creating a relationship from Person A to Person B automatically makes it visible on both people's profiles. Relationship types include name, color (for UI/graph visualization), and optional notes. Default types include: Acquaintance (#10b981), Friend (#3b82f6), Good Friend (#8b5cf6), Best Friend (#ec4899), Colleague (#f59e0b), Family (#ef4444), and Partner (#06b6d4).
 -   **Deletion Features:** Comprehensive delete functionality for people and groups, including confirmation dialogs, cascade deletion of related data (notes, interactions, relationships), and toast notifications.
+-   **Groups Management:** Bidirectional group management allows adding members to groups (via group profile) and adding people to groups (via person profile). The Groups tab on person profiles displays all groups the person belongs to with search functionality and multi-select "Add to Groups" dialog.
 -   **API Documentation:** Collapsible, interactive API documentation with example code and copy functionality.
 
 ### Interactions System Architecture
@@ -52,7 +53,7 @@ The application uses a flexible interactions system that supports multi-person a
 - **Smart Cache Invalidation:** When an interaction is deleted, all affected person and group queries are invalidated to ensure UI consistency
 
 **UI Components:**
-- `AddInteractionDialog`: Multi-select interface for choosing people (minimum 2) and optional groups, with image upload support
+- `AddInteractionDialog`: Multi-select interface for choosing people (minimum 2) and optional groups, with image upload support. Description field is optional.
 - `InteractionsTab`: Displays interactions with all involved people and groups, used on both person and group profile pages
 - Timeline visualization with type-specific icons and color coding for different interaction types (meeting, call, email, other)
 
