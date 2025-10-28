@@ -283,6 +283,12 @@ export class DatabaseStorage implements IStorage {
       .from(interactions)
       .where(sql`${id} = ANY(${interactions.peopleIds})`);
 
+    // Get groups where this person is a member
+    const personGroups = await db
+      .select()
+      .from(groups)
+      .where(arrayContains(groups.members, [id]));
+
     // Get relationships where this person is the "from" person
     const relationshipsFrom = await db
       .select({
@@ -333,6 +339,7 @@ export class DatabaseStorage implements IStorage {
       ...person,
       notes: personNotes,
       interactions: personInteractions,
+      groups: personGroups,
       relationships: allRelationships,
     };
   }

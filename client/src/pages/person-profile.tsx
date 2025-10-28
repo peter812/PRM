@@ -15,6 +15,7 @@ import { AddRelationshipDialog } from "@/components/add-relationship-dialog";
 import { NotesTab } from "@/components/notes-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { RelationshipsTab } from "@/components/relationships-tab";
+import { PersonGroupsTab } from "@/components/person-groups-tab";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -195,6 +196,13 @@ export default function PersonProfile() {
             >
               Relationships
             </TabsTrigger>
+            <TabsTrigger
+              value="groups"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-groups"
+            >
+              Groups
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -220,6 +228,13 @@ export default function PersonProfile() {
               relationships={person.relationships}
               personId={person.id}
               onAddRelationship={() => setIsAddRelationshipOpen(true)}
+            />
+          </TabsContent>
+
+          <TabsContent value="groups" className="mt-0 h-full">
+            <PersonGroupsTab
+              personId={person.id}
+              personGroups={person.groups}
             />
           </TabsContent>
         </div>

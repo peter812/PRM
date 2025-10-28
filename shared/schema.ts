@@ -266,6 +266,7 @@ export type RelationshipWithPerson = Relationship & {
 export type PersonWithRelations = Person & {
   notes: Note[];
   interactions: Interaction[];
+  groups: Group[];
   relationships: RelationshipWithPerson[];
 };
 
