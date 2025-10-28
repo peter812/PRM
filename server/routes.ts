@@ -643,6 +643,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Database reset endpoint
+  app.post("/api/reset-database", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const { userName, includeExamples } = req.body;
+      
+      if (!userName) {
+        return res.status(400).json({ error: "User name is required" });
+      }
+
+      // Get the current user
+      const user = req.user as any;
+      
+      // Verify the provided name matches the user's name
+      if (userName.trim().toLowerCase() !== user.name.trim().toLowerCase()) {
+        return res.status(400).json({ error: "Name confirmation does not match" });
+      }
+
+      // Import the resetDatabase function
+      const { resetDatabase } = await import("./db-init");
+      
+      // Reset the database
+      await resetDatabase(user.id, user.name, includeExamples === true);
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error resetting database:", error);
+      res.status(500).json({ error: "Failed to reset database" });
+    }
+  });
+
   // Setup endpoints
   app.get("/api/setup/status", async (req, res) => {
     try {

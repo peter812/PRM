@@ -134,6 +134,96 @@ async function hasUsers(): Promise<boolean> {
 }
 
 /**
+ * Seeds example people and groups for demo purposes
+ */
+async function seedExampleData(userId: number, mePerson: any): Promise<void> {
+  log("Seeding example people and groups...");
+  
+  try {
+    // Create 6 example people
+    const examplePeople = [
+      { firstName: 'Sarah', lastName: 'Johnson', email: 'sarah.johnson@example.com', company: 'Tech Corp', title: 'Senior Developer' },
+      { firstName: 'Michael', lastName: 'Chen', email: 'michael.chen@example.com', company: 'Design Studio', title: 'Creative Director' },
+      { firstName: 'Emily', lastName: 'Rodriguez', email: 'emily.rodriguez@example.com', company: 'Marketing Plus', title: 'Marketing Manager' },
+      { firstName: 'David', lastName: 'Thompson', email: 'david.thompson@example.com', company: 'Startup Inc', title: 'CEO' },
+      { firstName: 'Jessica', lastName: 'Williams', email: 'jessica.williams@example.com', company: 'Finance Group', title: 'Financial Analyst' },
+      { firstName: 'Alex', lastName: 'Martinez', email: 'alex.martinez@example.com', company: 'Consulting Firm', title: 'Consultant' },
+    ];
+    
+    const createdPeopleIds: string[] = [];
+    for (const person of examplePeople) {
+      const result = await pool.query(
+        `INSERT INTO people (user_id, first_name, last_name, email, company, title) 
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id`,
+        [userId, person.firstName, person.lastName, person.email, person.company, person.title]
+      );
+      createdPeopleIds.push(result.rows[0].id);
+    }
+    
+    // Create 2 example groups with members
+    const group1Members = [createdPeopleIds[0], createdPeopleIds[1], mePerson.id]; // Sarah, Michael, Me
+    const group2Members = [createdPeopleIds[2], createdPeopleIds[3], mePerson.id]; // Emily, David, Me
+    
+    await pool.query(
+      `INSERT INTO groups (name, color, members) 
+       VALUES ($1, $2, $3)`,
+      ['Work Team', '#3b82f6', group1Members]
+    );
+    
+    await pool.query(
+      `INSERT INTO groups (name, color, members) 
+       VALUES ($1, $2, $3)`,
+      ['Close Friends', '#ec4899', group2Members]
+    );
+    
+    log("Seeded 6 example people and 2 groups");
+  } catch (error) {
+    log(`Error seeding example data: ${error}`);
+    // Don't throw - example data is optional
+  }
+}
+
+/**
+ * Resets the database and seeds it with default data
+ * Optionally seeds example people and groups
+ */
+export async function resetDatabase(userId: number, userName: string, includeExamples: boolean): Promise<void> {
+  try {
+    log("Resetting database...");
+    
+    // Drop all existing tables
+    await dropAllTables();
+    
+    // Create new tables from schema
+    await runMigrations();
+    
+    // Seed default relationship and interaction types
+    await seedRelationshipTypes();
+    await seedInteractionTypes();
+    
+    // Create the "Me" person for the current user
+    const result = await pool.query(
+      `INSERT INTO people (user_id, first_name, last_name) 
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [userId, userName, '']
+    );
+    const mePerson = result.rows[0];
+    
+    // Optionally seed example data
+    if (includeExamples) {
+      await seedExampleData(userId, mePerson);
+    }
+    
+    log("Database reset successfully!");
+  } catch (error) {
+    log(`Database reset failed: ${error}`);
+    throw error;
+  }
+}
+
+/**
  * Initializes the database:
  * - If no users exist, drops all tables and recreates them
  * - Seeds default data (relationship types)
