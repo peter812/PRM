@@ -15,6 +15,7 @@ import { AddRelationshipDialog } from "@/components/add-relationship-dialog";
 import { NotesTab } from "@/components/notes-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { RelationshipsTab } from "@/components/relationships-tab";
+import { PersonGroupsTab } from "@/components/person-groups-tab";
 
 export default function MeProfile() {
   const [, navigate] = useLocation();
@@ -182,6 +183,13 @@ export default function MeProfile() {
             >
               Relationships
             </TabsTrigger>
+            <TabsTrigger
+              value="groups"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-groups"
+            >
+              Groups
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -207,6 +215,13 @@ export default function MeProfile() {
               relationships={person.relationships}
               personId={person.id}
               onAddRelationship={() => setIsAddRelationshipOpen(true)}
+            />
+          </TabsContent>
+
+          <TabsContent value="groups" className="mt-0 h-full">
+            <PersonGroupsTab
+              personGroups={person.groups || []}
+              personId={person.id}
             />
           </TabsContent>
         </div>
