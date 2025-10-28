@@ -26,6 +26,8 @@ interface OptionsPanelProps {
   onShowGroupsChange: (show: boolean) => void;
   hideOrphans: boolean;
   onHideOrphansChange: (hide: boolean) => void;
+  anonymizePeople: boolean;
+  onAnonymizePeopleChange: (anonymize: boolean) => void;
   highlightedPersonId: string | null;
   onHighlightedPersonChange: (personId: string | null) => void;
   people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
@@ -48,6 +50,8 @@ export function OptionsPanel({
   onShowGroupsChange,
   hideOrphans,
   onHideOrphansChange,
+  anonymizePeople,
+  onAnonymizePeopleChange,
   highlightedPersonId,
   onHighlightedPersonChange,
   people,
@@ -130,6 +134,24 @@ export function OptionsPanel({
                 checked={hideOrphans}
                 onCheckedChange={onHideOrphansChange}
                 data-testid="switch-hide-orphans"
+              />
+            </div>
+          </div>
+
+          {/* Anonymize People Toggle */}
+          <div className="space-y-3">
+            <Label htmlFor="anonymize-people" className="text-base font-medium">
+              Anonymize People
+            </Label>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                Hide names except Me node
+              </span>
+              <Switch
+                id="anonymize-people"
+                checked={anonymizePeople}
+                onCheckedChange={onAnonymizePeopleChange}
+                data-testid="switch-anonymize-people"
               />
             </div>
           </div>
@@ -345,6 +367,24 @@ export function OptionsPanel({
                     checked={hideOrphans}
                     onCheckedChange={onHideOrphansChange}
                     data-testid="switch-hide-orphans-mobile"
+                  />
+                </div>
+              </div>
+
+              {/* Anonymize People Toggle */}
+              <div className="space-y-3">
+                <Label htmlFor="anonymize-people-mobile" className="text-base font-medium">
+                  Anonymize People
+                </Label>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">
+                    Hide names except Me node
+                  </span>
+                  <Switch
+                    id="anonymize-people-mobile"
+                    checked={anonymizePeople}
+                    onCheckedChange={onAnonymizePeopleChange}
+                    data-testid="switch-anonymize-people-mobile"
                   />
                 </div>
               </div>

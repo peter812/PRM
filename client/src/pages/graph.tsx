@@ -92,6 +92,7 @@ export default function Graph() {
   const [personPull, setPersonPull] = useState(0.01);
   const [groupPull, setGroupPull] = useState(0.003);
   const [hideOrphans, setHideOrphans] = useState(false);
+  const [anonymizePeople, setAnonymizePeople] = useState(false);
 
   const { data: graphData } = useQuery<GraphData>({
     queryKey: ["/api/graph"],
@@ -214,6 +215,11 @@ export default function Graph() {
           text.anchor.set(0.5, -1.5);
           text.x = x;
           text.y = y;
+          
+          // Hide text if anonymize is enabled and this is not the Me node
+          if (anonymizePeople && person.id !== meData?.id) {
+            text.visible = false;
+          }
 
           // Interaction handlers
           graphics.on('pointerdown', (e) => {
@@ -708,15 +714,6 @@ export default function Graph() {
         wheelHandlerRef.current = null;
       }
       
-      // Stop the renderer before destroying to prevent mid-render errors
-      if (appRef.current) {
-        try {
-          appRef.current.renderer?.stop?.();
-        } catch (e) {
-          // Ignore errors during stop
-        }
-      }
-      
       // Clear refs to prevent race conditions
       nodesRef.current.clear();
       edgesRef.current = [];
@@ -739,7 +736,7 @@ export default function Graph() {
         }
       }
     };
-  }, [people, groups, navigate, showGroups, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull]);
+  }, [people, groups, navigate, showGroups, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull, anonymizePeople, meData?.id]);
 
   return (
     <div className="h-full flex flex-col">
@@ -789,6 +786,8 @@ export default function Graph() {
               onShowGroupsChange={setShowGroups}
               hideOrphans={hideOrphans}
               onHideOrphansChange={setHideOrphans}
+              anonymizePeople={anonymizePeople}
+              onAnonymizePeopleChange={setAnonymizePeople}
               highlightedPersonId={highlightedPersonId}
               onHighlightedPersonChange={setHighlightedPersonId}
               people={people}
