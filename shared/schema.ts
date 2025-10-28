@@ -38,12 +38,23 @@ export const notes = pgTable("notes", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Interaction types table
+export const interactionTypes = pgTable("interaction_types", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  color: text("color").notNull(), // hex color code
+  description: text("description"),
+  value: integer("value").notNull().default(50), // 1-255
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Interactions table
 export const interactions = pgTable("interactions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   peopleIds: text("people_ids").array().notNull().default(sql`ARRAY[]::text[]`), // Array of person UUIDs (2 or more)
   groupIds: text("group_ids").array().default(sql`ARRAY[]::text[]`), // Optional array of group UUIDs
-  type: text("type").notNull(), // "meeting", "call", "email", "other"
+  typeId: varchar("type_id").references(() => interactionTypes.id, { onDelete: "set null" }),
+  title: text("title"),
   date: timestamp("date").notNull(),
   description: text("description").notNull(),
   imageUrl: text("image_url"),
@@ -135,6 +146,17 @@ export const relationshipTypesRelations = relations(relationshipTypes, ({ many }
   relationships: many(relationships),
 }));
 
+export const interactionTypesRelations = relations(interactionTypes, ({ many }) => ({
+  interactions: many(interactions),
+}));
+
+export const interactionsRelations = relations(interactions, ({ one }) => ({
+  type: one(interactionTypes, {
+    fields: [interactions.typeId],
+    references: [interactionTypes.id],
+  }),
+}));
+
 export const groupsRelations = relations(groups, ({ many }) => ({
   notes: many(groupNotes),
 }));
@@ -166,6 +188,17 @@ export const insertInteractionSchema = createInsertSchema(interactions)
     date: z.coerce.date(),
     peopleIds: z.array(z.string()).min(2, "At least 2 people are required"),
     groupIds: z.array(z.string()).optional(),
+    typeId: z.string().optional(),
+    title: z.string().optional(),
+  });
+
+export const insertInteractionTypeSchema = createInsertSchema(interactionTypes)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    value: z.number().int().min(1).max(255),
   });
 
 export const insertRelationshipSchema = createInsertSchema(relationships).omit({
@@ -220,6 +253,9 @@ export type InsertGroupNote = z.infer<typeof insertGroupNoteSchema>;
 
 export type RelationshipType = typeof relationshipTypes.$inferSelect;
 export type InsertRelationshipType = z.infer<typeof insertRelationshipTypeSchema>;
+
+export type InteractionType = typeof interactionTypes.$inferSelect;
+export type InsertInteractionType = z.infer<typeof insertInteractionTypeSchema>;
 
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {
