@@ -202,6 +202,7 @@ export default function RelationshipTypesList() {
                         setEditedName(type.name);
                         setEditedNotes(type.notes || "");
                         setEditedColor(type.color);
+                        setEditedValue(type.value);
                       }}
                       data-testid={`button-name-${type.id}`}
                     >
@@ -215,6 +216,7 @@ export default function RelationshipTypesList() {
                           setEditedName(type.name);
                           setEditedNotes(type.notes || "");
                           setEditedColor(type.color);
+                          setEditedValue(type.value);
                         }}
                         data-testid={`button-notes-${type.id}`}
                       >
