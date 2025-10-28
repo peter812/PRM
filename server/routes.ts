@@ -377,6 +377,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "User not found" });
       }
 
+      // Sync name changes to the user's person entry
+      if (updateData.name !== undefined) {
+        const [firstName, ...lastNameParts] = (updateData.name || updatedUser.username).split(' ');
+        const lastName = lastNameParts.join(' ') || '';
+        
+        await storage.updateUserPerson(req.user.id, {
+          firstName: firstName,
+          lastName: lastName,
+        });
+      }
+
       res.json(updatedUser);
     } catch (error) {
       console.error("Error updating user:", error);

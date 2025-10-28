@@ -77,6 +77,8 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, user: Partial<InsertUser>): Promise<User | undefined>;
   getUserCount(): Promise<number>;
+  updateUserPerson(userId: number, person: Partial<InsertPerson>): Promise<void>;
+  getMePerson(userId: number): Promise<PersonWithRelations | undefined>;
 
   // Group operations
   getAllGroups(searchQuery?: string): Promise<Group[]>;
@@ -164,16 +166,16 @@ export class DatabaseStorage implements IStorage {
         .select()
         .from(people)
         .where(
-          or(
-            ilike(people.firstName, query),
-            ilike(people.lastName, query),
-            ilike(people.email, query),
-            ilike(people.company, query),
-            sql`EXISTS (
+          sql`${people.userId} IS NULL AND (
+            ${people.firstName} ILIKE ${query} OR
+            ${people.lastName} ILIKE ${query} OR
+            ${people.email} ILIKE ${query} OR
+            ${people.company} ILIKE ${query} OR
+            EXISTS (
               SELECT 1 FROM unnest(${people.tags}) AS tag
               WHERE tag ILIKE ${query}
-            )`
-          )
+            )
+          )`
         )
         .orderBy(
           sql`CASE
@@ -193,7 +195,7 @@ export class DatabaseStorage implements IStorage {
           END`
         );
     }
-    return await db.select().from(people);
+    return await db.select().from(people).where(sql`${people.userId} IS NULL`);
   }
 
   async getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>> {
@@ -461,6 +463,96 @@ export class DatabaseStorage implements IStorage {
   async getUserCount(): Promise<number> {
     const result = await db.select({ count: sql<number>`count(*)` }).from(users);
     return Number(result[0].count);
+  }
+
+  async updateUserPerson(userId: number, personData: Partial<InsertPerson>): Promise<void> {
+    await db
+      .update(people)
+      .set(personData)
+      .where(eq(people.userId, userId));
+  }
+
+  async getMePerson(userId: number): Promise<PersonWithRelations | undefined> {
+    const [person] = await db.select().from(people).where(eq(people.userId, userId));
+    
+    if (!person) {
+      return undefined;
+    }
+
+    // Get notes
+    const personNotes = await db
+      .select()
+      .from(notes)
+      .where(eq(notes.personId, person.id));
+
+    // Get interactions
+    const personInteractions = await db
+      .select()
+      .from(interactions)
+      .where(eq(interactions.personId, person.id));
+
+    // Get relationships (bidirectional)
+    const relationshipsFrom = await db
+      .select({
+        id: relationships.id,
+        fromPersonId: relationships.fromPersonId,
+        toPersonId: relationships.toPersonId,
+        typeId: relationships.typeId,
+        notes: relationships.notes,
+        createdAt: relationships.createdAt,
+        toPerson: people,
+        type: relationshipTypes,
+      })
+      .from(relationships)
+      .innerJoin(people, eq(relationships.toPersonId, people.id))
+      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+      .where(eq(relationships.fromPersonId, person.id));
+
+    const relationshipsTo = await db
+      .select({
+        id: relationships.id,
+        fromPersonId: relationships.fromPersonId,
+        toPersonId: relationships.toPersonId,
+        typeId: relationships.typeId,
+        notes: relationships.notes,
+        createdAt: relationships.createdAt,
+        toPerson: people,
+        type: relationshipTypes,
+      })
+      .from(relationships)
+      .innerJoin(people, eq(relationships.fromPersonId, people.id))
+      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+      .where(eq(relationships.toPersonId, person.id));
+
+    const allRelationships = [
+      ...relationshipsFrom.map(rel => ({
+        id: rel.id,
+        fromPersonId: rel.fromPersonId,
+        toPersonId: rel.toPersonId,
+        typeId: rel.typeId,
+        notes: rel.notes,
+        createdAt: rel.createdAt,
+        toPerson: rel.toPerson,
+        type: rel.type || undefined,
+      })),
+      ...relationshipsTo.map(rel => ({
+        id: rel.id,
+        fromPersonId: rel.fromPersonId,
+        toPersonId: rel.toPersonId,
+        typeId: rel.typeId,
+        notes: rel.notes,
+        createdAt: rel.createdAt,
+        toPerson: rel.toPerson,
+        type: rel.type || undefined,
+      })),
+    ];
+
+    return {
+      ...person,
+      notes: personNotes,
+      interactions: personInteractions,
+      relationships: allRelationships,
+    };
   }
 
   // Group operations
