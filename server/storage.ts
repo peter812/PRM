@@ -32,7 +32,7 @@ import {
   type GroupWithNotes,
 } from "@shared/schema";
 import { db, pool } from "./db";
-import { eq, or, ilike, sql, inArray } from "drizzle-orm";
+import { eq, or, ilike, sql, inArray, arrayContains } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 
