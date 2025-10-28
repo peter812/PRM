@@ -134,6 +134,14 @@ export default function Graph() {
         // Clean up existing app
         if (appRef.current) {
           appRef.current.destroy(true, { children: true, texture: true });
+          appRef.current = null;
+        }
+
+        // Clean up any existing canvas elements
+        if (canvasRef.current) {
+          while (canvasRef.current.firstChild) {
+            canvasRef.current.removeChild(canvasRef.current.firstChild);
+          }
         }
 
         // Get theme colors from CSS variables
@@ -472,6 +480,11 @@ export default function Graph() {
         const simulate = () => {
           // Guard: Stop simulation if app or container has been destroyed
           if (!appRef.current || !containerRef.current || nodesRef.current.size === 0) {
+            // Cancel animation frame to stop the loop
+            if (animationRef.current) {
+              cancelAnimationFrame(animationRef.current);
+              animationRef.current = 0;
+            }
             return;
           }
           
@@ -485,6 +498,7 @@ export default function Graph() {
           // Apply forces
           nodes.forEach((node) => {
             if (!node.graphics || !node.text) return; // Skip if graphics destroyed
+            if (node.graphics.destroyed || node.text.destroyed) return; // Skip if destroyed by Pixi
             if (!node.graphics.visible) return; // Skip hidden nodes
             
             let fx = 0;
@@ -493,6 +507,7 @@ export default function Graph() {
             // Repulsion between nodes
             nodes.forEach((other) => {
               if (!other.graphics) return; // Skip if graphics destroyed
+              if (other.graphics.destroyed) return; // Skip if destroyed by Pixi
               if (node.id !== other.id && other.graphics.visible) {
                 const dx = node.x - other.x;
                 const dy = node.y - other.y;
@@ -505,7 +520,7 @@ export default function Graph() {
 
             // Attraction along edges
             edgesRef.current.forEach((edge) => {
-              if (!edge.graphics || !edge.graphics.visible) return; // Skip hidden/destroyed edges
+              if (!edge.graphics || edge.graphics.destroyed || !edge.graphics.visible) return; // Skip hidden/destroyed edges
               
               let other: Node | undefined;
               let attraction = personAttraction;
@@ -539,6 +554,7 @@ export default function Graph() {
           // Update positions (skip if dragging)
           nodes.forEach((node) => {
             if (!node.graphics || !node.text) return; // Skip if graphics destroyed
+            if (node.graphics.destroyed || node.text.destroyed) return; // Skip if destroyed by Pixi
             if (!node.graphics.visible) return; // Skip hidden nodes
             
             if (isDraggingRef.current !== node.id) {
@@ -554,19 +570,26 @@ export default function Graph() {
           // Update edge positions
           edgesRef.current.forEach((edge) => {
             if (!edge.graphics) return; // Skip if graphics destroyed
+            if (edge.graphics.destroyed) return; // Skip if destroyed by Pixi
             if (!edge.graphics.visible) return; // Skip hidden edges
             
             const fromNode = nodesRef.current.get(edge.from);
             const toNode = nodesRef.current.get(edge.to);
-            if (fromNode && toNode && fromNode.graphics && toNode.graphics && fromNode.graphics.visible && toNode.graphics.visible) {
-              edge.graphics.clear();
-              edge.graphics.moveTo(fromNode.x, fromNode.y);
-              edge.graphics.lineTo(toNode.x, toNode.y);
-              
-              if (edge.type === 'relationship') {
-                edge.graphics.stroke({ color: edge.color, width: 2, alpha: personLineOpacity });
-              } else if (edge.type === 'group-member') {
-                edge.graphics.stroke({ color: edge.color, width: 1, alpha: groupLineOpacity });
+            if (fromNode && toNode && fromNode.graphics && toNode.graphics && 
+                !fromNode.graphics.destroyed && !toNode.graphics.destroyed &&
+                fromNode.graphics.visible && toNode.graphics.visible) {
+              try {
+                edge.graphics.clear();
+                edge.graphics.moveTo(fromNode.x, fromNode.y);
+                edge.graphics.lineTo(toNode.x, toNode.y);
+                
+                if (edge.type === 'relationship') {
+                  edge.graphics.stroke({ color: edge.color, width: 2, alpha: personLineOpacity });
+                } else if (edge.type === 'group-member') {
+                  edge.graphics.stroke({ color: edge.color, width: 1, alpha: groupLineOpacity });
+                }
+              } catch (e) {
+                // Graphics may have been destroyed during operation, skip silently
               }
             }
           });
@@ -581,7 +604,8 @@ export default function Graph() {
         app.stage.on('pointermove', (e) => {
           if (isDraggingRef.current) {
             const node = nodesRef.current.get(isDraggingRef.current);
-            if (node && containerRef.current) {
+            if (node && containerRef.current && node.graphics && node.text && 
+                !node.graphics.destroyed && !node.text.destroyed) {
               // Convert screen coordinates to world coordinates accounting for zoom
               const currentScale = containerRef.current.scale.x;
               const worldX = (e.global.x - containerRef.current.x) / currentScale;
@@ -602,7 +626,7 @@ export default function Graph() {
         app.stage.on('pointerup', () => {
           if (isDraggingRef.current) {
             const node = nodesRef.current.get(isDraggingRef.current);
-            if (node) {
+            if (node && node.graphics && !node.graphics.destroyed) {
               node.graphics.cursor = 'grab';
             }
           }
@@ -613,7 +637,7 @@ export default function Graph() {
         app.stage.on('pointerupoutside', () => {
           if (isDraggingRef.current) {
             const node = nodesRef.current.get(isDraggingRef.current);
-            if (node) {
+            if (node && node.graphics && !node.graphics.destroyed) {
               node.graphics.cursor = 'grab';
             }
           }
@@ -672,22 +696,47 @@ export default function Graph() {
     initPixi();
 
     return () => {
-      cancelAnimationFrame(animationRef.current);
+      // Cancel animation frame immediately
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = 0;
+      }
+      
+      // Remove wheel event listener before destroying app
+      if (appRef.current?.canvas && wheelHandlerRef.current) {
+        appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
+        wheelHandlerRef.current = null;
+      }
+      
+      // Stop the renderer before destroying to prevent mid-render errors
+      if (appRef.current) {
+        try {
+          appRef.current.renderer?.stop?.();
+        } catch (e) {
+          // Ignore errors during stop
+        }
+      }
       
       // Clear refs to prevent race conditions
       nodesRef.current.clear();
       edgesRef.current = [];
       containerRef.current = null;
       
-      // Remove wheel event listener
-      if (appRef.current?.canvas && wheelHandlerRef.current) {
-        appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
-        wheelHandlerRef.current = null;
+      // Destroy PIXI app with a small delay to ensure rendering has stopped
+      if (appRef.current) {
+        try {
+          appRef.current.destroy(true, { children: true, texture: true });
+        } catch (e) {
+          // Ignore errors during destroy - app may already be destroyed
+        }
+        appRef.current = null;
       }
       
-      if (appRef.current) {
-        appRef.current.destroy(true, { children: true, texture: true });
-        appRef.current = null;
+      // Clean up DOM
+      if (canvasRef.current) {
+        while (canvasRef.current.firstChild) {
+          canvasRef.current.removeChild(canvasRef.current.firstChild);
+        }
       }
     };
   }, [people, groups, navigate, showGroups, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull]);
