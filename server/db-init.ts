@@ -88,6 +88,37 @@ async function seedRelationshipTypes(): Promise<void> {
 }
 
 /**
+ * Seeds the database with default interaction types
+ */
+async function seedInteractionTypes(): Promise<void> {
+  log("Seeding default interaction types...");
+  
+  try {
+    const defaultTypes = [
+      { name: 'Generic', color: '#6b7280', value: 50, description: 'General interaction (cannot be deleted)' },
+      { name: 'Meeting', color: '#3b82f6', value: 70, description: 'In-person or virtual meeting' },
+      { name: 'Call', color: '#10b981', value: 60, description: 'Phone or video call' },
+      { name: 'Email', color: '#f59e0b', value: 40, description: 'Email correspondence' },
+      { name: 'Other', color: '#8b5cf6', value: 30, description: 'Other type of interaction' },
+    ];
+    
+    for (const type of defaultTypes) {
+      await pool.query(
+        `INSERT INTO interaction_types (name, color, value, description) 
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT DO NOTHING`,
+        [type.name, type.color, type.value, type.description]
+      );
+    }
+    
+    log("Seeded default interaction types");
+  } catch (error) {
+    log(`Error seeding interaction types: ${error}`);
+    // Don't throw - seeding is optional
+  }
+}
+
+/**
  * Checks if there are any users in the database
  */
 async function hasUsers(): Promise<boolean> {
@@ -124,6 +155,7 @@ export async function initializeDatabase(): Promise<void> {
       
       // Seed default data
       await seedRelationshipTypes();
+      await seedInteractionTypes();
       
       log("Database initialized successfully!");
     } else {
