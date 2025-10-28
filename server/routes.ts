@@ -14,6 +14,7 @@ import {
   insertGroupSchema,
   insertGroupNoteSchema,
   insertUserSchema,
+  insertApiKeySchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -850,6 +851,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching me person:", error);
       res.status(500).json({ error: "Failed to fetch person entry" });
+    }
+  });
+
+  // API Key endpoints
+  app.get("/api/api-keys", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const keys = await storage.getAllApiKeys(req.user.id);
+      res.json(keys);
+    } catch (error) {
+      console.error("Error fetching API keys:", error);
+      res.status(500).json({ error: "Failed to fetch API keys" });
+    }
+  });
+
+  app.post("/api/api-keys", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const { name } = req.body;
+      if (!name || typeof name !== 'string') {
+        return res.status(400).json({ error: "Name is required" });
+      }
+
+      // Generate a random API key (32 bytes = 64 hex characters)
+      const crypto = await import("crypto");
+      const rawKey = crypto.randomBytes(32).toString('hex');
+      
+      // Hash the key for storage (like password hashing)
+      const hashedKey = await hashPassword(rawKey);
+
+      const validatedData = insertApiKeySchema.parse({
+        userId: req.user.id,
+        name,
+        key: hashedKey,
+      });
+
+      const apiKey = await storage.createApiKey(validatedData);
+
+      // Return the raw key ONLY THIS ONE TIME (never stored/shown again)
+      res.status(201).json({
+        id: apiKey.id,
+        name: apiKey.name,
+        key: rawKey, // Show raw key only on creation
+        createdAt: apiKey.createdAt,
+      });
+    } catch (error) {
+      console.error("Error creating API key:", error);
+      res.status(400).json({ error: "Failed to create API key" });
+    }
+  });
+
+  app.delete("/api/api-keys/:id", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const id = req.params.id;
+      
+      // Verify the key belongs to the user
+      const keys = await storage.getAllApiKeys(req.user.id);
+      const keyToDelete = keys.find(k => k.id === id);
+      
+      if (!keyToDelete) {
+        return res.status(404).json({ error: "API key not found" });
+      }
+
+      await storage.deleteApiKey(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting API key:", error);
+      res.status(500).json({ error: "Failed to delete API key" });
     }
   });
 
