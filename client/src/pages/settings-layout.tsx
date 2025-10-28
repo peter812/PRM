@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/sidebar";
 import UserOptionsPage from "@/pages/user-options";
 import AppOptionsPage from "@/pages/app-options";
+import RelationshipTypesList from "@/pages/relationship-types-list";
+import ApiDocs from "@/pages/api-docs";
 import NotFound from "@/pages/not-found";
 
 const settingsMenuItems = [
@@ -30,6 +32,16 @@ const settingsMenuItems = [
     title: "App Options",
     url: "/settings/app",
     icon: Settings,
+  },
+  {
+    title: "Relationship Types",
+    url: "/settings/relationship-types",
+    icon: Heart,
+  },
+  {
+    title: "API Documentation",
+    url: "/settings/api",
+    icon: Book,
   },
 ];
 
@@ -76,6 +88,8 @@ export default function SettingsLayout() {
             <Route path="/settings" component={() => <Redirect to="/settings/user" />} />
             <Route path="/settings/user" component={UserOptionsPage} />
             <Route path="/settings/app" component={AppOptionsPage} />
+            <Route path="/settings/relationship-types" component={RelationshipTypesList} />
+            <Route path="/settings/api" component={ApiDocs} />
             <Route component={NotFound} />
           </Switch>
         </main>
