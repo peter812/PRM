@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Upload, FileText, AlertCircle, CheckCircle2, Download, Trash2, ChevronRight } from "lucide-react";
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 
@@ -27,11 +27,6 @@ export default function AppOptionsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
-
-  // Get current user data
-  const { data: meData } = useQuery({
-    queryKey: ["/api/me"],
-  });
 
   const importMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -194,13 +189,13 @@ export default function AppOptionsPage() {
   };
 
   const resetDatabaseMutation = useMutation({
-    mutationFn: async ({ userName, includeExamples }: { userName: string; includeExamples: boolean }) => {
+    mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
       const response = await fetch("/api/reset-database", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ userName, includeExamples }),
+        body: JSON.stringify({ includeExamples }),
       });
 
       if (!response.ok) {
@@ -239,16 +234,6 @@ export default function AppOptionsPage() {
   });
 
   const handleResetDatabase = () => {
-    const userName = (meData as any)?.name;
-    if (!userName) {
-      toast({
-        title: "Error",
-        description: "User data not loaded",
-        variant: "destructive",
-      });
-      return;
-    }
-
     if (confirmSliderValue[0] < 100) {
       toast({
         title: "Confirmation Required",
@@ -259,7 +244,6 @@ export default function AppOptionsPage() {
     }
 
     resetDatabaseMutation.mutate({
-      userName,
       includeExamples,
     });
   };

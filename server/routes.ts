@@ -650,24 +650,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ error: "Unauthorized" });
       }
 
-      const { userName, includeExamples } = req.body;
+      const { includeExamples } = req.body;
       
-      if (!userName) {
-        return res.status(400).json({ error: "User name is required" });
-      }
-
       // Get the current user
       const user = req.user as any;
-      
-      // Verify the provided name matches the user's name
-      if (userName.trim().toLowerCase() !== user.name.trim().toLowerCase()) {
-        return res.status(400).json({ error: "Name confirmation does not match" });
-      }
 
       // Import the resetDatabase function
       const { resetDatabase } = await import("./db-init");
       
-      // Reset the database
+      // Reset the database using the authenticated user's info
       await resetDatabase(user.id, user.name, includeExamples === true);
 
       res.json({ success: true });
