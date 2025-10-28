@@ -41,7 +41,8 @@ export const notes = pgTable("notes", {
 // Interactions table
 export const interactions = pgTable("interactions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  peopleIds: text("people_ids").array().notNull().default(sql`ARRAY[]::text[]`), // Array of person UUIDs (2 or more)
+  groupIds: text("group_ids").array().default(sql`ARRAY[]::text[]`), // Optional array of group UUIDs
   type: text("type").notNull(), // "meeting", "call", "email", "other"
   date: timestamp("date").notNull(),
   description: text("description").notNull(),
@@ -102,7 +103,6 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
     references: [users.id],
   }),
   notes: many(notes),
-  interactions: many(interactions),
   relationshipsFrom: many(relationships, { relationName: "relationshipsFrom" }),
   relationshipsTo: many(relationships, { relationName: "relationshipsTo" }),
 }));
@@ -110,13 +110,6 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
 export const notesRelations = relations(notes, ({ one }) => ({
   person: one(people, {
     fields: [notes.personId],
-    references: [people.id],
-  }),
-}));
-
-export const interactionsRelations = relations(interactions, ({ one }) => ({
-  person: one(people, {
-    fields: [interactions.personId],
     references: [people.id],
   }),
 }));
@@ -171,6 +164,8 @@ export const insertInteractionSchema = createInsertSchema(interactions)
   })
   .extend({
     date: z.coerce.date(),
+    peopleIds: z.array(z.string()).min(2, "At least 2 people are required"),
+    groupIds: z.array(z.string()).optional(),
   });
 
 export const insertRelationshipSchema = createInsertSchema(relationships).omit({
