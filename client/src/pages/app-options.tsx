@@ -208,7 +208,7 @@ export default function AppOptionsPage() {
     onSuccess: (data) => {
       toast({
         title: "Database Reset Complete",
-        description: "Your database has been reset successfully. Please log in again.",
+        description: "Your database has been reset successfully. You can now create a new account.",
       });
 
       // Close dialog and reset form
@@ -219,9 +219,9 @@ export default function AppOptionsPage() {
       // Invalidate all queries to refresh data
       queryClient.invalidateQueries();
 
-      // Redirect to login page after a brief delay since session was destroyed
+      // Redirect to welcome page after a brief delay since session was destroyed and user creation is enabled
       setTimeout(() => {
-        window.location.href = "/login";
+        window.location.href = "/welcome";
       }, 1500);
     },
     onError: (error: Error) => {
