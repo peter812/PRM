@@ -395,6 +395,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/me", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const mePerson = await storage.getMePerson(req.user.id);
+      if (!mePerson) {
+        return res.status(404).json({ error: "Person entry not found" });
+      }
+
+      res.json(mePerson);
+    } catch (error) {
+      console.error("Error fetching me person:", error);
+      res.status(500).json({ error: "Failed to fetch person entry" });
+    }
+  });
+
   // Graph endpoint - optimized for minimal data transfer
   app.get("/api/graph", async (req, res) => {
     try {

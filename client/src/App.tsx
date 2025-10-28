@@ -13,6 +13,7 @@ import { LogOut } from "lucide-react";
 import { GlobalSearch } from "@/components/global-search";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
+import MeProfile from "@/pages/me-profile";
 import GroupsList from "@/pages/groups-list";
 import GroupProfile from "@/pages/group-profile";
 import RelationshipTypesList from "@/pages/relationship-types-list";
@@ -31,6 +32,7 @@ function Router() {
       <ProtectedRoute path="/" component={PeopleList} />
       <ProtectedRoute path="/people" component={PeopleList} />
       <ProtectedRoute path="/person/:id" component={PersonProfile} />
+      <ProtectedRoute path="/me" component={MeProfile} />
       <ProtectedRoute path="/groups" component={GroupsList} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
       <ProtectedRoute path="/relationship-types" component={RelationshipTypesList} />
