@@ -238,7 +238,7 @@ export default function Graph() {
               const distance = Math.sqrt(dx * dx + dy * dy);
               
               if (distance < 5) {
-                navigate(`/person/${person.id}`);
+                navigate(`/person/${person.id}?from=graph`);
               }
             }
             isDraggingRef.current = null;

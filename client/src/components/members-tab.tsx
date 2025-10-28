@@ -150,7 +150,7 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                   data-testid={`card-member-${member.id}`}
                 >
                   <div className="flex items-center gap-4">
-                    <Link href={`/person/${member.id}`} className="flex items-center gap-4 flex-1 min-w-0">
+                    <Link href={`/person/${member.id}?from=group&groupId=${groupId}`} className="flex items-center gap-4 flex-1 min-w-0">
                       <Avatar className="w-12 h-12">
                         {member.imageUrl && (
                           <AvatarImage
@@ -202,7 +202,7 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                   className="p-6 hover-elevate transition-all relative"
                   data-testid={`card-member-${member.id}`}
                 >
-                  <Link href={`/person/${member.id}`}>
+                  <Link href={`/person/${member.id}?from=group&groupId=${groupId}`}>
                     <div className="flex flex-col items-center text-center cursor-pointer">
                       <Avatar className="w-20 h-20 mb-4">
                         {member.imageUrl && (
