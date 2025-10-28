@@ -17,6 +17,7 @@ export const users = pgTable("users", {
 // People table
 export const people = pgTable("people", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email"),
@@ -88,7 +89,18 @@ export const groupNotes = pgTable("group_notes", {
 });
 
 // Relations
-export const peopleRelations = relations(people, ({ many }) => ({
+export const usersRelations = relations(users, ({ one }) => ({
+  person: one(people, {
+    fields: [users.id],
+    references: [people.userId],
+  }),
+}));
+
+export const peopleRelations = relations(people, ({ one, many }) => ({
+  user: one(users, {
+    fields: [people.userId],
+    references: [users.id],
+  }),
   notes: many(notes),
   interactions: many(interactions),
   relationshipsFrom: many(relationships, { relationName: "relationshipsFrom" }),
