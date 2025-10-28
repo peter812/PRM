@@ -35,6 +35,7 @@ export default function RelationshipTypesList() {
   const [editedName, setEditedName] = useState("");
   const [editedNotes, setEditedNotes] = useState("");
   const [editedColor, setEditedColor] = useState("");
+  const [editedValue, setEditedValue] = useState(50);
   const { toast } = useToast();
 
   const { data: relationshipTypes, isLoading } = useQuery<RelationshipType[]>({
@@ -42,7 +43,7 @@ export default function RelationshipTypesList() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: { name: string; color: string; notes: string }) => {
+    mutationFn: async (data: { name: string; color: string; value: number; notes: string }) => {
       return apiRequest("POST", "/api/relationship-types", data);
     },
     onSuccess: () => {
@@ -63,7 +64,7 @@ export default function RelationshipTypesList() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: async ({ id, data }: { id: string; data: Partial<{ name: string; color: string; notes: string }> }) => {
+    mutationFn: async ({ id, data }: { id: string; data: Partial<{ name: string; color: string; value: number; notes: string }> }) => {
       return apiRequest("PATCH", `/api/relationship-types/${id}`, data);
     },
     onSuccess: () => {
@@ -112,6 +113,7 @@ export default function RelationshipTypesList() {
         name: editedName,
         notes: editedNotes,
         color: editedColor,
+        value: editedValue,
       },
     });
   };
@@ -119,6 +121,7 @@ export default function RelationshipTypesList() {
   const [newTypeName, setNewTypeName] = useState("");
   const [newTypeNotes, setNewTypeNotes] = useState("");
   const [newTypeColor, setNewTypeColor] = useState("#3b82f6");
+  const [newTypeValue, setNewTypeValue] = useState(50);
 
   const handleCreateType = () => {
     if (!newTypeName.trim()) {
@@ -132,11 +135,13 @@ export default function RelationshipTypesList() {
     createMutation.mutate({
       name: newTypeName,
       color: newTypeColor,
+      value: newTypeValue,
       notes: newTypeNotes,
     });
     setNewTypeName("");
     setNewTypeNotes("");
     setNewTypeColor("#3b82f6");
+    setNewTypeValue(50);
   };
 
   return (
@@ -185,6 +190,7 @@ export default function RelationshipTypesList() {
                       setEditedName(type.name);
                       setEditedNotes(type.notes || "");
                       setEditedColor(type.color);
+                      setEditedValue(type.value);
                     }}
                     data-testid={`button-color-${type.id}`}
                   />
@@ -288,6 +294,19 @@ export default function RelationshipTypesList() {
               </div>
             </div>
             <div className="space-y-2">
+              <Label htmlFor="value">Value (1-255)</Label>
+              <Input
+                id="value"
+                type="number"
+                min="1"
+                max="255"
+                value={newTypeValue}
+                onChange={(e) => setNewTypeValue(parseInt(e.target.value) || 50)}
+                placeholder="50"
+                data-testid="input-value"
+              />
+            </div>
+            <div className="space-y-2">
               <Label htmlFor="notes">Notes (Optional)</Label>
               <Textarea
                 id="notes"
@@ -348,6 +367,18 @@ export default function RelationshipTypesList() {
                   data-testid="input-edit-color-text"
                 />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-value">Value (1-255)</Label>
+              <Input
+                id="edit-value"
+                type="number"
+                min="1"
+                max="255"
+                value={editedValue}
+                onChange={(e) => setEditedValue(parseInt(e.target.value) || 50)}
+                data-testid="input-edit-value"
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="edit-notes">Notes</Label>
