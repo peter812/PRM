@@ -42,7 +42,7 @@ interface AddInteractionDialogProps {
 }
 
 const interactionFormSchema = insertInteractionSchema.extend({
-  description: z.string().min(1, "Description is required"),
+  description: z.string().optional(),
   peopleIds: z.array(z.string()).min(2, "At least 2 people are required"),
   groupIds: z.array(z.string()).optional(),
   title: z.string().optional(),

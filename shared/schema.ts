@@ -56,7 +56,7 @@ export const interactions = pgTable("interactions", {
   typeId: varchar("type_id").references(() => interactionTypes.id, { onDelete: "set null" }),
   title: text("title"),
   date: timestamp("date").notNull(),
-  description: text("description").notNull(),
+  description: text("description"),
   imageUrl: text("image_url"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
