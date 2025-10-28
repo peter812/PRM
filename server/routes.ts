@@ -8,6 +8,7 @@ import {
   insertPersonSchema,
   insertNoteSchema,
   insertInteractionSchema,
+  insertInteractionTypeSchema,
   insertRelationshipSchema,
   insertRelationshipTypeSchema,
   insertGroupSchema,
@@ -765,6 +766,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting relationship type:", error);
       res.status(500).json({ error: "Failed to delete relationship type" });
+    }
+  });
+
+  // Interaction types endpoints
+  app.get("/api/interaction-types", async (req, res) => {
+    try {
+      const interactionTypes = await storage.getAllInteractionTypes();
+      res.json(interactionTypes);
+    } catch (error) {
+      console.error("Error fetching interaction types:", error);
+      res.status(500).json({ error: "Failed to fetch interaction types" });
+    }
+  });
+
+  app.get("/api/interaction-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const interactionType = await storage.getInteractionTypeById(id);
+
+      if (!interactionType) {
+        return res.status(404).json({ error: "Interaction type not found" });
+      }
+
+      res.json(interactionType);
+    } catch (error) {
+      console.error("Error fetching interaction type:", error);
+      res.status(500).json({ error: "Failed to fetch interaction type" });
+    }
+  });
+
+  app.post("/api/interaction-types", async (req, res) => {
+    try {
+      const validatedData = insertInteractionTypeSchema.parse(req.body);
+      const interactionType = await storage.createInteractionType(validatedData);
+      res.status(201).json(interactionType);
+    } catch (error) {
+      console.error("Error creating interaction type:", error);
+      res.status(400).json({ error: "Failed to create interaction type" });
+    }
+  });
+
+  app.patch("/api/interaction-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const validatedData = insertInteractionTypeSchema.partial().parse(req.body);
+      const interactionType = await storage.updateInteractionType(id, validatedData);
+
+      if (!interactionType) {
+        return res.status(404).json({ error: "Interaction type not found" });
+      }
+
+      res.json(interactionType);
+    } catch (error) {
+      console.error("Error updating interaction type:", error);
+      res.status(400).json({ error: "Failed to update interaction type" });
+    }
+  });
+
+  app.delete("/api/interaction-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteInteractionType(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting interaction type:", error);
+      res.status(500).json({ error: "Failed to delete interaction type" });
     }
   });
 
