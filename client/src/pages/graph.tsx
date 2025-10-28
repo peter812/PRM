@@ -470,6 +470,11 @@ export default function Graph() {
 
         // Physics simulation
         const simulate = () => {
+          // Guard: Stop simulation if app or container has been destroyed
+          if (!appRef.current || !containerRef.current || nodesRef.current.size === 0) {
+            return;
+          }
+          
           const nodes = Array.from(nodesRef.current.values());
           const damping = 0.9;
           const repulsion = 3000;
@@ -668,6 +673,11 @@ export default function Graph() {
 
     return () => {
       cancelAnimationFrame(animationRef.current);
+      
+      // Clear refs to prevent race conditions
+      nodesRef.current.clear();
+      edgesRef.current = [];
+      containerRef.current = null;
       
       // Remove wheel event listener
       if (appRef.current?.canvas && wheelHandlerRef.current) {
