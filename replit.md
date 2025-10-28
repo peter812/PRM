@@ -35,6 +35,32 @@ The application uses an **external PostgreSQL database** (pbe.im:3306) for all p
 -   **Deletion Features:** Comprehensive delete functionality for people and groups, including confirmation dialogs, cascade deletion of related data (notes, interactions, relationships), and toast notifications.
 -   **API Documentation:** Collapsible, interactive API documentation with example code and copy functionality.
 
+### Interactions System Architecture
+
+The application uses a flexible interactions system that supports multi-person and group contexts:
+
+**Database Schema:**
+- `interactions`: Stores interactions with `peopleIds` array (minimum 2 required), optional `groupIds` array, type, date, description, and optional `imageUrl`
+- Interactions can involve multiple people (e.g., team meetings, group calls) and link to zero or more groups
+- Image attachments are stored in S3-compatible object storage with automatic CDN cleanup on deletion
+
+**Key Features:**
+- **Multi-Person Support:** Each interaction requires at least 2 people, enabling tracking of group meetings, calls, and collaborative events
+- **Optional Group Association:** Interactions can be linked to one or more groups, making them visible on group profile pages
+- **Image Attachments:** Upload and attach images to interactions with automatic S3 storage and cleanup on deletion
+- **Cascade Deletion:** Removing a person or group automatically removes them from all associated interactions
+- **Smart Cache Invalidation:** When an interaction is deleted, all affected person and group queries are invalidated to ensure UI consistency
+
+**UI Components:**
+- `AddInteractionDialog`: Multi-select interface for choosing people (minimum 2) and optional groups, with image upload support
+- `InteractionsTab`: Displays interactions with all involved people and groups, used on both person and group profile pages
+- Timeline visualization with type-specific icons and color coding for different interaction types (meeting, call, email, other)
+
+**API Endpoints:**
+- `POST /api/interactions`: Create interaction with multiple people, optional groups, and optional image
+- `DELETE /api/interactions/:id`: Delete interaction and associated S3 image if present
+- Interactions are included in both person and group detail endpoints
+
 ### Relationship System Architecture
 
 The application uses a unified relationship system with the following components:
