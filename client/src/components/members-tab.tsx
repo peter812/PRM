@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { Person } from "@shared/schema";
+import { Link } from "wouter";
 
 interface MembersTabProps {
   members: Person[];
@@ -149,33 +150,35 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                   data-testid={`card-member-${member.id}`}
                 >
                   <div className="flex items-center gap-4">
-                    <Avatar className="w-12 h-12">
-                      {member.imageUrl && (
-                        <AvatarImage
-                          src={member.imageUrl}
-                          alt={`${member.firstName} ${member.lastName}`}
-                        />
-                      )}
-                      <AvatarFallback>
-                        {getInitials(member.firstName, member.lastName)}
-                      </AvatarFallback>
-                    </Avatar>
+                    <Link href={`/person/${member.id}`} className="flex items-center gap-4 flex-1 min-w-0">
+                      <Avatar className="w-12 h-12">
+                        {member.imageUrl && (
+                          <AvatarImage
+                            src={member.imageUrl}
+                            alt={`${member.firstName} ${member.lastName}`}
+                          />
+                        )}
+                        <AvatarFallback>
+                          {getInitials(member.firstName, member.lastName)}
+                        </AvatarFallback>
+                      </Avatar>
 
-                    <div className="flex-1 min-w-0">
-                      <h3
-                        className="text-lg font-medium"
-                        data-testid={`text-member-name-${member.id}`}
-                      >
-                        {member.firstName} {member.lastName}
-                      </h3>
-                      {(member.company || member.title) && (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          {member.title && <span>{member.title}</span>}
-                          {member.title && member.company && <span>•</span>}
-                          {member.company && <span>{member.company}</span>}
-                        </div>
-                      )}
-                    </div>
+                      <div className="flex-1 min-w-0">
+                        <h3
+                          className="text-lg font-medium hover:underline cursor-pointer"
+                          data-testid={`text-member-name-${member.id}`}
+                        >
+                          {member.firstName} {member.lastName}
+                        </h3>
+                        {(member.company || member.title) && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            {member.title && <span>{member.title}</span>}
+                            {member.title && member.company && <span>•</span>}
+                            {member.company && <span>{member.company}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </Link>
 
                     <Button
                       variant="ghost"
@@ -199,35 +202,37 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                   className="p-6 hover-elevate transition-all relative"
                   data-testid={`card-member-${member.id}`}
                 >
-                  <div className="flex flex-col items-center text-center">
-                    <Avatar className="w-20 h-20 mb-4">
-                      {member.imageUrl && (
-                        <AvatarImage
-                          src={member.imageUrl}
-                          alt={`${member.firstName} ${member.lastName}`}
-                        />
+                  <Link href={`/person/${member.id}`}>
+                    <div className="flex flex-col items-center text-center cursor-pointer">
+                      <Avatar className="w-20 h-20 mb-4">
+                        {member.imageUrl && (
+                          <AvatarImage
+                            src={member.imageUrl}
+                            alt={`${member.firstName} ${member.lastName}`}
+                          />
+                        )}
+                        <AvatarFallback className="text-xl">
+                          {getInitials(member.firstName, member.lastName)}
+                        </AvatarFallback>
+                      </Avatar>
+
+                      <h3
+                        className="text-lg font-semibold mb-1 hover:underline"
+                        data-testid={`text-member-name-${member.id}`}
+                      >
+                        {member.firstName} {member.lastName}
+                      </h3>
+
+                      {member.company && (
+                        <p className="text-sm text-muted-foreground mb-1">
+                          {member.company}
+                        </p>
                       )}
-                      <AvatarFallback className="text-xl">
-                        {getInitials(member.firstName, member.lastName)}
-                      </AvatarFallback>
-                    </Avatar>
-
-                    <h3
-                      className="text-lg font-semibold mb-1"
-                      data-testid={`text-member-name-${member.id}`}
-                    >
-                      {member.firstName} {member.lastName}
-                    </h3>
-
-                    {member.company && (
-                      <p className="text-sm text-muted-foreground mb-1">
-                        {member.company}
-                      </p>
-                    )}
-                    {member.title && (
-                      <p className="text-xs text-muted-foreground">{member.title}</p>
-                    )}
-                  </div>
+                      {member.title && (
+                        <p className="text-xs text-muted-foreground">{member.title}</p>
+                      )}
+                    </div>
+                  </Link>
 
                   <Button
                     variant="ghost"
