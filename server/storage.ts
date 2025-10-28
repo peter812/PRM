@@ -9,6 +9,7 @@ import {
   users,
   groups,
   groupNotes,
+  apiKeys,
   type Person,
   type InsertPerson,
   type Note,
@@ -30,6 +31,8 @@ import {
   type GroupNote,
   type InsertGroupNote,
   type GroupWithNotes,
+  type ApiKey,
+  type InsertApiKey,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -89,6 +92,13 @@ export interface IStorage {
   getUserCount(): Promise<number>;
   updateUserPerson(userId: number, person: Partial<InsertPerson>): Promise<void>;
   getMePerson(userId: number): Promise<PersonWithRelations | undefined>;
+
+  // API Key operations
+  getAllApiKeys(userId: number): Promise<ApiKey[]>;
+  getApiKeyByKey(key: string): Promise<ApiKey | undefined>;
+  createApiKey(apiKey: InsertApiKey): Promise<ApiKey>;
+  deleteApiKey(id: string): Promise<void>;
+  updateApiKeyLastUsed(id: string): Promise<void>;
 
   // Group operations
   getAllGroups(searchQuery?: string): Promise<Group[]>;
@@ -670,6 +680,41 @@ export class DatabaseStorage implements IStorage {
       groups: personGroups,
       relationships: allRelationships,
     };
+  }
+
+  // API Key operations
+  async getAllApiKeys(userId: number): Promise<ApiKey[]> {
+    return await db
+      .select()
+      .from(apiKeys)
+      .where(eq(apiKeys.userId, userId));
+  }
+
+  async getApiKeyByKey(key: string): Promise<ApiKey | undefined> {
+    const [apiKey] = await db
+      .select()
+      .from(apiKeys)
+      .where(eq(apiKeys.key, key));
+    return apiKey || undefined;
+  }
+
+  async createApiKey(insertApiKey: InsertApiKey): Promise<ApiKey> {
+    const [apiKey] = await db
+      .insert(apiKeys)
+      .values(insertApiKey)
+      .returning();
+    return apiKey;
+  }
+
+  async deleteApiKey(id: string): Promise<void> {
+    await db.delete(apiKeys).where(eq(apiKeys.id, id));
+  }
+
+  async updateApiKeyLastUsed(id: string): Promise<void> {
+    await db
+      .update(apiKeys)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(apiKeys.id, id));
   }
 
   // Group operations
