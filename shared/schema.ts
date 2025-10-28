@@ -53,6 +53,7 @@ export const relationshipTypes = pgTable("relationship_types", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   color: text("color").notNull(), // hex color code
+  value: integer("value").notNull().default(50), // 1-255
   notes: text("notes"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -180,10 +181,14 @@ export const insertGroupNoteSchema = createInsertSchema(groupNotes).omit({
   createdAt: true,
 });
 
-export const insertRelationshipTypeSchema = createInsertSchema(relationshipTypes).omit({
-  id: true,
-  createdAt: true,
-});
+export const insertRelationshipTypeSchema = createInsertSchema(relationshipTypes)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    value: z.number().int().min(1).max(255),
+  });
 
 // Types
 export type User = typeof users.$inferSelect;
