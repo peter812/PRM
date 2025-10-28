@@ -271,7 +271,7 @@ export class DatabaseStorage implements IStorage {
     const personInteractions = await db
       .select()
       .from(interactions)
-      .where(eq(interactions.personId, id));
+      .where(sql`${id} = ANY(${interactions.peopleIds})`);
 
     // Get relationships where this person is the "from" person
     const relationshipsFrom = await db
@@ -345,7 +345,63 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deletePerson(id: string): Promise<void> {
+    // Remove person from all interactions
+    await this.removePersonFromInteractions(id);
+    
+    // Remove person from all groups
+    const allGroups = await db.select().from(groups);
+    for (const group of allGroups) {
+      if (group.members && group.members.includes(id)) {
+        const updatedMembers = group.members.filter((memberId) => memberId !== id);
+        await db
+          .update(groups)
+          .set({ members: updatedMembers })
+          .where(eq(groups.id, group.id));
+      }
+    }
+    
+    // Delete person (cascade will handle notes, relationships)
     await db.delete(people).where(eq(people.id, id));
+  }
+
+  private async removePersonFromInteractions(personId: string): Promise<void> {
+    // Get all interactions that include this person
+    const affectedInteractions = await db
+      .select()
+      .from(interactions)
+      .where(sql`${personId} = ANY(${interactions.peopleIds})`);
+
+    for (const interaction of affectedInteractions) {
+      const updatedPeopleIds = interaction.peopleIds.filter((id) => id !== personId);
+      
+      // If less than 2 people remain, delete the interaction
+      if (updatedPeopleIds.length < 2) {
+        await db.delete(interactions).where(eq(interactions.id, interaction.id));
+      } else {
+        // Otherwise update with removed person
+        await db
+          .update(interactions)
+          .set({ peopleIds: updatedPeopleIds })
+          .where(eq(interactions.id, interaction.id));
+      }
+    }
+  }
+
+  private async removeGroupFromInteractions(groupId: string): Promise<void> {
+    // Get all interactions that include this group
+    const affectedInteractions = await db
+      .select()
+      .from(interactions)
+      .where(sql`${groupId} = ANY(${interactions.groupIds})`);
+
+    for (const interaction of affectedInteractions) {
+      const updatedGroupIds = (interaction.groupIds || []).filter((id) => id !== groupId);
+      
+      await db
+        .update(interactions)
+        .set({ groupIds: updatedGroupIds })
+        .where(eq(interactions.id, interaction.id));
+    }
   }
 
   // Note operations
@@ -489,7 +545,7 @@ export class DatabaseStorage implements IStorage {
     const personInteractions = await db
       .select()
       .from(interactions)
-      .where(eq(interactions.personId, person.id));
+      .where(sql`${person.id} = ANY(${interactions.peopleIds})`);
 
     // Get relationships (bidirectional)
     const relationshipsFrom = await db
@@ -625,6 +681,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteGroup(id: string): Promise<void> {
+    // Remove group from all interactions
+    await this.removeGroupFromInteractions(id);
+    
+    // Delete group (cascade will handle group notes)
     await db.delete(groups).where(eq(groups.id, id));
   }
 
