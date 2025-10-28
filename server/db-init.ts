@@ -62,21 +62,21 @@ async function seedRelationshipTypes(): Promise<void> {
   
   try {
     const defaultTypes = [
-      { name: 'Acquaintance', color: '#10b981', notes: 'Someone you know casually' },
-      { name: 'Friend', color: '#3b82f6', notes: 'A good friend' },
-      { name: 'Good Friend', color: '#8b5cf6', notes: 'A close friend' },
-      { name: 'Best Friend', color: '#ec4899', notes: 'Your best friend' },
-      { name: 'Colleague', color: '#f59e0b', notes: 'Someone you work with' },
-      { name: 'Family', color: '#ef4444', notes: 'Family member' },
-      { name: 'Partner', color: '#06b6d4', notes: 'Romantic partner' },
+      { name: 'Acquaintance', color: '#10b981', value: 10, notes: 'Someone you know casually' },
+      { name: 'Friend', color: '#3b82f6', value: 40, notes: 'A good friend' },
+      { name: 'Good Friend', color: '#8b5cf6', value: 60, notes: 'A close friend' },
+      { name: 'Best Friend', color: '#ec4899', value: 80, notes: 'Your best friend' },
+      { name: 'Colleague', color: '#f59e0b', value: 30, notes: 'Someone you work with' },
+      { name: 'Family', color: '#ef4444', value: 90, notes: 'Family member' },
+      { name: 'Partner', color: '#06b6d4', value: 100, notes: 'Romantic partner' },
     ];
     
     for (const type of defaultTypes) {
       await pool.query(
-        `INSERT INTO relationship_types (name, color, notes) 
-         VALUES ($1, $2, $3)
+        `INSERT INTO relationship_types (name, color, value, notes) 
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT DO NOTHING`,
-        [type.name, type.color, type.notes]
+        [type.name, type.color, type.value, type.notes]
       );
     }
     
