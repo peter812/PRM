@@ -277,6 +277,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const user = await storage.createUser(validatedData);
       
+      // Create a person entry for the new user
+      const [firstName, ...lastNameParts] = (user.name || user.username).split(' ');
+      const lastName = lastNameParts.join(' ') || '';
+      
+      await storage.createPerson({
+        userId: user.id,
+        firstName: firstName,
+        lastName: lastName,
+        email: '',
+        phone: null,
+        company: null,
+        title: null,
+        tags: [],
+        imageUrl: null,
+      });
+      
       // Log the user in automatically
       req.login(user, (err) => {
         if (err) {
