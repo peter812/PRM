@@ -27,6 +27,9 @@ const scryptAsync = promisify(scrypt);
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Flag to track if user creation is allowed (only after database reset)
+let isUserCreationAllowed = false;
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Image upload endpoint
   app.post("/api/upload-image", upload.single("image"), async (req, res) => {
@@ -668,6 +671,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Reset the database using the authenticated user's info
       await resetDatabase(userData, includeExamples === true);
 
+      // Enable user creation after reset
+      isUserCreationAllowed = true;
+
       // Destroy the current session since the user ID will change
       req.logout((err) => {
         if (err) {
@@ -695,7 +701,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.set('Expires', '0');
       
       const userCount = await storage.getUserCount();
-      res.json({ isSetupNeeded: userCount === 0 });
+      
+      // Setup is needed if:
+      // 1. No users exist (first time setup) OR
+      // 2. User creation is explicitly allowed (after database reset)
+      const isSetupNeeded = userCount === 0 || isUserCreationAllowed;
+      
+      res.json({ isSetupNeeded });
     } catch (error) {
       console.error("Error checking setup status:", error);
       res.status(500).json({ error: "Failed to check setup status" });
@@ -705,8 +717,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/setup/initialize", async (req, res) => {
     try {
       const userCount = await storage.getUserCount();
-      if (userCount > 0) {
-        return res.status(400).json({ error: "Setup already completed" });
+      
+      // Allow user creation only if:
+      // 1. No users exist (first time setup) OR
+      // 2. User creation is explicitly allowed (after database reset)
+      if (userCount > 0 && !isUserCreationAllowed) {
+        return res.status(400).json({ error: "User creation is disabled. Please use the existing account." });
       }
 
       const validatedData = insertUserSchema.parse({
@@ -733,6 +749,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         tags: [],
         imageUrl: null,
       });
+      
+      // Disable user creation now that an account has been created
+      isUserCreationAllowed = false;
       
       // Log the user in automatically
       req.login(user, (err) => {

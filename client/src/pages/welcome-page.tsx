@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Users, Network, Search } from "lucide-react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Redirect } from "wouter";
@@ -24,6 +24,12 @@ type SetupFormData = z.infer<typeof setupSchema>;
 export default function WelcomePage() {
   const { toast } = useToast();
   const [setupComplete, setSetupComplete] = useState(false);
+
+  // Check if user is already authenticated - redirect to /me if so
+  const { data: currentUser } = useQuery({
+    queryKey: ["/api/user"],
+    retry: false,
+  });
 
   const form = useForm<SetupFormData>({
     resolver: zodResolver(setupSchema),
@@ -57,8 +63,14 @@ export default function WelcomePage() {
     },
   });
 
+  // If user is already authenticated, redirect to /me
+  if (currentUser) {
+    return <Redirect to="/me" />;
+  }
+
+  // If setup is complete, redirect to /me
   if (setupComplete) {
-    return <Redirect to="/" />;
+    return <Redirect to="/me" />;
   }
 
   const handleSubmit = (data: SetupFormData) => {
