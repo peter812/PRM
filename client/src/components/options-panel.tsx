@@ -24,6 +24,8 @@ interface OptionsPanelProps {
   onCollapsedChange: (collapsed: boolean) => void;
   showGroups: boolean;
   onShowGroupsChange: (show: boolean) => void;
+  disablePersonLines: boolean;
+  onDisablePersonLinesChange: (disable: boolean) => void;
   hideOrphans: boolean;
   onHideOrphansChange: (hide: boolean) => void;
   anonymizePeople: boolean;
@@ -48,6 +50,8 @@ export function OptionsPanel({
   onCollapsedChange,
   showGroups,
   onShowGroupsChange,
+  disablePersonLines,
+  onDisablePersonLinesChange,
   hideOrphans,
   onHideOrphansChange,
   anonymizePeople,
@@ -116,6 +120,24 @@ export function OptionsPanel({
                 checked={showGroups}
                 onCheckedChange={onShowGroupsChange}
                 data-testid="switch-show-groups"
+              />
+            </div>
+          </div>
+
+          {/* Disable Person to Person Lines Toggle */}
+          <div className="space-y-3">
+            <Label htmlFor="disable-person-lines" className="text-base font-medium">
+              Disable Person Lines
+            </Label>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                Hide person-to-person relationships
+              </span>
+              <Switch
+                id="disable-person-lines"
+                checked={disablePersonLines}
+                onCheckedChange={onDisablePersonLinesChange}
+                data-testid="switch-disable-person-lines"
               />
             </div>
           </div>
@@ -349,6 +371,24 @@ export function OptionsPanel({
                     checked={showGroups}
                     onCheckedChange={onShowGroupsChange}
                     data-testid="switch-show-groups-mobile"
+                  />
+                </div>
+              </div>
+
+              {/* Disable Person to Person Lines Toggle */}
+              <div className="space-y-3">
+                <Label htmlFor="disable-person-lines-mobile" className="text-base font-medium">
+                  Disable Person Lines
+                </Label>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">
+                    Hide person-to-person relationships
+                  </span>
+                  <Switch
+                    id="disable-person-lines-mobile"
+                    checked={disablePersonLines}
+                    onCheckedChange={onDisablePersonLinesChange}
+                    data-testid="switch-disable-person-lines-mobile"
                   />
                 </div>
               </div>

@@ -84,6 +84,7 @@ export default function Graph() {
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showGroups, setShowGroups] = useState(true);
+  const [disablePersonLines, setDisablePersonLines] = useState(false);
   const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
   const [isOptionsPanelOpen, setIsOptionsPanelOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -368,31 +369,33 @@ export default function Graph() {
         // Create edges
         const edges: Edge[] = [];
 
-        // Person-to-person relationship edges
-        relationships.forEach((rel) => {
-          const fromNode = nodes.get(rel.fromPersonId);
-          const toNode = nodes.get(rel.toPersonId);
+        // Person-to-person relationship edges (only if not disabled)
+        if (!disablePersonLines) {
+          relationships.forEach((rel) => {
+            const fromNode = nodes.get(rel.fromPersonId);
+            const toNode = nodes.get(rel.toPersonId);
 
-          if (fromNode && toNode) {
-            const graphics = new Graphics();
-            
-            // Use relationship type color if available, otherwise default to gray
-            const edgeColor = rel.typeColor ? hexToNumber(rel.typeColor) : defaultRelationshipColor;
-            
-            graphics.moveTo(fromNode.x, fromNode.y);
-            graphics.lineTo(toNode.x, toNode.y);
-            graphics.stroke({ color: edgeColor, width: 2, alpha: personLineOpacity });
+            if (fromNode && toNode) {
+              const graphics = new Graphics();
+              
+              // Use relationship type color if available, otherwise default to gray
+              const edgeColor = rel.typeColor ? hexToNumber(rel.typeColor) : defaultRelationshipColor;
+              
+              graphics.moveTo(fromNode.x, fromNode.y);
+              graphics.lineTo(toNode.x, toNode.y);
+              graphics.stroke({ color: edgeColor, width: 2, alpha: personLineOpacity });
 
-            container.addChildAt(graphics, 0); // Add edges behind nodes
-            edges.push({
-              from: rel.fromPersonId,
-              to: rel.toPersonId,
-              type: 'relationship',
-              color: edgeColor,
-              graphics,
-            });
-          }
-        });
+              container.addChildAt(graphics, 0); // Add edges behind nodes
+              edges.push({
+                from: rel.fromPersonId,
+                to: rel.toPersonId,
+                type: 'relationship',
+                color: edgeColor,
+                graphics,
+              });
+            }
+          });
+        }
 
         // Group-to-person edges
         if (showGroups && groups.length > 0) {
@@ -736,7 +739,7 @@ export default function Graph() {
         }
       }
     };
-  }, [people, groups, navigate, showGroups, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull, anonymizePeople, meData?.id]);
+  }, [people, groups, navigate, showGroups, disablePersonLines, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull, anonymizePeople, meData?.id]);
 
   return (
     <div className="h-full flex flex-col">
@@ -784,6 +787,8 @@ export default function Graph() {
               onCollapsedChange={setIsSidebarCollapsed}
               showGroups={showGroups}
               onShowGroupsChange={setShowGroups}
+              disablePersonLines={disablePersonLines}
+              onDisablePersonLinesChange={setDisablePersonLines}
               hideOrphans={hideOrphans}
               onHideOrphansChange={setHideOrphans}
               anonymizePeople={anonymizePeople}
