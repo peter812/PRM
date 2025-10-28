@@ -1,6 +1,9 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { db } from "./db";
+import { interactions } from "@shared/schema";
+import { eq } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -550,6 +553,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/interactions/:id", async (req, res) => {
     try {
       const id = req.params.id;
+      
+      // Get interaction to check for image
+      const [interaction] = await db.select().from(interactions).where(eq(interactions.id, id));
+      
+      // Delete image from S3 if it exists
+      if (interaction?.imageUrl) {
+        try {
+          await deleteImageFromS3(interaction.imageUrl);
+        } catch (error) {
+          console.error("Error deleting interaction image from S3:", error);
+          // Continue with deletion even if S3 deletion fails
+        }
+      }
+      
       await storage.deleteInteraction(id);
       res.json({ success: true });
     } catch (error) {
