@@ -20,7 +20,31 @@ The backend is an Express.js application written in TypeScript, providing a REST
 
 ### Data Storage Solutions
 
-The application uses an **external PostgreSQL database** (pbe.im:3306) for all persistent data, configured via the `DATABASE_URL` environment variable. Drizzle ORM provides type-safe database queries and migrations, following a schema-first approach. Key tables include `users`, `people`, `notes`, `interactions`, `relationships`, `relationship_types`, `groups`, `group_notes`, and `session`. Foreign key relationships with cascade deletion and array type support are utilized. Drizzle-Zod is used for runtime data validation, sharing schema definitions between frontend and backend. Session-based authentication is implemented using `express-session` with a PostgreSQL session store.
+The application uses an **external PostgreSQL database** (pbe.im:3306) for all persistent data, configured via the `DATABASE_URL` environment variable. Drizzle ORM provides type-safe database queries and migrations, following a schema-first approach. Key tables include `users`, `people`, `notes`, `interactions`, `relationships`, `relationship_types`, `groups`, `group_notes`, `api_keys`, and `session`. Foreign key relationships with cascade deletion and array type support are utilized. Drizzle-Zod is used for runtime data validation, sharing schema definitions between frontend and backend. Session-based authentication is implemented using `express-session` with a PostgreSQL session store.
+
+### Authentication & API Access
+
+The application supports two types of API access:
+
+**Internal (Web UI):**
+- Session-based authentication using `express-session` with PostgreSQL session store
+- Automatic token management for seamless user experience
+- User creation is disabled by default after initial setup - can only be enabled after database reset
+
+**External (API Keys):**
+- API keys can be generated from Settings > API Settings page
+- Keys are stored as hashed values (similar to passwords) for security
+- Each key has a user-friendly name and tracks last usage timestamp
+- Raw API key is shown only once during creation (never stored or displayed again)
+- Keys can be deleted at any time from the API Settings page
+- **IMPORTANT:** The `api_keys` table is NEVER included in data exports for security
+
+**User Creation Flow:**
+- New user creation is disabled by default after initial setup
+- User creation is only enabled after a database reset operation
+- Welcome page (`/welcome`) redirects authenticated users to `/me`
+- After successful account creation, users are redirected to `/me` instead of root
+- Database reset flow: reset → enable user creation → redirect to `/welcome` for new account creation
 
 ### Key Features & Design Decisions
 

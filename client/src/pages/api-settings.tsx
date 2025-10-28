@@ -49,10 +49,7 @@ export default function ApiSettingsPage() {
 
   const createKeyMutation = useMutation({
     mutationFn: async (name: string) => {
-      const response = await apiRequest("/api/api-keys", {
-        method: "POST",
-        body: JSON.stringify({ name }),
-      });
+      const response = await apiRequest("POST", "/api/api-keys", { name });
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.error || "Failed to create API key");
@@ -80,9 +77,7 @@ export default function ApiSettingsPage() {
 
   const deleteKeyMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await apiRequest(`/api/api-keys/${id}`, {
-        method: "DELETE",
-      });
+      const response = await apiRequest("DELETE", `/api/api-keys/${id}`);
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.error || "Failed to delete API key");
