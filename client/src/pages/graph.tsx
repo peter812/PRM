@@ -97,9 +97,21 @@ export default function Graph() {
     queryKey: ["/api/graph"],
   });
 
+  const { data: meData } = useQuery<{ id: string }>({
+    queryKey: ["/api/me"],
+    select: (data) => ({ id: data.id }),
+  });
+
   const allPeople = graphData?.people || [];
   const groups = graphData?.groups || [];
   const relationships = graphData?.relationships || [];
+
+  // Set ME person as default highlight when data loads
+  useEffect(() => {
+    if (meData?.id && highlightedPersonId === null) {
+      setHighlightedPersonId(meData.id);
+    }
+  }, [meData?.id]);
 
   // Filter out orphans if hideOrphans is enabled
   const people = hideOrphans 
