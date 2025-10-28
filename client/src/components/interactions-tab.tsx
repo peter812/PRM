@@ -1,12 +1,13 @@
-import { useMutation } from "@tanstack/react-query";
-import { Plus, Trash2, Phone, Mail, Video, Calendar } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Plus, Trash2, Phone, Mail, Video, Calendar, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { Interaction } from "@shared/schema";
+import type { Interaction, Person, Group } from "@shared/schema";
 import { format } from "date-fns";
+import { Link } from "wouter";
 
 interface InteractionsTabProps {
   interactions: Interaction[];
@@ -20,6 +21,14 @@ export function InteractionsTab({
   onAddInteraction,
 }: InteractionsTabProps) {
   const { toast } = useToast();
+
+  const { data: allPeople = [] } = useQuery<Person[]>({
+    queryKey: ["/api/people"],
+  });
+
+  const { data: allGroups = [] } = useQuery<Group[]>({
+    queryKey: ["/api/groups"],
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async (interactionId: string) => {
@@ -71,6 +80,19 @@ export function InteractionsTab({
     }
   };
 
+  const getPeopleForInteraction = (interaction: Interaction) => {
+    return interaction.peopleIds
+      .map((id) => allPeople.find((p) => p.id === id))
+      .filter((p): p is Person => !!p);
+  };
+
+  const getGroupsForInteraction = (interaction: Interaction) => {
+    if (!interaction.groupIds) return [];
+    return interaction.groupIds
+      .map((id) => allGroups.find((g) => g.id === id))
+      .filter((g): g is Group => !!g);
+  };
+
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
@@ -87,12 +109,15 @@ export function InteractionsTab({
           <div className="space-y-6">
             {sortedInteractions.map((interaction) => {
               const TypeIcon = getTypeIcon(interaction.type);
+              const people = getPeopleForInteraction(interaction);
+              const groups = getGroupsForInteraction(interaction);
+
               return (
                 <div key={interaction.id} className="relative pl-8" data-testid={`card-interaction-${interaction.id}`}>
                   <div className="absolute left-0 top-1.5 w-4 h-4 rounded-full bg-primary border-4 border-background" />
                   <Card className="p-4">
                     <div className="flex items-start justify-between gap-4 mb-3">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Badge
                           className={`${getTypeBadgeColor(interaction.type)} border capitalize`}
                         >
@@ -114,9 +139,46 @@ export function InteractionsTab({
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
+
+                    {people.length > 0 && (
+                      <div className="mb-3 flex items-center gap-2 flex-wrap">
+                        <Users className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">With:</span>
+                        {people.map((person, idx) => (
+                          <span key={person.id} className="text-sm">
+                            <Link href={`/people/${person.id}`} className="text-primary hover:underline">
+                              {person.firstName} {person.lastName}
+                            </Link>
+                            {idx < people.length - 1 && <span className="text-muted-foreground">, </span>}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {groups.length > 0 && (
+                      <div className="mb-3 flex items-center gap-2 flex-wrap">
+                        <span className="text-sm text-muted-foreground">Groups:</span>
+                        {groups.map((group) => (
+                          <Link key={group.id} href={`/groups/${group.id}`}>
+                            <Badge
+                              variant="outline"
+                              className="cursor-pointer"
+                              style={{
+                                borderColor: group.color || "#888",
+                                color: group.color || "#888",
+                              }}
+                            >
+                              {group.name}
+                            </Badge>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+
                     <p className="text-base whitespace-pre-wrap" data-testid={`text-interaction-description-${interaction.id}`}>
                       {interaction.description}
                     </p>
+                    
                     {interaction.imageUrl && (
                       <div className="mt-4">
                         <img
