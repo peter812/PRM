@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
 import {
   Dialog,
   DialogContent,
@@ -11,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Upload, FileText, AlertCircle, CheckCircle2, Download, Trash2 } from "lucide-react";
+import { Upload, FileText, AlertCircle, CheckCircle2, Download, Trash2, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -21,7 +22,7 @@ export default function AppOptionsPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedXmlFile, setSelectedXmlFile] = useState<File | null>(null);
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
-  const [resetConfirmName, setResetConfirmName] = useState("");
+  const [confirmSliderValue, setConfirmSliderValue] = useState([0]);
   const [includeExamples, setIncludeExamples] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -217,7 +218,7 @@ export default function AppOptionsPage() {
 
       // Close dialog and reset form
       setIsResetDialogOpen(false);
-      setResetConfirmName("");
+      setConfirmSliderValue([0]);
       setIncludeExamples(false);
 
       // Invalidate all queries to refresh data
@@ -248,17 +249,17 @@ export default function AppOptionsPage() {
       return;
     }
 
-    if (resetConfirmName.trim().toLowerCase() !== userName.trim().toLowerCase()) {
+    if (confirmSliderValue[0] < 100) {
       toast({
-        title: "Confirmation Failed",
-        description: "Please enter your name exactly as shown",
+        title: "Confirmation Required",
+        description: "Please slide the confirmation slider all the way to the right",
         variant: "destructive",
       });
       return;
     }
 
     resetDatabaseMutation.mutate({
-      userName: resetConfirmName,
+      userName,
       includeExamples,
     });
   };
@@ -542,28 +543,50 @@ export default function AppOptionsPage() {
         </CardContent>
       </Card>
 
-      <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
+      <Dialog open={isResetDialogOpen} onOpenChange={(open) => {
+        setIsResetDialogOpen(open);
+        if (!open) {
+          setConfirmSliderValue([0]);
+        }
+      }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="text-destructive">Confirm Database Reset</DialogTitle>
             <DialogDescription>
-              This will permanently delete all your data. Type your name to confirm.
+              This will permanently delete all your data. Slide to confirm.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="confirm-name">
-                Type <span className="font-semibold">{(meData as any)?.name || "your name"}</span> to confirm
-              </Label>
-              <Input
-                id="confirm-name"
-                value={resetConfirmName}
-                onChange={(e) => setResetConfirmName(e.target.value)}
-                placeholder="Enter your name"
-                disabled={resetDatabaseMutation.isPending}
-                data-testid="input-confirm-name"
-              />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">
+                  Slide to confirm
+                </Label>
+                <span className="text-xs text-muted-foreground">
+                  {confirmSliderValue[0]}%
+                </span>
+              </div>
+              <div className="relative">
+                <Slider
+                  value={confirmSliderValue}
+                  onValueChange={setConfirmSliderValue}
+                  max={100}
+                  step={1}
+                  disabled={resetDatabaseMutation.isPending}
+                  data-testid="slider-confirm-reset"
+                  className="w-full"
+                />
+                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
+                  <span>Cancel</span>
+                  <div className="flex items-center gap-1">
+                    <span className={confirmSliderValue[0] === 100 ? "text-destructive font-medium" : ""}>
+                      Confirm Reset
+                    </span>
+                    <ChevronRight className="h-3 w-3" />
+                  </div>
+                </div>
+              </div>
             </div>
 
             {includeExamples && (
@@ -582,7 +605,7 @@ export default function AppOptionsPage() {
               variant="outline"
               onClick={() => {
                 setIsResetDialogOpen(false);
-                setResetConfirmName("");
+                setConfirmSliderValue([0]);
               }}
               disabled={resetDatabaseMutation.isPending}
               data-testid="button-cancel-reset"
@@ -594,8 +617,7 @@ export default function AppOptionsPage() {
               onClick={handleResetDatabase}
               disabled={
                 resetDatabaseMutation.isPending ||
-                !resetConfirmName ||
-                resetConfirmName.trim().toLowerCase() !== ((meData as any)?.name || "").trim().toLowerCase()
+                confirmSliderValue[0] < 100
               }
               data-testid="button-confirm-reset"
             >
