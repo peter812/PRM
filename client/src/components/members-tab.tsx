@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, X, LayoutList, LayoutGrid } from "lucide-react";
+import { Plus, X, LayoutList, LayoutGrid, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { Person } from "@shared/schema";
@@ -286,11 +287,13 @@ function AddMembersDialog({
   isPending,
 }: AddMembersDialogProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const handleSubmit = () => {
     if (selectedIds.length > 0) {
       onAddMembers(selectedIds);
       setSelectedIds([]);
+      setSearchQuery("");
     }
   };
 
@@ -304,6 +307,18 @@ function AddMembersDialog({
     return `${firstName[0]}${lastName[0]}`.toUpperCase();
   };
 
+  // Filter available people based on search query
+  const filteredPeople = availablePeople.filter((person) => {
+    const query = searchQuery.toLowerCase();
+    return (
+      person.firstName.toLowerCase().includes(query) ||
+      person.lastName.toLowerCase().includes(query) ||
+      person.email?.toLowerCase().includes(query) ||
+      person.company?.toLowerCase().includes(query) ||
+      person.tags?.some((tag) => tag.toLowerCase().includes(query))
+    );
+  });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
@@ -314,9 +329,20 @@ function AddMembersDialog({
           </DialogDescription>
         </DialogHeader>
 
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search people by name, company, email, or tags..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9"
+            data-testid="input-search-members"
+          />
+        </div>
+
         <ScrollArea className="h-96 border rounded-md p-3">
           <div className="space-y-2">
-            {availablePeople.map((person) => {
+            {filteredPeople.map((person) => {
               const isSelected = selectedIds.includes(person.id);
               return (
                 <div
@@ -359,6 +385,11 @@ function AddMembersDialog({
             {availablePeople.length === 0 && (
               <p className="text-sm text-muted-foreground text-center py-8">
                 All people are already members of this group
+              </p>
+            )}
+            {availablePeople.length > 0 && filteredPeople.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-8">
+                No people found matching "{searchQuery}"
               </p>
             )}
           </div>
