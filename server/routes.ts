@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import {
   insertPersonSchema,
@@ -246,6 +246,400 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error importing CSV:", error);
       res.status(500).json({ error: "Failed to import CSV" });
+    }
+  });
+
+  // XML Export endpoint
+  app.get("/api/export-xml", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      // Fetch all data from database
+      const [user] = await storage.getAllUsers();
+      const people = await storage.getAllPeople();
+      const relationshipTypes = await storage.getAllRelationshipTypes();
+      const relationships = await storage.getAllRelationships();
+      const interactionTypes = await storage.getAllInteractionTypes();
+      const allInteractions = await storage.getAllInteractions();
+      const groups = await storage.getAllGroups();
+      const allNotes = await storage.getAllNotes();
+      const allGroupNotes = await storage.getAllGroupNotes();
+
+      // Helper function to escape XML special characters
+      const escapeXml = (str: any): string => {
+        if (str === null || str === undefined) return "";
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&apos;");
+      };
+
+      // Helper function to convert array to XML
+      const arrayToXml = (arr: any[], itemName: string): string => {
+        if (!arr || arr.length === 0) return "";
+        return arr.map(item => `<${itemName}>${escapeXml(item)}</${itemName}>`).join("");
+      };
+
+      // Build XML document
+      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+      xml += '<crm_data>\n';
+
+      // Export user profile
+      xml += '  <user_profile>\n';
+      xml += `    <name>${escapeXml(user?.name || "")}</name>\n`;
+      xml += `    <nickname>${escapeXml(user?.nickname || "")}</nickname>\n`;
+      xml += '  </user_profile>\n';
+
+      // Export relationship types
+      xml += '  <relationship_types>\n';
+      for (const type of relationshipTypes) {
+        xml += '    <relationship_type>\n';
+        xml += `      <id>${escapeXml(type.id)}</id>\n`;
+        xml += `      <name>${escapeXml(type.name)}</name>\n`;
+        xml += `      <color>${escapeXml(type.color)}</color>\n`;
+        xml += `      <notes>${escapeXml(type.notes || "")}</notes>\n`;
+        xml += '    </relationship_type>\n';
+      }
+      xml += '  </relationship_types>\n';
+
+      // Export interaction types
+      xml += '  <interaction_types>\n';
+      for (const type of interactionTypes) {
+        xml += '    <interaction_type>\n';
+        xml += `      <id>${escapeXml(type.id)}</id>\n`;
+        xml += `      <name>${escapeXml(type.name)}</name>\n`;
+        xml += `      <color>${escapeXml(type.color)}</color>\n`;
+        xml += `      <description>${escapeXml(type.description || "")}</description>\n`;
+        xml += `      <value>${escapeXml(type.value)}</value>\n`;
+        xml += '    </interaction_type>\n';
+      }
+      xml += '  </interaction_types>\n';
+
+      // Export people
+      xml += '  <people>\n';
+      for (const person of people) {
+        xml += '    <person>\n';
+        xml += `      <id>${escapeXml(person.id)}</id>\n`;
+        xml += `      <first_name>${escapeXml(person.firstName)}</first_name>\n`;
+        xml += `      <last_name>${escapeXml(person.lastName)}</last_name>\n`;
+        xml += `      <email>${escapeXml(person.email || "")}</email>\n`;
+        xml += `      <phone>${escapeXml(person.phone || "")}</phone>\n`;
+        xml += `      <company>${escapeXml(person.company || "")}</company>\n`;
+        xml += `      <title>${escapeXml(person.title || "")}</title>\n`;
+        xml += `      <tags>${arrayToXml(person.tags || [], "tag")}</tags>\n`;
+        xml += `      <created_at>${escapeXml(person.createdAt)}</created_at>\n`;
+        xml += '    </person>\n';
+      }
+      xml += '  </people>\n';
+
+      // Export relationships
+      xml += '  <relationships>\n';
+      for (const rel of relationships) {
+        xml += '    <relationship>\n';
+        xml += `      <id>${escapeXml(rel.id)}</id>\n`;
+        xml += `      <from_person_id>${escapeXml(rel.fromPersonId)}</from_person_id>\n`;
+        xml += `      <to_person_id>${escapeXml(rel.toPersonId)}</to_person_id>\n`;
+        xml += `      <type_id>${escapeXml(rel.typeId)}</type_id>\n`;
+        xml += `      <notes>${escapeXml(rel.notes || "")}</notes>\n`;
+        xml += `      <created_at>${escapeXml(rel.createdAt)}</created_at>\n`;
+        xml += '    </relationship>\n';
+      }
+      xml += '  </relationships>\n';
+
+      // Export groups
+      xml += '  <groups>\n';
+      for (const group of groups) {
+        xml += '    <group>\n';
+        xml += `      <id>${escapeXml(group.id)}</id>\n`;
+        xml += `      <name>${escapeXml(group.name)}</name>\n`;
+        xml += `      <color>${escapeXml(group.color)}</color>\n`;
+        xml += `      <type>${arrayToXml(group.type || [], "group_type")}</type>\n`;
+        xml += `      <members>${arrayToXml(group.members || [], "member_id")}</members>\n`;
+        xml += `      <created_at>${escapeXml(group.createdAt)}</created_at>\n`;
+        xml += '    </group>\n';
+      }
+      xml += '  </groups>\n';
+
+      // Export interactions
+      xml += '  <interactions>\n';
+      for (const interaction of allInteractions) {
+        xml += '    <interaction>\n';
+        xml += `      <id>${escapeXml(interaction.id)}</id>\n`;
+        xml += `      <type_id>${escapeXml(interaction.typeId)}</type_id>\n`;
+        xml += `      <date>${escapeXml(interaction.date)}</date>\n`;
+        xml += `      <description>${escapeXml(interaction.description || "")}</description>\n`;
+        xml += `      <people_ids>${arrayToXml(interaction.peopleIds || [], "person_id")}</people_ids>\n`;
+        xml += `      <group_ids>${arrayToXml(interaction.groupIds || [], "group_id")}</group_ids>\n`;
+        xml += `      <created_at>${escapeXml(interaction.createdAt)}</created_at>\n`;
+        xml += '    </interaction>\n';
+      }
+      xml += '  </interactions>\n';
+
+      // Export notes
+      xml += '  <notes>\n';
+      for (const note of allNotes) {
+        xml += '    <note>\n';
+        xml += `      <id>${escapeXml(note.id)}</id>\n`;
+        xml += `      <person_id>${escapeXml(note.personId)}</person_id>\n`;
+        xml += `      <content>${escapeXml(note.content)}</content>\n`;
+        xml += `      <created_at>${escapeXml(note.createdAt)}</created_at>\n`;
+        xml += '    </note>\n';
+      }
+      xml += '  </notes>\n';
+
+      // Export group notes
+      xml += '  <group_notes>\n';
+      for (const note of allGroupNotes) {
+        xml += '    <group_note>\n';
+        xml += `      <id>${escapeXml(note.id)}</id>\n`;
+        xml += `      <group_id>${escapeXml(note.groupId)}</group_id>\n`;
+        xml += `      <content>${escapeXml(note.content)}</content>\n`;
+        xml += `      <created_at>${escapeXml(note.createdAt)}</created_at>\n`;
+        xml += '    </group_note>\n';
+      }
+      xml += '  </group_notes>\n';
+
+      xml += '</crm_data>';
+
+      // Set headers for file download
+      res.setHeader("Content-Type", "application/xml");
+      res.setHeader("Content-Disposition", `attachment; filename="crm_export_${new Date().toISOString().split('T')[0]}.xml"`);
+      res.send(xml);
+    } catch (error) {
+      console.error("Error exporting XML:", error);
+      res.status(500).json({ error: "Failed to export data" });
+    }
+  });
+
+  // XML Import endpoint
+  app.post("/api/import-xml", upload.single("xml"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No XML file provided" });
+      }
+
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const xmlText = req.file.buffer.toString("utf-8");
+
+      // Simple XML parser using regex (for basic XML structure)
+      const parseXmlTag = (tagName: string, text: string): string => {
+        const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, 's');
+        const match = text.match(regex);
+        return match ? match[1].trim() : "";
+      };
+
+      const parseXmlArray = (containerTag: string, itemTag: string, text: string): string[] => {
+        const containerContent = parseXmlTag(containerTag, text);
+        if (!containerContent) return [];
+        const itemRegex = new RegExp(`<${itemTag}>(.*?)</${itemTag}>`, 'gs');
+        const matches = containerContent.matchAll(itemRegex);
+        return Array.from(matches).map(m => m[1].trim());
+      };
+
+      const parseAllTags = (tagName: string, text: string): string[] => {
+        const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, 'gs');
+        const matches = text.matchAll(regex);
+        return Array.from(matches).map(m => m[1].trim());
+      };
+
+      const unescapeXml = (str: string): string => {
+        return str
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'");
+      };
+
+      let importedCounts = {
+        relationshipTypes: 0,
+        interactionTypes: 0,
+        people: 0,
+        relationships: 0,
+        groups: 0,
+        interactions: 0,
+        notes: 0,
+        groupNotes: 0,
+      };
+
+      // Parse and import relationship types
+      const relationshipTypeBlocks = parseAllTags("relationship_type", xmlText);
+      for (const block of relationshipTypeBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const name = unescapeXml(parseXmlTag("name", block));
+        const color = unescapeXml(parseXmlTag("color", block));
+        const notes = unescapeXml(parseXmlTag("notes", block));
+
+        try {
+          await db.insert(relationshipTypes).values({ id, name, color, notes: notes || null, value: 50 }).onConflictDoNothing();
+          importedCounts.relationshipTypes++;
+        } catch (error) {
+          console.error(`Error importing relationship type ${id}:`, error);
+        }
+      }
+
+      // Parse and import interaction types
+      const interactionTypeBlocks = parseAllTags("interaction_type", xmlText);
+      for (const block of interactionTypeBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const name = unescapeXml(parseXmlTag("name", block));
+        const color = unescapeXml(parseXmlTag("color", block));
+        const description = unescapeXml(parseXmlTag("description", block));
+        const value = parseInt(parseXmlTag("value", block)) || 50;
+
+        try {
+          await db.insert(interactionTypes).values({ id, name, color, description: description || null, value }).onConflictDoNothing();
+          importedCounts.interactionTypes++;
+        } catch (error) {
+          console.error(`Error importing interaction type ${id}:`, error);
+        }
+      }
+
+      // Parse and import people
+      const personBlocks = parseAllTags("person", xmlText);
+      for (const block of personBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const firstName = unescapeXml(parseXmlTag("first_name", block));
+        const lastName = unescapeXml(parseXmlTag("last_name", block));
+        const email = unescapeXml(parseXmlTag("email", block));
+        const phone = unescapeXml(parseXmlTag("phone", block));
+        const company = unescapeXml(parseXmlTag("company", block));
+        const title = unescapeXml(parseXmlTag("title", block));
+        const tags = parseXmlArray("tags", "tag", block);
+
+        try {
+          await storage.createPersonWithId({
+            id,
+            firstName,
+            lastName,
+            email: email || null,
+            phone: phone || null,
+            company: company || null,
+            title: title || null,
+            tags: tags.length > 0 ? tags : [],
+          });
+          importedCounts.people++;
+        } catch (error) {
+          console.error(`Error importing person ${id}:`, error);
+        }
+      }
+
+      // Parse and import groups
+      const groupBlocks = parseAllTags("group", xmlText);
+      for (const block of groupBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const name = unescapeXml(parseXmlTag("name", block));
+        const color = unescapeXml(parseXmlTag("color", block));
+        const type = parseXmlArray("type", "group_type", block);
+        const members = parseXmlArray("members", "member_id", block);
+
+        try {
+          await storage.createGroupWithId({
+            id,
+            name,
+            color,
+            type: type.length > 0 ? type : [],
+            members: members.length > 0 ? members : [],
+          });
+          importedCounts.groups++;
+        } catch (error) {
+          console.error(`Error importing group ${id}:`, error);
+        }
+      }
+
+      // Parse and import relationships
+      const relationshipBlocks = parseAllTags("relationship", xmlText);
+      for (const block of relationshipBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const fromPersonId = unescapeXml(parseXmlTag("from_person_id", block));
+        const toPersonId = unescapeXml(parseXmlTag("to_person_id", block));
+        const typeId = unescapeXml(parseXmlTag("type_id", block));
+        const notes = unescapeXml(parseXmlTag("notes", block));
+
+        try {
+          await storage.createRelationshipWithId({
+            id,
+            fromPersonId,
+            toPersonId,
+            typeId,
+            notes: notes || null,
+          });
+          importedCounts.relationships++;
+        } catch (error) {
+          console.error(`Error importing relationship ${id}:`, error);
+        }
+      }
+
+      // Parse and import interactions
+      const interactionBlocks = parseAllTags("interaction", xmlText);
+      for (const block of interactionBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const typeId = unescapeXml(parseXmlTag("type_id", block));
+        const date = unescapeXml(parseXmlTag("date", block));
+        const description = unescapeXml(parseXmlTag("description", block));
+        const peopleIds = parseXmlArray("people_ids", "person_id", block);
+        const groupIds = parseXmlArray("group_ids", "group_id", block);
+
+        try {
+          await storage.createInteractionWithId({
+            id,
+            typeId,
+            date: new Date(date),
+            description: description || null,
+            peopleIds: peopleIds.length > 0 ? peopleIds : [],
+            groupIds: groupIds.length > 0 ? groupIds : [],
+            imageUrl: null, // Images are not imported
+          });
+          importedCounts.interactions++;
+        } catch (error) {
+          console.error(`Error importing interaction ${id}:`, error);
+        }
+      }
+
+      // Parse and import notes
+      const noteBlocks = parseAllTags("note", xmlText);
+      for (const block of noteBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const personId = unescapeXml(parseXmlTag("person_id", block));
+        const content = unescapeXml(parseXmlTag("content", block));
+
+        try {
+          await storage.createNoteWithId({ id, personId, content });
+          importedCounts.notes++;
+        } catch (error) {
+          console.error(`Error importing note ${id}:`, error);
+        }
+      }
+
+      // Parse and import group notes
+      const groupNoteBlocks = parseAllTags("group_note", xmlText);
+      for (const block of groupNoteBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const groupId = unescapeXml(parseXmlTag("group_id", block));
+        const content = unescapeXml(parseXmlTag("content", block));
+
+        try {
+          await storage.createGroupNoteWithId({ id, groupId, content });
+          importedCounts.groupNotes++;
+        } catch (error) {
+          console.error(`Error importing group note ${id}:`, error);
+        }
+      }
+
+      res.json({
+        success: true,
+        imported: importedCounts,
+      });
+    } catch (error) {
+      console.error("Error importing XML:", error);
+      res.status(500).json({ error: "Failed to import XML" });
     }
   });
 

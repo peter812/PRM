@@ -601,6 +601,12 @@ export class DatabaseStorage implements IStorage {
       .from(interactions)
       .where(sql`${person.id} = ANY(${interactions.peopleIds})`);
 
+    // Get groups where this person is a member
+    const personGroups = await db
+      .select()
+      .from(groups)
+      .where(arrayContains(groups.members, [person.id]));
+
     // Get relationships (bidirectional)
     const relationshipsFrom = await db
       .select({
@@ -661,6 +667,7 @@ export class DatabaseStorage implements IStorage {
       ...person,
       notes: personNotes,
       interactions: personInteractions,
+      groups: personGroups,
       relationships: allRelationships,
     };
   }
@@ -757,6 +764,58 @@ export class DatabaseStorage implements IStorage {
 
   async deleteGroupNote(id: string): Promise<void> {
     await db.delete(groupNotes).where(eq(groupNotes.id, id));
+  }
+
+  // Export helper methods
+  async getAllUsers(): Promise<User[]> {
+    return await db.select().from(users);
+  }
+
+  async getAllRelationships(): Promise<Relationship[]> {
+    return await db.select().from(relationships);
+  }
+
+  async getAllInteractions(): Promise<Interaction[]> {
+    return await db.select().from(interactions);
+  }
+
+  async getAllNotes(): Promise<Note[]> {
+    return await db.select().from(notes);
+  }
+
+  async getAllGroupNotes(): Promise<GroupNote[]> {
+    return await db.select().from(groupNotes);
+  }
+
+  // Import helper methods (with ID specification)
+  async createPersonWithId(person: InsertPerson & { id: string }): Promise<Person> {
+    const [newPerson] = await db.insert(people).values(person).returning();
+    return newPerson;
+  }
+
+  async createGroupWithId(group: InsertGroup & { id: string }): Promise<Group> {
+    const [newGroup] = await db.insert(groups).values(group).returning();
+    return newGroup;
+  }
+
+  async createRelationshipWithId(relationship: InsertRelationship & { id: string }): Promise<Relationship> {
+    const [newRelationship] = await db.insert(relationships).values(relationship).returning();
+    return newRelationship;
+  }
+
+  async createInteractionWithId(interaction: InsertInteraction & { id: string }): Promise<Interaction> {
+    const [newInteraction] = await db.insert(interactions).values(interaction).returning();
+    return newInteraction;
+  }
+
+  async createNoteWithId(note: InsertNote & { id: string }): Promise<Note> {
+    const [newNote] = await db.insert(notes).values(note).returning();
+    return newNote;
+  }
+
+  async createGroupNoteWithId(groupNote: InsertGroupNote & { id: string }): Promise<GroupNote> {
+    const [newGroupNote] = await db.insert(groupNotes).values(groupNote).returning();
+    return newGroupNote;
   }
 }
 
