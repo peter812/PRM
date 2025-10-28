@@ -153,10 +153,10 @@ async function seedExampleData(userId: number, mePerson: any): Promise<void> {
     const createdPeopleIds: string[] = [];
     for (const person of examplePeople) {
       const result = await pool.query(
-        `INSERT INTO people (user_id, first_name, last_name, email, company, title) 
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO people (first_name, last_name, email, company, title) 
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-        [userId, person.firstName, person.lastName, person.email, person.company, person.title]
+        [person.firstName, person.lastName, person.email, person.company, person.title]
       );
       createdPeopleIds.push(result.rows[0].id);
     }
