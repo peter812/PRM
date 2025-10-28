@@ -26,7 +26,7 @@ export default function PersonProfile() {
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
 
   // Parse query parameters to determine where to navigate back to
-  const params = new URLSearchParams(location.split('?')[1] || '');
+  const params = new URLSearchParams(window.location.search);
   const from = params.get('from');
   const groupId = params.get('groupId');
 
