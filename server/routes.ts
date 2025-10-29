@@ -942,6 +942,247 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // SSO Config endpoints
+  app.get("/api/sso-config", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const config = await storage.getSsoConfig(req.user.id);
+      if (!config) {
+        return res.json(null);
+      }
+
+      // Don't send the client secret to the frontend (security)
+      const { clientSecret, ...safeConfig } = config;
+      res.json({ ...safeConfig, clientSecret: '********' });
+    } catch (error) {
+      console.error("Error fetching SSO config:", error);
+      res.status(500).json({ error: "Failed to fetch SSO config" });
+    }
+  });
+
+  app.post("/api/sso-config", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const {
+        enabled,
+        clientId,
+        clientSecret,
+        authUrl,
+        tokenUrl,
+        userInfoUrl,
+        redirectUrl,
+        logoutUrl,
+        userIdentifier,
+        scopes,
+        authStyle,
+      } = req.body;
+
+      // Check if config already exists
+      const existingConfig = await storage.getSsoConfig(req.user.id);
+      
+      const configData = {
+        userId: req.user.id,
+        enabled: enabled ? 1 : 0,
+        clientId,
+        clientSecret,
+        authUrl,
+        tokenUrl,
+        userInfoUrl,
+        redirectUrl,
+        logoutUrl: logoutUrl || null,
+        userIdentifier: userIdentifier || 'email',
+        scopes: scopes || 'openid',
+        authStyle: authStyle || 'auto',
+      };
+
+      let config;
+      if (existingConfig) {
+        // Update existing config
+        config = await storage.updateSsoConfig(req.user.id, configData);
+      } else {
+        // Create new config
+        config = await storage.createSsoConfig(configData);
+      }
+
+      if (!config) {
+        return res.status(500).json({ error: "Failed to save SSO config" });
+      }
+
+      // Don't send client secret back
+      const { clientSecret: _, ...safeConfig } = config;
+      res.json({ ...safeConfig, clientSecret: '********' });
+    } catch (error) {
+      console.error("Error saving SSO config:", error);
+      res.status(500).json({ error: "Failed to save SSO config" });
+    }
+  });
+
+  app.delete("/api/sso-config", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      await storage.deleteSsoConfig(req.user.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting SSO config:", error);
+      res.status(500).json({ error: "Failed to delete SSO config" });
+    }
+  });
+
+  // SSO Login flow endpoints
+  app.get("/api/sso/login", async (req, res) => {
+    try {
+      // Get user ID from query param (passed from login page)
+      const username = req.query.username as string;
+      if (!username) {
+        return res.status(400).json({ error: "Username required for SSO login" });
+      }
+
+      // Get user by username
+      const user = await storage.getUserByUsername(username);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Get SSO config for this user
+      const config = await storage.getSsoConfig(user.id);
+      if (!config || !config.enabled) {
+        return res.status(400).json({ error: "SSO not configured or disabled for this user" });
+      }
+
+      // Store state in session for CSRF protection
+      const crypto = await import("crypto");
+      const state = crypto.randomBytes(32).toString('hex');
+      req.session.ssoState = state;
+      req.session.ssoUserId = user.id;
+
+      // Build authorization URL
+      const authParams = new URLSearchParams({
+        client_id: config.clientId,
+        redirect_uri: config.redirectUrl,
+        response_type: 'code',
+        scope: config.scopes,
+        state: state,
+      });
+
+      const authUrl = `${config.authUrl}?${authParams.toString()}`;
+      res.json({ redirectUrl: authUrl });
+    } catch (error) {
+      console.error("Error initiating SSO login:", error);
+      res.status(500).json({ error: "Failed to initiate SSO login" });
+    }
+  });
+
+  app.get("/api/sso/callback", async (req, res) => {
+    try {
+      const { code, state } = req.query;
+
+      // Verify state for CSRF protection
+      if (!state || state !== req.session.ssoState) {
+        return res.redirect('/login?error=invalid_state');
+      }
+
+      const userId = req.session.ssoUserId;
+      if (!userId) {
+        return res.redirect('/login?error=missing_session');
+      }
+
+      // Get SSO config
+      const config = await storage.getSsoConfig(userId);
+      if (!config || !config.enabled) {
+        return res.redirect('/login?error=sso_disabled');
+      }
+
+      // Exchange code for token
+      const tokenParams: any = {
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: config.redirectUrl,
+      };
+
+      let tokenResponse;
+      const axios = (await import("axios")).default;
+
+      if (config.authStyle === 'in_header' || config.authStyle === 'auto') {
+        // Try Basic Auth first
+        try {
+          const auth = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
+          tokenResponse = await axios.post(config.tokenUrl, new URLSearchParams(tokenParams), {
+            headers: {
+              'Authorization': `Basic ${auth}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          });
+        } catch (error) {
+          // If auto mode and header auth failed, try params
+          if (config.authStyle === 'auto') {
+            tokenParams.client_id = config.clientId;
+            tokenParams.client_secret = config.clientSecret;
+            tokenResponse = await axios.post(config.tokenUrl, new URLSearchParams(tokenParams), {
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            });
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        // in_params mode
+        tokenParams.client_id = config.clientId;
+        tokenParams.client_secret = config.clientSecret;
+        tokenResponse = await axios.post(config.tokenUrl, new URLSearchParams(tokenParams), {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        });
+      }
+
+      const accessToken = tokenResponse.data.access_token;
+      if (!accessToken) {
+        return res.redirect('/login?error=no_access_token');
+      }
+
+      // Get user info
+      const userInfoResponse = await axios.get(config.userInfoUrl, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      });
+
+      const userInfo = userInfoResponse.data;
+      const identifierValue = userInfo[config.userIdentifier];
+
+      if (!identifierValue) {
+        return res.redirect('/login?error=missing_identifier');
+      }
+
+      // Get user by SSO email
+      const user = await storage.getUserBySsoEmail(identifierValue);
+      if (!user || user.id !== userId) {
+        return res.redirect('/login?error=sso_email_mismatch');
+      }
+
+      // Clean up session state
+      delete req.session.ssoState;
+      delete req.session.ssoUserId;
+
+      // Log the user in
+      req.login(user, (err) => {
+        if (err) {
+          console.error("Error logging in after SSO:", err);
+          return res.redirect('/login?error=login_failed');
+        }
+        res.redirect('/');
+      });
+    } catch (error) {
+      console.error("Error in SSO callback:", error);
+      res.redirect('/login?error=callback_failed');
+    }
+  });
+
   // Graph endpoint - optimized for minimal data transfer
   app.get("/api/graph", async (req, res) => {
     try {
