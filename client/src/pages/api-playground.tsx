@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -30,6 +31,7 @@ export default function ApiPlayground() {
   const [operation, setOperation] = useState<Operation | "">("");
   const [result, setResult] = useState<string>("");
   const [isExecuting, setIsExecuting] = useState(false);
+  const [editableCode, setEditableCode] = useState<string>("");
 
   const getAvailableOperations = (resource: Resource): Operation[] => {
     switch (resource) {
@@ -516,6 +518,15 @@ fetch(\`${API_BASE_URL}/api/group-notes/\${groupNoteId}\`, {
     return examples[resource]?.[operation] || null;
   };
 
+  const example = resource && operation ? generateExample(resource, operation) : null;
+
+  // Update editable code when example changes
+  useEffect(() => {
+    if (example) {
+      setEditableCode(example.code);
+    }
+  }, [example]);
+
   const executeApiCall = async () => {
     if (!apiKey) {
       toast({
@@ -535,11 +546,10 @@ fetch(\`${API_BASE_URL}/api/group-notes/\${groupNoteId}\`, {
       return;
     }
 
-    const example = generateExample(resource, operation);
-    if (!example) {
+    if (!editableCode) {
       toast({
         title: "Error",
-        description: "No example available for this combination",
+        description: "No code available to execute",
         variant: "destructive",
       });
       return;
@@ -550,7 +560,7 @@ fetch(\`${API_BASE_URL}/api/group-notes/\${groupNoteId}\`, {
 
     try {
       // Replace YOUR_API_KEY with the actual API key in the code
-      const codeToExecute = example.code.replace(/YOUR_API_KEY/g, apiKey);
+      const codeToExecute = editableCode.replace(/YOUR_API_KEY/g, apiKey);
       
       // Execute the code and capture the result
       const resultPromise = new Promise((resolve, reject) => {
@@ -609,8 +619,6 @@ fetch(\`${API_BASE_URL}/api/group-notes/\${groupNoteId}\`, {
       setIsExecuting(false);
     }
   };
-
-  const example = resource && operation ? generateExample(resource, operation) : null;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -695,11 +703,18 @@ fetch(\`${API_BASE_URL}/api/group-notes/\${groupNoteId}\`, {
           <>
             <Card className="p-6">
               <h2 className="text-lg font-semibold mb-3">{example.description}</h2>
-              <div className="relative">
-                <pre className="bg-muted p-4 rounded-md overflow-x-auto text-sm">
-                  <code>{example.code}</code>
-                </pre>
+              <div className="mb-2">
+                <Label htmlFor="editable-code" className="text-sm text-muted-foreground">
+                  Edit the code below to customize parameters
+                </Label>
               </div>
+              <Textarea
+                id="editable-code"
+                value={editableCode}
+                onChange={(e) => setEditableCode(e.target.value)}
+                className="font-mono text-sm min-h-[300px] resize-y"
+                data-testid="textarea-code"
+              />
               <div className="mt-4 flex justify-end">
                 <Button
                   onClick={executeApiCall}
