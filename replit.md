@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project is a professional CRM application designed for managing contacts, tracking interactions, and nurturing relationships. It features a modern React frontend and an Express backend, offering a clean, data-focused interface inspired by productivity tools. Key capabilities include creating and managing people profiles, adding notes, tracking interactions (meetings, calls, emails), organizing contacts with tags, creating and managing groups with members, and utilizing powerful global search functionalities. The application aims to provide a robust solution for personal and professional relationship management.
+This project is a professional CRM application for managing contacts, tracking interactions, and nurturing relationships. It features a modern React frontend and an Express backend, offering a clean, data-focused interface. Key capabilities include managing people profiles, notes, interactions (meetings, calls, emails), organizing contacts with tags, creating and managing groups, and utilizing global search functionalities. The application aims to provide a robust solution for personal and professional relationship management.
 
 ## User Preferences
 
@@ -10,151 +10,78 @@ Preferred communication style: Simple, everyday language.
 
 ## System Architecture
 
-### Frontend Architecture
+### Frontend
 
-The frontend is built with React 18+ and TypeScript, utilizing Vite for development and bundling. Wouter handles client-side routing. UI components are developed using shadcn/ui (New York style) built on Radix UI primitives, styled with Tailwind CSS and custom design tokens for theming and light/dark mode support. State management for server data is handled by TanStack React Query, with React Hook Form and Zod for form state and validation. Typography uses Inter and JetBrains Mono.
+The frontend uses React 18+ with TypeScript, Vite, Wouter for routing, and shadcn/ui (New York style) built on Radix UI and Tailwind CSS for UI components. State management uses TanStack React Query for server data and React Hook Form with Zod for form validation.
 
-### Backend Architecture
+### Backend
 
-The backend is an Express.js application written in TypeScript, providing a RESTful API. Endpoints cover CRUD operations for people, notes, interactions, relationships, groups, and image uploads/deletions. Route handlers in `server/routes.ts` use Zod for validation, with business logic abstracted to `server/storage.ts`. Multer is used for handling image uploads. The development environment integrates Vite middleware for HMR, and the API includes request logging and structured error handling.
+The backend is an Express.js application in TypeScript, providing a RESTful API for CRUD operations on people, notes, interactions, relationships, groups, and images. It uses Zod for validation, Multer for image uploads, and integrates Vite middleware for HMR.
 
-### Data Storage Solutions
+### Data Storage
 
-The application uses an **external PostgreSQL database** (pbe.im:3306) for all persistent data, configured via the `DATABASE_URL` environment variable. Drizzle ORM provides type-safe database queries and migrations, following a schema-first approach. Key tables include `users`, `people`, `notes`, `interactions`, `relationships`, `relationship_types`, `groups`, `group_notes`, `api_keys`, and `session`. Foreign key relationships with cascade deletion and array type support are utilized. Drizzle-Zod is used for runtime data validation, sharing schema definitions between frontend and backend. Session-based authentication is implemented using `express-session` with a PostgreSQL session store.
+An external PostgreSQL database is used for all persistent data, configured via `DATABASE_URL`. Drizzle ORM handles type-safe database queries and migrations. Session-based authentication uses `express-session` with a PostgreSQL session store.
 
 ### Authentication & API Access
 
-The application supports two types of API access:
-
-**Internal (Web UI):**
-- Session-based authentication using `express-session` with PostgreSQL session store
-- Automatic token management for seamless user experience
-- User creation is disabled by default after initial setup - can only be enabled after database reset
-
-**External (API Keys):**
-- API keys can be generated from Settings > API Settings page
-- Keys are stored as hashed values (similar to passwords) for security
-- Each key has a user-friendly name and tracks last usage timestamp
-- Raw API key is shown only once during creation (never stored or displayed again)
-- Keys can be deleted at any time from the API Settings page
-- **IMPORTANT:** The `api_keys` table is NEVER included in data exports for security
-
-**User Creation Flow:**
-- New user creation is disabled by default after initial setup
-- User creation is only enabled after a database reset operation
-- Welcome page (`/welcome`) redirects authenticated users to `/me`
-- After successful account creation, users are redirected to `/me` instead of root
-- Database reset flow: reset → enable user creation → redirect to `/welcome` for new account creation
+The application supports session-based authentication for the internal web UI and API key-based access for external integrations. API keys are hashed and managed via a settings page, never included in data exports. User creation is disabled by default after initial setup and can be re-enabled after a database reset.
 
 ### Key Features & Design Decisions
 
--   **Global Search:** Top-bar search with real-time dropdown results for people and groups, replacing a dedicated search page. Search results are intelligently prioritized: matches at the start of first names appear first, followed by matches at the start of last names, then matches found elsewhere (email, company, tags). Within each priority level, results are sorted alphabetically by the matched field.
--   **Graph Optimization:** The graph visualization uses a dedicated `/api/graph` endpoint that fetches only minimal data required for rendering (id, firstName, lastName, company for people; id, fromPersonId, toPersonId, typeColor for relationships; id, name, color, members for groups). This eliminates the previous N+1 query pattern and significantly improves performance. The frontend uses dedicated minimal types (`GraphPerson`, `GraphRelationship`, `GraphGroup`) to maintain type safety while reducing data transfer.
--   **Graph Rendering Stability:** The graph page uses Pixi.js with manual rendering control to prevent race conditions during navigation. Key safety mechanisms include: (1) `isMountedRef` tracking to prevent operations after unmount, (2) manual render control with `autoStart: false` to prevent concurrent rendering, (3) `renderable` flag toggling during edge clear/redraw operations to prevent null geometry errors, (4) immediate canvas removal from DOM on unmount before Pixi cleanup, and (5) comprehensive destroyed-state checks throughout the animation loop. This ensures the graph never throws errors when navigating away and returning.
--   **Graph Display Options:** The graph page includes multiple display toggles:
-    - **Show Groups:** Display or hide group nodes on the graph
-    - **Disable Person Lines:** Hide person-to-person relationship lines from both rendering and physics simulation. This removes the entire edge objects for cleaner visualization when focusing on group connections. When a person is highlighted with this option enabled, only the person and their groups are shown (relationship-connected people are hidden)
-    - **Hide Orphans:** Hide people with no connections. When enabled, only people who have at least one relationship with another person OR are members of a group are displayed
-    - **Anonymize People:** Hide names on all people nodes except the "Me" node. Useful for taking screenshots or sharing the graph visualization while preserving privacy of contacts
--   **Enhanced Add Connection Dialog:** The graph page's "Add Connection" dialog features searchable autocomplete fields for selecting both people and relationship types. It fetches relationship types dynamically from the database, displays color indicators for each type, and prevents self-connections by clearing the second person field when the first person selection changes.
--   **Context-Aware Navigation:** Back button navigation preserves context - clicking a person from the graph view returns to the graph, while clicking from a group view returns to that specific group. Query parameters track navigation context.
--   **Settings Page:** Dedicated `/settings` route with collapsible sidebar navigation (matching main app), user profile editing (name, nickname, username, password change), and app-wide settings. Settings pages use consistent left padding (`px-12`) for better visual separation from the sidebar menu.
--   **First-Time Setup:** A `/welcome` route guides initial user creation when no users exist, with an API to check and initialize setup status.
--   **Automatic Database Initialization:** On application startup, the system checks if any users exist. If no users are found, it automatically drops all database tables, runs migrations to recreate them from the schema, and seeds default relationship types. This ensures a clean state for first-time setup or development resets.
--   **Unified Relationship System:** Person-to-person relationships use customizable relationship types from the database. Relationships are bidirectional - creating a relationship from Person A to Person B automatically makes it visible on both people's profiles. Relationship types include name, color (for UI/graph visualization), and optional notes. Default types include: Acquaintance (#10b981), Friend (#3b82f6), Good Friend (#8b5cf6), Best Friend (#ec4899), Colleague (#f59e0b), Family (#ef4444), and Partner (#06b6d4).
--   **Deletion Features:** Comprehensive delete functionality for people and groups, including confirmation dialogs, cascade deletion of related data (notes, interactions, relationships), and toast notifications.
--   **Groups Management:** Bidirectional group management allows adding members to groups (via group profile) and adding people to groups (via person profile). The Groups tab on person profiles displays all groups the person belongs to with search functionality and multi-select "Add to Groups" dialog. Groups list page features both list and card view modes, with a 5px gap between items for visual separation. In card view, the delete button is positioned at the bottom-left corner.
--   **XML Import/Export:** Complete data backup and migration system located in the App Options page. Users can export all CRM data (user profile, people, relationships, relationship types, interactions, groups, and notes) to XML format while preserving UUIDs for data integrity. Import functionality handles foreign key dependencies correctly and skips duplicate IDs. Images and image URLs are excluded from both import and export operations.
--   **API Documentation:** Collapsible, interactive API documentation with example code and copy functionality.
+-   **Global Search:** Real-time top-bar search with prioritized results for people and groups.
+-   **Graph Optimization:** Dedicated `/api/graph` endpoint for efficient data fetching, using Pixi.js for stable, WebGL-based interactive rendering with manual control to prevent race conditions.
+-   **Graph Display Options:** Toggles for showing groups, disabling person lines, hiding orphans, and anonymizing people.
+-   **Context-Aware Navigation:** Back buttons preserve navigation context.
+-   **Settings Page:** Dedicated route for user profile and app-wide settings.
+-   **First-Time Setup:** `/welcome` route guides initial user creation; automatic database initialization on startup if no users exist.
+-   **Unified Relationship System:** Customizable, bidirectional person-to-person relationships with database-driven types, colors, and notes. Default types are provided.
+-   **Deletion Features:** Comprehensive cascade deletion for people and groups.
+-   **Groups Management:** Bidirectional member management between people and groups with various UI display modes.
+-   **XML Import/Export:** Full data backup and migration, preserving UUIDs, excluding images.
+-   **API Documentation & Playground:** Interactive API documentation and a testing page at `/api-playground` with code examples and execution.
 
-### Interactions System Architecture
+### Interactions System
 
-The application uses a flexible interactions system that supports multi-person and group contexts:
+Supports multi-person and optional group contexts. Interactions store `peopleIds` (minimum 2), optional `groupIds`, type, date, description, and an optional `imageUrl`. Image attachments are stored in S3-compatible storage. Features include cascade deletion and smart cache invalidation. UI components facilitate adding interactions with multi-select and image upload, and a timeline visualization on profiles.
 
-**Database Schema:**
-- `interactions`: Stores interactions with `peopleIds` array (minimum 2 required), optional `groupIds` array, type, date, description, and optional `imageUrl`
-- Interactions can involve multiple people (e.g., team meetings, group calls) and link to zero or more groups
-- Image attachments are stored in S3-compatible object storage with automatic CDN cleanup on deletion
+### Relationship System
 
-**Key Features:**
-- **Multi-Person Support:** Each interaction requires at least 2 people, enabling tracking of group meetings, calls, and collaborative events
-- **Optional Group Association:** Interactions can be linked to one or more groups, making them visible on group profile pages
-- **Image Attachments:** Upload and attach images to interactions with automatic S3 storage and cleanup on deletion
-- **Cascade Deletion:** Removing a person or group automatically removes them from all associated interactions
-- **Smart Cache Invalidation:** When an interaction is deleted, all affected person and group queries are invalidated to ensure UI consistency
-
-**UI Components:**
-- `AddInteractionDialog`: Multi-select interface for choosing people (minimum 2) and optional groups, with image upload support. Description field is optional.
-- `InteractionsTab`: Displays interactions with all involved people and groups, used on both person and group profile pages
-- Timeline visualization with type-specific icons and color coding for different interaction types (meeting, call, email, other)
-
-**API Endpoints:**
-- `POST /api/interactions`: Create interaction with multiple people, optional groups, and optional image
-- `DELETE /api/interactions/:id`: Delete interaction and associated S3 image if present
-- Interactions are included in both person and group detail endpoints
-
-### Relationship System Architecture
-
-The application uses a unified relationship system with the following components:
-
-**Database Tables:**
-- `relationship_types`: Stores customizable relationship types with UUID, name, color (hex), and optional notes
-- `relationships`: Stores person-to-person connections with `fromPersonId`, `toPersonId`, `typeId` (foreign key), and optional notes
-
-**Bidirectional Display:**
-Relationships are stored once in the database but displayed on both people's profiles. The storage layer queries relationships in both directions:
-1. Where the person is `fromPersonId` (outgoing relationships)
-2. Where the person is `toPersonId` (incoming relationships)
-
-This ensures mutual visibility - if Bob is friends with Ryan, the friendship appears on both Bob's and Ryan's profiles.
-
-**UI Integration:**
-- `AddRelationshipDialog`: Features multi-select person picker using Command component with checkboxes, enabling bulk relationship creation with parallel API calls via Promise.all. Fetches relationship types from database and displays them with color indicators
-- `RelationshipsTab`: Shows all bidirectional relationships with colored type badges
-- `Graph Visualization`: Uses relationship type colors for edge rendering in the network graph
-
-**API Endpoints:**
-- `GET /api/relationship-types`: Fetch all relationship types
-- `POST /api/relationships`: Create a new relationship (automatically bidirectional)
-- `DELETE /api/relationships/:id`: Remove a relationship (affects both people)
+Uses `relationship_types` for customizable types (UUID, name, color, notes) and `relationships` for person-to-person connections (`fromPersonId`, `toPersonId`, `typeId`, notes). Relationships are stored once but displayed bidirectionally on both people's profiles. UI components include `AddRelationshipDialog` for creating relationships and `RelationshipsTab` for display, with colors used in the graph visualization.
 
 ## External Dependencies
 
 **Database:**
--   External PostgreSQL database at `pbe.im:3306`.
+-   External PostgreSQL database.
 
 **Image Storage:**
--   S3-compatible object storage (e.g., `hel1.your-objectstorage.com`) for images.
--   AWS SDK S3 client for upload/delete operations.
--   `react-easy-crop` for client-side image cropping.
+-   S3-compatible object storage.
+-   AWS SDK S3 client.
+-   `react-easy-crop` for client-side cropping.
 
 **UI Component Libraries:**
--   Radix UI primitives for accessible components.
--   `shadcn/ui` for styled components.
+-   Radix UI primitives.
+-   `shadcn/ui`.
 -   Lucide React for icons.
-
-**Development Tools:**
--   Replit-specific plugins (development banner, error overlay, Cartographer).
 
 **Form & Validation:**
 -   React Hook Form.
--   Zod for schema validation.
--   `@hookform/resolvers` for Zod integration.
+-   Zod.
+-   `@hookform/resolvers` for Zod.
 
 **Date Handling:**
--   `date-fns` for date manipulation.
+-   `date-fns`.
 
 **Styling:**
--   Tailwind CSS with PostCSS.
--   `class-variance-authority`, `clsx`, and `tailwind-merge` for styling utilities.
+-   Tailwind CSS.
+-   `class-variance-authority`, `clsx`, `tailwind-merge`.
 
 **UI Enhancement:**
--   `cmdk` for command palette.
--   `embla-carousel-react` for carousels.
--   `vaul` for drawer components.
+-   `cmdk` (command palette).
+-   `embla-carousel-react`.
+-   `vaul` (drawers).
 
 **Graph Visualization:**
--   Pixi.js for WebGL-based interactive graph rendering.
+-   Pixi.js.
 
 **File Upload:**
--   Multer for handling multipart/form-data.
+-   Multer.
