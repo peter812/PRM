@@ -647,7 +647,7 @@ export default function Graph() {
           });
 
           // Manually render after all updates are complete
-          if (appRef.current && !appRef.current.renderer.destroyed) {
+          if (appRef.current) {
             try {
               appRef.current.renderer.render(appRef.current.stage);
             } catch (e) {
@@ -804,7 +804,7 @@ export default function Graph() {
         }
       }, 0);
     };
-  }, [people, groups, navigate, showGroups, disablePersonLines, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull, anonymizePeople, meData?.id]);
+  }, [people, groups, navigate, showGroups, disablePersonLines, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull, anonymizePeople]);
 
   return (
     <div className="h-full flex flex-col">
