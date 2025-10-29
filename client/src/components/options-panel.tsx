@@ -184,7 +184,7 @@ export function OptionsPanel({
             <p className="text-sm text-muted-foreground">
               Focus on a specific person and their connections
             </p>
-            <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+            <Popover open={searchOpen} onOpenChange={setSearchOpen} modal={true}>
               <PopoverTrigger asChild>
                 <Button
                   variant="outline"
@@ -199,7 +199,7 @@ export function OptionsPanel({
                   <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-72 p-0" align="start">
+              <PopoverContent className="w-72 p-0" align="start" side="bottom" sideOffset={4}>
                 <Command>
                   <CommandInput placeholder="Search people..." />
                   <CommandList>
@@ -435,7 +435,7 @@ export function OptionsPanel({
                 <p className="text-sm text-muted-foreground">
                   Focus on a specific person and their connections
                 </p>
-                <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+                <Popover open={searchOpen} onOpenChange={setSearchOpen} modal={true}>
                   <PopoverTrigger asChild>
                     <Button
                       variant="outline"
@@ -450,7 +450,7 @@ export function OptionsPanel({
                       <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-72 p-0" align="start">
+                  <PopoverContent className="w-72 p-0" align="start" side="bottom" sideOffset={4}>
                     <Command>
                       <CommandInput placeholder="Search people..." />
                       <CommandList>
