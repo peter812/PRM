@@ -1040,29 +1040,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // SSO Login flow endpoints
   app.get("/api/sso/login", async (req, res) => {
     try {
-      // Get user ID from query param (passed from login page)
-      const username = req.query.username as string;
-      if (!username) {
-        return res.status(400).json({ error: "Username required for SSO login" });
+      // Get the first enabled SSO config (system-wide)
+      // In a multi-user system, we can get any user's config since it's system-wide
+      const allUsers = await storage.getAllUsers();
+      let config = null;
+      
+      for (const user of allUsers) {
+        const userConfig = await storage.getSsoConfig(user.id);
+        if (userConfig && userConfig.enabled === 1) {
+          config = userConfig;
+          break;
+        }
       }
 
-      // Get user by username
-      const user = await storage.getUserByUsername(username);
-      if (!user) {
-        return res.status(404).json({ error: "User not found" });
-      }
-
-      // Get SSO config for this user
-      const config = await storage.getSsoConfig(user.id);
-      if (!config || !config.enabled) {
-        return res.status(400).json({ error: "SSO not configured or disabled for this user" });
+      if (!config) {
+        return res.status(400).json({ error: "SSO not configured or disabled" });
       }
 
       // Store state in session for CSRF protection
       const crypto = await import("crypto");
       const state = crypto.randomBytes(32).toString('hex');
       req.session.ssoState = state;
-      req.session.ssoUserId = user.id;
+      // Don't store userId yet - we'll determine it from OAuth response
 
       // Build authorization URL
       const authParams = new URLSearchParams({
@@ -1074,7 +1073,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       const authUrl = `${config.authUrl}?${authParams.toString()}`;
-      res.json({ redirectUrl: authUrl });
+      
+      // Redirect directly instead of returning JSON
+      res.redirect(authUrl);
     } catch (error) {
       console.error("Error initiating SSO login:", error);
       res.status(500).json({ error: "Failed to initiate SSO login" });
@@ -1087,18 +1088,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Verify state for CSRF protection
       if (!state || state !== req.session.ssoState) {
-        return res.redirect('/login?error=invalid_state');
+        return res.redirect('/?error=invalid_state');
       }
 
-      const userId = req.session.ssoUserId;
-      if (!userId) {
-        return res.redirect('/login?error=missing_session');
+      // Get the first enabled SSO config (system-wide)
+      const allUsers = await storage.getAllUsers();
+      let config = null;
+      
+      for (const user of allUsers) {
+        const userConfig = await storage.getSsoConfig(user.id);
+        if (userConfig && userConfig.enabled === 1) {
+          config = userConfig;
+          break;
+        }
       }
 
-      // Get SSO config
-      const config = await storage.getSsoConfig(userId);
-      if (!config || !config.enabled) {
-        return res.redirect('/login?error=sso_disabled');
+      if (!config) {
+        return res.redirect('/?error=sso_disabled');
       }
 
       // Exchange code for token
@@ -1161,25 +1167,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Get user by SSO email
       const user = await storage.getUserBySsoEmail(identifierValue);
-      if (!user || user.id !== userId) {
-        return res.redirect('/login?error=sso_email_mismatch');
+      if (!user) {
+        return res.redirect('/?error=sso_email_not_found');
       }
 
       // Clean up session state
       delete req.session.ssoState;
-      delete req.session.ssoUserId;
 
       // Log the user in
       req.login(user, (err) => {
         if (err) {
           console.error("Error logging in after SSO:", err);
-          return res.redirect('/login?error=login_failed');
+          return res.redirect('/?error=login_failed');
         }
         res.redirect('/');
       });
     } catch (error) {
       console.error("Error in SSO callback:", error);
-      res.redirect('/login?error=callback_failed');
+      res.redirect('/?error=callback_failed');
     }
   });
 
