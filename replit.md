@@ -26,6 +26,16 @@ An external PostgreSQL database is used for all persistent data, configured via 
 
 The application supports session-based authentication for the internal web UI and API key-based access for external integrations. API keys are hashed and managed via a settings page, never included in data exports. User creation is disabled by default after initial setup and can be re-enabled after a database reset.
 
+### Database Reset
+
+The "Reset Database" feature performs a complete wipe of all data including the current ME user. After reset:
+- All tables are dropped and recreated
+- Default relationship and interaction types are seeded
+- No users are preserved (including the current ME user)
+- User creation is re-enabled
+- The current session is destroyed
+- User is redirected to /welcome to create a new account
+
 ### Key Features & Design Decisions
 
 -   **Global Search:** Real-time top-bar search with prioritized results for people and groups.

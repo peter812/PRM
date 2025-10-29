@@ -186,10 +186,10 @@ async function seedExampleData(userId: number, mePerson: any): Promise<void> {
 
 /**
  * Resets the database and seeds it with default data
- * Optionally seeds example people and groups
+ * Optionally recreates a user and seeds example people and groups
  */
 export async function resetDatabase(
-  userData: { name: string; nickname: string | null; username: string; password: string },
+  userData: { name: string; nickname: string | null; username: string; password: string } | null,
   includeExamples: boolean
 ): Promise<void> {
   try {
@@ -218,27 +218,30 @@ export async function resetDatabase(
     await seedRelationshipTypes();
     await seedInteractionTypes();
     
-    // Recreate the user (will get a new ID, likely 1)
-    const userResult = await pool.query(
-      `INSERT INTO users (name, nickname, username, password)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id`,
-      [userData.name, userData.nickname, userData.username, userData.password]
-    );
-    const newUserId = userResult.rows[0].id;
-    
-    // Create the "Me" person for the recreated user
-    const personResult = await pool.query(
-      `INSERT INTO people (user_id, first_name, last_name) 
-       VALUES ($1, $2, $3)
-       RETURNING *`,
-      [newUserId, userData.name, '']
-    );
-    const mePerson = personResult.rows[0];
-    
-    // Optionally seed example data
-    if (includeExamples) {
-      await seedExampleData(newUserId, mePerson);
+    // Only recreate user if userData is provided
+    if (userData) {
+      // Recreate the user (will get a new ID, likely 1)
+      const userResult = await pool.query(
+        `INSERT INTO users (name, nickname, username, password)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [userData.name, userData.nickname, userData.username, userData.password]
+      );
+      const newUserId = userResult.rows[0].id;
+      
+      // Create the "Me" person for the recreated user
+      const personResult = await pool.query(
+        `INSERT INTO people (user_id, first_name, last_name) 
+         VALUES ($1, $2, $3)
+         RETURNING *`,
+        [newUserId, userData.name, '']
+      );
+      const mePerson = personResult.rows[0];
+      
+      // Optionally seed example data
+      if (includeExamples) {
+        await seedExampleData(newUserId, mePerson);
+      }
     }
     
     log("Database reset successfully!");
