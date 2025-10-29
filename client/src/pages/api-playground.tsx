@@ -36,15 +36,15 @@ export default function ApiPlayground() {
       case "people":
         return ["list", "get", "create", "update", "delete"];
       case "notes":
-        return ["create", "delete"];
+        return ["list", "create", "delete"];
       case "interactions":
-        return ["create", "delete"];
+        return ["list", "create", "delete"];
       case "relationships":
-        return ["create", "update", "delete"];
+        return ["get", "create", "update", "delete"];
       case "groups":
         return ["list", "get", "create", "update", "delete"];
       case "group-notes":
-        return ["create", "delete"];
+        return ["get", "create", "delete"];
       default:
         return [];
     }
@@ -142,6 +142,19 @@ fetch(\`${API_BASE_URL}/api/people/\${personId}\`, {
         }
       },
       notes: {
+        list: {
+          description: "Get all notes across all people",
+          code: `fetch('${API_BASE_URL}/api/notes', {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  }
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));`
+        },
         create: {
           description: "Create a note for a person",
           code: `const newNote = {
@@ -178,6 +191,44 @@ fetch(\`${API_BASE_URL}/api/notes/\${noteId}\`, {
         }
       },
       interactions: {
+        list: {
+          description: "Get filtered interactions for a person or group",
+          code: `// Get interactions for a person (last 10)
+const params = new URLSearchParams({
+  interaction_type: 'person',
+  uuid: 'PERSON_ID_HERE',
+  count_limit: '10'
+});
+
+fetch(\`${API_BASE_URL}/api/interactions?\${params}\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  }
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));
+
+// Get interactions for a group after a specific date
+const params2 = new URLSearchParams({
+  interaction_type: 'group',
+  uuid: 'GROUP_ID_HERE',
+  date_back: '2024-01-01T00:00:00.000Z'
+});
+
+fetch(\`${API_BASE_URL}/api/interactions?\${params2}\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  }
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));`
+        },
         create: {
           description: "Create an interaction (meeting, call, email, etc.)",
           code: `const newInteraction = {
@@ -217,6 +268,39 @@ fetch(\`${API_BASE_URL}/api/interactions/\${interactionId}\`, {
         }
       },
       relationships: {
+        get: {
+          description: "Get relationships for a person with optional filters",
+          code: `// Get all relationships for a person
+const personId = 'PERSON_ID_HERE';
+
+fetch(\`${API_BASE_URL}/api/relationships/\${personId}\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  }
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));
+
+// Get top 5 relationships with value >= 70
+const params = new URLSearchParams({
+  count_limit: '5',
+  value_limit: '70'
+});
+
+fetch(\`${API_BASE_URL}/api/relationships/\${personId}?\${params}\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  }
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));`
+        },
         create: {
           description: "Create a relationship between two people",
           code: `const newRelationship = {
@@ -359,6 +443,39 @@ fetch(\`${API_BASE_URL}/api/groups/\${groupId}\`, {
         }
       },
       "group-notes": {
+        get: {
+          description: "Get notes for a group with optional filters",
+          code: `// Get all notes for a group
+const groupId = 'GROUP_ID_HERE';
+
+fetch(\`${API_BASE_URL}/api/group-notes/\${groupId}\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  }
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));
+
+// Get last 10 notes created after a specific date
+const params = new URLSearchParams({
+  count_limit: '10',
+  date_back: '2024-01-01T00:00:00.000Z'
+});
+
+fetch(\`${API_BASE_URL}/api/group-notes/\${groupId}?\${params}\`, {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer YOUR_API_KEY',
+    'Content-Type': 'application/json'
+  }
+})
+  .then(response => response.json())
+  .then(data => console.log(data))
+  .catch(error => console.error('Error:', error));`
+        },
         create: {
           description: "Create a note for a group",
           code: `const newGroupNote = {
