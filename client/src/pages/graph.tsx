@@ -180,7 +180,7 @@ export default function Graph() {
         const foregroundColor = hslToHex(fgColor.h, fgColor.s, fgColor.l);
         const defaultRelationshipColor = 0x6b7280; // Gray for relationships without a type
 
-        // Create PIXI application
+        // Create PIXI application with manual rendering
         const app = new Application();
         await app.init({
           width: canvasRef.current?.clientWidth || 800,
@@ -190,6 +190,7 @@ export default function Graph() {
           resolution: window.devicePixelRatio || 1,
           autoDensity: true,
           preference: 'webgl',
+          autoStart: false, // Disable auto-rendering
         });
 
         if (canvasRef.current) {
@@ -600,6 +601,11 @@ export default function Graph() {
             }
           });
 
+          // Check if still mounted before edge updates
+          if (!isMountedRef.current || !appRef.current || !containerRef.current) {
+            return;
+          }
+          
           // Update edge positions
           edgesRef.current.forEach((edge) => {
             if (!edge.graphics) return; // Skip if graphics destroyed
@@ -612,22 +618,47 @@ export default function Graph() {
                 !fromNode.graphics.destroyed && !toNode.graphics.destroyed &&
                 fromNode.graphics.visible && toNode.graphics.visible) {
               try {
-                edge.graphics.clear();
-                edge.graphics.moveTo(fromNode.x, fromNode.y);
-                edge.graphics.lineTo(toNode.x, toNode.y);
+                // Check again before graphics operations
+                if (!isMountedRef.current || edge.graphics.destroyed) return;
+                
+                // Temporarily set renderable to false to prevent rendering during clear/redraw
+                const g = edge.graphics;
+                const wasRenderable = g.renderable;
+                g.renderable = false;
+                
+                g.clear();
                 
                 if (edge.type === 'relationship') {
-                  edge.graphics.stroke({ color: edge.color, width: 2, alpha: personLineOpacity });
+                  g.moveTo(fromNode.x, fromNode.y);
+                  g.lineTo(toNode.x, toNode.y);
+                  g.stroke({ color: edge.color, width: 2, alpha: personLineOpacity });
                 } else if (edge.type === 'group-member') {
-                  edge.graphics.stroke({ color: edge.color, width: 1, alpha: groupLineOpacity });
+                  g.moveTo(fromNode.x, fromNode.y);
+                  g.lineTo(toNode.x, toNode.y);
+                  g.stroke({ color: edge.color, width: 1, alpha: groupLineOpacity });
                 }
+                
+                // Restore renderable state after drawing is complete
+                g.renderable = wasRenderable;
               } catch (e) {
                 // Graphics may have been destroyed during operation, skip silently
               }
             }
           });
 
-          animationRef.current = requestAnimationFrame(simulate);
+          // Manually render after all updates are complete
+          if (appRef.current && !appRef.current.renderer.destroyed) {
+            try {
+              appRef.current.renderer.render(appRef.current.stage);
+            } catch (e) {
+              // Renderer may be destroyed, skip
+            }
+          }
+          
+          // Final check before scheduling next frame
+          if (isMountedRef.current && appRef.current) {
+            animationRef.current = requestAnimationFrame(simulate);
+          }
         };
 
         simulate();
@@ -738,40 +769,40 @@ export default function Graph() {
         animationRef.current = 0;
       }
       
-      // Remove wheel event listener before destroying app
-      if (appRef.current?.canvas && wheelHandlerRef.current) {
-        try {
-          appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
-        } catch (e) {
-          // Ignore if already removed
-        }
-        wheelHandlerRef.current = null;
-      }
-      
-      // Clear container reference before destroying to prevent render attempts
-      containerRef.current = null;
-      
-      // Clear node and edge refs
-      nodesRef.current.clear();
-      edgesRef.current = [];
-      
-      // Destroy PIXI app - all graphics will be automatically destroyed
-      if (appRef.current) {
-        try {
-          appRef.current.destroy(true, { children: true, texture: true });
-        } catch (e) {
-          // Ignore errors during destroy - objects may already be destroyed
-          console.warn('Pixi cleanup warning:', e);
-        }
-        appRef.current = null;
-      }
-      
-      // Clean up DOM
-      if (canvasRef.current) {
+      // Remove canvas from DOM IMMEDIATELY to prevent Pixi from rendering
+      if (canvasRef.current && canvasRef.current.firstChild) {
         while (canvasRef.current.firstChild) {
           canvasRef.current.removeChild(canvasRef.current.firstChild);
         }
       }
+      
+      // Small delay to ensure Pixi renderer has stopped
+      setTimeout(() => {
+        // Remove wheel event listener
+        if (appRef.current?.canvas && wheelHandlerRef.current) {
+          try {
+            appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
+          } catch (e) {
+            // Ignore if already removed
+          }
+          wheelHandlerRef.current = null;
+        }
+        
+        // Clear refs
+        containerRef.current = null;
+        nodesRef.current.clear();
+        edgesRef.current = [];
+        
+        // Destroy PIXI app
+        if (appRef.current) {
+          try {
+            appRef.current.destroy(true, { children: true, texture: true });
+          } catch (e) {
+            // Ignore errors during destroy
+          }
+          appRef.current = null;
+        }
+      }, 0);
     };
   }, [people, groups, navigate, showGroups, disablePersonLines, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull, anonymizePeople, meData?.id]);
 
