@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Users, Network, Search } from "lucide-react";
+import { Users, Network, Search, Shield } from "lucide-react";
 import { Redirect } from "wouter";
 import { useQuery } from "@tanstack/react-query";
+import { Separator } from "@/components/ui/separator";
 
 export default function AuthPage() {
   const { user, loginMutation } = useAuth();
@@ -18,6 +19,11 @@ export default function AuthPage() {
     queryKey: ["/api/setup/status"],
     refetchInterval: false,
     staleTime: 0, // Always fetch fresh
+  });
+
+  // Check if SSO is enabled
+  const { data: ssoConfig } = useQuery<{ enabled: number }>({
+    queryKey: ["/api/sso-config"],
   });
 
   const loginForm = useForm<InsertUser>({
@@ -40,6 +46,13 @@ export default function AuthPage() {
   const handleLogin = (data: InsertUser) => {
     loginMutation.mutate(data);
   };
+
+  const handleSsoLogin = () => {
+    // Redirect to SSO initiation endpoint
+    window.location.href = "/api/sso/login";
+  };
+
+  const isSsoEnabled = ssoConfig?.enabled === 1;
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
@@ -109,6 +122,27 @@ export default function AuthPage() {
                   </Button>
                 </form>
               </Form>
+
+              {isSsoEnabled && (
+                <>
+                  <div className="relative my-6">
+                    <Separator />
+                    <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-2 text-xs text-muted-foreground">
+                      or
+                    </span>
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={handleSsoLogin}
+                    data-testid="button-sso-login"
+                  >
+                    <Shield className="mr-2 h-4 w-4" />
+                    Sign in with SSO
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
         </div>
