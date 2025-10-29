@@ -81,6 +81,7 @@ export default function Graph() {
   const isDraggingRef = useRef<string | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const wheelHandlerRef = useRef<((e: WheelEvent) => void) | null>(null);
+  const isMountedRef = useRef<boolean>(true);
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showGroups, setShowGroups] = useState(true);
@@ -130,14 +131,32 @@ export default function Graph() {
 
   useEffect(() => {
     if (!canvasRef.current || !people.length) return;
+    
+    // Mark as mounted at the start of effect
+    isMountedRef.current = true;
 
     const initPixi = async () => {
       try {
+        // Stop any existing animation
+        if (animationRef.current) {
+          cancelAnimationFrame(animationRef.current);
+          animationRef.current = 0;
+        }
+        
         // Clean up existing app
         if (appRef.current) {
-          appRef.current.destroy(true, { children: true, texture: true });
+          try {
+            appRef.current.destroy(true, { children: true, texture: true });
+          } catch (e) {
+            console.warn('Cleanup during reinit:', e);
+          }
           appRef.current = null;
         }
+        
+        // Clear refs
+        nodesRef.current.clear();
+        edgesRef.current = [];
+        containerRef.current = null;
 
         // Clean up any existing canvas elements
         if (canvasRef.current) {
@@ -145,6 +164,9 @@ export default function Graph() {
             canvasRef.current.removeChild(canvasRef.current.firstChild);
           }
         }
+        
+        // Check if still mounted after async cleanup
+        if (!isMountedRef.current) return;
 
         // Get theme colors from CSS variables
         const styles = getComputedStyle(document.documentElement);
@@ -489,8 +511,8 @@ export default function Graph() {
 
         // Physics simulation
         const simulate = () => {
-          // Guard: Stop simulation if app or container has been destroyed
-          if (!appRef.current || !containerRef.current || nodesRef.current.size === 0) {
+          // Guard: Stop simulation if component unmounted or app destroyed
+          if (!isMountedRef.current || !appRef.current || !containerRef.current || nodesRef.current.size === 0) {
             // Cancel animation frame to stop the loop
             if (animationRef.current) {
               cancelAnimationFrame(animationRef.current);
@@ -707,7 +729,10 @@ export default function Graph() {
     initPixi();
 
     return () => {
-      // Cancel animation frame immediately
+      // Mark as unmounted FIRST to stop all operations
+      isMountedRef.current = false;
+      
+      // Cancel animation frame immediately to stop rendering loop
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
         animationRef.current = 0;
@@ -715,21 +740,28 @@ export default function Graph() {
       
       // Remove wheel event listener before destroying app
       if (appRef.current?.canvas && wheelHandlerRef.current) {
-        appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
+        try {
+          appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
+        } catch (e) {
+          // Ignore if already removed
+        }
         wheelHandlerRef.current = null;
       }
       
-      // Clear refs to prevent race conditions
-      nodesRef.current.clear();
-      edgesRef.current = [];
+      // Clear container reference before destroying to prevent render attempts
       containerRef.current = null;
       
-      // Destroy PIXI app with a small delay to ensure rendering has stopped
+      // Clear node and edge refs
+      nodesRef.current.clear();
+      edgesRef.current = [];
+      
+      // Destroy PIXI app - all graphics will be automatically destroyed
       if (appRef.current) {
         try {
           appRef.current.destroy(true, { children: true, texture: true });
         } catch (e) {
-          // Ignore errors during destroy - app may already be destroyed
+          // Ignore errors during destroy - objects may already be destroyed
+          console.warn('Pixi cleanup warning:', e);
         }
         appRef.current = null;
       }
