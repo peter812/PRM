@@ -94,7 +94,7 @@ export function OptionsPanel({
       {/* Desktop: Sidebar panel */}
       {!isCollapsed && (
         <div className="hidden lg:flex lg:flex-col lg:w-80 lg:border-l lg:bg-card">
-          <div className="p-4 border-b flex items-center justify-between">
+          <div className="p-4 border-b flex items-center justify-between shrink-0">
             <h3 className="font-semibold text-lg">Graph Options</h3>
             <Button
               variant="ghost"
@@ -105,7 +105,7 @@ export function OptionsPanel({
               <ChevronRight className="h-5 w-5" />
             </Button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          <div className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-6 pb-8" style={{ WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
           {/* Show Groups Toggle */}
           <div className="space-y-3">
             <Label htmlFor="show-groups" className="text-base font-medium">
@@ -342,10 +342,10 @@ export function OptionsPanel({
           onClick={() => onOpenChange(false)}
         >
           <div
-            className="fixed right-0 top-0 bottom-0 w-80 bg-card border-l shadow-lg"
+            className="fixed right-0 top-0 bottom-0 w-full max-w-sm bg-card border-l shadow-lg"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-4 border-b flex items-center justify-between">
+            <div className="p-4 border-b flex items-center justify-between shrink-0">
               <h3 className="font-semibold text-lg">Graph Options</h3>
               <Button
                 variant="ghost"
@@ -356,7 +356,7 @@ export function OptionsPanel({
                 <X className="h-5 w-5" />
               </Button>
             </div>
-            <div className="overflow-y-auto p-4 space-y-6 h-[calc(100%-73px)]">
+            <div className="overflow-y-auto overscroll-contain p-4 space-y-6 h-[calc(100%-73px)] pb-8" style={{ WebkitOverflowScrolling: 'touch' } as React.CSSProperties}>
               {/* Show Groups Toggle */}
               <div className="space-y-3">
                 <Label htmlFor="show-groups-mobile" className="text-base font-medium">
