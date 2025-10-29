@@ -1,4 +1,4 @@
-import { Users, Network, Users2, Settings, User } from "lucide-react";
+import { Users, Network, Users2, Settings, User, Code } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -31,6 +31,11 @@ const menuItems = [
     title: "Graph",
     url: "/graph",
     icon: Network,
+  },
+  {
+    title: "API Playground",
+    url: "/api-playground",
+    icon: Code,
   },
   {
     title: "Settings",

@@ -17,6 +17,7 @@ import MeProfile from "@/pages/me-profile";
 import GroupsList from "@/pages/groups-list";
 import GroupProfile from "@/pages/group-profile";
 import Graph from "@/pages/graph";
+import ApiPlayground from "@/pages/api-playground";
 import AuthPage from "@/pages/auth-page";
 import WelcomePage from "@/pages/welcome-page";
 import SettingsLayout from "@/pages/settings-layout";
@@ -34,6 +35,7 @@ function Router() {
       <ProtectedRoute path="/groups" component={GroupsList} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
       <ProtectedRoute path="/graph" component={Graph} />
+      <ProtectedRoute path="/api-playground" component={ApiPlayground} />
       <ProtectedRoute path="/settings" component={SettingsLayout} />
       <ProtectedRoute path="/settings/:rest*" component={SettingsLayout} />
       <Route component={NotFound} />
