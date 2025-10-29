@@ -269,6 +269,7 @@ export default function PersonProfile() {
         open={isAddRelationshipOpen}
         onOpenChange={setIsAddRelationshipOpen}
         personId={person.id}
+        existingRelationships={person.relationships}
       />
       <EditPersonDialog
         open={isEditPersonOpen}
