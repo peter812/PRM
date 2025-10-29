@@ -38,7 +38,7 @@ The application supports session-based authentication for the internal web UI an
 -   **Deletion Features:** Comprehensive cascade deletion for people and groups.
 -   **Groups Management:** Bidirectional member management between people and groups with various UI display modes.
 -   **XML Import/Export:** Full data backup and migration, preserving UUIDs, excluding images.
--   **API Documentation & Playground:** Interactive API documentation and a testing page at `/api-playground` with code examples and execution.
+-   **API Documentation & Playground:** Interactive API documentation organized into collapsible sections (People, Notes, Interactions, Relationships, Groups, Group Notes) with endpoint details, request/response examples, and copy-to-clipboard functionality. Dedicated testing page at `/api-playground` with resource/operation selection, live code examples, and result execution.
 
 ### Interactions System
 
