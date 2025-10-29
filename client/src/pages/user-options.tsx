@@ -68,14 +68,15 @@ export default function UserOptionsPage() {
   const queryClient = useQueryClient();
   const [showClientSecret, setShowClientSecret] = useState(false);
   const ssoFormInitialized = useRef(false);
+  const userFormInitialized = useRef(false);
 
   const form = useForm<UpdateUserForm>({
     resolver: zodResolver(updateUserSchema),
     defaultValues: {
-      name: user?.name || "",
-      nickname: user?.nickname || "",
-      username: user?.username || "",
-      ssoEmail: user?.ssoEmail || "",
+      name: "",
+      nickname: "",
+      username: "",
+      ssoEmail: "",
       currentPassword: "",
       newPassword: "",
       confirmPassword: "",
@@ -117,6 +118,22 @@ export default function UserOptionsPage() {
     },
   });
 
+  // Update user form when user data loads (only once)
+  useEffect(() => {
+    if (user && !userFormInitialized.current) {
+      userFormInitialized.current = true;
+      form.reset({
+        name: user.name || "",
+        nickname: user.nickname || "",
+        username: user.username || "",
+        ssoEmail: user.ssoEmail || "",
+        currentPassword: "",
+        newPassword: "",
+        confirmPassword: "",
+      });
+    }
+  }, [user, form]);
+
   // Update SSO form when config loads (only once)
   useEffect(() => {
     if (ssoConfig && !ssoFormInitialized.current) {
@@ -124,7 +141,7 @@ export default function UserOptionsPage() {
       ssoForm.reset({
         enabled: ssoConfig.enabled === 1,
         clientId: ssoConfig.clientId || "",
-        clientSecret: ssoConfig.clientSecret === '********' ? '' : ssoConfig.clientSecret || "",
+        clientSecret: ssoConfig.clientSecret || "",
         authUrl: ssoConfig.authUrl || "",
         tokenUrl: ssoConfig.tokenUrl || "",
         userInfoUrl: ssoConfig.userInfoUrl || "",
