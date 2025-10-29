@@ -10,6 +10,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
+  SidebarTrigger,
 } from "@/components/ui/sidebar";
 import UserOptionsPage from "@/pages/user-options";
 import AppOptionsPage from "@/pages/app-options";
@@ -95,18 +96,23 @@ export default function SettingsLayout() {
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
         <SettingsSidebar />
-        <main className="flex-1 overflow-auto">
-          <Switch>
-            <Route path="/settings" component={() => <Redirect to="/settings/user" />} />
-            <Route path="/settings/user" component={UserOptionsPage} />
-            <Route path="/settings/app" component={AppOptionsPage} />
-            <Route path="/settings/relationship-types" component={RelationshipTypesList} />
-            <Route path="/settings/interaction-types" component={InteractionTypesList} />
-            <Route path="/settings/api-settings" component={ApiSettingsPage} />
-            <Route path="/settings/api" component={ApiDocs} />
-            <Route component={NotFound} />
-          </Switch>
-        </main>
+        <div className="flex flex-col flex-1">
+          <header className="flex items-center justify-between p-2 border-b">
+            <SidebarTrigger data-testid="button-sidebar-toggle" />
+          </header>
+          <main className="flex-1 overflow-auto">
+            <Switch>
+              <Route path="/settings" component={() => <Redirect to="/settings/user" />} />
+              <Route path="/settings/user" component={UserOptionsPage} />
+              <Route path="/settings/app" component={AppOptionsPage} />
+              <Route path="/settings/relationship-types" component={RelationshipTypesList} />
+              <Route path="/settings/interaction-types" component={InteractionTypesList} />
+              <Route path="/settings/api-settings" component={ApiSettingsPage} />
+              <Route path="/settings/api" component={ApiDocs} />
+              <Route component={NotFound} />
+            </Switch>
+          </main>
+        </div>
       </div>
     </SidebarProvider>
   );

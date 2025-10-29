@@ -107,7 +107,7 @@ export default function UserOptionsPage() {
   }
 
   return (
-    <div className="container max-w-2xl py-8">
+    <div className="container max-w-2xl py-8 pl-12">
       <Card>
         <CardHeader>
           <CardTitle>User Options</CardTitle>

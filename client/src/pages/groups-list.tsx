@@ -115,7 +115,7 @@ export default function GroupsList() {
 
       <div className="flex-1 overflow-auto px-6 py-6">
         {isLoading ? (
-          <div className={viewMode === "list" ? "space-y-3" : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"}>
+          <div className={viewMode === "list" ? "flex flex-col gap-[5px]" : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"}>
             {[1, 2, 3, 4].map((i) => (
               <Card key={i} className="p-4 animate-pulse">
                 <div className="flex items-center gap-4">
@@ -130,7 +130,7 @@ export default function GroupsList() {
           </div>
         ) : groups && groups.length > 0 ? (
           viewMode === "list" ? (
-            <div className="space-y-3">
+            <div className="flex flex-col gap-[5px]">
               {groups.map((group) => (
                 <Link key={group.id} href={`/group/${group.id}`}>
                   <Card
@@ -206,7 +206,7 @@ export default function GroupsList() {
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10 absolute top-0 right-0"
+                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10 absolute bottom-0 left-0"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();

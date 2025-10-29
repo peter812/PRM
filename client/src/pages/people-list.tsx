@@ -71,7 +71,7 @@ export default function PeopleList() {
 
       <div className="flex-1 overflow-auto px-6 py-6">
         {isLoading ? (
-          <div className="space-y-3">
+          <div className="flex flex-col gap-[5px]">
             {[1, 2, 3, 4].map((i) => (
               <Card key={i} className="p-4 animate-pulse">
                 <div className="flex items-center gap-4">
@@ -98,7 +98,7 @@ export default function PeopleList() {
             </Button>
           </div>
         ) : people && people.length > 0 ? (
-          <div className="space-y-4">
+          <div className="flex flex-col gap-[5px]">
             {people.map((person) => (
               <Link key={person.id} href={`/person/${person.id}`}>
                 <Card
