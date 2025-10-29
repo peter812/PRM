@@ -1051,6 +1051,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Notes endpoints
+  app.get("/api/notes", async (req, res) => {
+    try {
+      // Get all notes across all people
+      const allPeople = await storage.getAllPeople();
+      const allNotes: any[] = [];
+      
+      for (const person of allPeople) {
+        const personWithDetails = await storage.getPersonById(person.id);
+        if (personWithDetails?.notes) {
+          allNotes.push(...personWithDetails.notes.map(note => ({
+            ...note,
+            personId: person.id,
+            personName: `${person.firstName} ${person.lastName}`,
+          })));
+        }
+      }
+      
+      // Sort by creation date, newest first
+      allNotes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      
+      res.json(allNotes);
+    } catch (error) {
+      console.error("Error fetching notes:", error);
+      res.status(500).json({ error: "Failed to fetch notes" });
+    }
+  });
+
   app.post("/api/notes", async (req, res) => {
     try {
       const validatedData = insertNoteSchema.parse(req.body);
@@ -1074,6 +1101,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Interactions endpoints
+  app.get("/api/interactions", async (req, res) => {
+    try {
+      const { interaction_type, uuid, count_limit, date_back } = req.query;
+      
+      // Validate required parameters
+      if (!interaction_type || !uuid) {
+        return res.status(400).json({ 
+          error: "Missing required parameters: interaction_type and uuid are required" 
+        });
+      }
+      
+      if (interaction_type !== "person" && interaction_type !== "group") {
+        return res.status(400).json({ 
+          error: "interaction_type must be either 'person' or 'group'" 
+        });
+      }
+      
+      // Get all interactions
+      const allInteractions = await db
+        .select()
+        .from(interactions)
+        .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id));
+      
+      // Filter based on interaction_type
+      let filteredInteractions = allInteractions.filter(row => {
+        if (interaction_type === "person") {
+          return row.interactions.peopleIds.includes(uuid as string);
+        } else {
+          return row.interactions.groupIds?.includes(uuid as string);
+        }
+      });
+      
+      // Apply date filter if provided
+      if (date_back) {
+        const dateBackTimestamp = new Date(date_back as string).getTime();
+        filteredInteractions = filteredInteractions.filter(row => 
+          new Date(row.interactions.date).getTime() >= dateBackTimestamp
+        );
+      }
+      
+      // Sort by date, newest first
+      filteredInteractions.sort((a, b) => 
+        new Date(b.interactions.date).getTime() - new Date(a.interactions.date).getTime()
+      );
+      
+      // Apply count limit if provided
+      if (count_limit) {
+        const limit = parseInt(count_limit as string);
+        if (!isNaN(limit) && limit > 0) {
+          filteredInteractions = filteredInteractions.slice(0, limit);
+        }
+      }
+      
+      // Format the response
+      const result = filteredInteractions.map(row => ({
+        ...row.interactions,
+        type: row.interaction_types ? {
+          id: row.interaction_types.id,
+          name: row.interaction_types.name,
+          color: row.interaction_types.color,
+          value: row.interaction_types.value,
+        } : null,
+      }));
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching interactions:", error);
+      res.status(500).json({ error: "Failed to fetch interactions" });
+    }
+  });
+
   app.post("/api/interactions", async (req, res) => {
     try {
       const validatedData = insertInteractionSchema.parse(req.body);
@@ -1111,6 +1209,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Relationships endpoints
+  app.get("/api/relationships/:personId", async (req, res) => {
+    try {
+      const { personId } = req.params;
+      const { count_limit, value_limit } = req.query;
+      
+      // Get the person with all relationships
+      const person = await storage.getPersonById(personId);
+      if (!person) {
+        return res.status(404).json({ error: "Person not found" });
+      }
+      
+      // Get all relationships where this person is involved
+      let allRelationships = person.relationships || [];
+      
+      // Apply value_limit filter if provided
+      if (value_limit) {
+        const valueThreshold = parseInt(value_limit as string);
+        if (!isNaN(valueThreshold)) {
+          allRelationships = allRelationships.filter(rel => {
+            const relValue = rel.type?.value ?? 0;
+            return relValue >= valueThreshold;
+          });
+        }
+      }
+      
+      // Sort by relationship value (highest first), then by creation date
+      allRelationships.sort((a, b) => {
+        const aValue = a.type?.value ?? 0;
+        const bValue = b.type?.value ?? 0;
+        if (bValue !== aValue) {
+          return bValue - aValue;
+        }
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+      
+      // Apply count_limit if provided
+      if (count_limit) {
+        const limit = parseInt(count_limit as string);
+        if (!isNaN(limit) && limit > 0) {
+          allRelationships = allRelationships.slice(0, limit);
+        }
+      }
+      
+      res.json(allRelationships);
+    } catch (error) {
+      console.error("Error fetching relationships:", error);
+      res.status(500).json({ error: "Failed to fetch relationships" });
+    }
+  });
+
   app.post("/api/relationships", async (req, res) => {
     try {
       const validatedData = insertRelationshipSchema.parse(req.body);
@@ -1215,6 +1363,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Group notes endpoints
+  app.get("/api/group-notes/:groupId", async (req, res) => {
+    try {
+      const { groupId } = req.params;
+      const { count_limit, date_back } = req.query;
+      
+      // Get the group with all notes
+      const group = await storage.getGroupById(groupId);
+      if (!group) {
+        return res.status(404).json({ error: "Group not found" });
+      }
+      
+      let groupNotesList = group.notes || [];
+      
+      // Apply date filter if provided
+      if (date_back) {
+        const dateBackTimestamp = new Date(date_back as string).getTime();
+        groupNotesList = groupNotesList.filter(note => 
+          new Date(note.createdAt).getTime() >= dateBackTimestamp
+        );
+      }
+      
+      // Sort by creation date, newest first
+      groupNotesList.sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      
+      // Apply count limit if provided
+      if (count_limit) {
+        const limit = parseInt(count_limit as string);
+        if (!isNaN(limit) && limit > 0) {
+          groupNotesList = groupNotesList.slice(0, limit);
+        }
+      }
+      
+      res.json(groupNotesList);
+    } catch (error) {
+      console.error("Error fetching group notes:", error);
+      res.status(500).json({ error: "Failed to fetch group notes" });
+    }
+  });
+
   app.post("/api/group-notes", async (req, res) => {
     try {
       const validatedData = insertGroupNoteSchema.parse(req.body);
