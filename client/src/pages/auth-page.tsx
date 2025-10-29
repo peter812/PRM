@@ -21,9 +21,9 @@ export default function AuthPage() {
     staleTime: 0, // Always fetch fresh
   });
 
-  // Check if SSO is enabled
-  const { data: ssoConfig } = useQuery<{ enabled: number }>({
-    queryKey: ["/api/sso-config"],
+  // Check if SSO is enabled (public endpoint)
+  const { data: ssoStatus } = useQuery<{ enabled: number }>({
+    queryKey: ["/api/sso-config/status"],
   });
 
   const loginForm = useForm<InsertUser>({
@@ -52,7 +52,7 @@ export default function AuthPage() {
     window.location.href = "/api/sso/login";
   };
 
-  const isSsoEnabled = ssoConfig?.enabled === 1;
+  const isSsoEnabled = ssoStatus?.enabled === 1;
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">

@@ -943,6 +943,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // SSO Config endpoints
+  // Public endpoint to check if SSO is enabled (no auth required)
+  app.get("/api/sso-config/status", async (req, res) => {
+    try {
+      // Check if any user has SSO enabled
+      const allUsers = await storage.getAllUsers();
+      let isEnabled = false;
+      
+      for (const user of allUsers) {
+        const config = await storage.getSsoConfig(user.id);
+        if (config && config.enabled === 1) {
+          isEnabled = true;
+          break;
+        }
+      }
+
+      res.json({ enabled: isEnabled ? 1 : 0 });
+    } catch (error) {
+      console.error("Error fetching SSO status:", error);
+      res.status(500).json({ error: "Failed to fetch SSO status" });
+    }
+  });
+
   app.get("/api/sso-config", async (req, res) => {
     try {
       if (!req.user) {
@@ -986,11 +1008,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Check if config already exists
       const existingConfig = await storage.getSsoConfig(req.user.id);
       
+      // If clientSecret is empty or masked, keep the existing one
+      let finalClientSecret = clientSecret;
+      if ((!clientSecret || clientSecret === '********') && existingConfig) {
+        finalClientSecret = existingConfig.clientSecret;
+      }
+      
       const configData = {
         userId: req.user.id,
         enabled: enabled ? 1 : 0,
         clientId,
-        clientSecret,
+        clientSecret: finalClientSecret,
         authUrl,
         tokenUrl,
         userInfoUrl,
