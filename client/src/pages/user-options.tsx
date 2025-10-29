@@ -19,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Eye, EyeOff } from "lucide-react";
 
 const updateUserSchema = z.object({
@@ -67,6 +67,7 @@ export default function UserOptionsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showClientSecret, setShowClientSecret] = useState(false);
+  const ssoFormInitialized = useRef(false);
 
   const form = useForm<UpdateUserForm>({
     resolver: zodResolver(updateUserSchema),
@@ -82,7 +83,19 @@ export default function UserOptionsPage() {
   });
 
   // Fetch SSO config
-  const { data: ssoConfig } = useQuery({
+  const { data: ssoConfig } = useQuery<{
+    enabled: number;
+    clientId: string;
+    clientSecret: string;
+    authUrl: string;
+    tokenUrl: string;
+    userInfoUrl: string;
+    redirectUrl: string;
+    logoutUrl: string;
+    userIdentifier: string;
+    scopes: string;
+    authStyle: "auto" | "in_params" | "in_header";
+  }>({
     queryKey: ['/api/sso-config'],
     enabled: !!user,
   });
@@ -104,22 +117,25 @@ export default function UserOptionsPage() {
     },
   });
 
-  // Update SSO form when config loads
-  if (ssoConfig && !ssoForm.formState.isDirty) {
-    ssoForm.reset({
-      enabled: ssoConfig.enabled === 1,
-      clientId: ssoConfig.clientId || "",
-      clientSecret: ssoConfig.clientSecret === '********' ? '' : ssoConfig.clientSecret || "",
-      authUrl: ssoConfig.authUrl || "",
-      tokenUrl: ssoConfig.tokenUrl || "",
-      userInfoUrl: ssoConfig.userInfoUrl || "",
-      redirectUrl: ssoConfig.redirectUrl || "",
-      logoutUrl: ssoConfig.logoutUrl || "",
-      userIdentifier: ssoConfig.userIdentifier || "email",
-      scopes: ssoConfig.scopes || "openid",
-      authStyle: ssoConfig.authStyle || "auto",
-    });
-  }
+  // Update SSO form when config loads (only once)
+  useEffect(() => {
+    if (ssoConfig && !ssoFormInitialized.current) {
+      ssoFormInitialized.current = true;
+      ssoForm.reset({
+        enabled: ssoConfig.enabled === 1,
+        clientId: ssoConfig.clientId || "",
+        clientSecret: ssoConfig.clientSecret === '********' ? '' : ssoConfig.clientSecret || "",
+        authUrl: ssoConfig.authUrl || "",
+        tokenUrl: ssoConfig.tokenUrl || "",
+        userInfoUrl: ssoConfig.userInfoUrl || "",
+        redirectUrl: ssoConfig.redirectUrl || "",
+        logoutUrl: ssoConfig.logoutUrl || "",
+        userIdentifier: ssoConfig.userIdentifier || "email",
+        scopes: ssoConfig.scopes || "openid",
+        authStyle: ssoConfig.authStyle || "auto",
+      });
+    }
+  }, [ssoConfig, ssoForm]);
 
   const updateMutation = useMutation({
     mutationFn: async (data: UpdateUserForm) => {
