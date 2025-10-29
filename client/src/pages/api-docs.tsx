@@ -182,6 +182,26 @@ fetch(\`${baseUrl}/api/people/\${personId}\`, {
   // Notes endpoints
   const notesEndpoints: Endpoint[] = [
     {
+      id: "get-notes",
+      method: "GET",
+      path: "/api/notes",
+      summary: "Get all notes",
+      description: "Get all notes across all people, sorted by creation date",
+      response: `[
+  {
+    "id": "uuid-1",
+    "personId": "uuid-2",
+    "personName": "John Doe",
+    "content": "Met at conference",
+    "createdAt": "2024-01-01T00:00:00.000Z"
+  }
+]`,
+      example: `// Get all notes
+fetch('${baseUrl}/api/notes')
+  .then(res => res.json())
+  .then(data => console.log(data));`,
+    },
+    {
       id: "create-note",
       method: "POST",
       path: "/api/notes",
@@ -228,6 +248,43 @@ fetch(\`${baseUrl}/api/notes/\${noteId}\`, {
 
   // Interactions endpoints
   const interactionsEndpoints: Endpoint[] = [
+    {
+      id: "get-interactions",
+      method: "GET",
+      path: "/api/interactions",
+      summary: "Get filtered interactions",
+      description: "Get interactions for a specific person or group with optional filters",
+      queryParams: [
+        { name: "interaction_type", type: "string", description: "Required: 'person' or 'group'" },
+        { name: "uuid", type: "string", description: "Required: Person or Group UUID" },
+        { name: "count_limit", type: "number", description: "Optional: Limit number of results" },
+        { name: "date_back", type: "string", description: "Optional: ISO date string - only return interactions after this date" },
+      ],
+      response: `[
+  {
+    "id": "uuid-1",
+    "peopleIds": ["uuid-2", "uuid-3"],
+    "groupIds": [],
+    "date": "2024-01-15T10:00:00.000Z",
+    "description": "Meeting notes",
+    "type": {
+      "id": "type-uuid",
+      "name": "Meeting",
+      "color": "#3b82f6",
+      "value": 75
+    }
+  }
+]`,
+      example: `// Get interactions for a person
+fetch('${baseUrl}/api/interactions?interaction_type=person&uuid=person-uuid-1&count_limit=10')
+  .then(res => res.json())
+  .then(data => console.log(data));
+
+// Get interactions for a group after a specific date
+fetch('${baseUrl}/api/interactions?interaction_type=group&uuid=group-uuid-1&date_back=2024-01-01T00:00:00.000Z')
+  .then(res => res.json())
+  .then(data => console.log(data));`,
+    },
     {
       id: "create-interaction",
       method: "POST",
@@ -281,6 +338,45 @@ fetch(\`${baseUrl}/api/interactions/\${interactionId}\`, {
 
   // Relationships endpoints
   const relationshipsEndpoints: Endpoint[] = [
+    {
+      id: "get-relationships",
+      method: "GET",
+      path: "/api/relationships/:personId",
+      summary: "Get relationships for a person",
+      description: "Get all relationships for a specific person with optional filters",
+      queryParams: [
+        { name: "count_limit", type: "number", description: "Optional: Limit number of results" },
+        { name: "value_limit", type: "number", description: "Optional: Only return relationships with value >= this number" },
+      ],
+      response: `[
+  {
+    "id": "uuid-1",
+    "fromPersonId": "uuid-2",
+    "toPersonId": "uuid-3",
+    "person": {
+      "id": "uuid-3",
+      "firstName": "Jane",
+      "lastName": "Doe"
+    },
+    "type": {
+      "id": "type-uuid",
+      "name": "Friend",
+      "color": "#10b981",
+      "value": 80
+    },
+    "notes": "Met at conference"
+  }
+]`,
+      example: `// Get relationships for a person
+fetch('${baseUrl}/api/relationships/person-uuid-1')
+  .then(res => res.json())
+  .then(data => console.log(data));
+
+// Get top 5 relationships with value >= 70
+fetch('${baseUrl}/api/relationships/person-uuid-1?count_limit=5&value_limit=70')
+  .then(res => res.json())
+  .then(data => console.log(data));`,
+    },
     {
       id: "create-relationship",
       method: "POST",
@@ -474,6 +570,34 @@ fetch(\`${baseUrl}/api/groups/\${groupId}\`, {
 
   // Group Notes endpoints
   const groupNotesEndpoints: Endpoint[] = [
+    {
+      id: "get-group-notes",
+      method: "GET",
+      path: "/api/group-notes/:groupId",
+      summary: "Get notes for a group",
+      description: "Get all notes for a specific group with optional filters",
+      queryParams: [
+        { name: "count_limit", type: "number", description: "Optional: Limit number of results" },
+        { name: "date_back", type: "string", description: "Optional: ISO date string - only return notes after this date" },
+      ],
+      response: `[
+  {
+    "id": "note-uuid-1",
+    "groupId": "group-uuid-1",
+    "content": "Kickoff meeting scheduled",
+    "createdAt": "2024-01-01T00:00:00.000Z"
+  }
+]`,
+      example: `// Get notes for a group
+fetch('${baseUrl}/api/group-notes/group-uuid-1')
+  .then(res => res.json())
+  .then(data => console.log(data));
+
+// Get last 10 notes created after a specific date
+fetch('${baseUrl}/api/group-notes/group-uuid-1?count_limit=10&date_back=2024-01-01T00:00:00.000Z')
+  .then(res => res.json())
+  .then(data => console.log(data));`,
+    },
     {
       id: "create-group-note",
       method: "POST",

@@ -1379,13 +1379,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Apply date filter if provided
       if (date_back) {
         const dateBackTimestamp = new Date(date_back as string).getTime();
-        groupNotesList = groupNotesList.filter(note => 
+        groupNotesList = groupNotesList.filter((note: any) => 
           new Date(note.createdAt).getTime() >= dateBackTimestamp
         );
       }
       
       // Sort by creation date, newest first
-      groupNotesList.sort((a, b) => 
+      groupNotesList.sort((a: any, b: any) => 
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
       
