@@ -10,6 +10,7 @@ import {
   groups,
   groupNotes,
   apiKeys,
+  ssoConfig,
   type Person,
   type InsertPerson,
   type Note,
@@ -33,6 +34,8 @@ import {
   type GroupWithNotes,
   type ApiKey,
   type InsertApiKey,
+  type SsoConfig,
+  type InsertSsoConfig,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -99,6 +102,13 @@ export interface IStorage {
   createApiKey(apiKey: InsertApiKey): Promise<ApiKey>;
   deleteApiKey(id: string): Promise<void>;
   updateApiKeyLastUsed(id: string): Promise<void>;
+
+  // SSO Config operations
+  getSsoConfig(userId: number): Promise<SsoConfig | undefined>;
+  createSsoConfig(config: InsertSsoConfig): Promise<SsoConfig>;
+  updateSsoConfig(userId: number, config: Partial<InsertSsoConfig>): Promise<SsoConfig | undefined>;
+  deleteSsoConfig(userId: number): Promise<void>;
+  getUserBySsoEmail(ssoEmail: string): Promise<User | undefined>;
 
   // Group operations
   getAllGroups(searchQuery?: string): Promise<Group[]>;
@@ -715,6 +725,44 @@ export class DatabaseStorage implements IStorage {
       .update(apiKeys)
       .set({ lastUsedAt: new Date() })
       .where(eq(apiKeys.id, id));
+  }
+
+  // SSO Config operations
+  async getSsoConfig(userId: number): Promise<SsoConfig | undefined> {
+    const [config] = await db
+      .select()
+      .from(ssoConfig)
+      .where(eq(ssoConfig.userId, userId));
+    return config || undefined;
+  }
+
+  async createSsoConfig(insertConfig: InsertSsoConfig): Promise<SsoConfig> {
+    const [config] = await db
+      .insert(ssoConfig)
+      .values(insertConfig)
+      .returning();
+    return config;
+  }
+
+  async updateSsoConfig(userId: number, updateData: Partial<InsertSsoConfig>): Promise<SsoConfig | undefined> {
+    const [config] = await db
+      .update(ssoConfig)
+      .set({ ...updateData, updatedAt: new Date() })
+      .where(eq(ssoConfig.userId, userId))
+      .returning();
+    return config || undefined;
+  }
+
+  async deleteSsoConfig(userId: number): Promise<void> {
+    await db.delete(ssoConfig).where(eq(ssoConfig.userId, userId));
+  }
+
+  async getUserBySsoEmail(ssoEmail: string): Promise<User | undefined> {
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.ssoEmail, ssoEmail));
+    return user || undefined;
   }
 
   // Group operations
