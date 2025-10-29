@@ -57,12 +57,12 @@ The application supports two types of API access:
     - **Anonymize People:** Hide names on all people nodes except the "Me" node. Useful for taking screenshots or sharing the graph visualization while preserving privacy of contacts
 -   **Enhanced Add Connection Dialog:** The graph page's "Add Connection" dialog features searchable autocomplete fields for selecting both people and relationship types. It fetches relationship types dynamically from the database, displays color indicators for each type, and prevents self-connections by clearing the second person field when the first person selection changes.
 -   **Context-Aware Navigation:** Back button navigation preserves context - clicking a person from the graph view returns to the graph, while clicking from a group view returns to that specific group. Query parameters track navigation context.
--   **Settings Page:** Dedicated `/settings` route with user profile editing (name, nickname, username, password change) and a placeholder for app-wide settings.
+-   **Settings Page:** Dedicated `/settings` route with collapsible sidebar navigation (matching main app), user profile editing (name, nickname, username, password change), and app-wide settings. Settings pages use consistent left padding (`px-12`) for better visual separation from the sidebar menu.
 -   **First-Time Setup:** A `/welcome` route guides initial user creation when no users exist, with an API to check and initialize setup status.
 -   **Automatic Database Initialization:** On application startup, the system checks if any users exist. If no users are found, it automatically drops all database tables, runs migrations to recreate them from the schema, and seeds default relationship types. This ensures a clean state for first-time setup or development resets.
 -   **Unified Relationship System:** Person-to-person relationships use customizable relationship types from the database. Relationships are bidirectional - creating a relationship from Person A to Person B automatically makes it visible on both people's profiles. Relationship types include name, color (for UI/graph visualization), and optional notes. Default types include: Acquaintance (#10b981), Friend (#3b82f6), Good Friend (#8b5cf6), Best Friend (#ec4899), Colleague (#f59e0b), Family (#ef4444), and Partner (#06b6d4).
 -   **Deletion Features:** Comprehensive delete functionality for people and groups, including confirmation dialogs, cascade deletion of related data (notes, interactions, relationships), and toast notifications.
--   **Groups Management:** Bidirectional group management allows adding members to groups (via group profile) and adding people to groups (via person profile). The Groups tab on person profiles displays all groups the person belongs to with search functionality and multi-select "Add to Groups" dialog.
+-   **Groups Management:** Bidirectional group management allows adding members to groups (via group profile) and adding people to groups (via person profile). The Groups tab on person profiles displays all groups the person belongs to with search functionality and multi-select "Add to Groups" dialog. Groups list page features both list and card view modes, with a 5px gap between items for visual separation. In card view, the delete button is positioned at the bottom-left corner.
 -   **XML Import/Export:** Complete data backup and migration system located in the App Options page. Users can export all CRM data (user profile, people, relationships, relationship types, interactions, groups, and notes) to XML format while preserving UUIDs for data integrity. Import functionality handles foreign key dependencies correctly and skips duplicate IDs. Images and image URLs are excluded from both import and export operations.
 -   **API Documentation:** Collapsible, interactive API documentation with example code and copy functionality.
 
@@ -108,7 +108,7 @@ Relationships are stored once in the database but displayed on both people's pro
 This ensures mutual visibility - if Bob is friends with Ryan, the friendship appears on both Bob's and Ryan's profiles.
 
 **UI Integration:**
-- `AddRelationshipDialog`: Fetches relationship types from database and displays them with color indicators
+- `AddRelationshipDialog`: Features multi-select person picker using Command component with checkboxes, enabling bulk relationship creation with parallel API calls via Promise.all. Fetches relationship types from database and displays them with color indicators
 - `RelationshipsTab`: Shows all bidirectional relationships with colored type badges
 - `Graph Visualization`: Uses relationship type colors for edge rendering in the network graph
 
