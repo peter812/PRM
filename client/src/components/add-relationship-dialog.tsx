@@ -42,7 +42,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertRelationshipSchema, type InsertRelationship, type Person, type RelationshipType } from "@shared/schema";
+import { insertRelationshipSchema, type InsertRelationship, type Person, type RelationshipType, type RelationshipWithPerson } from "@shared/schema";
 import { z } from "zod";
 import { Check, ChevronsUpDown, X } from "lucide-react";
 
@@ -50,6 +50,7 @@ interface AddRelationshipDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   personId: string;
+  existingRelationships?: RelationshipWithPerson[];
 }
 
 const relationshipFormSchema = insertRelationshipSchema.extend({
@@ -64,6 +65,7 @@ export function AddRelationshipDialog({
   open,
   onOpenChange,
   personId,
+  existingRelationships = [],
 }: AddRelationshipDialogProps) {
   const { toast } = useToast();
   const [selectedPeopleIds, setSelectedPeopleIds] = useState<string[]>([]);
@@ -74,12 +76,28 @@ export function AddRelationshipDialog({
     enabled: open,
   });
 
+  const { data: meUser } = useQuery<Person>({
+    queryKey: ["/api/me"],
+    enabled: open,
+  });
+
   const { data: relationshipTypes } = useQuery<RelationshipType[]>({
     queryKey: ["/api/relationship-types"],
     enabled: open,
   });
 
-  const availablePeople = allPeople?.filter((p) => p.id !== personId) || [];
+  // Check if ME user already has a relationship with this person
+  const meHasRelationship = meUser ? existingRelationships.some(
+    rel => rel.toPerson.id === meUser.id
+  ) : false;
+
+  // Build available people list
+  let availablePeople = allPeople?.filter((p) => p.id !== personId) || [];
+  
+  // If ME user exists and doesn't have a relationship, add them at the beginning
+  if (meUser && !meHasRelationship && meUser.id !== personId) {
+    availablePeople = [meUser, ...availablePeople];
+  }
 
   const form = useForm<RelationshipForm>({
     resolver: zodResolver(relationshipFormSchema),
