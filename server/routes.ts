@@ -262,14 +262,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Fetch all data from database
       const [user] = await storage.getAllUsers();
-      const people = await storage.getAllPeople();
+      const allPeople = await storage.getAllPeople();
       const relationshipTypes = await storage.getAllRelationshipTypes();
-      const relationships = await storage.getAllRelationships();
+      const allRelationships = await storage.getAllRelationships();
       const interactionTypes = await storage.getAllInteractionTypes();
       const allInteractions = await storage.getAllInteractions();
       const groups = await storage.getAllGroups();
       const allNotes = await storage.getAllNotes();
       const allGroupNotes = await storage.getAllGroupNotes();
+      
+      // Find ME user's person ID
+      const mePersonResult = await db.select().from(people).where(sql`${people.userId} IS NOT NULL`).limit(1);
+      const mePersonId = mePersonResult[0]?.id || null;
+      const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
+      
+      // Filter out ME user from people export
+      const peopleToExport = allPeople.filter(p => p.id !== mePersonId);
 
       // Helper function to escape XML special characters
       const escapeXml = (str: any): string => {
@@ -323,9 +331,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       xml += '  </interaction_types>\n';
 
-      // Export people
+      // Export people (excluding ME user)
       xml += '  <people>\n';
-      for (const person of people) {
+      for (const person of peopleToExport) {
         xml += '    <person>\n';
         xml += `      <id>${escapeXml(person.id)}</id>\n`;
         xml += `      <first_name>${escapeXml(person.firstName)}</first_name>\n`;
@@ -340,13 +348,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       xml += '  </people>\n';
 
-      // Export relationships
+      // Export relationships (encode ME user UUID as all zeros)
       xml += '  <relationships>\n';
-      for (const rel of relationships) {
+      for (const rel of allRelationships) {
+        const fromPersonId = rel.fromPersonId === mePersonId ? ZERO_UUID : rel.fromPersonId;
+        const toPersonId = rel.toPersonId === mePersonId ? ZERO_UUID : rel.toPersonId;
+        
         xml += '    <relationship>\n';
         xml += `      <id>${escapeXml(rel.id)}</id>\n`;
-        xml += `      <from_person_id>${escapeXml(rel.fromPersonId)}</from_person_id>\n`;
-        xml += `      <to_person_id>${escapeXml(rel.toPersonId)}</to_person_id>\n`;
+        xml += `      <from_person_id>${escapeXml(fromPersonId)}</from_person_id>\n`;
+        xml += `      <to_person_id>${escapeXml(toPersonId)}</to_person_id>\n`;
         xml += `      <type_id>${escapeXml(rel.typeId)}</type_id>\n`;
         xml += `      <notes>${escapeXml(rel.notes || "")}</notes>\n`;
         xml += `      <created_at>${escapeXml(rel.createdAt)}</created_at>\n`;
@@ -354,38 +365,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       xml += '  </relationships>\n';
 
-      // Export groups
+      // Export groups (encode ME user UUID as all zeros in members)
       xml += '  <groups>\n';
       for (const group of groups) {
+        const members = (group.members || []).map(memberId => 
+          memberId === mePersonId ? ZERO_UUID : memberId
+        );
+        
         xml += '    <group>\n';
         xml += `      <id>${escapeXml(group.id)}</id>\n`;
         xml += `      <name>${escapeXml(group.name)}</name>\n`;
         xml += `      <color>${escapeXml(group.color)}</color>\n`;
         xml += `      <type>${arrayToXml(group.type || [], "group_type")}</type>\n`;
-        xml += `      <members>${arrayToXml(group.members || [], "member_id")}</members>\n`;
+        xml += `      <members>${arrayToXml(members, "member_id")}</members>\n`;
         xml += `      <created_at>${escapeXml(group.createdAt)}</created_at>\n`;
         xml += '    </group>\n';
       }
       xml += '  </groups>\n';
 
-      // Export interactions
+      // Export interactions (encode ME user UUID as all zeros in peopleIds)
       xml += '  <interactions>\n';
       for (const interaction of allInteractions) {
+        const peopleIds = (interaction.peopleIds || []).map(personId => 
+          personId === mePersonId ? ZERO_UUID : personId
+        );
+        
         xml += '    <interaction>\n';
         xml += `      <id>${escapeXml(interaction.id)}</id>\n`;
         xml += `      <type_id>${escapeXml(interaction.typeId)}</type_id>\n`;
         xml += `      <date>${escapeXml(interaction.date)}</date>\n`;
         xml += `      <description>${escapeXml(interaction.description || "")}</description>\n`;
-        xml += `      <people_ids>${arrayToXml(interaction.peopleIds || [], "person_id")}</people_ids>\n`;
+        xml += `      <people_ids>${arrayToXml(peopleIds, "person_id")}</people_ids>\n`;
         xml += `      <group_ids>${arrayToXml(interaction.groupIds || [], "group_id")}</group_ids>\n`;
         xml += `      <created_at>${escapeXml(interaction.createdAt)}</created_at>\n`;
         xml += '    </interaction>\n';
       }
       xml += '  </interactions>\n';
 
-      // Export notes
+      // Export notes (exclude notes for ME user)
       xml += '  <notes>\n';
       for (const note of allNotes) {
+        if (note.personId === mePersonId) continue; // Skip ME user's notes
+        
         xml += '    <note>\n';
         xml += `      <id>${escapeXml(note.id)}</id>\n`;
         xml += `      <person_id>${escapeXml(note.personId)}</person_id>\n`;
@@ -462,6 +483,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .replace(/&apos;/g, "'");
       };
 
+      // Get ME user's person ID for replacing all-zero UUIDs
+      const mePersonResult = await db.select().from(people).where(sql`${people.userId} IS NOT NULL`).limit(1);
+      const mePersonId = mePersonResult[0]?.id || null;
+      const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
+      
+      // Helper function to replace zero UUIDs with ME user UUID
+      const replaceZeroUUID = (uuid: string): string => {
+        if (!mePersonId) return uuid;
+        return uuid === ZERO_UUID ? mePersonId : uuid;
+      };
+
       let importedCounts = {
         relationshipTypes: 0,
         interactionTypes: 0,
@@ -472,6 +504,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         notes: 0,
         groupNotes: 0,
       };
+      
+      let skippedCounts = {
+        relationshipTypes: 0,
+        interactionTypes: 0,
+        people: 0,
+      };
+
+      // Get existing data to check for duplicates
+      const existingRelationshipTypes = await storage.getAllRelationshipTypes();
+      const existingInteractionTypes = await storage.getAllInteractionTypes();
+      const existingPeople = await storage.getAllPeople();
 
       // Parse and import relationship types
       const relationshipTypeBlocks = parseAllTags("relationship_type", xmlText);
@@ -481,9 +524,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const color = unescapeXml(parseXmlTag("color", block));
         const notes = unescapeXml(parseXmlTag("notes", block));
 
+        // Check for duplicate name
+        const duplicate = existingRelationshipTypes.find(t => 
+          t.name.toLowerCase() === name.toLowerCase()
+        );
+        
+        if (duplicate) {
+          skippedCounts.relationshipTypes++;
+          continue; // Skip this duplicate
+        }
+
         try {
           await db.insert(relationshipTypes).values({ id, name, color, notes: notes || null, value: 50 }).onConflictDoNothing();
           importedCounts.relationshipTypes++;
+          existingRelationshipTypes.push({ id, name, color, notes: notes || null, value: 50 } as any);
         } catch (error) {
           console.error(`Error importing relationship type ${id}:`, error);
         }
@@ -498,9 +552,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const description = unescapeXml(parseXmlTag("description", block));
         const value = parseInt(parseXmlTag("value", block)) || 50;
 
+        // Check for duplicate name
+        const duplicate = existingInteractionTypes.find(t => 
+          t.name.toLowerCase() === name.toLowerCase()
+        );
+        
+        if (duplicate) {
+          skippedCounts.interactionTypes++;
+          continue; // Skip this duplicate
+        }
+
         try {
           await db.insert(interactionTypes).values({ id, name, color, description: description || null, value }).onConflictDoNothing();
           importedCounts.interactionTypes++;
+          existingInteractionTypes.push({ id, name, color, description: description || null, value } as any);
         } catch (error) {
           console.error(`Error importing interaction type ${id}:`, error);
         }
@@ -518,6 +583,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const title = unescapeXml(parseXmlTag("title", block));
         const tags = parseXmlArray("tags", "tag", block);
 
+        // Check for duplicate name
+        const duplicate = existingPeople.find(p => 
+          p.firstName.toLowerCase() === firstName.toLowerCase() && 
+          p.lastName.toLowerCase() === lastName.toLowerCase()
+        );
+        
+        if (duplicate) {
+          skippedCounts.people++;
+          continue; // Skip this duplicate
+        }
+
         try {
           await storage.createPersonWithId({
             id,
@@ -530,6 +606,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             tags: tags.length > 0 ? tags : [],
           });
           importedCounts.people++;
+          existingPeople.push({ id, firstName, lastName } as any);
         } catch (error) {
           console.error(`Error importing person ${id}:`, error);
         }
@@ -544,13 +621,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const type = parseXmlArray("type", "group_type", block);
         const members = parseXmlArray("members", "member_id", block);
 
+        // Replace zero UUIDs with ME user UUID in members
+        const processedMembers = members.map(memberId => replaceZeroUUID(memberId));
+
         try {
           await storage.createGroupWithId({
             id,
             name,
             color,
             type: type.length > 0 ? type : [],
-            members: members.length > 0 ? members : [],
+            members: processedMembers.length > 0 ? processedMembers : [],
           });
           importedCounts.groups++;
         } catch (error) {
@@ -562,8 +642,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const relationshipBlocks = parseAllTags("relationship", xmlText);
       for (const block of relationshipBlocks) {
         const id = unescapeXml(parseXmlTag("id", block));
-        const fromPersonId = unescapeXml(parseXmlTag("from_person_id", block));
-        const toPersonId = unescapeXml(parseXmlTag("to_person_id", block));
+        const fromPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("from_person_id", block)));
+        const toPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("to_person_id", block)));
         const typeId = unescapeXml(parseXmlTag("type_id", block));
         const notes = unescapeXml(parseXmlTag("notes", block));
 
@@ -591,13 +671,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const peopleIds = parseXmlArray("people_ids", "person_id", block);
         const groupIds = parseXmlArray("group_ids", "group_id", block);
 
+        // Replace zero UUIDs with ME user UUID in peopleIds
+        const processedPeopleIds = peopleIds.map(personId => replaceZeroUUID(personId));
+
         try {
           await storage.createInteractionWithId({
             id,
             typeId,
             date: new Date(date),
             description: description || null,
-            peopleIds: peopleIds.length > 0 ? peopleIds : [],
+            peopleIds: processedPeopleIds.length > 0 ? processedPeopleIds : [],
             groupIds: groupIds.length > 0 ? groupIds : [],
             imageUrl: null, // Images are not imported
           });
@@ -640,6 +723,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         success: true,
         imported: importedCounts,
+        skipped: skippedCounts,
       });
     } catch (error) {
       console.error("Error importing XML:", error);
@@ -1279,6 +1363,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/people", async (req, res) => {
     try {
       const validatedData = insertPersonSchema.parse(req.body);
+      
+      // Check for duplicate names
+      const allPeople = await storage.getAllPeople();
+      const duplicate = allPeople.find(p => 
+        p.firstName.toLowerCase() === validatedData.firstName.toLowerCase() && 
+        p.lastName.toLowerCase() === validatedData.lastName.toLowerCase()
+      );
+      
+      if (duplicate) {
+        return res.status(400).json({ 
+          error: "A person with this name already exists" 
+        });
+      }
+      
       const person = await storage.createPerson(validatedData);
       res.status(201).json(person);
     } catch (error) {
