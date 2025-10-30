@@ -156,11 +156,21 @@ export default function Graph() {
   useEffect(() => {
     if (!canvasRef.current || !people.length) return;
     
-    // Mark as mounted at the start of effect
+    // Reset mounted flag and cancel any pending operations
+    isMountedRef.current = false;
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = 0;
+    }
+    
+    // Mark as mounted after cleanup
     isMountedRef.current = true;
 
     const initPixi = async () => {
       try {
+        // Double-check still mounted before starting async work
+        if (!isMountedRef.current) return;
+        
         // Stop any existing animation
         if (animationRef.current) {
           cancelAnimationFrame(animationRef.current);
@@ -794,6 +804,16 @@ export default function Graph() {
         animationRef.current = 0;
       }
       
+      // Remove wheel event listener immediately
+      if (appRef.current?.canvas && wheelHandlerRef.current) {
+        try {
+          appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
+        } catch (e) {
+          // Ignore if already removed
+        }
+        wheelHandlerRef.current = null;
+      }
+      
       // Remove canvas from DOM IMMEDIATELY to prevent Pixi from rendering
       if (canvasRef.current && canvasRef.current.firstChild) {
         while (canvasRef.current.firstChild) {
@@ -801,33 +821,20 @@ export default function Graph() {
         }
       }
       
-      // Small delay to ensure Pixi renderer has stopped
-      setTimeout(() => {
-        // Remove wheel event listener
-        if (appRef.current?.canvas && wheelHandlerRef.current) {
-          try {
-            appRef.current.canvas.removeEventListener('wheel', wheelHandlerRef.current);
-          } catch (e) {
-            // Ignore if already removed
-          }
-          wheelHandlerRef.current = null;
+      // Clear refs
+      containerRef.current = null;
+      nodesRef.current.clear();
+      edgesRef.current = [];
+      
+      // Destroy PIXI app synchronously
+      if (appRef.current) {
+        try {
+          appRef.current.destroy(true, { children: true, texture: true });
+        } catch (e) {
+          // Ignore errors during destroy
         }
-        
-        // Clear refs
-        containerRef.current = null;
-        nodesRef.current.clear();
-        edgesRef.current = [];
-        
-        // Destroy PIXI app
-        if (appRef.current) {
-          try {
-            appRef.current.destroy(true, { children: true, texture: true });
-          } catch (e) {
-            // Ignore errors during destroy
-          }
-          appRef.current = null;
-        }
-      }, 0);
+        appRef.current = null;
+      }
     };
   }, [people, groups, navigate, showGroups, disablePersonLines, highlightedPersonId, anonymizePeople]);
 
