@@ -632,11 +632,11 @@ export default function Graph() {
                 if (edge.type === 'relationship') {
                   g.moveTo(fromNode.x, fromNode.y);
                   g.lineTo(toNode.x, toNode.y);
-                  g.stroke({ color: edge.color, width: 2, alpha: personLineOpacity });
+                  g.stroke({ color: edge.color, width: 2, alpha: 0.6 });
                 } else if (edge.type === 'group-member') {
                   g.moveTo(fromNode.x, fromNode.y);
                   g.lineTo(toNode.x, toNode.y);
-                  g.stroke({ color: edge.color, width: 1, alpha: groupLineOpacity });
+                  g.stroke({ color: edge.color, width: 1, alpha: 0.5 });
                 }
                 
                 // Restore renderable state after drawing is complete
