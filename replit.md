@@ -39,7 +39,7 @@ The "Reset Database" feature performs a complete wipe of all data including the 
 ### Key Features & Design Decisions
 
 -   **Global Search:** Real-time top-bar search with prioritized results for people and groups.
--   **People List Optimization:** Infinite scroll pagination loading 30 people at a time. People are sorted by highest-value relationship type first (e.g., Partners before Friends), then alphabetically by name. Each person card displays a colored badge showing their highest-value relationship type.
+-   **People List Optimization:** Infinite scroll pagination loading 30 people at a time. People are sorted by highest-value relationship with the ME user first (e.g., Partners before Friends), then alphabetically by name. Each person card displays a colored badge showing their highest-value relationship type with the ME user. Only relationships between the displayed person and the ME user are considered for sorting and badge display.
 -   **Graph Optimization:** Dedicated `/api/graph` endpoint for efficient data fetching, using Pixi.js for stable, WebGL-based interactive rendering with manual control to prevent race conditions.
 -   **Graph Display Options:** Toggles for showing groups, disabling person lines, hiding orphans, and anonymizing people.
 -   **Context-Aware Navigation:** Back buttons preserve navigation context.
