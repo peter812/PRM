@@ -1334,7 +1334,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const offset = parseInt(req.query.offset as string) || 0;
       const limit = parseInt(req.query.limit as string) || 30;
       
-      const people = await storage.getPeoplePaginated(offset, limit);
+      // Get ME user's person ID to filter relationships
+      const userId = req.user?.id;
+      let mePersonId: string | undefined;
+      if (userId) {
+        const mePerson = await storage.getMePerson(userId);
+        mePersonId = mePerson?.id;
+      }
+      
+      const people = await storage.getPeoplePaginated(offset, limit, mePersonId);
       res.json(people);
     } catch (error) {
       console.error("Error fetching paginated people:", error);

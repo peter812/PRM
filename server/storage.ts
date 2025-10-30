@@ -38,7 +38,7 @@ import {
   type InsertSsoConfig,
 } from "@shared/schema";
 import { db, pool } from "./db";
-import { eq, or, ilike, sql, inArray, arrayContains } from "drizzle-orm";
+import { eq, or, and, ilike, sql, inArray, arrayContains } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 
@@ -55,7 +55,7 @@ export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
   getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
-  getPeoplePaginated(offset: number, limit: number): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null }>>;
+  getPeoplePaginated(offset: number, limit: number, mePersonId?: string): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null }>>;
   getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
@@ -293,23 +293,45 @@ export class DatabaseStorage implements IStorage {
 
   async getPeoplePaginated(
     offset: number,
-    limit: number
+    limit: number,
+    mePersonId?: string
   ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null }>> {
-    // Get all people (excluding ME user) with their highest-value relationship
+    // Get all people (excluding ME user) with their highest-value relationship WITH THE ME USER
     const result = await db
       .select({
         person: people,
         maxValue: sql<number | null>`MAX(${relationshipTypes.value})`.as('max_value'),
-        typeName: sql<string | null>`MAX(CASE WHEN ${relationshipTypes.value} = (SELECT MAX(rt2.value) FROM ${relationshipTypes} rt2 INNER JOIN ${relationships} r2 ON rt2.id = r2.type_id WHERE r2.from_person_id = ${people.id} OR r2.to_person_id = ${people.id}) THEN ${relationshipTypes.name} ELSE NULL END)`.as('type_name'),
-        typeColor: sql<string | null>`MAX(CASE WHEN ${relationshipTypes.value} = (SELECT MAX(rt2.value) FROM ${relationshipTypes} rt2 INNER JOIN ${relationships} r2 ON rt2.id = r2.type_id WHERE r2.from_person_id = ${people.id} OR r2.to_person_id = ${people.id}) THEN ${relationshipTypes.color} ELSE NULL END)`.as('type_color'),
+        typeName: sql<string | null>`MAX(CASE WHEN ${relationshipTypes.value} = (
+          SELECT MAX(rt2.value) 
+          FROM ${relationshipTypes} rt2 
+          INNER JOIN ${relationships} r2 ON rt2.id = r2.type_id 
+          WHERE ${mePersonId ? sql`(
+            (r2.from_person_id = ${people.id} AND r2.to_person_id = ${mePersonId}) OR 
+            (r2.to_person_id = ${people.id} AND r2.from_person_id = ${mePersonId})
+          )` : sql`(r2.from_person_id = ${people.id} OR r2.to_person_id = ${people.id})`}
+        ) THEN ${relationshipTypes.name} ELSE NULL END)`.as('type_name'),
+        typeColor: sql<string | null>`MAX(CASE WHEN ${relationshipTypes.value} = (
+          SELECT MAX(rt2.value) 
+          FROM ${relationshipTypes} rt2 
+          INNER JOIN ${relationships} r2 ON rt2.id = r2.type_id 
+          WHERE ${mePersonId ? sql`(
+            (r2.from_person_id = ${people.id} AND r2.to_person_id = ${mePersonId}) OR 
+            (r2.to_person_id = ${people.id} AND r2.from_person_id = ${mePersonId})
+          )` : sql`(r2.from_person_id = ${people.id} OR r2.to_person_id = ${people.id})`}
+        ) THEN ${relationshipTypes.color} ELSE NULL END)`.as('type_color'),
       })
       .from(people)
       .leftJoin(
         relationships,
-        or(
-          eq(relationships.fromPersonId, people.id),
-          eq(relationships.toPersonId, people.id)
-        )
+        mePersonId 
+          ? or(
+              and(eq(relationships.fromPersonId, people.id), eq(relationships.toPersonId, mePersonId)),
+              and(eq(relationships.toPersonId, people.id), eq(relationships.fromPersonId, mePersonId))
+            )
+          : or(
+              eq(relationships.fromPersonId, people.id),
+              eq(relationships.toPersonId, people.id)
+            )
       )
       .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
       .where(sql`${people.userId} IS NULL`)
