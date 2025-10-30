@@ -26,6 +26,8 @@ An external PostgreSQL database is used for all persistent data, configured via 
 
 The application supports session-based authentication for the internal web UI and API key-based access for external integrations. API keys are hashed and managed via a settings page, never included in data exports. User creation is disabled by default after initial setup and can be re-enabled after a database reset.
 
+**External API Documentation**: See `PRM-external-API-guide.md` for comprehensive documentation of all REST API endpoints available for third-party integrations.
+
 ### Database Reset
 
 The "Reset Database" feature performs a complete wipe of all data including the current ME user. After reset:
