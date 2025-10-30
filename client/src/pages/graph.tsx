@@ -82,6 +82,13 @@ export default function Graph() {
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const wheelHandlerRef = useRef<((e: WheelEvent) => void) | null>(null);
   const isMountedRef = useRef<boolean>(true);
+  
+  // Physics parameter refs for live updates without reinit
+  const centerForceRef = useRef(0.001);
+  const repelForceRef = useRef(3000);
+  const linkForceRef = useRef(0.01);
+  const linkDistanceRef = useRef(100);
+  
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showGroups, setShowGroups] = useState(true);
@@ -95,6 +102,23 @@ export default function Graph() {
   const [linkDistance, setLinkDistance] = useState(100);
   const [hideOrphans, setHideOrphans] = useState(false);
   const [anonymizePeople, setAnonymizePeople] = useState(false);
+  
+  // Sync state to refs for live physics updates
+  useEffect(() => {
+    centerForceRef.current = centerForce;
+  }, [centerForce]);
+  
+  useEffect(() => {
+    repelForceRef.current = repelForce;
+  }, [repelForce]);
+  
+  useEffect(() => {
+    linkForceRef.current = linkForce;
+  }, [linkForce]);
+  
+  useEffect(() => {
+    linkDistanceRef.current = linkDistance;
+  }, [linkDistance]);
 
   const { data: graphData } = useQuery<GraphData>({
     queryKey: ["/api/graph"],
@@ -542,7 +566,7 @@ export default function Graph() {
                 const dx = node.x - other.x;
                 const dy = node.y - other.y;
                 const distSq = dx * dx + dy * dy + 1;
-                const force = repelForce / distSq;
+                const force = repelForceRef.current / distSq;
                 fx += (dx / Math.sqrt(distSq)) * force;
                 fy += (dy / Math.sqrt(distSq)) * force;
               }
@@ -566,8 +590,8 @@ export default function Graph() {
                 const distance = Math.sqrt(dx * dx + dy * dy);
                 
                 // Spring force: attractive if too far, repulsive if too close
-                const displacement = distance - linkDistance;
-                const force = displacement * linkForce;
+                const displacement = distance - linkDistanceRef.current;
+                const force = displacement * linkForceRef.current;
                 
                 if (distance > 0) {
                   fx += (dx / distance) * force;
@@ -579,8 +603,8 @@ export default function Graph() {
             // Center attraction
             const dx = centerX - node.x;
             const dy = centerY - node.y;
-            fx += dx * centerForce;
-            fy += dy * centerForce;
+            fx += dx * centerForceRef.current;
+            fy += dy * centerForceRef.current;
 
             node.vx = (node.vx + fx) * damping;
             node.vy = (node.vy + fy) * damping;
