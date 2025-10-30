@@ -535,12 +535,6 @@ export default function Graph() {
                 (edge.type === 'group-member' && userGroupIds.has(edge.from) && connectedPersonIds.has(edge.to));
               edge.graphics.visible = shouldShow;
             });
-            
-            // Center camera on highlighted node
-            if (containerRef.current) {
-              containerRef.current.x = app.screen.width / 2 - highlightedNode.x;
-              containerRef.current.y = app.screen.height / 2 - highlightedNode.y;
-            }
           }
         }
 
