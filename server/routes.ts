@@ -1329,6 +1329,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/people/paginated", async (req, res) => {
+    try {
+      const offset = parseInt(req.query.offset as string) || 0;
+      const limit = parseInt(req.query.limit as string) || 30;
+      
+      const people = await storage.getPeoplePaginated(offset, limit);
+      res.json(people);
+    } catch (error) {
+      console.error("Error fetching paginated people:", error);
+      res.status(500).json({ error: "Failed to fetch people" });
+    }
+  });
+
   app.get("/api/people/search", async (req, res) => {
     try {
       const query = req.query.q as string | undefined;
