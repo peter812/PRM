@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Application, Graphics, Container, Text, TextStyle } from "pixi.js";
 import { Button } from "@/components/ui/button";
-import { Plus, Settings } from "lucide-react";
+import { Plus, Settings, Box } from "lucide-react";
 import { useLocation } from "wouter";
 import { AddConnectionDialog } from "@/components/add-connection-dialog";
 import { OptionsPanel } from "@/components/options-panel";
@@ -844,6 +844,15 @@ export default function Graph() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => navigate('/graph-3d')}
+            data-testid="button-switch-to-3d"
+          >
+            <Box className="h-4 w-4 mr-2" />
+            3D View
+          </Button>
           <Button 
             variant="ghost" 
             size="icon"
