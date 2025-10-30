@@ -33,14 +33,14 @@ interface OptionsPanelProps {
   highlightedPersonId: string | null;
   onHighlightedPersonChange: (personId: string | null) => void;
   people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
-  personLineOpacity: number;
-  onPersonLineOpacityChange: (value: number) => void;
-  groupLineOpacity: number;
-  onGroupLineOpacityChange: (value: number) => void;
-  personPull: number;
-  onPersonPullChange: (value: number) => void;
-  groupPull: number;
-  onGroupPullChange: (value: number) => void;
+  centerForce: number;
+  onCenterForceChange: (value: number) => void;
+  repelForce: number;
+  onRepelForceChange: (value: number) => void;
+  linkForce: number;
+  onLinkForceChange: (value: number) => void;
+  linkDistance: number;
+  onLinkDistanceChange: (value: number) => void;
 }
 
 export function OptionsPanel({
@@ -59,14 +59,14 @@ export function OptionsPanel({
   highlightedPersonId,
   onHighlightedPersonChange,
   people,
-  personLineOpacity,
-  onPersonLineOpacityChange,
-  groupLineOpacity,
-  onGroupLineOpacityChange,
-  personPull,
-  onPersonPullChange,
-  groupPull,
-  onGroupPullChange,
+  centerForce,
+  onCenterForceChange,
+  repelForce,
+  onRepelForceChange,
+  linkForce,
+  onLinkForceChange,
+  linkDistance,
+  onLinkDistanceChange,
 }: OptionsPanelProps) {
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -247,87 +247,87 @@ export function OptionsPanel({
           <div className="space-y-6 pt-4 border-t">
             <h4 className="font-medium text-sm text-muted-foreground">Physics & Appearance</h4>
             
-            {/* Person to Person Line Opacity */}
+            {/* Center Force */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="person-opacity" className="text-sm">
-                  Person-to-Person Line Opacity
+                <Label htmlFor="center-force" className="text-sm">
+                  Center Force
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {personLineOpacity?.toFixed(2) ?? '0.30'}
+                  {centerForce?.toFixed(4) ?? '0.0010'}
                 </span>
               </div>
               <Slider
-                id="person-opacity"
+                id="center-force"
                 min={0}
-                max={1}
-                step={0.05}
-                value={[personLineOpacity]}
-                onValueChange={(values) => onPersonLineOpacityChange(values[0])}
-                data-testid="slider-person-opacity"
+                max={0.01}
+                step={0.0001}
+                value={[centerForce]}
+                onValueChange={(values) => onCenterForceChange(values[0])}
+                data-testid="slider-center-force"
               />
             </div>
 
-            {/* Group to Person Line Opacity */}
+            {/* Repel Force */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="group-opacity" className="text-sm">
-                  Group-to-Person Line Opacity
+                <Label htmlFor="repel-force" className="text-sm">
+                  Repel Force
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {groupLineOpacity?.toFixed(2) ?? '0.20'}
+                  {repelForce?.toFixed(0) ?? '3000'}
                 </span>
               </div>
               <Slider
-                id="group-opacity"
-                min={0}
-                max={1}
-                step={0.05}
-                value={[groupLineOpacity]}
-                onValueChange={(values) => onGroupLineOpacityChange(values[0])}
-                data-testid="slider-group-opacity"
+                id="repel-force"
+                min={500}
+                max={10000}
+                step={100}
+                value={[repelForce]}
+                onValueChange={(values) => onRepelForceChange(values[0])}
+                data-testid="slider-repel-force"
               />
             </div>
 
-            {/* Person to Person Pull */}
+            {/* Link Force */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="person-pull" className="text-sm">
-                  Person-to-Person Pull
+                <Label htmlFor="link-force" className="text-sm">
+                  Link Force
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {personPull?.toFixed(3) ?? '0.010'}
+                  {linkForce?.toFixed(4) ?? '0.0100'}
                 </span>
               </div>
               <Slider
-                id="person-pull"
-                min={0}
+                id="link-force"
+                min={0.001}
                 max={0.05}
                 step={0.001}
-                value={[personPull]}
-                onValueChange={(values) => onPersonPullChange(values[0])}
-                data-testid="slider-person-pull"
+                value={[linkForce]}
+                onValueChange={(values) => onLinkForceChange(values[0])}
+                data-testid="slider-link-force"
               />
             </div>
 
-            {/* Group to Person Pull */}
+            {/* Link Distance */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label htmlFor="group-pull" className="text-sm">
-                  Group-to-Person Pull
+                <Label htmlFor="link-distance" className="text-sm">
+                  Link Distance
                 </Label>
                 <span className="text-xs text-muted-foreground font-mono">
-                  {groupPull?.toFixed(3) ?? '0.003'}
+                  {linkDistance?.toFixed(0) ?? '100'}
                 </span>
               </div>
               <Slider
-                id="group-pull"
-                min={0}
-                max={0.05}
-                step={0.001}
-                value={[groupPull]}
-                onValueChange={(values) => onGroupPullChange(values[0])}
-                data-testid="slider-group-pull"
+                id="link-distance"
+                min={50}
+                max={300}
+                step={10}
+                value={[linkDistance]}
+                onValueChange={(values) => onLinkDistanceChange(values[0])}
+                data-testid="slider-link-distance"
               />
             </div>
           </div>
@@ -498,87 +498,87 @@ export function OptionsPanel({
               <div className="space-y-6 pt-4 border-t">
                 <h4 className="font-medium text-sm text-muted-foreground">Physics & Appearance</h4>
                 
-                {/* Person to Person Line Opacity */}
+                {/* Center Force */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="person-opacity-mobile" className="text-sm">
-                      Person-to-Person Line Opacity
+                    <Label htmlFor="center-force-mobile" className="text-sm">
+                      Center Force
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {personLineOpacity?.toFixed(2) ?? '0.30'}
+                      {centerForce?.toFixed(4) ?? '0.0010'}
                     </span>
                   </div>
                   <Slider
-                    id="person-opacity-mobile"
+                    id="center-force-mobile"
                     min={0}
-                    max={1}
-                    step={0.05}
-                    value={[personLineOpacity]}
-                    onValueChange={(values) => onPersonLineOpacityChange(values[0])}
-                    data-testid="slider-person-opacity-mobile"
+                    max={0.01}
+                    step={0.0001}
+                    value={[centerForce]}
+                    onValueChange={(values) => onCenterForceChange(values[0])}
+                    data-testid="slider-center-force-mobile"
                   />
                 </div>
 
-                {/* Group to Person Line Opacity */}
+                {/* Repel Force */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="group-opacity-mobile" className="text-sm">
-                      Group-to-Person Line Opacity
+                    <Label htmlFor="repel-force-mobile" className="text-sm">
+                      Repel Force
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {groupLineOpacity?.toFixed(2) ?? '0.20'}
+                      {repelForce?.toFixed(0) ?? '3000'}
                     </span>
                   </div>
                   <Slider
-                    id="group-opacity-mobile"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={[groupLineOpacity]}
-                    onValueChange={(values) => onGroupLineOpacityChange(values[0])}
-                    data-testid="slider-group-opacity-mobile"
+                    id="repel-force-mobile"
+                    min={500}
+                    max={10000}
+                    step={100}
+                    value={[repelForce]}
+                    onValueChange={(values) => onRepelForceChange(values[0])}
+                    data-testid="slider-repel-force-mobile"
                   />
                 </div>
 
-                {/* Person to Person Pull */}
+                {/* Link Force */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="person-pull-mobile" className="text-sm">
-                      Person-to-Person Pull
+                    <Label htmlFor="link-force-mobile" className="text-sm">
+                      Link Force
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {personPull?.toFixed(3) ?? '0.010'}
+                      {linkForce?.toFixed(4) ?? '0.0100'}
                     </span>
                   </div>
                   <Slider
-                    id="person-pull-mobile"
-                    min={0}
+                    id="link-force-mobile"
+                    min={0.001}
                     max={0.05}
                     step={0.001}
-                    value={[personPull]}
-                    onValueChange={(values) => onPersonPullChange(values[0])}
-                    data-testid="slider-person-pull-mobile"
+                    value={[linkForce]}
+                    onValueChange={(values) => onLinkForceChange(values[0])}
+                    data-testid="slider-link-force-mobile"
                   />
                 </div>
 
-                {/* Group to Person Pull */}
+                {/* Link Distance */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="group-pull-mobile" className="text-sm">
-                      Group-to-Person Pull
+                    <Label htmlFor="link-distance-mobile" className="text-sm">
+                      Link Distance
                     </Label>
                     <span className="text-xs text-muted-foreground font-mono">
-                      {groupPull?.toFixed(3) ?? '0.003'}
+                      {linkDistance?.toFixed(0) ?? '100'}
                     </span>
                   </div>
                   <Slider
-                    id="group-pull-mobile"
-                    min={0}
-                    max={0.05}
-                    step={0.001}
-                    value={[groupPull]}
-                    onValueChange={(values) => onGroupPullChange(values[0])}
-                    data-testid="slider-group-pull-mobile"
+                    id="link-distance-mobile"
+                    min={50}
+                    max={300}
+                    step={10}
+                    value={[linkDistance]}
+                    onValueChange={(values) => onLinkDistanceChange(values[0])}
+                    data-testid="slider-link-distance-mobile"
                   />
                 </div>
               </div>

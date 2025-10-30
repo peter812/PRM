@@ -89,10 +89,10 @@ export default function Graph() {
   const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
   const [isOptionsPanelOpen, setIsOptionsPanelOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [personLineOpacity, setPersonLineOpacity] = useState(0.7);
-  const [groupLineOpacity, setGroupLineOpacity] = useState(0.7);
-  const [personPull, setPersonPull] = useState(0.01);
-  const [groupPull, setGroupPull] = useState(0.003);
+  const [centerForce, setCenterForce] = useState(0.001);
+  const [repelForce, setRepelForce] = useState(3000);
+  const [linkForce, setLinkForce] = useState(0.01);
+  const [linkDistance, setLinkDistance] = useState(100);
   const [hideOrphans, setHideOrphans] = useState(false);
   const [anonymizePeople, setAnonymizePeople] = useState(false);
 
@@ -406,7 +406,7 @@ export default function Graph() {
               
               graphics.moveTo(fromNode.x, fromNode.y);
               graphics.lineTo(toNode.x, toNode.y);
-              graphics.stroke({ color: edgeColor, width: 2, alpha: personLineOpacity });
+              graphics.stroke({ color: edgeColor, width: 2, alpha: 0.6 });
 
               container.addChildAt(graphics, 0); // Add edges behind nodes
               edges.push({
@@ -434,7 +434,7 @@ export default function Graph() {
                   graphics.moveTo(groupNode.x, groupNode.y);
                   graphics.lineTo(personNode.x, personNode.y);
                   const groupColor = group.color ? hexToNumber(group.color) : 0x8b5cf6;
-                  graphics.stroke({ color: groupColor, width: 1, alpha: groupLineOpacity });
+                  graphics.stroke({ color: groupColor, width: 1, alpha: 0.5 });
 
                   container.addChildAt(graphics, 0); // Add edges behind nodes
                   edges.push({
@@ -524,10 +524,6 @@ export default function Graph() {
           
           const nodes = Array.from(nodesRef.current.values());
           const damping = 0.9;
-          const repulsion = 3000;
-          const personAttraction = personPull;
-          const groupAttraction = groupPull;
-          const centerForce = 0.001;
 
           // Apply forces
           nodes.forEach((node) => {
@@ -546,32 +542,37 @@ export default function Graph() {
                 const dx = node.x - other.x;
                 const dy = node.y - other.y;
                 const distSq = dx * dx + dy * dy + 1;
-                const force = repulsion / distSq;
+                const force = repelForce / distSq;
                 fx += (dx / Math.sqrt(distSq)) * force;
                 fy += (dy / Math.sqrt(distSq)) * force;
               }
             });
 
-            // Attraction along edges
+            // Attraction along edges with desired distance
             edgesRef.current.forEach((edge) => {
               if (!edge.graphics || edge.graphics.destroyed || !edge.graphics.visible) return; // Skip hidden/destroyed edges
               
               let other: Node | undefined;
-              let attraction = personAttraction;
               
               if (edge.from === node.id) {
                 other = nodesRef.current.get(edge.to);
-                if (edge.type === 'group-member') attraction = groupAttraction;
               } else if (edge.to === node.id) {
                 other = nodesRef.current.get(edge.from);
-                if (edge.type === 'group-member') attraction = groupAttraction;
               }
 
               if (other && other.graphics && other.graphics.visible) {
                 const dx = other.x - node.x;
                 const dy = other.y - node.y;
-                fx += dx * attraction;
-                fy += dy * attraction;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                // Spring force: attractive if too far, repulsive if too close
+                const displacement = distance - linkDistance;
+                const force = displacement * linkForce;
+                
+                if (distance > 0) {
+                  fx += (dx / distance) * force;
+                  fy += (dy / distance) * force;
+                }
               }
             });
 
@@ -716,8 +717,8 @@ export default function Graph() {
           if (!containerRef.current) return;
           
           const zoomSpeed = 0.001;
-          const minZoom = 0.1;
-          const maxZoom = 5;
+          const minZoom = 0.2;
+          const maxZoom = 4;
           
           // Calculate zoom delta
           const delta = -e.deltaY * zoomSpeed;
@@ -804,7 +805,7 @@ export default function Graph() {
         }
       }, 0);
     };
-  }, [people, groups, navigate, showGroups, disablePersonLines, highlightedPersonId, personLineOpacity, groupLineOpacity, personPull, groupPull, anonymizePeople]);
+  }, [people, groups, navigate, showGroups, disablePersonLines, highlightedPersonId, anonymizePeople]);
 
   return (
     <div className="h-full flex flex-col">
@@ -861,14 +862,14 @@ export default function Graph() {
               highlightedPersonId={highlightedPersonId}
               onHighlightedPersonChange={setHighlightedPersonId}
               people={people}
-              personLineOpacity={personLineOpacity}
-              onPersonLineOpacityChange={setPersonLineOpacity}
-              groupLineOpacity={groupLineOpacity}
-              onGroupLineOpacityChange={setGroupLineOpacity}
-              personPull={personPull}
-              onPersonPullChange={setPersonPull}
-              groupPull={groupPull}
-              onGroupPullChange={setGroupPull}
+              centerForce={centerForce}
+              onCenterForceChange={setCenterForce}
+              repelForce={repelForce}
+              onRepelForceChange={setRepelForce}
+              linkForce={linkForce}
+              onLinkForceChange={setLinkForce}
+              linkDistance={linkDistance}
+              onLinkDistanceChange={setLinkDistance}
             />
           </>
         )}
