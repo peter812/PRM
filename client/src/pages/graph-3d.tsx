@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import { Button } from "@/components/ui/button";
-import { Settings, Grid2X2, Eye, EyeOff } from "lucide-react";
+import { Settings, Grid2X2, Eye, EyeOff, X } from "lucide-react";
 import { useLocation } from "wouter";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -305,53 +305,61 @@ export default function Graph3D() {
               {/* Person Highlight Search */}
               <div className="space-y-2">
                 <Label>Highlight Person</Label>
-                <Popover open={searchOpen} onOpenChange={setSearchOpen}>
-                  <PopoverTrigger asChild>
+                <div className="relative">
+                  {highlightedPersonId && (
                     <Button
-                      variant="outline"
-                      className="w-full justify-start text-left font-normal"
-                      data-testid="button-person-search"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute left-0 top-0 h-full z-10 hover:bg-transparent"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setHighlightedPersonId(null);
+                      }}
+                      data-testid="button-clear-highlight"
                     >
-                      {highlightedPersonId
-                        ? people.find(p => p.id === highlightedPersonId)
-                          ? `${people.find(p => p.id === highlightedPersonId)!.firstName} ${people.find(p => p.id === highlightedPersonId)!.lastName}`
-                          : 'Select person...'
-                        : 'Select person...'}
+                      <X className="h-4 w-4" />
                     </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-80 p-0" align="start">
-                    <Command>
-                      <CommandInput placeholder="Search people..." />
-                      <CommandList>
-                        <CommandEmpty>No person found.</CommandEmpty>
-                        <CommandGroup>
-                          <CommandItem
-                            onSelect={() => {
-                              setHighlightedPersonId(null);
-                              setSearchOpen(false);
-                            }}
-                            data-testid="option-clear-highlight"
-                          >
-                            <span className="font-medium">Clear highlight</span>
-                          </CommandItem>
-                          {searchPeople.map((person) => (
-                            <CommandItem
-                              key={person.id}
-                              value={`${person.firstName} ${person.lastName}`}
-                              onSelect={() => {
-                                setHighlightedPersonId(person.id);
-                                setSearchOpen(false);
-                              }}
-                              data-testid={`option-person-${person.id}`}
-                            >
-                              {person.firstName} {person.lastName}
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
+                  )}
+                  <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start text-left font-normal"
+                        style={{ paddingLeft: highlightedPersonId ? '2.5rem' : undefined }}
+                        data-testid="button-person-search"
+                      >
+                        {highlightedPersonId
+                          ? people.find(p => p.id === highlightedPersonId)
+                            ? `${people.find(p => p.id === highlightedPersonId)!.firstName} ${people.find(p => p.id === highlightedPersonId)!.lastName}`
+                            : 'Select person...'
+                          : 'Select person...'}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-80 p-0" align="start">
+                      <Command>
+                        <CommandInput placeholder="Search people..." />
+                        <CommandList>
+                          <CommandEmpty>No person found.</CommandEmpty>
+                          <CommandGroup>
+                            {searchPeople.map((person) => (
+                              <CommandItem
+                                key={person.id}
+                                value={`${person.firstName} ${person.lastName}`}
+                                onSelect={() => {
+                                  setHighlightedPersonId(person.id);
+                                  setSearchOpen(false);
+                                }}
+                                data-testid={`option-person-${person.id}`}
+                              >
+                                {person.firstName} {person.lastName}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
+                </div>
               </div>
 
               {/* Show Groups */}
