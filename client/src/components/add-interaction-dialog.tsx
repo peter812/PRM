@@ -225,8 +225,16 @@ export function AddInteractionDialog({
     return `${year}-${month}-${day}T${hours}:${minutes}`;
   };
 
-  // Filter out "ME" person from the people list
-  const availablePeople = people.filter((p) => !p.userId);
+  // Sort people with ME user first
+  const availablePeople = useMemo(() => {
+    return [...people].sort((a, b) => {
+      // ME user (with userId) comes first
+      if (a.userId && !b.userId) return -1;
+      if (!a.userId && b.userId) return 1;
+      // Otherwise sort alphabetically by first name
+      return a.firstName.localeCompare(b.firstName);
+    });
+  }, [people]);
 
   // Filter people based on search query
   const filteredPeople = useMemo(() => {
