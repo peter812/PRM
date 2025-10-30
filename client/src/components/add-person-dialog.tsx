@@ -55,6 +55,7 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       toast({
         title: "Success",
         description: "Person added successfully",

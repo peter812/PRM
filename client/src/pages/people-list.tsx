@@ -1,6 +1,6 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -21,20 +21,66 @@ import { AddPersonDialog } from "@/components/add-person-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
+type PersonWithRelationship = Person & {
+  maxRelationshipValue: number | null;
+  relationshipTypeName: string | null;
+  relationshipTypeColor: string | null;
+};
+
 export default function PeopleList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [personToDelete, setPersonToDelete] = useState<Person | null>(null);
+  const [personToDelete, setPersonToDelete] = useState<PersonWithRelationship | null>(null);
   const { toast } = useToast();
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const { data: people, isLoading, isError, error } = useQuery<Person[]>({
-    queryKey: ["/api/people"],
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery<PersonWithRelationship[]>({
+    queryKey: ["/api/people/paginated"],
+    queryFn: async ({ pageParam = 0 }) => {
+      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30`);
+      if (!response.ok) throw new Error("Failed to fetch people");
+      return response.json();
+    },
+    getNextPageParam: (lastPage, allPages) => {
+      if (lastPage.length < 30) return undefined;
+      return allPages.length * 30;
+    },
+    initialPageParam: 0,
   });
+
+  // Infinite scroll handler
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const scrollPercentage = (scrollTop + clientHeight) / scrollHeight;
+      
+      if (scrollPercentage > 0.8 && hasNextPage && !isFetchingNextPage) {
+        fetchNextPage();
+      }
+    };
+
+    container.addEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  const people = data?.pages.flat() || [];
 
   const deleteMutation = useMutation({
     mutationFn: async (personId: string) => {
       await apiRequest("DELETE", `/api/people/${personId}`);
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       toast({
         title: "Person deleted",
@@ -69,7 +115,7 @@ export default function PeopleList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-6">
+      <div className="flex-1 overflow-auto px-6 py-6" ref={scrollContainerRef}>
         {isLoading ? (
           <div className="flex flex-col gap-[5px]">
             {[1, 2, 3, 4].map((i) => (
@@ -131,15 +177,26 @@ export default function PeopleList() {
                           </span>
                         )}
                       </div>
-                      {person.tags && person.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {person.tags.map((tag, idx) => (
-                            <Badge key={idx} variant="secondary" className="text-xs">
-                              {tag}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {person.relationshipTypeName && (
+                          <Badge
+                            variant="secondary"
+                            className="text-xs"
+                            style={{
+                              backgroundColor: person.relationshipTypeColor || undefined,
+                              color: 'white',
+                            }}
+                            data-testid={`badge-relationship-${person.id}`}
+                          >
+                            {person.relationshipTypeName}
+                          </Badge>
+                        )}
+                        {person.tags && person.tags.map((tag, idx) => (
+                          <Badge key={idx} variant="secondary" className="text-xs">
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
                     </div>
                     <Button
                       variant="ghost"
@@ -158,6 +215,14 @@ export default function PeopleList() {
                 </Card>
               </Link>
             ))}
+            {isFetchingNextPage && (
+              <div className="flex justify-center py-4">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                  Loading more...
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-16 text-center">
