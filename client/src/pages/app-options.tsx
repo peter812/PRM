@@ -112,9 +112,22 @@ export default function AppOptionsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       
+      const imported = data.imported;
+      const skipped = data.skipped || { people: 0, relationshipTypes: 0, interactionTypes: 0 };
+      
+      const importSummary = [
+        `${imported.people} people${skipped.people > 0 ? ` (${skipped.people} duplicates skipped)` : ''}`,
+        `${imported.relationships} relationships`,
+        `${imported.relationshipTypes} relationship types${skipped.relationshipTypes > 0 ? ` (${skipped.relationshipTypes} duplicates skipped)` : ''}`,
+        `${imported.interactions} interactions`,
+        `${imported.interactionTypes} interaction types${skipped.interactionTypes > 0 ? ` (${skipped.interactionTypes} duplicates skipped)` : ''}`,
+        `${imported.groups} groups`,
+        `${imported.notes} notes`,
+      ].join(', ');
+      
       toast({
         title: "Import Successful",
-        description: `Successfully imported data: ${data.imported.people} people, ${data.imported.groups} groups, ${data.imported.interactions} interactions, ${data.imported.notes} notes`,
+        description: `Successfully imported: ${importSummary}`,
       });
 
       setSelectedXmlFile(null);
