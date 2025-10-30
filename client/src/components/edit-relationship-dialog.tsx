@@ -56,7 +56,7 @@ export function EditRelationshipDialog({
     enabled: open,
   });
 
-  const form = useForm<EditRelationshipForm>({
+  const form = useForm({
     resolver: zodResolver(editRelationshipSchema),
     defaultValues: {
       typeId: relationship.typeId,
@@ -85,8 +85,8 @@ export function EditRelationshipDialog({
     },
   });
 
-  const onSubmit = (data: EditRelationshipForm) => {
-    updateMutation.mutate(data);
+  const onSubmit = (data: any) => {
+    updateMutation.mutate(data as EditRelationshipForm);
   };
 
   return (

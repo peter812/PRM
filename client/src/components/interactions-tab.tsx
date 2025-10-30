@@ -1,13 +1,15 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, Trash2, Phone, Mail, Video, Calendar, Users } from "lucide-react";
+import { Plus, Trash2, Phone, Mail, Video, Calendar, Users, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { EditInteractionDialog } from "@/components/edit-interaction-dialog";
 import type { Interaction, Person, Group, InteractionType } from "@shared/schema";
 import { format } from "date-fns";
 import { Link } from "wouter";
+import { useState } from "react";
 
 interface InteractionsTabProps {
   interactions: Interaction[];
@@ -23,6 +25,7 @@ export function InteractionsTab({
   onAddInteraction,
 }: InteractionsTabProps) {
   const { toast } = useToast();
+  const [editingInteraction, setEditingInteraction] = useState<Interaction | null>(null);
 
   const { data: allPeople = [] } = useQuery<Person[]>({
     queryKey: ["/api/people"],
@@ -157,16 +160,27 @@ export function InteractionsTab({
                           {format(new Date(interaction.date), "MMM d, yyyy 'at' h:mm a")}
                         </span>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => deleteMutation.mutate(interaction.id)}
-                        disabled={deleteMutation.isPending}
-                        className="h-8 text-destructive hover:text-destructive"
-                        data-testid={`button-delete-interaction-${interaction.id}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditingInteraction(interaction)}
+                          className="h-8"
+                          data-testid={`button-edit-interaction-${interaction.id}`}
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => deleteMutation.mutate(interaction.id)}
+                          disabled={deleteMutation.isPending}
+                          className="h-8 text-destructive hover:text-destructive"
+                          data-testid={`button-delete-interaction-${interaction.id}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
 
                     {interaction.title && (
@@ -244,6 +258,16 @@ export function InteractionsTab({
             Add Interaction
           </Button>
         </div>
+      )}
+
+      {editingInteraction && (
+        <EditInteractionDialog
+          open={!!editingInteraction}
+          onOpenChange={(open) => !open && setEditingInteraction(null)}
+          interaction={editingInteraction}
+          personId={personId}
+          groupId={groupId}
+        />
       )}
     </div>
   );

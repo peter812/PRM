@@ -66,6 +66,7 @@ export interface IStorage {
 
   // Interaction operations
   createInteraction(interaction: InsertInteraction): Promise<Interaction>;
+  updateInteraction(id: string, interaction: Partial<InsertInteraction>): Promise<Interaction | undefined>;
   deleteInteraction(id: string): Promise<void>;
 
   // Relationship operations
@@ -460,6 +461,18 @@ export class DatabaseStorage implements IStorage {
       .values(insertInteraction)
       .returning();
     return interaction;
+  }
+
+  async updateInteraction(
+    id: string,
+    interactionData: Partial<InsertInteraction>
+  ): Promise<Interaction | undefined> {
+    const [interaction] = await db
+      .update(interactions)
+      .set(interactionData)
+      .where(eq(interactions.id, id))
+      .returning();
+    return interaction || undefined;
   }
 
   async deleteInteraction(id: string): Promise<void> {

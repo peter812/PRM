@@ -1546,6 +1546,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.patch("/api/interactions/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const validatedData = insertInteractionSchema.partial().parse(req.body);
+      const interaction = await storage.updateInteraction(id, validatedData);
+
+      if (!interaction) {
+        return res.status(404).json({ error: "Interaction not found" });
+      }
+
+      res.json(interaction);
+    } catch (error) {
+      console.error("Error updating interaction:", error);
+      res.status(400).json({ error: "Failed to update interaction" });
+    }
+  });
+
   app.delete("/api/interactions/:id", async (req, res) => {
     try {
       const id = req.params.id;

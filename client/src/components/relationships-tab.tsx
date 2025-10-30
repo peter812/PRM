@@ -1,12 +1,14 @@
 import { useMutation } from "@tanstack/react-query";
-import { Plus, Trash2, Users2 } from "lucide-react";
+import { Plus, Trash2, Users2, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { EditRelationshipDialog } from "@/components/edit-relationship-dialog";
 import type { RelationshipWithPerson } from "@shared/schema";
+import { useState } from "react";
 
 interface RelationshipsTabProps {
   relationships: RelationshipWithPerson[];
@@ -20,6 +22,7 @@ export function RelationshipsTab({
   onAddRelationship,
 }: RelationshipsTabProps) {
   const { toast } = useToast();
+  const [editingRelationship, setEditingRelationship] = useState<RelationshipWithPerson | null>(null);
 
   const deleteMutation = useMutation({
     mutationFn: async (relationshipId: string) => {
@@ -99,16 +102,27 @@ export function RelationshipsTab({
                         </div>
                       )}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => deleteMutation.mutate(relationship.id)}
-                      disabled={deleteMutation.isPending}
-                      className="h-8 text-destructive hover:text-destructive"
-                      data-testid={`button-delete-relationship-${relationship.id}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setEditingRelationship(relationship)}
+                        className="h-8"
+                        data-testid={`button-edit-relationship-${relationship.id}`}
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => deleteMutation.mutate(relationship.id)}
+                        disabled={deleteMutation.isPending}
+                        className="h-8 text-destructive hover:text-destructive"
+                        data-testid={`button-delete-relationship-${relationship.id}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
 
                   {relationship.type && (
@@ -151,6 +165,15 @@ export function RelationshipsTab({
             Add Relationship
           </Button>
         </div>
+      )}
+
+      {editingRelationship && (
+        <EditRelationshipDialog
+          open={!!editingRelationship}
+          onOpenChange={(open) => !open && setEditingRelationship(null)}
+          relationship={editingRelationship}
+          personId={personId}
+        />
       )}
     </div>
   );
