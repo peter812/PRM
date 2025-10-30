@@ -134,6 +134,41 @@ async function hasUsers(): Promise<boolean> {
 }
 
 /**
+ * Ensures the sso_email column exists in the users table
+ * Adds it retroactively if it doesn't exist
+ */
+async function ensureSsoEmailColumn(): Promise<void> {
+  try {
+    // Check if the column exists
+    const result = await pool.query(`
+      SELECT EXISTS (
+        SELECT 1 
+        FROM information_schema.columns 
+        WHERE table_name = 'users' 
+        AND column_name = 'sso_email'
+      ) as column_exists
+    `);
+    
+    const columnExists = result.rows[0]?.column_exists || false;
+    
+    if (!columnExists) {
+      log("sso_email column not found. Adding it to users table...");
+      
+      // Add the column
+      await pool.query(`
+        ALTER TABLE users 
+        ADD COLUMN sso_email TEXT
+      `);
+      
+      log("sso_email column added successfully");
+    }
+  } catch (error) {
+    log(`Note: Could not check/add sso_email column: ${error}`);
+    // Don't throw - this is a non-critical migration
+  }
+}
+
+/**
  * Seeds example people and groups for demo purposes
  */
 async function seedExampleData(userId: number, mePerson: any): Promise<void> {
@@ -278,6 +313,9 @@ export async function initializeDatabase(): Promise<void> {
       log("Database initialized successfully!");
     } else {
       log("Users found in database. Skipping initialization.");
+      
+      // Ensure sso_email column exists (retroactive migration)
+      await ensureSsoEmailColumn();
     }
   } catch (error) {
     log(`Database initialization failed: ${error}`);
