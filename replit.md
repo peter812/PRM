@@ -39,6 +39,7 @@ The "Reset Database" feature performs a complete wipe of all data including the 
 ### Key Features & Design Decisions
 
 -   **Global Search:** Real-time top-bar search with prioritized results for people and groups.
+-   **People List Optimization:** Infinite scroll pagination loading 30 people at a time. People are sorted by highest-value relationship type first (e.g., Partners before Friends), then alphabetically by name. Each person card displays a colored badge showing their highest-value relationship type.
 -   **Graph Optimization:** Dedicated `/api/graph` endpoint for efficient data fetching, using Pixi.js for stable, WebGL-based interactive rendering with manual control to prevent race conditions.
 -   **Graph Display Options:** Toggles for showing groups, disabling person lines, hiding orphans, and anonymizing people.
 -   **Context-Aware Navigation:** Back buttons preserve navigation context.
@@ -47,6 +48,8 @@ The "Reset Database" feature performs a complete wipe of all data including the 
 -   **Unified Relationship System:** Customizable, bidirectional person-to-person relationships with database-driven types, colors, and notes. Default types are provided.
 -   **Deletion Features:** Comprehensive cascade deletion for people and groups.
 -   **Groups Management:** Bidirectional member management between people and groups with various UI display modes.
+-   **Editable Relationships & Interactions:** Modal dialogs for editing relationship types/notes and interaction details directly from person profiles.
+-   **ME User in Interactions:** The ME user appears first in people selection lists when creating or editing interactions.
 -   **XML Import/Export:** Full data backup and migration, preserving UUIDs, excluding images.
 -   **API Documentation & Playground:** Interactive API documentation organized into collapsible sections (People, Notes, Interactions, Relationships, Groups, Group Notes) with endpoint details, request/response examples, and copy-to-clipboard functionality. Dedicated testing page at `/api-playground` with resource/operation selection, live code examples, and result execution.
 
