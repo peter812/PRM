@@ -62,13 +62,6 @@ export default function Graph3D() {
   const groups = graphData?.groups || [];
   const relationships = graphData?.relationships || [];
 
-  // Set ME person as default highlight when data loads
-  useEffect(() => {
-    if (meData?.id && highlightedPersonId === null) {
-      setHighlightedPersonId(meData.id);
-    }
-  }, [meData?.id, highlightedPersonId]);
-
   // Filter people if hideOrphans is enabled
   const people = hideOrphans 
     ? allPeople.filter(person => {
