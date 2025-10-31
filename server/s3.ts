@@ -1,8 +1,14 @@
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { nanoid } from "nanoid";
 
+// Parse S3_ENDPOINT to handle both formats: with or without protocol
+const s3Endpoint = process.env.S3_ENDPOINT!;
+const endpoint = s3Endpoint.startsWith('http://') || s3Endpoint.startsWith('https://') 
+  ? s3Endpoint 
+  : `https://${s3Endpoint}`;
+
 const s3Client = new S3Client({
-  endpoint: `https://${process.env.S3_ENDPOINT}`,
+  endpoint,
   region: "auto",
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY!,
@@ -32,10 +38,14 @@ export async function uploadImageToS3(
     await s3Client.send(command);
   } catch (error) {
     console.error("S3 upload error details:", error);
+    console.error("S3 Configuration - Endpoint:", endpoint);
+    console.error("S3 Configuration - Bucket:", BUCKET_NAME);
     throw error;
   }
 
-  return `https://${process.env.S3_ENDPOINT}/${BUCKET_NAME}/${key}`;
+  // Extract the base URL without protocol for constructing the public URL
+  const baseEndpoint = endpoint.replace(/^https?:\/\//, '');
+  return `https://${baseEndpoint}/${BUCKET_NAME}/${key}`;
 }
 
 export async function deleteImageFromS3(imageUrl: string): Promise<void> {
