@@ -26,10 +26,14 @@ export async function uploadImageToS3(
     Key: key,
     Body: buffer,
     ContentType: mimeType,
-    ACL: "public-read",
   });
 
-  await s3Client.send(command);
+  try {
+    await s3Client.send(command);
+  } catch (error) {
+    console.error("S3 upload error details:", error);
+    throw error;
+  }
 
   return `https://${process.env.S3_ENDPOINT}/${BUCKET_NAME}/${key}`;
 }
