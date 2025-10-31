@@ -25,6 +25,7 @@ type PersonWithRelationship = Person & {
   maxRelationshipValue: number | null;
   relationshipTypeName: string | null;
   relationshipTypeColor: string | null;
+  groupCount: number;
 };
 
 export default function PeopleList() {
@@ -145,10 +146,13 @@ export default function PeopleList() {
           </div>
         ) : people && people.length > 0 ? (
           <div className="flex flex-col gap-[5px]">
-            {people.map((person) => (
+            {people.map((person) => {
+              const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
+              return (
               <Link key={person.id} href={`/person/${person.id}`}>
                 <Card
                   className="p-4 hover-elevate transition-all cursor-pointer"
+                  style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
                   data-testid={`card-person-${person.id}`}
                 >
                   <div className="flex items-center gap-4">
@@ -214,7 +218,8 @@ export default function PeopleList() {
                   </div>
                 </Card>
               </Link>
-            ))}
+            );
+            })}
             {isFetchingNextPage && (
               <div className="flex justify-center py-4">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">

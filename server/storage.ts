@@ -55,7 +55,7 @@ export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
   getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
-  getPeoplePaginated(offset: number, limit: number, mePersonId?: string): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null }>>;
+  getPeoplePaginated(offset: number, limit: number, mePersonId?: string): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>>;
   getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
@@ -295,7 +295,7 @@ export class DatabaseStorage implements IStorage {
     offset: number,
     limit: number,
     mePersonId?: string
-  ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null }>> {
+  ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>> {
     // Get all people (excluding ME user) with their highest-value relationship WITH THE ME USER
     const result = await db
       .select({
@@ -319,6 +319,11 @@ export class DatabaseStorage implements IStorage {
             (r2.to_person_id = ${people.id} AND r2.from_person_id = ${mePersonId})
           )` : sql`(r2.from_person_id = ${people.id} OR r2.to_person_id = ${people.id})`}
         ) THEN ${relationshipTypes.color} ELSE NULL END)`.as('type_color'),
+        groupCount: sql<number>`(
+          SELECT COUNT(*)::int 
+          FROM ${groups} 
+          WHERE ${people.id} = ANY(${groups.members})
+        )`.as('group_count'),
       })
       .from(people)
       .leftJoin(
@@ -349,6 +354,7 @@ export class DatabaseStorage implements IStorage {
       maxRelationshipValue: row.maxValue,
       relationshipTypeName: row.typeName,
       relationshipTypeColor: row.typeColor,
+      groupCount: row.groupCount,
     }));
   }
 

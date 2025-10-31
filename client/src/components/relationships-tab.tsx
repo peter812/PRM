@@ -9,6 +9,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { EditRelationshipDialog } from "@/components/edit-relationship-dialog";
 import type { RelationshipWithPerson } from "@shared/schema";
 import { useState } from "react";
+import { Link } from "wouter";
 
 interface RelationshipsTabProps {
   relationships: RelationshipWithPerson[];
@@ -85,9 +86,11 @@ export function RelationshipsTab({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-4 mb-2">
                     <div>
-                      <h3 className="text-lg font-medium" data-testid={`text-related-person-${relationship.id}`}>
-                        {relationship.toPerson.firstName} {relationship.toPerson.lastName}
-                      </h3>
+                      <Link href={`/person/${relationship.toPerson.id}`}>
+                        <h3 className="text-lg font-medium hover:text-primary cursor-pointer transition-colors" data-testid={`text-related-person-${relationship.id}`}>
+                          {relationship.toPerson.firstName} {relationship.toPerson.lastName}
+                        </h3>
+                      </Link>
                       {(relationship.toPerson.company || relationship.toPerson.title) && (
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           {relationship.toPerson.title && (
