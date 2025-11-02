@@ -520,6 +520,11 @@ export class DatabaseStorage implements IStorage {
     await db.delete(notes).where(eq(notes.id, id));
   }
 
+  async getNoteById(id: string): Promise<Note | undefined> {
+    const [note] = await db.select().from(notes).where(eq(notes.id, id));
+    return note || undefined;
+  }
+
   // Interaction operations
   async createInteraction(
     insertInteraction: InsertInteraction

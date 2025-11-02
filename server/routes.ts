@@ -1353,12 +1353,49 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/people/search", async (req, res) => {
     try {
       const query = req.query.q as string | undefined;
+      const creationStartDate = req.query.creation_start_date as string | undefined;
+      const creationStopDate = req.query.creation_stop_date as string | undefined;
+      const connectedToMe = req.query.connected_to_me as string | undefined;
       
       if (!query) {
         return res.status(400).json({ error: "Search query parameter 'q' is required" });
       }
 
-      const people = await storage.getAllPeople(query);
+      let people = await storage.getAllPeople(query);
+      
+      // Filter by creation date range
+      if (creationStartDate) {
+        const startTimestamp = new Date(creationStartDate).getTime();
+        people = people.filter(p => new Date(p.createdAt).getTime() >= startTimestamp);
+      }
+      
+      if (creationStopDate) {
+        const stopTimestamp = new Date(creationStopDate).getTime();
+        people = people.filter(p => new Date(p.createdAt).getTime() <= stopTimestamp);
+      }
+      
+      // Filter by connection to ME user
+      if (connectedToMe === 'true') {
+        const userId = req.user?.id;
+        if (userId) {
+          const mePerson = await storage.getMePerson(userId);
+          if (mePerson) {
+            // Get all relationships involving the ME user
+            const allRelationships = await storage.getAllRelationships();
+            const meRelationships = allRelationships.filter(
+              rel => rel.fromPersonId === mePerson.id || rel.toPersonId === mePerson.id
+            );
+            const connectedPersonIds = new Set(
+              meRelationships.map(rel => 
+                rel.fromPersonId === mePerson.id ? rel.toPersonId : rel.fromPersonId
+              )
+            );
+            
+            people = people.filter(p => connectedPersonIds.has(p.id));
+          }
+        }
+      }
+
       res.json(people);
     } catch (error) {
       console.error("Error searching people:", error);
@@ -1437,7 +1474,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Notes endpoints
   app.get("/api/notes", async (req, res) => {
     try {
-      // Get all notes across all people
+      const personId = req.query.personId as string | undefined;
+      
+      // If personId is provided, get notes for that person only
+      if (personId) {
+        const person = await storage.getPersonById(personId);
+        if (!person) {
+          return res.status(404).json({ error: "Person not found" });
+        }
+        return res.json(person.notes || []);
+      }
+      
+      // Otherwise, get all notes across all people
       const allPeople = await storage.getAllPeople();
       const allNotes: any[] = [];
       
@@ -1459,6 +1507,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching notes:", error);
       res.status(500).json({ error: "Failed to fetch notes" });
+    }
+  });
+
+  app.get("/api/notes/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const note = await storage.getNoteById(id);
+      
+      if (!note) {
+        return res.status(404).json({ error: "Note not found" });
+      }
+      
+      res.json(note);
+    } catch (error) {
+      console.error("Error fetching note:", error);
+      res.status(500).json({ error: "Failed to fetch note" });
     }
   });
 
@@ -1487,20 +1551,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Interactions endpoints
   app.get("/api/interactions", async (req, res) => {
     try {
-      const { interaction_type, uuid, count_limit, date_back } = req.query;
-      
-      // Validate required parameters
-      if (!interaction_type || !uuid) {
-        return res.status(400).json({ 
-          error: "Missing required parameters: interaction_type and uuid are required" 
-        });
-      }
-      
-      if (interaction_type !== "person" && interaction_type !== "group") {
-        return res.status(400).json({ 
-          error: "interaction_type must be either 'person' or 'group'" 
-        });
-      }
+      const { personId, groupId, isgroup, startDate, endDate, start_date, end_date, count_limit, date_back } = req.query;
       
       // Get all interactions
       const allInteractions = await db
@@ -1508,20 +1559,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .from(interactions)
         .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id));
       
-      // Filter based on interaction_type
-      let filteredInteractions = allInteractions.filter(row => {
-        if (interaction_type === "person") {
-          return row.interactions.peopleIds.includes(uuid as string);
-        } else {
-          return row.interactions.groupIds?.includes(uuid as string);
-        }
-      });
+      let filteredInteractions = allInteractions;
       
-      // Apply date filter if provided
-      if (date_back) {
-        const dateBackTimestamp = new Date(date_back as string).getTime();
+      // Filter by person or group ID
+      if (personId) {
         filteredInteractions = filteredInteractions.filter(row => 
-          new Date(row.interactions.date).getTime() >= dateBackTimestamp
+          row.interactions.peopleIds.includes(personId as string)
+        );
+      } else if (groupId) {
+        filteredInteractions = filteredInteractions.filter(row => 
+          row.interactions.groupIds?.includes(groupId as string)
+        );
+      } else if (isgroup !== undefined) {
+        // If isgroup flag is provided without specific ID
+        if (isgroup === 'true') {
+          filteredInteractions = filteredInteractions.filter(row => 
+            row.interactions.groupIds && row.interactions.groupIds.length > 0
+          );
+        } else {
+          filteredInteractions = filteredInteractions.filter(row => 
+            !row.interactions.groupIds || row.interactions.groupIds.length === 0
+          );
+        }
+      }
+      
+      // Apply date filters (support both formats)
+      const startDateParam = startDate || start_date || date_back;
+      const endDateParam = endDate || end_date;
+      
+      if (startDateParam) {
+        const startTimestamp = new Date(startDateParam as string).getTime();
+        filteredInteractions = filteredInteractions.filter(row => 
+          new Date(row.interactions.date).getTime() >= startTimestamp
+        );
+      }
+      
+      if (endDateParam) {
+        const endTimestamp = new Date(endDateParam as string).getTime();
+        filteredInteractions = filteredInteractions.filter(row => 
+          new Date(row.interactions.date).getTime() <= endTimestamp
         );
       }
       
