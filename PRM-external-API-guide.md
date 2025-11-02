@@ -58,6 +58,9 @@ Manage contacts and individuals in your CRM.
 GET /api/people
 ```
 
+**Query Parameters:**
+- `includeRelationships` (optional): Set to 'true' to include relationship data (default: false)
+
 **Response:**
 ```json
 [
@@ -108,11 +111,28 @@ GET /api/people/paginated?offset=0&limit=30
 #### Search People
 
 ```http
-GET /api/people/search?q=john
+GET /api/people/search?q=john&creation_start_date=2024-01-01&creation_stop_date=2024-12-31&connected_to_me=true
 ```
 
 **Query Parameters:**
 - `q` (required): Search query string
+- `creation_start_date` (optional): Filter people created on or after this date (ISO 8601 format)
+- `creation_stop_date` (optional): Filter people created on or before this date (ISO 8601 format)
+- `connected_to_me` (optional): Set to 'true' to only return people with relationships to the authenticated user
+
+**Response:** Array of people matching search criteria
+
+**Examples:**
+```bash
+# Search for people named "john"
+GET /api/people/search?q=john
+
+# Search for people created in 2024
+GET /api/people/search?q=john&creation_start_date=2024-01-01&creation_stop_date=2024-12-31
+
+# Search for people connected to the ME user
+GET /api/people/search?q=john&connected_to_me=true
+```
 
 #### Get Person by ID
 
@@ -159,6 +179,8 @@ Content-Type: application/json
 
 **Response:** `201 Created` with person object
 
+**Note:** Duplicate names are prevented - you cannot create two people with the same first and last name.
+
 #### Update Person
 
 ```http
@@ -185,6 +207,188 @@ DELETE /api/people/:id
 
 ---
 
+### Notes
+
+Personal notes attached to people.
+
+#### Get All Notes
+
+```http
+GET /api/notes
+```
+
+**Query Parameters:**
+- `personId` (optional): Filter notes for a specific person
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid",
+    "personId": "uuid",
+    "personName": "John Doe",
+    "content": "Important reminder about project deadline",
+    "createdAt": "2024-01-15T10:00:00Z"
+  }
+]
+```
+
+**Examples:**
+```bash
+# Get all notes across all people
+GET /api/notes
+
+# Get notes for a specific person
+GET /api/notes?personId=uuid
+```
+
+#### Get Note by ID
+
+```http
+GET /api/notes/:id
+```
+
+**Response:**
+```json
+{
+  "id": "uuid",
+  "personId": "uuid",
+  "content": "Important reminder about project deadline",
+  "createdAt": "2024-01-15T10:00:00Z"
+}
+```
+
+#### Create Note
+
+```http
+POST /api/notes
+Content-Type: application/json
+
+{
+  "personId": "uuid",
+  "content": "Important reminder about project deadline"
+}
+```
+
+**Response:** `201 Created` with note object
+
+#### Delete Note
+
+```http
+DELETE /api/notes/:id
+```
+
+**Response:** `200 OK` with success status
+
+---
+
+### Interactions
+
+Track meetings, calls, emails, and other interactions.
+
+#### Get Interactions
+
+```http
+GET /api/interactions
+```
+
+**Query Parameters:**
+- `personId` (optional): Filter interactions involving a specific person
+- `groupId` (optional): Filter interactions involving a specific group
+- `isgroup` (optional): Set to 'true' to get only group interactions, 'false' for non-group interactions
+- `startDate` or `start_date` (optional): Filter interactions on or after this date (ISO 8601)
+- `endDate` or `end_date` (optional): Filter interactions on or before this date (ISO 8601)
+- `count_limit` (optional): Maximum number of results to return
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid",
+    "peopleIds": ["uuid1", "uuid2"],
+    "groupIds": ["uuid1"],
+    "typeId": "uuid",
+    "date": "2024-01-15T10:00:00Z",
+    "description": "Discussed Q1 project goals",
+    "imageUrl": "https://...",
+    "createdAt": "2024-01-15T11:00:00Z",
+    "type": {
+      "id": "uuid",
+      "name": "Meeting",
+      "color": "#3b82f6",
+      "value": 70
+    }
+  }
+]
+```
+
+**Examples:**
+```bash
+# Get all interactions for a person
+GET /api/interactions?personId=uuid
+
+# Get all interactions for a group
+GET /api/interactions?groupId=uuid
+
+# Get interactions within a date range
+GET /api/interactions?personId=uuid&startDate=2024-01-01&endDate=2024-12-31
+
+# Get only group interactions
+GET /api/interactions?isgroup=true
+
+# Get recent interactions (limit to 10)
+GET /api/interactions?personId=uuid&count_limit=10
+```
+
+#### Create Interaction
+
+```http
+POST /api/interactions
+Content-Type: application/json
+
+{
+  "peopleIds": ["uuid1", "uuid2"],
+  "groupIds": ["uuid1"],
+  "typeId": "uuid",
+  "date": "2024-01-15T10:00:00Z",
+  "description": "Team standup meeting",
+  "imageUrl": null
+}
+```
+
+**Validation:**
+- `peopleIds`: Array with minimum 2 people
+- `date`: ISO 8601 timestamp
+- `typeId`: Valid interaction type UUID
+
+**Response:** `201 Created` with interaction object
+
+#### Update Interaction
+
+```http
+PATCH /api/interactions/:id
+Content-Type: application/json
+
+{
+  "description": "Updated description",
+  "date": "2024-01-15T14:00:00Z"
+}
+```
+
+**Response:** `200 OK` with updated interaction object
+
+#### Delete Interaction
+
+```http
+DELETE /api/interactions/:id
+```
+
+**Response:** `200 OK` with success status
+
+**Note:** Automatically deletes associated images from S3.
+
+---
+
 ### Relationships
 
 Manage relationships between people.
@@ -194,6 +398,10 @@ Manage relationships between people.
 ```http
 GET /api/relationships/:personId
 ```
+
+**Query Parameters:**
+- `count_limit` (optional): Maximum number of results to return
+- `value_limit` (optional): Filter relationships with value greater than or equal to this threshold
 
 **Response:**
 ```json
@@ -221,7 +429,19 @@ GET /api/relationships/:personId
 ]
 ```
 
-**Note**: Returns bidirectional relationships (both where person is "from" or "to").
+**Note**: Returns bidirectional relationships (both where person is "from" or "to"), sorted by relationship value (highest first).
+
+**Examples:**
+```bash
+# Get all relationships for a person
+GET /api/relationships/uuid
+
+# Get high-value relationships only (value >= 70)
+GET /api/relationships/uuid?value_limit=70
+
+# Get top 5 relationships
+GET /api/relationships/uuid?count_limit=5
+```
 
 #### Create Relationship
 
@@ -251,78 +471,15 @@ Content-Type: application/json
 }
 ```
 
+**Response:** `200 OK` with updated relationship object
+
 #### Delete Relationship
 
 ```http
 DELETE /api/relationships/:id
 ```
 
----
-
-### Interactions
-
-Track meetings, calls, emails, and other interactions.
-
-#### List All Interactions
-
-```http
-GET /api/interactions
-```
-
-**Response:**
-```json
-[
-  {
-    "id": "uuid",
-    "peopleIds": ["uuid1", "uuid2"],
-    "groupIds": ["uuid1"],
-    "typeId": "uuid",
-    "date": "2024-01-15T10:00:00Z",
-    "description": "Discussed Q1 project goals",
-    "imageUrl": "https://...",
-    "createdAt": "2024-01-15T11:00:00Z"
-  }
-]
-```
-
-#### Create Interaction
-
-```http
-POST /api/interactions
-Content-Type: application/json
-
-{
-  "peopleIds": ["uuid1", "uuid2"],
-  "groupIds": ["uuid1"],
-  "typeId": "uuid",
-  "date": "2024-01-15T10:00:00Z",
-  "description": "Team standup meeting",
-  "imageUrl": null
-}
-```
-
-**Validation:**
-- `peopleIds`: Array with minimum 2 people
-- `date`: ISO 8601 timestamp
-- `typeId`: Valid interaction type UUID
-
-#### Update Interaction
-
-```http
-PATCH /api/interactions/:id
-Content-Type: application/json
-
-{
-  "description": "Updated description",
-  "date": "2024-01-15T14:00:00Z"
-}
-```
-
-#### Delete Interaction
-
-```http
-DELETE /api/interactions/:id
-```
+**Response:** `200 OK` with success status
 
 ---
 
@@ -346,6 +503,7 @@ GET /api/groups?search=team
     "id": "uuid",
     "name": "Work Team",
     "color": "#3b82f6",
+    "type": ["team", "project"],
     "members": ["uuid1", "uuid2", "uuid3"],
     "createdAt": "2024-01-01T00:00:00Z"
   }
@@ -358,7 +516,7 @@ GET /api/groups?search=team
 GET /api/groups/:id
 ```
 
-**Response:** Group object with populated member details
+**Response:** Group object with populated member details and notes
 
 #### Create Group
 
@@ -369,9 +527,12 @@ Content-Type: application/json
 {
   "name": "Project Alpha Team",
   "color": "#8b5cf6",
+  "type": ["project"],
   "members": ["uuid1", "uuid2"]
 }
 ```
+
+**Response:** `201 Created` with group object
 
 #### Update Group
 
@@ -385,35 +546,17 @@ Content-Type: application/json
 }
 ```
 
+**Response:** `200 OK` with updated group object
+
 #### Delete Group
 
 ```http
 DELETE /api/groups/:id
 ```
 
----
+**Response:** `200 OK` with success status
 
-### Notes
-
-Personal notes attached to people.
-
-#### Create Note
-
-```http
-POST /api/notes
-Content-Type: application/json
-
-{
-  "personId": "uuid",
-  "content": "Important reminder about project deadline"
-}
-```
-
-#### Delete Note
-
-```http
-DELETE /api/notes/:id
-```
+**Note:** Cascade deletes group notes and removes group from interactions.
 
 ---
 
@@ -425,6 +568,34 @@ Notes attached to groups.
 
 ```http
 GET /api/group-notes/:groupId
+```
+
+**Query Parameters:**
+- `count_limit` (optional): Maximum number of results to return
+- `date_back` (optional): Filter notes created on or after this date (ISO 8601)
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid",
+    "groupId": "uuid",
+    "content": "Team meeting notes",
+    "createdAt": "2024-01-15T10:00:00Z"
+  }
+]
+```
+
+**Examples:**
+```bash
+# Get all notes for a group
+GET /api/group-notes/uuid
+
+# Get recent notes (last 10)
+GET /api/group-notes/uuid?count_limit=10
+
+# Get notes since specific date
+GET /api/group-notes/uuid?date_back=2024-01-01
 ```
 
 #### Create Group Note
@@ -439,11 +610,15 @@ Content-Type: application/json
 }
 ```
 
+**Response:** `201 Created` with group note object
+
 #### Delete Group Note
 
 ```http
 DELETE /api/group-notes/:id
 ```
+
+**Response:** `200 OK` with success status
 
 ---
 
@@ -472,6 +647,14 @@ GET /api/relationship-types
 ]
 ```
 
+#### Get Relationship Type by ID
+
+```http
+GET /api/relationship-types/:id
+```
+
+**Response:** Relationship type object
+
 #### Create Relationship Type
 
 ```http
@@ -486,17 +669,29 @@ Content-Type: application/json
 }
 ```
 
+**Response:** `201 Created` with relationship type object
+
 #### Update Relationship Type
 
 ```http
 PATCH /api/relationship-types/:id
+Content-Type: application/json
+
+{
+  "value": 90,
+  "notes": "Updated description"
+}
 ```
+
+**Response:** `200 OK` with updated relationship type object
 
 #### Delete Relationship Type
 
 ```http
 DELETE /api/relationship-types/:id
 ```
+
+**Response:** `200 OK` with success status
 
 **Note**: Cannot delete if relationships are using this type.
 
@@ -525,9 +720,51 @@ GET /api/interaction-types
 ]
 ```
 
-#### Create/Update/Delete
+#### Get Interaction Type by ID
 
-Similar patterns to relationship types.
+```http
+GET /api/interaction-types/:id
+```
+
+**Response:** Interaction type object
+
+#### Create Interaction Type
+
+```http
+POST /api/interaction-types
+Content-Type: application/json
+
+{
+  "name": "Video Call",
+  "color": "#8b5cf6",
+  "value": 60,
+  "description": "Virtual meeting via video"
+}
+```
+
+**Response:** `201 Created` with interaction type object
+
+#### Update Interaction Type
+
+```http
+PATCH /api/interaction-types/:id
+Content-Type: application/json
+
+{
+  "value": 65,
+  "description": "Updated description"
+}
+```
+
+**Response:** `200 OK` with updated interaction type object
+
+#### Delete Interaction Type
+
+```http
+DELETE /api/interaction-types/:id
+```
+
+**Response:** `200 OK` with success status
 
 **Note**: "Generic" interaction type cannot be deleted.
 
@@ -551,12 +788,14 @@ GET /api/export-xml
 - Relationships
 - Interactions
 - Groups
+- Group notes
 - Relationship and interaction types
 
 **Excludes:**
 - Images (URLs included but files not exported)
 - API keys
 - Session data
+- ME user data (privacy preserved)
 
 ### Import Data (XML)
 
@@ -573,15 +812,28 @@ xml: <file>
 ```json
 {
   "message": "Import successful",
-  "stats": {
+  "imported": {
     "people": 10,
     "relationships": 5,
-    "interactions": 3
+    "interactions": 3,
+    "groups": 2,
+    "notes": 15,
+    "groupNotes": 4,
+    "relationshipTypes": 2,
+    "interactionTypes": 1
+  },
+  "skipped": {
+    "people": 2,
+    "relationshipTypes": 0,
+    "interactionTypes": 0
   }
 }
 ```
 
-**Note**: Duplicate detection by name; existing people are skipped.
+**Note**: 
+- Duplicate detection by name; existing people are skipped
+- UUIDs are preserved during import
+- ME user UUID (all zeros in export) is replaced with current user's person ID
 
 ---
 
@@ -668,6 +920,7 @@ All endpoints return standard HTTP status codes:
 4. **Bulk Operations**: When creating multiple relationships, make parallel requests
 5. **Error Handling**: Always check response status codes and handle errors gracefully
 6. **Date Formats**: Always use ISO 8601 format for dates (`YYYY-MM-DDTHH:mm:ssZ`)
+7. **Filter Wisely**: Use query parameters to reduce data transfer and improve performance
 
 ---
 
@@ -679,37 +932,61 @@ All endpoints return standard HTTP status codes:
 const API_BASE = 'https://your-app.replit.app/api';
 const API_KEY = 'your-api-key';
 
+// Helper function for API calls
+async function apiCall(endpoint, options = {}) {
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    ...options,
+    headers: {
+      'X-API-Key': API_KEY,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  
+  if (!response.ok) {
+    throw new Error(`API Error: ${response.statusText}`);
+  }
+  
+  return response.json();
+}
+
+// Get all people
 async function getPeople() {
-  const response = await fetch(`${API_BASE}/people`, {
-    headers: {
-      'X-API-Key': API_KEY
-    }
-  });
-  return response.json();
+  return apiCall('/people');
 }
 
+// Search people connected to ME user
+async function getConnectedPeople(searchTerm) {
+  return apiCall(`/people/search?q=${searchTerm}&connected_to_me=true`);
+}
+
+// Create a new person
 async function createPerson(personData) {
-  const response = await fetch(`${API_BASE}/people`, {
+  return apiCall('/people', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': API_KEY
-    },
-    body: JSON.stringify(personData)
+    body: JSON.stringify(personData),
   });
-  return response.json();
 }
 
-async function createInteraction(interactionData) {
-  const response = await fetch(`${API_BASE}/interactions`, {
+// Get interactions for a person within date range
+async function getPersonInteractions(personId, startDate, endDate) {
+  let url = `/interactions?personId=${personId}`;
+  if (startDate) url += `&startDate=${startDate}`;
+  if (endDate) url += `&endDate=${endDate}`;
+  return apiCall(url);
+}
+
+// Create a relationship
+async function createRelationship(fromPersonId, toPersonId, typeId, notes) {
+  return apiCall('/relationships', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': API_KEY
-    },
-    body: JSON.stringify(interactionData)
+    body: JSON.stringify({ fromPersonId, toPersonId, typeId, notes }),
   });
-  return response.json();
+}
+
+// Get notes for a person
+async function getPersonNotes(personId) {
+  return apiCall(`/notes?personId=${personId}`);
 }
 ```
 
@@ -717,6 +994,7 @@ async function createInteraction(interactionData) {
 
 ```python
 import requests
+from datetime import datetime, timedelta
 
 API_BASE = 'https://your-app.replit.app/api'
 API_KEY = 'your-api-key'
@@ -730,12 +1008,25 @@ headers = {
 response = requests.get(f'{API_BASE}/people', headers=headers)
 people = response.json()
 
+# Search people created in the last 30 days
+thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
+response = requests.get(
+    f'{API_BASE}/people/search',
+    params={
+        'q': '',
+        'creation_start_date': thirty_days_ago,
+    },
+    headers=headers
+)
+recent_people = response.json()
+
 # Create a new person
 new_person = {
     'firstName': 'Jane',
     'lastName': 'Smith',
     'email': 'jane@example.com',
-    'company': 'Tech Corp'
+    'company': 'Tech Corp',
+    'tags': ['developer', 'python']
 }
 response = requests.post(
     f'{API_BASE}/people',
@@ -743,6 +1034,39 @@ response = requests.post(
     headers=headers
 )
 created_person = response.json()
+
+# Get interactions for a person in a date range
+person_id = created_person['id']
+response = requests.get(
+    f'{API_BASE}/interactions',
+    params={
+        'personId': person_id,
+        'startDate': '2024-01-01',
+        'endDate': '2024-12-31',
+    },
+    headers=headers
+)
+interactions = response.json()
+
+# Create a note
+new_note = {
+    'personId': person_id,
+    'content': 'Follow up on project discussion'
+}
+response = requests.post(
+    f'{API_BASE}/notes',
+    json=new_note,
+    headers=headers
+)
+note = response.json()
+
+# Get all notes for a person
+response = requests.get(
+    f'{API_BASE}/notes',
+    params={'personId': person_id},
+    headers=headers
+)
+person_notes = response.json()
 ```
 
 ---
@@ -759,6 +1083,6 @@ For questions or issues with the API:
 ## Version
 
 API Version: 1.0  
-Last Updated: October 2025
+Last Updated: November 2025
 
 **Note**: This API is currently in active development. Breaking changes may occur. Pin your integration to specific functionality and test thoroughly before production deployment.
