@@ -9,7 +9,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/lib/protected-route";
 import { Button } from "@/components/ui/button";
-import { LogOut } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { GlobalSearch } from "@/components/global-search";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
@@ -50,7 +50,7 @@ function Router() {
 }
 
 function AppLayout() {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
   const isAuthPage = location === "/auth";
   const isWelcomePage = location === "/welcome";
@@ -93,6 +93,18 @@ function AppLayout() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  onClick={() => navigate("/settings")}
+                  data-testid="button-settings"
+                  title="Settings"
+                >
+                  <Settings className="h-5 w-5" />
+                </Button>
+              )}
+              <ThemeToggle />
+              {user && (
+                <Button
+                  variant="ghost"
+                  size="icon"
                   onClick={handleLogout}
                   disabled={logoutMutation.isPending}
                   data-testid="button-logout"
@@ -100,7 +112,6 @@ function AppLayout() {
                   <LogOut className="h-5 w-5" />
                 </Button>
               )}
-              <ThemeToggle />
             </div>
           </header>
           <main className="flex-1 overflow-hidden">
