@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { Plus, X, Users2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,7 +9,6 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Link } from "wouter";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,6 +25,7 @@ import type { SocialAccount, Person } from "@shared/schema";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
 
 export default function SocialAccountsList() {
+  const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<SocialAccount | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -176,72 +177,74 @@ export default function SocialAccountsList() {
               );
               
               return (
-                <Link key={account.id} href={`/social-accounts/${account.id}`}>
-                  <a>
-                    <Card
-                      className="p-4 hover-elevate transition-all cursor-pointer"
-                      data-testid={`card-account-${account.id}`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <Avatar className="w-12 h-12">
-                          {account.imageUrl && (
-                            <AvatarImage src={account.imageUrl} alt={account.username} />
+                <div
+                  key={account.id}
+                  onClick={() => navigate(`/social-accounts/${account.id}`)}
+                  className="cursor-pointer"
+                >
+                  <Card
+                    className="p-4 hover-elevate transition-all"
+                    data-testid={`card-account-${account.id}`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <Avatar className="w-12 h-12">
+                        {account.imageUrl && (
+                          <AvatarImage src={account.imageUrl} alt={account.username} />
+                        )}
+                        <AvatarFallback>
+                          {getInitials(account.username)}
+                        </AvatarFallback>
+                      </Avatar>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="font-medium truncate" data-testid={`text-username-${account.id}`}>
+                            {account.username}
+                          </h3>
+                          {isFollowingYou && (
+                            <Badge variant="secondary" className="text-xs">
+                              Follows you
+                            </Badge>
                           )}
-                          <AvatarFallback>
-                            {getInitials(account.username)}
-                          </AvatarFallback>
-                        </Avatar>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-medium truncate" data-testid={`text-username-${account.id}`}>
-                              {account.username}
-                            </h3>
-                            {isFollowingYou && (
-                              <Badge variant="secondary" className="text-xs">
-                                Follows you
-                              </Badge>
-                            )}
-                          </div>
-                          <a
-                            href={account.accountUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-sm text-muted-foreground hover:underline truncate block"
-                            data-testid={`link-account-url-${account.id}`}
-                          >
-                            {account.accountUrl}
-                          </a>
-                          
-                          <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
-                            <span data-testid={`text-followers-${account.id}`}>
-                              {account.followers?.length || 0} followers
-                            </span>
-                            <span>•</span>
-                            <span data-testid={`text-following-${account.id}`}>
-                              {account.following?.length || 0} following
-                            </span>
-                          </div>
                         </div>
-
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setAccountToDelete(account);
-                          }}
-                          data-testid={`button-delete-${account.id}`}
+                        <a
+                          href={account.accountUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-sm text-muted-foreground hover:underline truncate block"
+                          data-testid={`link-account-url-${account.id}`}
                         >
-                          <X className="h-4 w-4" />
-                        </Button>
+                          {account.accountUrl}
+                        </a>
+                        
+                        <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+                          <span data-testid={`text-followers-${account.id}`}>
+                            {account.followers?.length || 0} followers
+                          </span>
+                          <span>•</span>
+                          <span data-testid={`text-following-${account.id}`}>
+                            {account.following?.length || 0} following
+                          </span>
+                        </div>
                       </div>
-                    </Card>
-                  </a>
-                </Link>
+
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setAccountToDelete(account);
+                        }}
+                        data-testid={`button-delete-${account.id}`}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </Card>
+                </div>
               );
             })}
           </div>
