@@ -125,9 +125,9 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
               <div className="flex-shrink-0">
                 <FormLabel>Profile Picture</FormLabel>
                 <ImageUpload
-                  imageUrl={imageUrl}
+                  currentImageUrl={imageUrl}
                   onImageChange={setImageUrl}
-                  size="md"
+                  aspectRatio={1}
                 />
               </div>
             </div>
