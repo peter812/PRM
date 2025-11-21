@@ -56,6 +56,7 @@ export const people = pgTable("people", {
   title: text("title"),
   tags: text("tags").array().default(sql`ARRAY[]::text[]`),
   imageUrl: text("image_url"),
+  socialAccountUuids: text("social_account_uuids").array().default(sql`ARRAY[]::text[]`),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -127,6 +128,18 @@ export const groupNotes = pgTable("group_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   groupId: varchar("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
   content: text("content").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Social accounts table
+export const socialAccounts = pgTable("social_accounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  username: text("username").notNull(),
+  accountUrl: text("account_url").notNull(),
+  ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
+  imageUrl: text("image_url"),
+  following: text("following").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts this account follows
+  followers: text("followers").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts that follow this account
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -272,6 +285,11 @@ export const insertSsoConfigSchema = createInsertSchema(ssoConfig).omit({
   updatedAt: true,
 });
 
+export const insertSocialAccountSchema = createInsertSchema(socialAccounts).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -302,6 +320,9 @@ export type InsertRelationshipType = z.infer<typeof insertRelationshipTypeSchema
 
 export type InteractionType = typeof interactionTypes.$inferSelect;
 export type InsertInteractionType = z.infer<typeof insertInteractionTypeSchema>;
+
+export type SocialAccount = typeof socialAccounts.$inferSelect;
+export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
 
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {
