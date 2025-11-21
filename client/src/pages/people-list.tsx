@@ -120,10 +120,10 @@ export default function PeopleList() {
         {isLoading ? (
           <div className="flex flex-col gap-[5px]">
             {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-4 animate-pulse">
-                <div className="flex items-center gap-4">
+              <Card key={i} className="p-2 animate-pulse">
+                <div className="flex items-center gap-2">
                   <div className="w-12 h-12 rounded-full bg-muted" />
-                  <div className="flex-1 space-y-2">
+                  <div className="flex-1 space-y-1">
                     <div className="h-4 bg-muted rounded w-1/3" />
                     <div className="h-3 bg-muted rounded w-1/4" />
                   </div>
@@ -151,11 +151,11 @@ export default function PeopleList() {
               return (
               <Link key={person.id} href={`/person/${person.id}`}>
                 <Card
-                  className="p-4 hover-elevate transition-all cursor-pointer"
+                  className="p-2 hover-elevate transition-all cursor-pointer"
                   style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
                   data-testid={`card-person-${person.id}`}
                 >
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2">
                     <Avatar className="w-12 h-12">
                       {person.imageUrl && (
                         <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
@@ -168,7 +168,7 @@ export default function PeopleList() {
                       <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
                         {person.firstName} {person.lastName}
                       </h3>
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-1 text-sm text-muted-foreground">
                         {person.company && (
                           <span data-testid={`text-company-${person.id}`}>
                             {person.company}
@@ -181,7 +181,7 @@ export default function PeopleList() {
                           </span>
                         )}
                       </div>
-                      <div className="flex flex-wrap gap-1 mt-2">
+                      <div className="flex flex-wrap gap-1 mt-1">
                         {person.relationshipTypeName && (
                           <Badge
                             variant="secondary"
