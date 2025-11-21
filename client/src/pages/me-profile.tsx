@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations } from "@shared/schema";
+import { queryClient } from "@/lib/queryClient";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
 import { EditPersonDialog } from "@/components/edit-person-dialog";
@@ -16,6 +17,8 @@ import { NotesTab } from "@/components/notes-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
+import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
+import { PersonTagsChips } from "@/components/person-tags-chips";
 
 export default function MeProfile() {
   const [, navigate] = useLocation();
@@ -119,6 +122,16 @@ export default function MeProfile() {
               </Button>
             </div>
 
+            <PersonSocialAccountsChips
+              personId={person.id}
+              socialAccountUuids={person.socialAccountUuids || []}
+              onUpdate={() => {
+                queryClient.invalidateQueries({
+                  queryKey: ["/api/me"],
+                });
+              }}
+            />
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {person.email && (
                 <div className="flex items-center gap-2 text-sm">
@@ -146,15 +159,7 @@ export default function MeProfile() {
               )}
             </div>
 
-            {person.tags && person.tags.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4">
-                {person.tags.map((tag, idx) => (
-                  <Badge key={idx} variant="secondary">
-                    {tag}
-                  </Badge>
-                ))}
-              </div>
-            )}
+            <PersonTagsChips personId={person.id} tags={person.tags || []} />
           </div>
         </div>
       </div>
