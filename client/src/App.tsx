@@ -9,7 +9,15 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/lib/protected-route";
 import { Button } from "@/components/ui/button";
-import { LogOut, Settings } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { LogOut, Settings, Menu } from "lucide-react";
+import { useState } from "react";
 import { GlobalSearch } from "@/components/global-search";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
@@ -52,6 +60,7 @@ function Router() {
 function AppLayout() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const isAuthPage = location === "/auth";
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");
@@ -64,6 +73,11 @@ function AppLayout() {
 
   const handleLogout = () => {
     logoutMutation.mutate();
+  };
+
+  const handleSettingsClick = () => {
+    navigate("/settings");
+    setIsMenuOpen(false);
   };
 
   const style = {
@@ -88,12 +102,13 @@ function AppLayout() {
           <header className="flex items-center justify-between gap-2 px-4 py-2 border-b">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
             <GlobalSearch />
-            <div className="flex items-center gap-2">
+            {/* Desktop Menu - Hidden on mobile */}
+            <div className="hidden md:flex items-center gap-2">
               {user && (
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={() => navigate("/settings")}
+                  onClick={handleSettingsClick}
                   data-testid="button-settings"
                   title="Settings"
                 >
@@ -111,6 +126,37 @@ function AppLayout() {
                 >
                   <LogOut className="h-5 w-5" />
                 </Button>
+              )}
+            </div>
+            {/* Mobile Menu - Visible only on mobile */}
+            <div className="flex md:hidden items-center gap-2">
+              {user && (
+                <DropdownMenu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" data-testid="button-mobile-menu">
+                      <Menu className="h-5 w-5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" data-testid="menu-mobile-options">
+                    <DropdownMenuItem onClick={handleSettingsClick} data-testid="menu-settings">
+                      <Settings className="h-4 w-4 mr-2" />
+                      <span>Settings</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild data-testid="menu-theme">
+                      <ThemeToggle />
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={handleLogout}
+                      disabled={logoutMutation.isPending}
+                      data-testid="menu-logout"
+                    >
+                      <LogOut className="h-4 w-4 mr-2" />
+                      <span>Logout</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
           </header>
