@@ -101,40 +101,40 @@ export function LinkSocialAccountDialog({
         }
       }}
     >
-      <DialogContent className="max-w-lg">
+      <DialogContent className="w-[95vw] max-w-sm md:max-w-lg p-3 md:p-6">
         <DialogHeader>
-          <DialogTitle>Link Social Accounts</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-lg md:text-xl">Link Social Accounts</DialogTitle>
+          <DialogDescription className="text-xs md:text-sm">
             Search and select social accounts to link to this person
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-3 md:space-y-4">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search by username or account URL..."
+              placeholder="Search username or URL..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
+              className="pl-10 text-sm"
               data-testid="input-search-social-accounts"
             />
           </div>
 
-          <div className="max-h-64 overflow-auto space-y-2">
+          <div className="max-h-48 md:max-h-64 overflow-auto space-y-1 md:space-y-2">
             {filteredAccounts.length > 0 ? (
               filteredAccounts.map((account) => {
                 const isSelected = selectedIds.includes(account.id);
                 return (
                   <Card
                     key={account.id}
-                    className="p-3 cursor-pointer transition-all"
+                    className="p-2 md:p-3 cursor-pointer transition-all"
                     onClick={() => handleToggle(account.id)}
                     data-testid={`card-social-account-option-${account.id}`}
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1 flex items-center gap-3 min-w-0">
-                        <Avatar className="h-8 w-8 flex-shrink-0">
+                    <div className="flex items-center gap-2 md:gap-3">
+                      <div className="flex-1 flex items-center gap-2 md:gap-3 min-w-0">
+                        <Avatar className="h-7 w-7 md:h-8 md:w-8 flex-shrink-0">
                           {account.imageUrl && (
                             <AvatarImage src={account.imageUrl} alt={account.username} />
                           )}
@@ -143,7 +143,7 @@ export function LinkSocialAccountDialog({
                           </AvatarFallback>
                         </Avatar>
                         <div className="min-w-0">
-                          <p className="font-medium text-sm truncate" data-testid={`text-username-option-${account.id}`}>
+                          <p className="font-medium text-xs md:text-sm truncate" data-testid={`text-username-option-${account.id}`}>
                             @{account.username}
                           </p>
                           <p className="text-xs text-muted-foreground truncate" data-testid={`text-url-option-${account.id}`}>
@@ -168,13 +168,13 @@ export function LinkSocialAccountDialog({
                 );
               })
             ) : (
-              <div className="text-center py-8 text-muted-foreground">
+              <div className="text-center py-6 md:py-8 text-xs md:text-sm text-muted-foreground">
                 No social accounts found
               </div>
             )}
           </div>
 
-          <div className="flex justify-end gap-2 pt-4 border-t">
+          <div className="flex flex-col-reverse md:flex-row md:justify-end gap-2 pt-3 md:pt-4 border-t">
             <Button
               variant="outline"
               onClick={() => {
@@ -183,6 +183,7 @@ export function LinkSocialAccountDialog({
                 onOpenChange(false);
               }}
               data-testid="button-cancel"
+              className="w-full md:w-auto text-sm"
             >
               Cancel
             </Button>
@@ -190,6 +191,7 @@ export function LinkSocialAccountDialog({
               onClick={handleSave}
               disabled={linkMutation.isPending}
               data-testid="button-save-links"
+              className="w-full md:w-auto text-sm"
             >
               {linkMutation.isPending ? "Saving..." : "Save"}
             </Button>
