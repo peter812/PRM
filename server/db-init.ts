@@ -134,6 +134,110 @@ async function hasUsers(): Promise<boolean> {
 }
 
 /**
+ * Checks if a table exists in the database
+ */
+async function tableExists(tableName: string): Promise<boolean> {
+  try {
+    const result = await pool.query(`
+      SELECT EXISTS (
+        SELECT 1 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = $1
+      ) as exists
+    `, [tableName]);
+    return result.rows[0]?.exists || false;
+  } catch (error) {
+    log(`Error checking if table ${tableName} exists: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Checks if a column exists in a table
+ */
+async function columnExists(tableName: string, columnName: string): Promise<boolean> {
+  try {
+    const result = await pool.query(`
+      SELECT EXISTS (
+        SELECT 1 
+        FROM information_schema.columns 
+        WHERE table_name = $1 
+        AND column_name = $2
+      ) as exists
+    `, [tableName, columnName]);
+    return result.rows[0]?.exists || false;
+  } catch (error) {
+    log(`Error checking if column ${tableName}.${columnName} exists: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Adds a column to a table if it doesn't exist
+ */
+async function addColumnIfNotExists(
+  tableName: string,
+  columnName: string,
+  columnDefinition: string
+): Promise<void> {
+  try {
+    const exists = await columnExists(tableName, columnName);
+    if (!exists) {
+      log(`Adding missing column: ${tableName}.${columnName}`);
+      await pool.query(`
+        ALTER TABLE ${tableName} 
+        ADD COLUMN ${columnName} ${columnDefinition}
+      `);
+      log(`Column ${tableName}.${columnName} added successfully`);
+    }
+  } catch (error) {
+    log(`Error adding column ${tableName}.${columnName}: ${error}`);
+    // Don't throw - continue with other migrations
+  }
+}
+
+/**
+ * Validates and syncs all database tables and columns with the schema
+ */
+async function validateAndSyncSchema(): Promise<void> {
+  log("Validating database schema...");
+  
+  try {
+    // Define all tables and their required columns with definitions
+    const schemaDefinitions: Record<string, Record<string, string>> = {
+      users: {
+        sso_email: "TEXT",
+      },
+      people: {
+        social_account_uuids: "TEXT[]",
+      },
+      social_accounts: {
+        notes: "TEXT",
+      },
+    };
+
+    // Check and add missing columns
+    for (const [tableName, columns] of Object.entries(schemaDefinitions)) {
+      const exists = await tableExists(tableName);
+      if (!exists) {
+        log(`Warning: Expected table ${tableName} not found. It should be created by migrations.`);
+        continue;
+      }
+
+      for (const [columnName, columnDef] of Object.entries(columns)) {
+        await addColumnIfNotExists(tableName, columnName, columnDef);
+      }
+    }
+
+    log("Schema validation completed");
+  } catch (error) {
+    log(`Schema validation error: ${error}`);
+    // Don't throw - continue initialization
+  }
+}
+
+/**
  * Ensures the sso_email column exists in the users table
  * Adds it retroactively if it doesn't exist
  */
@@ -290,6 +394,7 @@ export async function resetDatabase(
  * Initializes the database:
  * - If no users exist, drops all tables and recreates them
  * - Seeds default data (relationship types)
+ * - Validates schema and adds missing columns
  */
 export async function initializeDatabase(): Promise<void> {
   try {
@@ -314,8 +419,8 @@ export async function initializeDatabase(): Promise<void> {
     } else {
       log("Users found in database. Skipping initialization.");
       
-      // Ensure sso_email column exists (retroactive migration)
-      await ensureSsoEmailColumn();
+      // Validate schema and add missing columns if needed
+      await validateAndSyncSchema();
     }
   } catch (error) {
     log(`Database initialization failed: ${error}`);
