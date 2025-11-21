@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations } from "@shared/schema";
+import { queryClient } from "@/lib/queryClient";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
 import { EditPersonDialog } from "@/components/edit-person-dialog";
@@ -16,6 +17,7 @@ import { NotesTab } from "@/components/notes-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
+import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -183,6 +185,17 @@ export default function PersonProfile() {
                 ))}
               </div>
             )}
+
+            <PersonSocialAccountsChips
+              personId={person.id}
+              socialAccountUuids={person.socialAccountUuids || []}
+              onUpdate={() => {
+                // Refetch person data to update chips
+                queryClient.invalidateQueries({
+                  queryKey: ["/api/people", person.id],
+                });
+              }}
+            />
           </div>
         </div>
       </div>
