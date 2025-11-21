@@ -149,6 +149,17 @@ export default function PersonProfile() {
               </Button>
             </div>
 
+            <PersonSocialAccountsChips
+              personId={person.id}
+              socialAccountUuids={person.socialAccountUuids || []}
+              onUpdate={() => {
+                // Refetch person data to update chips
+                queryClient.invalidateQueries({
+                  queryKey: ["/api/people", person.id],
+                });
+              }}
+            />
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {person.email && (
                 <div className="flex items-center gap-2 text-sm">
@@ -185,17 +196,6 @@ export default function PersonProfile() {
                 ))}
               </div>
             )}
-
-            <PersonSocialAccountsChips
-              personId={person.id}
-              socialAccountUuids={person.socialAccountUuids || []}
-              onUpdate={() => {
-                // Refetch person data to update chips
-                queryClient.invalidateQueries({
-                  queryKey: ["/api/people", person.id],
-                });
-              }}
-            />
           </div>
         </div>
       </div>
