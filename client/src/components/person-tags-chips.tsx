@@ -10,9 +10,10 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 interface PersonTagsChipsProps {
   personId: string;
   tags: string[];
+  onUpdate?: () => void;
 }
 
-export function PersonTagsChips({ personId, tags }: PersonTagsChipsProps) {
+export function PersonTagsChips({ personId, tags, onUpdate }: PersonTagsChipsProps) {
   const { toast } = useToast();
   const [isAddingTag, setIsAddingTag] = useState(false);
   const [newTagValue, setNewTagValue] = useState("");
@@ -26,6 +27,9 @@ export function PersonTagsChips({ personId, tags }: PersonTagsChipsProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      if (onUpdate) {
+        onUpdate();
+      }
       toast({
         title: "Success",
         description: "Tags updated successfully",

@@ -159,7 +159,15 @@ export default function MeProfile() {
               )}
             </div>
 
-            <PersonTagsChips personId={person.id} tags={person.tags || []} />
+            <PersonTagsChips
+              personId={person.id}
+              tags={person.tags || []}
+              onUpdate={() => {
+                queryClient.invalidateQueries({
+                  queryKey: ["/api/me"],
+                });
+              }}
+            />
           </div>
         </div>
       </div>
