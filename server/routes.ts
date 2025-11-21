@@ -15,6 +15,7 @@ import {
   insertGroupNoteSchema,
   insertUserSchema,
   insertApiKeySchema,
+  insertSocialAccountSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -1900,6 +1901,127 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting group note:", error);
       res.status(500).json({ error: "Failed to delete group note" });
+    }
+  });
+
+  // Social accounts endpoints
+  app.get("/api/social-accounts", async (req, res) => {
+    try {
+      const searchQuery = req.query.search as string | undefined;
+      const accounts = await storage.getAllSocialAccounts(searchQuery);
+      res.json(accounts);
+    } catch (error) {
+      console.error("Error fetching social accounts:", error);
+      res.status(500).json({ error: "Failed to fetch social accounts" });
+    }
+  });
+
+  app.get("/api/social-accounts/:id", async (req, res) => {
+    try {
+      const account = await storage.getSocialAccountById(req.params.id);
+      if (!account) {
+        return res.status(404).json({ error: "Social account not found" });
+      }
+      res.json(account);
+    } catch (error) {
+      console.error("Error fetching social account:", error);
+      res.status(500).json({ error: "Failed to fetch social account" });
+    }
+  });
+
+  app.post("/api/social-accounts", async (req, res) => {
+    try {
+      const validatedData = insertSocialAccountSchema.parse(req.body);
+      const account = await storage.createSocialAccount(validatedData);
+      res.status(201).json(account);
+    } catch (error) {
+      console.error("Error creating social account:", error);
+      res.status(400).json({ error: "Failed to create social account" });
+    }
+  });
+
+  app.patch("/api/social-accounts/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const validatedData = insertSocialAccountSchema.partial().parse(req.body);
+      const account = await storage.updateSocialAccount(id, validatedData);
+
+      if (!account) {
+        return res.status(404).json({ error: "Social account not found" });
+      }
+
+      res.json(account);
+    } catch (error) {
+      console.error("Error updating social account:", error);
+      res.status(400).json({ error: "Failed to update social account" });
+    }
+  });
+
+  app.delete("/api/social-accounts/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteSocialAccount(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting social account:", error);
+      res.status(500).json({ error: "Failed to delete social account" });
+    }
+  });
+
+  // Social account follower/following management
+  app.post("/api/social-accounts/:id/followers", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { followerId } = req.body;
+      
+      if (!followerId) {
+        return res.status(400).json({ error: "followerId is required" });
+      }
+
+      await storage.addFollower(id, followerId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error adding follower:", error);
+      res.status(500).json({ error: "Failed to add follower" });
+    }
+  });
+
+  app.delete("/api/social-accounts/:id/followers/:followerId", async (req, res) => {
+    try {
+      const { id, followerId } = req.params;
+      await storage.removeFollower(id, followerId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error removing follower:", error);
+      res.status(500).json({ error: "Failed to remove follower" });
+    }
+  });
+
+  app.post("/api/social-accounts/:id/following", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { followingId } = req.body;
+      
+      if (!followingId) {
+        return res.status(400).json({ error: "followingId is required" });
+      }
+
+      await storage.addFollowing(id, followingId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error adding following:", error);
+      res.status(500).json({ error: "Failed to add following" });
+    }
+  });
+
+  app.delete("/api/social-accounts/:id/following/:followingId", async (req, res) => {
+    try {
+      const { id, followingId } = req.params;
+      await storage.removeFollowing(id, followingId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error removing following:", error);
+      res.status(500).json({ error: "Failed to remove following" });
     }
   });
 
