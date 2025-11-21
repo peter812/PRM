@@ -17,6 +17,7 @@ import MeProfile from "@/pages/me-profile";
 import GroupsList from "@/pages/groups-list";
 import GroupProfile from "@/pages/group-profile";
 import SocialAccountsList from "@/pages/social-accounts-list";
+import SocialAccountProfile from "@/pages/social-account-profile";
 import Graph from "@/pages/graph";
 import Graph3D from "@/pages/graph-3d";
 import ApiPlayground from "@/pages/api-playground";
@@ -37,6 +38,7 @@ function Router() {
       <ProtectedRoute path="/groups" component={GroupsList} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
       <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
+      <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/graph-3d" component={Graph3D} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
