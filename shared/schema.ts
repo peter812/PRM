@@ -138,6 +138,7 @@ export const socialAccounts = pgTable("social_accounts", {
   accountUrl: text("account_url").notNull(),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
   imageUrl: text("image_url"),
+  notes: text("notes"),
   following: text("following").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts this account follows
   followers: text("followers").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts that follow this account
   createdAt: timestamp("created_at").notNull().defaultNow(),
