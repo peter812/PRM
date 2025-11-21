@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Plus, X, Users2 } from "lucide-react";
+import { Plus, X, Users2, Edit2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -23,11 +23,13 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { SocialAccount, Person } from "@shared/schema";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
+import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 
 export default function SocialAccountsList() {
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<SocialAccount | null>(null);
+  const [accountToEdit, setAccountToEdit] = useState<SocialAccount | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [showFollowsYou, setShowFollowsYou] = useState(false);
   const { toast } = useToast();
@@ -229,19 +231,34 @@ export default function SocialAccountsList() {
                         </div>
                       </div>
 
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setAccountToDelete(account);
-                        }}
-                        data-testid={`button-delete-${account.id}`}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setAccountToEdit(account);
+                          }}
+                          data-testid={`button-edit-${account.id}`}
+                        >
+                          <Edit2 className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setAccountToDelete(account);
+                          }}
+                          data-testid={`button-delete-${account.id}`}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   </Card>
                 </div>
@@ -270,6 +287,14 @@ export default function SocialAccountsList() {
       </div>
 
       <AddSocialAccountDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+
+      {accountToEdit && (
+        <EditSocialAccountDialog
+          open={!!accountToEdit}
+          onOpenChange={(open) => !open && setAccountToEdit(null)}
+          account={accountToEdit}
+        />
+      )}
 
       <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && setAccountToDelete(null)}>
         <AlertDialogContent>
