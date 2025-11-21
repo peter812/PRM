@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 import type { SocialAccount, Person } from "@shared/schema";
 import { Link } from "wouter";
+import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 
 export default function SocialAccountProfile() {
   const { uuid } = useParams<{ uuid: string }>();
@@ -19,6 +20,7 @@ export default function SocialAccountProfile() {
   const { toast } = useToast();
   const [notes, setNotes] = useState("");
   const [isEditingNotes, setIsEditingNotes] = useState(false);
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
 
   const { data: account, isLoading, isError, error } = useQuery<SocialAccount>({
     queryKey: ["/api/social-accounts", uuid],
@@ -57,6 +59,27 @@ export default function SocialAccountProfile() {
       toast({
         title: "Error",
         description: "Failed to update notes",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("DELETE", `/api/social-accounts/${uuid}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      toast({
+        title: "Success",
+        description: "Social account deleted successfully",
+      });
+      navigate("/social-accounts");
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to delete social account",
         variant: "destructive",
       });
     },
@@ -149,15 +172,42 @@ export default function SocialAccountProfile() {
           </Avatar>
 
           <div className="flex-1">
-            <div className="flex items-start gap-3 mb-4">
-              <h1 className="text-3xl font-semibold" data-testid="text-account-username">
-                {account.username}
-              </h1>
-              {isFollowingYou && (
-                <Badge variant="secondary" data-testid="badge-follows-you">
-                  Follows you
-                </Badge>
-              )}
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="flex items-start gap-3">
+                <h1 className="text-3xl font-semibold" data-testid="text-account-username">
+                  {account.username}
+                </h1>
+                {isFollowingYou && (
+                  <Badge variant="secondary" data-testid="badge-follows-you">
+                    Follows you
+                  </Badge>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsEditDialogOpen(true)}
+                  data-testid="button-edit-account"
+                >
+                  <Edit2 className="h-4 w-4" />
+                  Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => deleteMutation.mutate()}
+                  disabled={deleteMutation.isPending}
+                  data-testid="button-delete-account"
+                  className="text-destructive hover:text-destructive"
+                >
+                  {deleteMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
             </div>
 
             <a
@@ -293,6 +343,12 @@ export default function SocialAccountProfile() {
           </div>
         </div>
       </div>
+
+      <EditSocialAccountDialog
+        open={isEditDialogOpen}
+        onOpenChange={setIsEditDialogOpen}
+        account={account}
+      />
     </div>
   );
 }
