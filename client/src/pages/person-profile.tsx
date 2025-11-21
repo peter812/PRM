@@ -104,12 +104,12 @@ export default function PersonProfile() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-6">
+      <div className="border-b px-6 py-3">
         <Button
           variant="ghost"
           size="sm"
           onClick={handleBack}
-          className="mb-6"
+          className="mb-3"
           data-testid="button-back"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -127,13 +127,13 @@ export default function PersonProfile() {
           </Avatar>
 
           <div className="flex-1">
-            <div className="flex items-start justify-between gap-4 mb-3">
+            <div className="flex items-start justify-between gap-4 mb-1">
               <div>
-                <h1 className="text-3xl font-semibold mb-2" data-testid="text-person-name">
+                <h1 className="text-3xl font-semibold mb-1" data-testid="text-person-name">
                   {person.firstName} {person.lastName}
                 </h1>
                 {(person.company || person.title) && (
-                  <div className="flex items-center gap-2 text-lg text-muted-foreground">
+                  <div className="flex items-center gap-1 text-lg text-muted-foreground">
                     {person.title && <span data-testid="text-person-title">{person.title}</span>}
                     {person.title && person.company && <span>•</span>}
                     {person.company && <span data-testid="text-person-company">{person.company}</span>}
@@ -161,7 +161,7 @@ export default function PersonProfile() {
               }}
             />
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
               {person.email && (
                 <div className="flex items-center gap-2 text-sm">
                   <Mail className="h-4 w-4 text-muted-foreground" />
