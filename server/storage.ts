@@ -11,6 +11,7 @@ import {
   groupNotes,
   apiKeys,
   ssoConfig,
+  socialAccounts,
   type Person,
   type InsertPerson,
   type Note,
@@ -36,6 +37,8 @@ import {
   type InsertApiKey,
   type SsoConfig,
   type InsertSsoConfig,
+  type SocialAccount,
+  type InsertSocialAccount,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -122,6 +125,17 @@ export interface IStorage {
   // Group note operations
   createGroupNote(note: InsertGroupNote): Promise<GroupNote>;
   deleteGroupNote(id: string): Promise<void>;
+
+  // Social account operations
+  getAllSocialAccounts(searchQuery?: string): Promise<SocialAccount[]>;
+  getSocialAccountById(id: string): Promise<SocialAccount | undefined>;
+  createSocialAccount(account: InsertSocialAccount): Promise<SocialAccount>;
+  updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
+  deleteSocialAccount(id: string): Promise<void>;
+  addFollower(accountId: string, followerId: string): Promise<void>;
+  removeFollower(accountId: string, followerId: string): Promise<void>;
+  addFollowing(accountId: string, followingId: string): Promise<void>;
+  removeFollowing(accountId: string, followingId: string): Promise<void>;
   
   // Session store
   sessionStore: session.Store;
@@ -943,6 +957,122 @@ export class DatabaseStorage implements IStorage {
 
   async deleteGroupNote(id: string): Promise<void> {
     await db.delete(groupNotes).where(eq(groupNotes.id, id));
+  }
+
+  // Social account operations
+  async getAllSocialAccounts(searchQuery?: string): Promise<SocialAccount[]> {
+    if (!searchQuery) {
+      return await db.select().from(socialAccounts).orderBy(socialAccounts.username);
+    }
+
+    const query = `%${searchQuery}%`;
+    const startQuery = `${searchQuery}%`;
+    
+    return await db
+      .select()
+      .from(socialAccounts)
+      .where(
+        or(
+          ilike(socialAccounts.username, query),
+          ilike(socialAccounts.accountUrl, query)
+        )
+      )
+      .orderBy(
+        sql`CASE
+          WHEN ${socialAccounts.username} ILIKE ${startQuery} THEN 0
+          ELSE 1
+        END`,
+        socialAccounts.username
+      );
+  }
+
+  async getSocialAccountById(id: string): Promise<SocialAccount | undefined> {
+    const [account] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, id));
+    return account || undefined;
+  }
+
+  async createSocialAccount(insertAccount: InsertSocialAccount): Promise<SocialAccount> {
+    const [account] = await db.insert(socialAccounts).values(insertAccount).returning();
+    return account;
+  }
+
+  async updateSocialAccount(
+    id: string,
+    accountData: Partial<InsertSocialAccount>
+  ): Promise<SocialAccount | undefined> {
+    const [account] = await db
+      .update(socialAccounts)
+      .set(accountData)
+      .where(eq(socialAccounts.id, id))
+      .returning();
+    return account || undefined;
+  }
+
+  async deleteSocialAccount(id: string): Promise<void> {
+    // Remove from people's socialAccountUuids
+    const allPeople = await db.select().from(people);
+    for (const person of allPeople) {
+      if (person.socialAccountUuids && person.socialAccountUuids.includes(id)) {
+        const updatedAccounts = person.socialAccountUuids.filter((accountId) => accountId !== id);
+        await db
+          .update(people)
+          .set({ socialAccountUuids: updatedAccounts })
+          .where(eq(people.id, person.id));
+      }
+    }
+    
+    // Delete the social account
+    await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
+  }
+
+  async addFollower(accountId: string, followerId: string): Promise<void> {
+    const account = await this.getSocialAccountById(accountId);
+    if (!account) throw new Error("Account not found");
+    
+    const currentFollowers = account.followers || [];
+    if (!currentFollowers.includes(followerId)) {
+      await db
+        .update(socialAccounts)
+        .set({ followers: [...currentFollowers, followerId] })
+        .where(eq(socialAccounts.id, accountId));
+    }
+  }
+
+  async removeFollower(accountId: string, followerId: string): Promise<void> {
+    const account = await this.getSocialAccountById(accountId);
+    if (!account) throw new Error("Account not found");
+    
+    const currentFollowers = account.followers || [];
+    const updatedFollowers = currentFollowers.filter(id => id !== followerId);
+    await db
+      .update(socialAccounts)
+      .set({ followers: updatedFollowers })
+      .where(eq(socialAccounts.id, accountId));
+  }
+
+  async addFollowing(accountId: string, followingId: string): Promise<void> {
+    const account = await this.getSocialAccountById(accountId);
+    if (!account) throw new Error("Account not found");
+    
+    const currentFollowing = account.following || [];
+    if (!currentFollowing.includes(followingId)) {
+      await db
+        .update(socialAccounts)
+        .set({ following: [...currentFollowing, followingId] })
+        .where(eq(socialAccounts.id, accountId));
+    }
+  }
+
+  async removeFollowing(accountId: string, followingId: string): Promise<void> {
+    const account = await this.getSocialAccountById(accountId);
+    if (!account) throw new Error("Account not found");
+    
+    const currentFollowing = account.following || [];
+    const updatedFollowing = currentFollowing.filter(id => id !== followingId);
+    await db
+      .update(socialAccounts)
+      .set({ following: updatedFollowing })
+      .where(eq(socialAccounts.id, accountId));
   }
 
   // Export helper methods
