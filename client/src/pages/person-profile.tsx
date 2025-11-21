@@ -18,6 +18,7 @@ import { InteractionsTab } from "@/components/interactions-tab";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
+import { PersonTagsChips } from "@/components/person-tags-chips";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -187,15 +188,7 @@ export default function PersonProfile() {
               )}
             </div>
 
-            {person.tags && person.tags.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4">
-                {person.tags.map((tag, idx) => (
-                  <Badge key={idx} variant="secondary">
-                    {tag}
-                  </Badge>
-                ))}
-              </div>
-            )}
+            <PersonTagsChips personId={person.id} tags={person.tags || []} />
           </div>
         </div>
       </div>
