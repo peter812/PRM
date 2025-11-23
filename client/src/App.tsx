@@ -143,8 +143,11 @@ function AppLayout() {
                       <span>Settings</span>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem asChild data-testid="menu-theme">
-                      <ThemeToggle />
+                    <DropdownMenuItem data-testid="menu-theme" className="cursor-pointer">
+                      <div className="flex items-center gap-2 w-full">
+                        <ThemeToggle />
+                        <span>Theme</span>
+                      </div>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
