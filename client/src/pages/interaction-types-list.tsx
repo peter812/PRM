@@ -149,8 +149,8 @@ export default function InteractionTypesList() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-4">
-        <div className="flex items-center justify-between gap-4 mb-4">
+      <div className="border-b px-3 md:px-6 py-2 md:py-4">
+        <div className="flex items-center justify-between gap-2 md:gap-4 mb-2 md:mb-4">
           <h1 className="text-3xl font-semibold" data-testid="text-page-title">
             Interaction Types
           </h1>

@@ -262,7 +262,7 @@ export default function AppOptionsPage() {
   };
 
   return (
-    <div className="container max-w-2xl py-8 pl-12">
+    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <Card>
         <CardHeader>
           <CardTitle>Import Contacts</CardTitle>

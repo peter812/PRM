@@ -122,7 +122,7 @@ export default function ApiSettingsPage() {
   };
 
   return (
-    <div className="container max-w-4xl py-8 pl-12 space-y-8">
+    <div className="container max-w-full md:max-w-4xl py-3 md:py-8 px-4 md:pl-12 space-y-4 md:space-y-8 mx-auto md:mx-0">
       <div>
         <h1 className="text-3xl font-bold mb-2" data-testid="heading-api-settings">API Settings</h1>
         <p className="text-muted-foreground">
