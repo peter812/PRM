@@ -59,6 +59,7 @@ export function AddNoteDialog({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", String(personId)] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       toast({
         title: "Success",
         description: "Note added successfully",

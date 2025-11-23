@@ -68,6 +68,7 @@ export function AddGroupDialog({ open, onOpenChange }: AddGroupDialogProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       toast({
         title: "Success",
         description: "Group created successfully",

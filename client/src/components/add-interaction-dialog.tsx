@@ -123,6 +123,7 @@ export function AddInteractionDialog({
       selectedGroupIds.forEach((id) => {
         queryClient.invalidateQueries({ queryKey: ["/api/groups", id] });
       });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       
       toast({
         title: "Success",
