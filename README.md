@@ -11,11 +11,16 @@ a CRM adjacent tool for managing personal realatioships with a UI that takes que
 
 Get up and running in seconds:
 
+#### setup postgres server
+
+
+#### Deploy with docker compose
+
 - clone the repo
 - generate key for PRM
 - connect S3 storage for images
 - add DB info (postgres)
-- 
+
 ```
 docker compose up -d
 ```
@@ -23,3 +28,6 @@ docker compose up -d
 ## Having issues? Want a feature?
 Add an issue in the github:
 Make sure to add info about your OS, Version, and stats like the DB
+
+#### want faster communication check out my discord server:
+[My discord](https://l.pbe.im/discord)
