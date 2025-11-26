@@ -56,7 +56,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>People Manager</SidebarGroupLabel>
+          <SidebarGroupLabel>People Manager 1.3</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {menuItems.map((item) => (
