@@ -16,7 +16,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { LogOut, Settings, Menu } from "lucide-react";
+import { LogOut, Settings, Menu, Moon, Sun } from "lucide-react";
 import { useState } from "react";
 import { GlobalSearch } from "@/components/global-search";
 import PeopleList from "@/pages/people-list";
@@ -61,6 +61,7 @@ function AppLayout() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const isAuthPage = location === "/auth";
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");
@@ -78,6 +79,13 @@ function AppLayout() {
   const handleSettingsClick = () => {
     navigate("/settings");
     setIsMenuOpen(false);
+  };
+
+  const handleThemeToggle = () => {
+    const newTheme = theme === "light" ? "dark" : "light";
+    setTheme(newTheme);
+    localStorage.setItem("theme", newTheme);
+    document.documentElement.classList.toggle("dark", newTheme === "dark");
   };
 
   const style = {
@@ -143,7 +151,14 @@ function AppLayout() {
                       <span>Settings</span>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <ThemeToggle />
+                    <DropdownMenuItem onClick={handleThemeToggle} data-testid="menu-theme">
+                      {theme === "light" ? (
+                        <Moon className="h-4 w-4 mr-2" />
+                      ) : (
+                        <Sun className="h-4 w-4 mr-2" />
+                      )}
+                      <span>Theme</span>
+                    </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onClick={handleLogout}
