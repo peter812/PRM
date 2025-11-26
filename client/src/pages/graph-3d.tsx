@@ -211,14 +211,7 @@ export default function Graph3D() {
         .d3AlphaDecay(0.01)
         .d3VelocityDecay(0.3)
         .warmupTicks(100)
-        .cooldownTime(15000)
-        .cameraPosition({ x: 0, y: 0, z: 1000 }, { x: 0, y: 0, z: 0 }, 0);
-      
-      setTimeout(() => {
-        if (fgRef.current) {
-          fgRef.current.zoomToFit(1000, 50);
-        }
-      }, 100);
+        .cooldownTime(15000);
     } else {
       fgRef.current.graphData(graphData);
     }
