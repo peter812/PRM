@@ -195,7 +195,7 @@ export default function PersonProfile() {
 
       <Tabs defaultValue="notes" className="flex-1 flex flex-col overflow-hidden">
         <div className="border-b px-6">
-          <TabsList className="h-12 bg-transparent p-0">
+          <TabsList className="h-12 bg-transparent p-0 overflow-x-auto flex-nowrap">
             <TabsTrigger
               value="notes"
               className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
