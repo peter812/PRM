@@ -32,6 +32,7 @@ type PersonWithRelationship = Person & {
 export default function PeopleList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [personToDelete, setPersonToDelete] = useState<PersonWithRelationship | null>(null);
+  const [starredStates, setStarredStates] = useState<Record<string, number>>({});
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -118,6 +119,13 @@ export default function PeopleList() {
     },
   });
 
+  const handleStarClick = (person: PersonWithRelationship) => {
+    const currentStarred = starredStates[person.id] ?? (person.isStarred || 0);
+    const newStarred = currentStarred === 1 ? 0 : 1;
+    setStarredStates((prev) => ({ ...prev, [person.id]: newStarred }));
+    starMutation.mutate({ personId: person.id, isStarred: currentStarred });
+  };
+
   const getInitials = (firstName: string, lastName: string) => {
     return `${firstName[0]}${lastName[0]}`.toUpperCase();
   };
@@ -185,9 +193,24 @@ export default function PeopleList() {
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1 min-w-0">
-                      <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
-                        {person.firstName} {person.lastName}
-                      </h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
+                          {person.firstName} {person.lastName}
+                        </h3>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleStarClick(person);
+                          }}
+                          data-testid={`button-star-${person.id}`}
+                        >
+                          <Star className={`h-4 w-4 ${(starredStates[person.id] ?? (person.isStarred || 0)) === 1 ? "fill-current" : ""}`} />
+                        </Button>
+                      </div>
                       <div className="flex items-center gap-1 text-sm text-muted-foreground">
                         {person.company && (
                           <span data-testid={`text-company-${person.id}`}>
@@ -222,19 +245,6 @@ export default function PeopleList() {
                         ))}
                       </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-yellow-500 hover:text-yellow-600"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        starMutation.mutate({ personId: person.id, isStarred: person.isStarred || 0 });
-                      }}
-                      data-testid={`button-star-${person.id}`}
-                    >
-                      <Star className={`h-4 w-4 ${(person.isStarred || 0) === 1 ? "fill-current" : ""}`} />
-                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
