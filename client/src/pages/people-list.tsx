@@ -194,7 +194,7 @@ export default function PeopleList() {
                     </Avatar>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <h3 className="text-lg font-medium" data-testid={`text-name-${person.id}`}>
+                        <h3 className="text-sm md:text-lg font-medium" data-testid={`text-name-${person.id}`}>
                           {person.firstName} {person.lastName}
                         </h3>
                         <Button
@@ -211,7 +211,7 @@ export default function PeopleList() {
                           <Star className={`h-4 w-4 ${(starredStates[person.id] ?? (person.isStarred || 0)) === 1 ? "fill-current" : ""}`} />
                         </Button>
                       </div>
-                      <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-1 text-xs md:text-sm text-muted-foreground">
                         {person.company && (
                           <span data-testid={`text-company-${person.id}`}>
                             {person.company}
@@ -228,7 +228,7 @@ export default function PeopleList() {
                         {person.relationshipTypeName && (
                           <Badge
                             variant="secondary"
-                            className="text-xs"
+                            className="text-[0.65rem] md:text-xs"
                             style={{
                               backgroundColor: person.relationshipTypeColor || undefined,
                               color: 'white',
@@ -239,7 +239,7 @@ export default function PeopleList() {
                           </Badge>
                         )}
                         {person.tags && person.tags.map((tag, idx) => (
-                          <Badge key={idx} variant="secondary" className="text-xs">
+                          <Badge key={idx} variant="secondary" className="text-[0.65rem] md:text-xs">
                             {tag}
                           </Badge>
                         ))}
