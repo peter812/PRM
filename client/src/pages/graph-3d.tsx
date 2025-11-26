@@ -43,7 +43,7 @@ export default function Graph3D() {
   const fgRef = useRef<any>(null);
   const [, navigate] = useLocation();
   const [showGroups, setShowGroups] = useState(true);
-  const [hideOrphans, setHideOrphans] = useState(false);
+  const [hideOrphans, setHideOrphans] = useState(true);
   const [anonymizePeople, setAnonymizePeople] = useState(false);
   const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
