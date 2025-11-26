@@ -249,12 +249,9 @@ export default function Graph3D() {
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
         <div>
-          <h1 className="text-2xl font-semibold" data-testid="text-page-title">
+          <h1 className="text-lg md:text-2xl font-semibold" data-testid="text-page-title">
             3D Connection Graph
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Explore relationships in 3D space
-          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button 
