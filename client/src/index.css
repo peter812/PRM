@@ -305,6 +305,13 @@
     @apply hidden;
   }
 
+  /* Touch-friendly horizontal scrolling for mobile */
+  .touch-scroll {
+    -webkit-overflow-scrolling: touch;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
   /* Placeholder styling for contentEditable div */
   [contenteditable][data-placeholder]:empty::before {
     content: attr(data-placeholder);
