@@ -19,6 +19,8 @@ import {
 import { LogOut, Settings, Menu, Moon, Sun } from "lucide-react";
 import { useState } from "react";
 import { GlobalSearch } from "@/components/global-search";
+import { MobileBottomNav } from "@/components/mobile-bottom-nav";
+import { AddPersonDialog } from "@/components/add-person-dialog";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import MeProfile from "@/pages/me-profile";
@@ -62,6 +64,7 @@ function AppLayout() {
   const { user, logoutMutation } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [isAddPersonDialogOpen, setIsAddPersonDialogOpen] = useState(false);
   const isAuthPage = location === "/auth";
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");
@@ -173,11 +176,17 @@ function AppLayout() {
               )}
             </div>
           </header>
-          <main className="flex-1 overflow-hidden">
+          <main className="flex-1 overflow-hidden pb-16 md:pb-0">
             <Router />
           </main>
         </div>
       </div>
+      {user && (
+        <>
+          <MobileBottomNav onAddPersonClick={() => setIsAddPersonDialogOpen(true)} />
+          <AddPersonDialog open={isAddPersonDialogOpen} onOpenChange={setIsAddPersonDialogOpen} />
+        </>
+      )}
     </SidebarProvider>
   );
 }
