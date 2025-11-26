@@ -144,7 +144,7 @@ export default function PeopleList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-6" ref={scrollContainerRef}>
+      <div className="flex-1 overflow-auto px-3 md:px-6 py-6" ref={scrollContainerRef}>
         {isLoading ? (
           <div className="flex flex-col gap-[5px]">
             {[1, 2, 3, 4].map((i) => (
