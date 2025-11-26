@@ -249,7 +249,7 @@ export default function Graph3D() {
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
         <div>
-          <h1 className="text-lg md:text-2xl font-semibold" data-testid="text-page-title">
+          <h1 className="text-sm md:text-2xl font-semibold" data-testid="text-page-title">
             3D Connection Graph
           </h1>
         </div>
