@@ -143,12 +143,7 @@ function AppLayout() {
                       <span>Settings</span>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem data-testid="menu-theme" className="cursor-pointer">
-                      <div className="flex items-center gap-2 w-full">
-                        <ThemeToggle />
-                        <span>Theme</span>
-                      </div>
-                    </DropdownMenuItem>
+                    <ThemeToggle />
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onClick={handleLogout}
