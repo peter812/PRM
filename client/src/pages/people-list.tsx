@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Plus, X } from "lucide-react";
+import { Plus, X, Star } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ type PersonWithRelationship = Person & {
   relationshipTypeName: string | null;
   relationshipTypeColor: string | null;
   groupCount: number;
+  isStarred?: number;
 };
 
 export default function PeopleList() {
@@ -93,6 +94,25 @@ export default function PeopleList() {
       toast({
         title: "Error",
         description: error.message || "Failed to delete person",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const starMutation = useMutation({
+    mutationFn: async ({ personId, isStarred }: { personId: string; isStarred: number }) => {
+      await apiRequest("PATCH", `/api/people/${personId}`, {
+        isStarred: isStarred === 1 ? 0 : 1,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update star status",
         variant: "destructive",
       });
     },
@@ -202,6 +222,19 @@ export default function PeopleList() {
                         ))}
                       </div>
                     </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-yellow-500 hover:text-yellow-600"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        starMutation.mutate({ personId: person.id, isStarred: person.isStarred || 0 });
+                      }}
+                      data-testid={`button-star-${person.id}`}
+                    >
+                      <Star className={`h-4 w-4 ${(person.isStarred || 0) === 1 ? "fill-current" : ""}`} />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
