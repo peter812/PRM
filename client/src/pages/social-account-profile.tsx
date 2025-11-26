@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -13,6 +13,7 @@ import { useMutation } from "@tanstack/react-query";
 import type { SocialAccount, Person } from "@shared/schema";
 import { Link } from "wouter";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
+import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
 
 export default function SocialAccountProfile() {
   const { uuid } = useParams<{ uuid: string }>();
@@ -21,6 +22,7 @@ export default function SocialAccountProfile() {
   const [notes, setNotes] = useState("");
   const [isEditingNotes, setIsEditingNotes] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isLinkFollowingOpen, setIsLinkFollowingOpen] = useState(false);
 
   const { data: account, isLoading, isError, error } = useQuery<SocialAccount>({
     queryKey: ["/api/social-accounts", uuid],
@@ -324,9 +326,19 @@ export default function SocialAccountProfile() {
 
           {/* Following Column */}
           <div>
-            <h3 className="text-lg font-semibold mb-4" data-testid="text-following-header">
-              Following ({account.following?.length || 0})
-            </h3>
+            <div className="flex items-center justify-between gap-2 mb-4">
+              <h3 className="text-lg font-semibold" data-testid="text-following-header">
+                Following ({account.following?.length || 0})
+              </h3>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsLinkFollowingOpen(true)}
+                data-testid="button-add-following"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
             {account.following && account.following.length > 0 ? (
               <div className="space-y-2">
                 {account.following.map((followingId) => (
@@ -348,6 +360,13 @@ export default function SocialAccountProfile() {
         open={isEditDialogOpen}
         onOpenChange={setIsEditDialogOpen}
         account={account}
+      />
+
+      <LinkFollowingAccountsDialog
+        open={isLinkFollowingOpen}
+        onOpenChange={setIsLinkFollowingOpen}
+        accountUuid={uuid!}
+        linkedAccountIds={account.following || []}
       />
     </div>
   );
