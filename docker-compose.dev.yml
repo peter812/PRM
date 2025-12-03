@@ -1,0 +1,39 @@
+# ============================================================
+# Local Development - PostgreSQL Only
+# ============================================================
+# This provides a local PostgreSQL database for development.
+# Run the app natively with `npm run dev` for best experience.
+#
+# USAGE:
+#   Start database:     docker-compose -f docker-compose.dev.yml up -d
+#   Stop database:      docker-compose -f docker-compose.dev.yml down
+#   Reset database:     docker-compose -f docker-compose.dev.yml down -v
+#
+# DATABASE CONNECTION:
+#   postgresql://prm:prm_dev_password@localhost:5432/people_crm
+#
+# NOTE: For full Docker deployment (app + external DB), use docker-compose.yml
+# ============================================================
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: prm-dev-postgres
+    environment:
+      POSTGRES_USER: prm
+      POSTGRES_PASSWORD: prm_dev_password
+      POSTGRES_DB: people_crm
+    ports:
+      - "5432:5432"
+    volumes:
+      - prm_dev_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prm -d people_crm"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  prm_dev_postgres_data:

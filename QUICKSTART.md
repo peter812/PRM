@@ -1,175 +1,316 @@
-# Quick Start Guide
+# People Manager CRM - Development Quick Start
 
-Get your People Manager CRM up and running in 5 minutes!
+Get your development environment up and running quickly on any platform.
 
 ## Prerequisites
 
-- Docker and Docker Compose installed
-- PostgreSQL client (psql) for database setup
-- Access to PostgreSQL server at `pbe.im:3306`
-- S3 storage credentials
+Before you begin, ensure you have the following installed:
 
-## Step-by-Step Setup
+| Tool | Version | Download |
+|------|---------|----------|
+| **Node.js** | v18+ (v20 recommended) | [nodejs.org](https://nodejs.org/) |
+| **npm** | v9+ (comes with Node.js) | Included with Node.js |
+| **Git** | Latest | [git-scm.com](https://git-scm.com/) |
+| **PostgreSQL** | v14+ | See Database Options below |
 
-### 1. Clone and Configure
+### Optional Tools
+
+| Tool | Purpose |
+|------|---------|
+| **Docker Desktop** | Alternative database setup, production testing |
+| **VS Code** | Recommended IDE |
+
+---
+
+## Quick Start (5 Minutes)
+
+### Step 1: Clone and Install
+
+```bash
+# Clone the repository
+git clone https://github.com/your-username/people-manager-crm.git
+cd people-manager-crm
+
+# Install dependencies
+npm install
+```
+
+### Step 2: Start a Database
+
+Choose one option (Docker is easiest):
+
+**Option A: Docker (Recommended)**
+```bash
+docker-compose -f docker-compose.dev.yml up -d
+```
+
+**Option B: Local PostgreSQL** - See [Database Options](#database-options) below
+
+### Step 3: Configure Environment
 
 ```bash
 # Copy the environment template
 cp .env.example .env
-
-# Edit .env with your actual credentials
-nano .env  # or use your preferred editor
 ```
 
-Fill in these required values:
-- `DATABASE_URL` - Your PostgreSQL connection string
-- `SESSION_SECRET` - Generate with: `openssl rand -base64 32`
-- `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` - Your S3 credentials
+The default `.env` is pre-configured for the Docker database. If using a different database, update `DATABASE_URL`.
 
-### 2. Create the Database
-
-**Option A: Automated (Recommended)**
-```bash
-chmod +x setup-database.sh
-./setup-database.sh
-```
-
-**Option B: Manual**
-```bash
-psql -h pbe.im -p 3306 -U people -d postgres -c "CREATE DATABASE people_crm;"
-```
-
-### 3. ✨ Automatic Database Setup (New!)
-
-The application now **automatically sets up the database** when there are no users!
-
-Just start the app - it will:
-- ✅ Check if users exist
-- ✅ If no users: Drop all tables and recreate them
-- ✅ Seed default relationship types
-- ✅ Ready to use!
-
-**Manual migration (optional):**
-If you prefer to run migrations manually before starting:
+### Step 4: Push Database Schema
 
 ```bash
-npm install
-npm run db:push --force
+npm run db:push
 ```
 
-### 4. Start the Application
-
-**With Docker (Recommended):**
+If you see warnings about data loss (first time only), use:
 ```bash
-docker-compose up -d
+npm run db:push -- --force
 ```
 
-**Or run locally:**
+### Step 5: Start Development Server
+
 ```bash
 npm run dev
 ```
 
-### 5. Access the Application
+Open your browser to **http://localhost:5000**
 
-Open your browser to: **http://localhost:5000**
+On first visit, you'll be guided through creating your admin account.
 
-On first visit, you'll be guided through creating your admin account!
+---
 
-## What Gets Created
+## Database Options
 
-The database migration creates these tables:
-- **users** - User accounts
-- **people** - Your contacts
-- **notes** - Notes for people
-- **interactions** - Meetings, calls, emails
-- **relationships** - Person-to-person connections
-- **relationship_types** - Friend, family, colleague, etc.
-- **groups** - Contact groups
-- **group_notes** - Notes for groups
-- **session** - Session storage
+Choose one of these options based on your preference:
 
-## Verify Everything Works
+### Option A: Docker PostgreSQL (Recommended for Beginners)
 
-1. ✅ Application loads at http://localhost:5000
-2. ✅ You can create a user account
-3. ✅ You can add your first contact
-4. ✅ Image uploads work (profile pictures)
+The easiest way to get a database running locally:
+
+```bash
+# Start PostgreSQL in Docker
+docker-compose -f docker-compose.dev.yml up -d postgres
+
+# Your .env DATABASE_URL should be:
+# DATABASE_URL=postgresql://prm:prm_dev_password@localhost:5432/people_crm
+```
+
+To stop the database:
+```bash
+docker-compose -f docker-compose.dev.yml down
+```
+
+### Option B: Local PostgreSQL Installation
+
+**macOS (Homebrew):**
+```bash
+brew install postgresql@15
+brew services start postgresql@15
+createdb people_crm
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo -u postgres createuser --interactive
+sudo -u postgres createdb people_crm
+```
+
+**Windows:**
+1. Download from [postgresql.org](https://www.postgresql.org/download/windows/)
+2. Run the installer
+3. Use pgAdmin or command line to create a database named `people_crm`
+
+Update your `.env` with your local connection:
+```env
+DATABASE_URL=postgresql://your_username:your_password@localhost:5432/people_crm
+```
+
+### Option C: Cloud PostgreSQL
+
+Use a cloud provider like:
+- [Neon](https://neon.tech/) (Free tier available)
+- [Supabase](https://supabase.com/) (Free tier available)
+- [Railway](https://railway.app/)
+- [ElephantSQL](https://www.elephantsql.com/)
+
+Copy the connection string to your `.env`.
+
+---
+
+## IDE Setup
+
+### VS Code (Recommended)
+
+**Recommended Extensions:**
+- **ESLint** - Code linting
+- **Prettier** - Code formatting
+- **TypeScript and JavaScript Language Features** - Built-in
+- **Tailwind CSS IntelliSense** - CSS class autocomplete
+- **Prisma** or **Drizzle ORM** - Database schema highlighting
+
+**Workspace Settings** (`.vscode/settings.json`):
+```json
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "typescript.preferences.importModuleSpecifier": "relative"
+}
+```
+
+### Other IDEs
+
+The project works with any IDE that supports TypeScript:
+- **WebStorm** - Full support out of the box
+- **Vim/Neovim** - Use coc.nvim or nvim-lspconfig with typescript-language-server
+- **Sublime Text** - Use LSP package with typescript server
+
+---
+
+## Development Workflow
+
+### Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start development server with hot reload |
+| `npm run build` | Build for production |
+| `npm run start` | Run production build |
+| `npm run check` | TypeScript type checking |
+| `npm run db:push` | Push schema changes to database |
+| `npm run db:studio` | Open Drizzle Studio (database viewer) |
+
+### Project Structure
+
+```
+people-manager-crm/
+├── client/              # React frontend
+│   └── src/
+│       ├── components/  # Reusable UI components
+│       ├── pages/       # Page components
+│       ├── hooks/       # Custom React hooks
+│       └── lib/         # Utilities and helpers
+├── server/              # Express backend
+│   ├── index.ts         # Server entry point
+│   ├── routes.ts        # API routes
+│   └── storage.ts       # Database operations
+├── shared/              # Shared code (frontend + backend)
+│   └── schema.ts        # Database schema (Drizzle ORM)
+└── .env                 # Environment variables (not in git)
+```
+
+### Making Changes
+
+1. **Frontend changes**: Edit files in `client/src/` - hot reload will update the browser
+2. **Backend changes**: Edit files in `server/` - server will auto-restart
+3. **Database changes**: Edit `shared/schema.ts`, then run `npm run db:push`
+
+---
+
+## Docker Database Management
+
+Manage the development database:
+
+```bash
+# Start PostgreSQL
+docker-compose -f docker-compose.dev.yml up -d
+
+# View database logs
+docker-compose -f docker-compose.dev.yml logs -f
+
+# Stop PostgreSQL
+docker-compose -f docker-compose.dev.yml down
+
+# Reset database (removes all data)
+docker-compose -f docker-compose.dev.yml down -v
+docker-compose -f docker-compose.dev.yml up -d
+```
+
+## Full Docker Deployment
+
+For production-style deployment with Docker, see [DOCKER.md](DOCKER.md) which uses `docker-compose.yml` with an external database.
+
+---
 
 ## Common Issues
 
 ### "database does not exist"
-**Fix**: Run the database setup script (Step 2 above)
 
-### "Cannot find package 'vite'"
-**Fix**: Make sure `NODE_ENV` in `.env` matches your Dockerfile:
-- `NODE_ENV=development` → Use default `Dockerfile`
-- `NODE_ENV=production` → Use `Dockerfile.production`
-
-### "Connection refused"
-**Fix**: Check your `DATABASE_URL` and verify the PostgreSQL server is accessible:
+Create the database first:
 ```bash
-psql -h pbe.im -p 3306 -U people -d postgres
+# Docker option
+docker-compose -f docker-compose.dev.yml up -d postgres
+
+# Or manually with psql
+createdb people_crm
 ```
 
-### Images won't upload
-**Fix**: Verify all S3 environment variables are set correctly in `.env`
+### "relation does not exist"
+
+Push the schema to your database:
+```bash
+npm run db:push -- --force
+```
+
+### "ENOENT: no such file or directory .env"
+
+Create the environment file:
+```bash
+cp .env.example .env
+```
+
+### Windows: "NODE_ENV is not recognized"
+
+The development server should work without manually setting NODE_ENV. If you encounter issues, use PowerShell:
+```powershell
+$env:NODE_ENV="development"; npm run dev
+```
+
+Or use Command Prompt:
+```cmd
+set NODE_ENV=development && npm run dev
+```
+
+### Port 5000 already in use
+
+Change the port or stop the conflicting process:
+```bash
+# Linux/macOS: Find and kill process
+lsof -i :5000
+kill -9 <PID>
+
+# Windows PowerShell
+netstat -ano | findstr :5000
+taskkill /PID <PID> /F
+```
+
+### Images don't upload
+
+Configure S3 storage in `.env`. For development without image uploads, you can leave S3 settings empty - the app will function but image uploads will fail.
+
+---
 
 ## Next Steps
 
 Once running:
 
-1. 🎨 Complete the first-time setup wizard
-2. 👥 Add your contacts
-3. 🏷️ Create relationship types (Settings → Relationship Types)
-4. 📊 Explore the relationship graph
-5. 📝 Add notes and track interactions
-
-## Getting Help
-
-- **Database Setup**: See [DATABASE_SETUP.md](DATABASE_SETUP.md)
-- **Docker Issues**: See [DOCKER.md](DOCKER.md)
-- **General Info**: See [README.md](README.md)
-
-## Development Workflow
-
-```bash
-# View logs
-docker-compose logs -f
-
-# Restart after changes
-docker-compose restart
-
-# Stop everything
-docker-compose down
-
-# Rebuild from scratch
-docker-compose build --no-cache
-docker-compose up
-```
-
-## Production Deployment
-
-When ready for production:
-
-1. Change `.env`:
-   ```env
-   NODE_ENV=production
-   ```
-
-2. Update `docker-compose.yml`:
-   ```yaml
-   build:
-     dockerfile: Dockerfile.production
-   ```
-
-3. Deploy:
-   ```bash
-   docker-compose build
-   docker-compose up -d
-   ```
+1. Complete the first-time setup wizard
+2. Add your first contact
+3. Explore relationship types in Settings
+4. Try the 2D and 3D relationship graphs
+5. Check the API documentation at `/api-playground`
 
 ---
 
-**Questions?** Check the detailed guides in the repository or the troubleshooting sections.
+## Additional Documentation
 
-Happy CRM-ing! 🚀
+- **[DOCKER.md](DOCKER.md)** - Production Docker deployment
+- **[DATABASE_SETUP.md](DATABASE_SETUP.md)** - Advanced database configuration
+- **[PRM-external-API-guide.md](PRM-external-API-guide.md)** - REST API documentation
+
+---
+
+Happy developing!
