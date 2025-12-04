@@ -1,26 +1,30 @@
 # ============================================================
-# Local Development - PostgreSQL Only
+# Local Development Stack - PostgreSQL + PRM Application
 # ============================================================
-# This provides a local PostgreSQL database for development.
-# Run the app natively with `npm run dev` for best experience.
+# Complete development environment with database and app.
+# All configuration is self-contained - no .env file needed.
 #
 # USAGE:
-#   Start database:     docker-compose -f docker-compose.dev.yml up -d
-#   Stop database:      docker-compose -f docker-compose.dev.yml down
-#   Reset database:     docker-compose -f docker-compose.dev.yml down -v
+#   Start:    docker-compose -f docker-compose.dev.yml up -d
+#   Stop:     docker-compose -f docker-compose.dev.yml down
+#   Logs:     docker-compose -f docker-compose.dev.yml logs -f
+#   Reset:    docker-compose -f docker-compose.dev.yml down -v
 #
-# DATABASE CONNECTION:
-#   postgresql://prm:prm_dev_password@localhost:5432/people_crm
+# ACCESS:
+#   App:      http://localhost:5001
+#   Database: localhost:5432
 #
-# NOTE: For full Docker deployment (app + external DB), use docker-compose.yml
+# NOTE: Uses port 5001 to avoid conflicts with native development (port 5000)
+#       and production docker-compose.yml
 # ============================================================
 
 version: '3.8'
 
 services:
+  # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
-    container_name: prm-dev-postgres
+    container_name: prm-postgres-dev
     environment:
       POSTGRES_USER: prm
       POSTGRES_PASSWORD: prm_dev_password
@@ -34,6 +38,42 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # People Manager CRM Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prm-app-dev
+    ports:
+      - "5001:5000"
+    environment:
+      # Database connection (uses Docker service name)
+      DATABASE_URL: postgresql://prm:prm_dev_password@postgres:5432/people_crm
+      # Session configuration
+      SESSION_SECRET: dev-session-secret-for-local-development-only
+      # Node environment
+      NODE_ENV: development
+      # S3 Storage (optional - leave empty to disable image uploads)
+      S3_ENDPOINT: ""
+      S3_BUCKET: ""
+      S3_ACCESS_KEY: ""
+      S3_SECRET_KEY: ""
+    volumes:
+      # Mount source code for hot reload
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/setup/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
 
 volumes:
   prm_dev_postgres_data:

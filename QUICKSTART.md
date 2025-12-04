@@ -35,44 +35,30 @@ cd people-manager-crm
 npm install
 ```
 
-### Step 2: Start a Database
+### Step 2: Choose Your Development Method
 
-Choose one option (Docker is easiest):
-
-**Option A: Docker (Recommended)**
+**Option A: Full Docker Stack (Easiest)**
 ```bash
+# Start both database and app
 docker-compose -f docker-compose.dev.yml up -d
 ```
+Open **http://localhost:5001** - Done!
 
-**Option B: Local PostgreSQL** - See [Database Options](#database-options) below
-
-### Step 3: Configure Environment
-
+**Option B: Native Development (Best for coding)**
 ```bash
-# Copy the environment template
+# Start database only
+docker-compose -f docker-compose.dev.yml up -d postgres
+
+# Copy environment template
 cp .env.example .env
-```
 
-The default `.env` is pre-configured for the Docker database. If using a different database, update `DATABASE_URL`.
-
-### Step 4: Push Database Schema
-
-```bash
+# Push database schema
 npm run db:push
-```
 
-If you see warnings about data loss (first time only), use:
-```bash
-npm run db:push -- --force
-```
-
-### Step 5: Start Development Server
-
-```bash
+# Start development server
 npm run dev
 ```
-
-Open your browser to **http://localhost:5000**
+Open **http://localhost:5000**
 
 On first visit, you'll be guided through creating your admin account.
 
@@ -203,28 +189,38 @@ people-manager-crm/
 
 ---
 
-## Docker Database Management
+## Docker Development Stack
 
-Manage the development database:
+The `docker-compose.dev.yml` provides a complete development environment:
 
+| Service | Container | Port | Description |
+|---------|-----------|------|-------------|
+| **App** | prm-app-dev | 5001 | PRM application |
+| **Database** | prm-postgres-dev | 5432 | PostgreSQL 15 |
+
+**Commands:**
 ```bash
-# Start PostgreSQL
+# Start everything
 docker-compose -f docker-compose.dev.yml up -d
 
-# View database logs
+# Start database only (for native app development)
+docker-compose -f docker-compose.dev.yml up -d postgres
+
+# View logs
 docker-compose -f docker-compose.dev.yml logs -f
 
-# Stop PostgreSQL
+# Stop everything
 docker-compose -f docker-compose.dev.yml down
 
 # Reset database (removes all data)
 docker-compose -f docker-compose.dev.yml down -v
-docker-compose -f docker-compose.dev.yml up -d
 ```
 
-## Full Docker Deployment
+**Note:** The Docker app runs on port 5001 to avoid conflicts with native development on port 5000.
 
-For production-style deployment with Docker, see [DOCKER.md](DOCKER.md) which uses `docker-compose.yml` with an external database.
+## Production Deployment
+
+For production deployment with Docker, see [DOCKER.md](DOCKER.md) which uses `docker-compose.yml` with an external database.
 
 ---
 
