@@ -253,14 +253,36 @@ cp .env.example .env
 
 ### Windows: "NODE_ENV is not recognized"
 
-The development server should work without manually setting NODE_ENV. If you encounter issues, use PowerShell:
-```powershell
-$env:NODE_ENV="development"; npm run dev
+Windows Command Prompt and PowerShell don't support the Unix-style `NODE_ENV=development` syntax. Choose one of these solutions:
+
+**Option 1: Update package.json scripts (Recommended)**
+
+The `cross-env` package is already installed. Edit `package.json` and change:
+```json
+"scripts": {
+  "dev": "cross-env NODE_ENV=development tsx server/index.ts",
+  "start": "cross-env NODE_ENV=production node dist/index.js"
+}
 ```
 
-Or use Command Prompt:
+**Option 2: Run directly with npx**
+```bash
+npx cross-env NODE_ENV=development tsx server/index.ts
+```
+
+**Option 3: Set environment variable first (PowerShell)**
+```powershell
+$env:NODE_ENV="development"; npx tsx server/index.ts
+```
+
+**Option 4: Set environment variable first (Command Prompt)**
 ```cmd
-set NODE_ENV=development && npm run dev
+set NODE_ENV=development && npx tsx server/index.ts
+```
+
+**Option 5: Use Docker (no environment issues)**
+```bash
+docker-compose -f docker-compose.dev.yml up
 ```
 
 ### Port 5000 already in use
