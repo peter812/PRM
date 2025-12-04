@@ -126,13 +126,6 @@ Update your `.env` with your local connection:
 DATABASE_URL=postgresql://your_username:your_password@localhost:5432/people_crm
 ```
 
-### Option C: Cloud PostgreSQL
-
-Use a cloud provider like:
-- [Neon](https://neon.tech/) (Free tier available)
-- [Supabase](https://supabase.com/) (Free tier available)
-- [Railway](https://railway.app/)
-- [ElephantSQL](https://www.elephantsql.com/)
 
 Copy the connection string to your `.env`.
 
