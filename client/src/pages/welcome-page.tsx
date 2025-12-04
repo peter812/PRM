@@ -46,8 +46,9 @@ export default function WelcomePage() {
       const response = await apiRequest("POST", "/api/setup/initialize", data);
       return await response.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/user"] });
+    onSuccess: (user) => {
+      queryClient.setQueryData(["/api/setup/status"], { isSetupNeeded: false });
+      queryClient.setQueryData(["/api/user"], user);
       toast({
         title: "Setup Complete",
         description: "Your account has been created successfully!",
