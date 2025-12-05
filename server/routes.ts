@@ -974,12 +974,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name, nickname, username, currentPassword, newPassword } = req.body;
+      const { name, nickname, username, currentPassword, newPassword, ssoEmail } = req.body;
       const updateData: any = {};
 
       // Validate and add basic fields
       if (name !== undefined) updateData.name = name;
       if (nickname !== undefined) updateData.nickname = nickname;
+      if (ssoEmail !== undefined) {
+        // Validate email format if provided
+        if (ssoEmail && typeof ssoEmail === 'string' && ssoEmail.trim()) {
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(ssoEmail.trim())) {
+            return res.status(400).json({ error: "Invalid SSO email format" });
+          }
+          // Check if SSO email is already used by another user
+          const existingUserWithSsoEmail = await storage.getUserBySsoEmail(ssoEmail.trim());
+          if (existingUserWithSsoEmail && existingUserWithSsoEmail.id !== req.user.id) {
+            return res.status(400).json({ error: "This SSO email is already associated with another account" });
+          }
+          updateData.ssoEmail = ssoEmail.trim();
+        } else {
+          updateData.ssoEmail = null;
+        }
+      }
       if (username !== undefined) {
         // Check if username is already taken by another user
         const existingUser = await storage.getUserByUsername(username);
