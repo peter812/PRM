@@ -20,7 +20,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useState, useEffect, useRef } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Copy, Check } from "lucide-react";
 
 const updateUserSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -67,6 +67,8 @@ export default function UserOptionsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showClientSecret, setShowClientSecret] = useState(false);
+  const [redirectUrl, setRedirectUrl] = useState("");
+  const [copiedRedirectUrl, setCopiedRedirectUrl] = useState(false);
   const ssoFormInitialized = useRef(false);
   const userFormInitialized = useRef(false);
 
@@ -134,6 +136,12 @@ export default function UserOptionsPage() {
     }
   }, [user, form]);
 
+  // Calculate redirect URL on mount
+  useEffect(() => {
+    const computedRedirectUrl = `${window.location.origin}/api/sso/callback`;
+    setRedirectUrl(computedRedirectUrl);
+  }, []);
+
   // Update SSO form when config loads (only once)
   useEffect(() => {
     if (ssoConfig && !ssoFormInitialized.current) {
@@ -145,14 +153,20 @@ export default function UserOptionsPage() {
         authUrl: ssoConfig.authUrl || "",
         tokenUrl: ssoConfig.tokenUrl || "",
         userInfoUrl: ssoConfig.userInfoUrl || "",
-        redirectUrl: ssoConfig.redirectUrl || "",
+        redirectUrl: ssoConfig.redirectUrl || redirectUrl,
         logoutUrl: ssoConfig.logoutUrl || "",
         userIdentifier: ssoConfig.userIdentifier || "email",
         scopes: ssoConfig.scopes || "openid",
         authStyle: ssoConfig.authStyle || "auto",
       });
     }
-  }, [ssoConfig, ssoForm]);
+  }, [ssoConfig, ssoForm, redirectUrl]);
+
+  const handleCopyRedirectUrl = () => {
+    navigator.clipboard.writeText(redirectUrl);
+    setCopiedRedirectUrl(true);
+    setTimeout(() => setCopiedRedirectUrl(false), 2000);
+  };
 
   const updateMutation = useMutation({
     mutationFn: async (data: UpdateUserForm) => {
@@ -487,8 +501,33 @@ export default function UserOptionsPage() {
                     <FormItem>
                       <FormLabel>Redirect URL</FormLabel>
                       <FormControl>
-                        <Input {...field} placeholder="https://your-app.com/api/sso/callback" data-testid="input-sso-redirect-url" />
+                        <div className="relative">
+                          <Input 
+                            {...field} 
+                            value={field.value || redirectUrl}
+                            readOnly
+                            className="pr-10 bg-muted"
+                            data-testid="input-sso-redirect-url" 
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="absolute right-0 top-0 h-full"
+                            onClick={handleCopyRedirectUrl}
+                            data-testid="button-copy-redirect-url"
+                          >
+                            {copiedRedirectUrl ? (
+                              <Check className="h-4 w-4 text-green-600" />
+                            ) : (
+                              <Copy className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </div>
                       </FormControl>
+                      <FormDescription>
+                        Copy this URL and paste it as your Redirect URI in your OAuth provider settings
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
