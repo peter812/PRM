@@ -2,8 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { interactions, relationshipTypes, interactionTypes, people } from "@shared/schema";
+import { eq, sql, isNotNull } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -264,16 +264,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Fetch all data from database
       const [user] = await storage.getAllUsers();
       const allPeople = await storage.getAllPeople();
-      const relationshipTypes = await storage.getAllRelationshipTypes();
+      const allRelationshipTypes = await storage.getAllRelationshipTypes();
       const allRelationships = await storage.getAllRelationships();
-      const interactionTypes = await storage.getAllInteractionTypes();
+      const allInteractionTypes = await storage.getAllInteractionTypes();
       const allInteractions = await storage.getAllInteractions();
       const groups = await storage.getAllGroups();
       const allNotes = await storage.getAllNotes();
       const allGroupNotes = await storage.getAllGroupNotes();
+      const allSocialAccounts = await storage.getAllSocialAccounts();
       
       // Find ME user's person ID
-      const mePersonResult = await db.select().from(people).where(sql`${people.userId} IS NOT NULL`).limit(1);
+      const mePersonResult = await db.select().from(people).where(isNotNull(people.userId)).limit(1);
       const mePersonId = mePersonResult[0]?.id || null;
       const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
       
@@ -309,25 +310,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Export relationship types
       xml += '  <relationship_types>\n';
-      for (const type of relationshipTypes) {
+      for (const type of allRelationshipTypes) {
         xml += '    <relationship_type>\n';
         xml += `      <id>${escapeXml(type.id)}</id>\n`;
         xml += `      <name>${escapeXml(type.name)}</name>\n`;
         xml += `      <color>${escapeXml(type.color)}</color>\n`;
+        xml += `      <value>${escapeXml(type.value)}</value>\n`;
         xml += `      <notes>${escapeXml(type.notes || "")}</notes>\n`;
+        xml += `      <created_at>${escapeXml(type.createdAt)}</created_at>\n`;
         xml += '    </relationship_type>\n';
       }
       xml += '  </relationship_types>\n';
 
       // Export interaction types
       xml += '  <interaction_types>\n';
-      for (const type of interactionTypes) {
+      for (const type of allInteractionTypes) {
         xml += '    <interaction_type>\n';
         xml += `      <id>${escapeXml(type.id)}</id>\n`;
         xml += `      <name>${escapeXml(type.name)}</name>\n`;
         xml += `      <color>${escapeXml(type.color)}</color>\n`;
         xml += `      <description>${escapeXml(type.description || "")}</description>\n`;
         xml += `      <value>${escapeXml(type.value)}</value>\n`;
+        xml += `      <created_at>${escapeXml(type.createdAt)}</created_at>\n`;
         xml += '    </interaction_type>\n';
       }
       xml += '  </interaction_types>\n';
@@ -344,6 +348,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <company>${escapeXml(person.company || "")}</company>\n`;
         xml += `      <title>${escapeXml(person.title || "")}</title>\n`;
         xml += `      <tags>${arrayToXml(person.tags || [], "tag")}</tags>\n`;
+        xml += `      <image_url>${escapeXml(person.imageUrl || "")}</image_url>\n`;
+        xml += `      <social_account_uuids>${arrayToXml(person.socialAccountUuids || [], "social_account_uuid")}</social_account_uuids>\n`;
+        xml += `      <is_starred>${escapeXml(person.isStarred)}</is_starred>\n`;
         xml += `      <created_at>${escapeXml(person.createdAt)}</created_at>\n`;
         xml += '    </person>\n';
       }
@@ -379,6 +386,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <color>${escapeXml(group.color)}</color>\n`;
         xml += `      <type>${arrayToXml(group.type || [], "group_type")}</type>\n`;
         xml += `      <members>${arrayToXml(members, "member_id")}</members>\n`;
+        xml += `      <image_url>${escapeXml(group.imageUrl || "")}</image_url>\n`;
         xml += `      <created_at>${escapeXml(group.createdAt)}</created_at>\n`;
         xml += '    </group>\n';
       }
@@ -394,8 +402,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    <interaction>\n';
         xml += `      <id>${escapeXml(interaction.id)}</id>\n`;
         xml += `      <type_id>${escapeXml(interaction.typeId)}</type_id>\n`;
+        xml += `      <title>${escapeXml(interaction.title || "")}</title>\n`;
         xml += `      <date>${escapeXml(interaction.date)}</date>\n`;
         xml += `      <description>${escapeXml(interaction.description || "")}</description>\n`;
+        xml += `      <image_url>${escapeXml(interaction.imageUrl || "")}</image_url>\n`;
         xml += `      <people_ids>${arrayToXml(peopleIds, "person_id")}</people_ids>\n`;
         xml += `      <group_ids>${arrayToXml(interaction.groupIds || [], "group_id")}</group_ids>\n`;
         xml += `      <created_at>${escapeXml(interaction.createdAt)}</created_at>\n`;
@@ -412,6 +422,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <id>${escapeXml(note.id)}</id>\n`;
         xml += `      <person_id>${escapeXml(note.personId)}</person_id>\n`;
         xml += `      <content>${escapeXml(note.content)}</content>\n`;
+        xml += `      <image_url>${escapeXml(note.imageUrl || "")}</image_url>\n`;
         xml += `      <created_at>${escapeXml(note.createdAt)}</created_at>\n`;
         xml += '    </note>\n';
       }
@@ -428,6 +439,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    </group_note>\n';
       }
       xml += '  </group_notes>\n';
+
+      // Export social accounts (encode ME user UUID as all zeros in ownerUuid)
+      xml += '  <social_accounts>\n';
+      for (const account of allSocialAccounts) {
+        const ownerUuid = account.ownerUuid === mePersonId ? ZERO_UUID : account.ownerUuid;
+        
+        xml += '    <social_account>\n';
+        xml += `      <id>${escapeXml(account.id)}</id>\n`;
+        xml += `      <username>${escapeXml(account.username)}</username>\n`;
+        xml += `      <account_url>${escapeXml(account.accountUrl)}</account_url>\n`;
+        xml += `      <owner_uuid>${escapeXml(ownerUuid || "")}</owner_uuid>\n`;
+        xml += `      <image_url>${escapeXml(account.imageUrl || "")}</image_url>\n`;
+        xml += `      <notes>${escapeXml(account.notes || "")}</notes>\n`;
+        xml += `      <following>${arrayToXml(account.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(account.followers || [], "account_id")}</followers>\n`;
+        xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
+        xml += '    </social_account>\n';
+      }
+      xml += '  </social_accounts>\n';
 
       xml += '</crm_data>';
 
@@ -485,7 +515,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       // Get ME user's person ID for replacing all-zero UUIDs
-      const mePersonResult = await db.select().from(people).where(sql`${people.userId} IS NOT NULL`).limit(1);
+      const mePersonResult = await db.select().from(people).where(isNotNull(people.userId)).limit(1);
       const mePersonId = mePersonResult[0]?.id || null;
       const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
       
