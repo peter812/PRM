@@ -534,6 +534,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         interactions: 0,
         notes: 0,
         groupNotes: 0,
+        socialAccounts: 0,
       };
       
       let skippedCounts = {
@@ -613,6 +614,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const company = unescapeXml(parseXmlTag("company", block));
         const title = unescapeXml(parseXmlTag("title", block));
         const tags = parseXmlArray("tags", "tag", block);
+        const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+        const socialAccountUuids = parseXmlArray("social_account_uuids", "social_account_uuid", block);
+        const isStarred = parseInt(parseXmlTag("is_starred", block)) || 0;
 
         // Check for duplicate name
         const duplicate = existingPeople.find(p => 
@@ -635,6 +639,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             company: company || null,
             title: title || null,
             tags: tags.length > 0 ? tags : [],
+            imageUrl: imageUrl || null,
+            socialAccountUuids: socialAccountUuids.length > 0 ? socialAccountUuids : [],
+            isStarred: isStarred,
           });
           importedCounts.people++;
           existingPeople.push({ id, firstName, lastName } as any);
@@ -651,6 +658,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const color = unescapeXml(parseXmlTag("color", block));
         const type = parseXmlArray("type", "group_type", block);
         const members = parseXmlArray("members", "member_id", block);
+        const imageUrl = unescapeXml(parseXmlTag("image_url", block));
 
         // Replace zero UUIDs with ME user UUID in members
         const processedMembers = members.map(memberId => replaceZeroUUID(memberId));
@@ -662,6 +670,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             color,
             type: type.length > 0 ? type : [],
             members: processedMembers.length > 0 ? processedMembers : [],
+            imageUrl: imageUrl || null,
           });
           importedCounts.groups++;
         } catch (error) {
@@ -697,8 +706,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const block of interactionBlocks) {
         const id = unescapeXml(parseXmlTag("id", block));
         const typeId = unescapeXml(parseXmlTag("type_id", block));
+        const interactionTitle = unescapeXml(parseXmlTag("title", block));
         const date = unescapeXml(parseXmlTag("date", block));
         const description = unescapeXml(parseXmlTag("description", block));
+        const imageUrl = unescapeXml(parseXmlTag("image_url", block));
         const peopleIds = parseXmlArray("people_ids", "person_id", block);
         const groupIds = parseXmlArray("group_ids", "group_id", block);
 
@@ -708,12 +719,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           await storage.createInteractionWithId({
             id,
-            typeId,
+            typeId: typeId || undefined,
+            title: interactionTitle || undefined,
             date: new Date(date),
-            description: description || null,
+            description: description || undefined,
             peopleIds: processedPeopleIds.length > 0 ? processedPeopleIds : [],
             groupIds: groupIds.length > 0 ? groupIds : [],
-            imageUrl: null, // Images are not imported
+            imageUrl: imageUrl || undefined,
           });
           importedCounts.interactions++;
         } catch (error) {
@@ -727,9 +739,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const id = unescapeXml(parseXmlTag("id", block));
         const personId = unescapeXml(parseXmlTag("person_id", block));
         const content = unescapeXml(parseXmlTag("content", block));
+        const imageUrl = unescapeXml(parseXmlTag("image_url", block));
 
         try {
-          await storage.createNoteWithId({ id, personId, content });
+          await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null });
           importedCounts.notes++;
         } catch (error) {
           console.error(`Error importing note ${id}:`, error);
@@ -748,6 +761,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
           importedCounts.groupNotes++;
         } catch (error) {
           console.error(`Error importing group note ${id}:`, error);
+        }
+      }
+
+      // Parse and import social accounts
+      const socialAccountBlocks = parseAllTags("social_account", xmlText);
+      for (const block of socialAccountBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const username = unescapeXml(parseXmlTag("username", block));
+        const accountUrl = unescapeXml(parseXmlTag("account_url", block));
+        const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
+        const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+        const notes = unescapeXml(parseXmlTag("notes", block));
+        const following = parseXmlArray("following", "account_id", block);
+        const followers = parseXmlArray("followers", "account_id", block);
+
+        // Replace zero UUID with ME user UUID in ownerUuid
+        const processedOwnerUuid = replaceZeroUUID(ownerUuid);
+
+        try {
+          await storage.createSocialAccountWithId({
+            id,
+            username,
+            accountUrl,
+            ownerUuid: processedOwnerUuid || null,
+            imageUrl: imageUrl || null,
+            notes: notes || null,
+            following: following.length > 0 ? following : [],
+            followers: followers.length > 0 ? followers : [],
+          });
+          importedCounts.socialAccounts++;
+        } catch (error) {
+          console.error(`Error importing social account ${id}:`, error);
         }
       }
 

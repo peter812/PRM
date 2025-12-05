@@ -1126,6 +1126,11 @@ export class DatabaseStorage implements IStorage {
     const [newGroupNote] = await db.insert(groupNotes).values(groupNote).returning();
     return newGroupNote;
   }
+
+  async createSocialAccountWithId(account: InsertSocialAccount & { id: string }): Promise<SocialAccount> {
+    const [newAccount] = await db.insert(socialAccounts).values(account).returning();
+    return newAccount;
+  }
 }
 
 export const storage = new DatabaseStorage();
