@@ -541,12 +541,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         relationshipTypes: 0,
         interactionTypes: 0,
         people: 0,
+        relationships: 0,
+        interactions: 0,
+        socialAccounts: 0,
       };
 
-      // Get existing data to check for duplicates
+      // Get existing data to check for duplicates (by UUID)
       const existingRelationshipTypes = await storage.getAllRelationshipTypes();
       const existingInteractionTypes = await storage.getAllInteractionTypes();
       const existingPeople = await storage.getAllPeople();
+      const existingRelationships = await storage.getAllRelationships();
+      const existingInteractions = await storage.getAllInteractions();
+      const existingSocialAccounts = await storage.getAllSocialAccounts();
+      
+      // Create UUID sets for fast lookup
+      const existingRelationshipTypeUuids = new Set(existingRelationshipTypes.map(t => t.id));
+      const existingInteractionTypeUuids = new Set(existingInteractionTypes.map(t => t.id));
+      const existingRelationshipUuids = new Set(existingRelationships.map(r => r.id));
+      const existingInteractionUuids = new Set(existingInteractions.map(i => i.id));
+      const existingSocialAccountUuids = new Set(existingSocialAccounts.map(s => s.id));
 
       // Parse and import relationship types
       const relationshipTypeBlocks = parseAllTags("relationship_type", xmlText);
@@ -556,12 +569,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const color = unescapeXml(parseXmlTag("color", block));
         const notes = unescapeXml(parseXmlTag("notes", block));
 
-        // Check for duplicate name
-        const duplicate = existingRelationshipTypes.find(t => 
-          t.name.toLowerCase() === name.toLowerCase()
-        );
-        
-        if (duplicate) {
+        // Check for duplicate by UUID
+        if (existingRelationshipTypeUuids.has(id)) {
           skippedCounts.relationshipTypes++;
           continue; // Skip this duplicate
         }
@@ -569,7 +578,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           await db.insert(relationshipTypes).values({ id, name, color, notes: notes || null, value: 50 }).onConflictDoNothing();
           importedCounts.relationshipTypes++;
-          existingRelationshipTypes.push({ id, name, color, notes: notes || null, value: 50 } as any);
+          existingRelationshipTypeUuids.add(id);
         } catch (error) {
           console.error(`Error importing relationship type ${id}:`, error);
         }
@@ -584,12 +593,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const description = unescapeXml(parseXmlTag("description", block));
         const value = parseInt(parseXmlTag("value", block)) || 50;
 
-        // Check for duplicate name
-        const duplicate = existingInteractionTypes.find(t => 
-          t.name.toLowerCase() === name.toLowerCase()
-        );
-        
-        if (duplicate) {
+        // Check for duplicate by UUID
+        if (existingInteractionTypeUuids.has(id)) {
           skippedCounts.interactionTypes++;
           continue; // Skip this duplicate
         }
@@ -597,13 +602,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           await db.insert(interactionTypes).values({ id, name, color, description: description || null, value }).onConflictDoNothing();
           importedCounts.interactionTypes++;
-          existingInteractionTypes.push({ id, name, color, description: description || null, value } as any);
+          existingInteractionTypeUuids.add(id);
         } catch (error) {
           console.error(`Error importing interaction type ${id}:`, error);
         }
       }
 
       // Parse and import people
+      // Create a map for fast lookup by firstName + UUID
+      const existingPeopleMap = new Map<string, boolean>();
+      for (const p of existingPeople) {
+        existingPeopleMap.set(`${p.firstName.toLowerCase()}:${p.id}`, true);
+      }
+      
       const personBlocks = parseAllTags("person", xmlText);
       for (const block of personBlocks) {
         const id = unescapeXml(parseXmlTag("id", block));
@@ -618,13 +629,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const socialAccountUuids = parseXmlArray("social_account_uuids", "social_account_uuid", block);
         const isStarred = parseInt(parseXmlTag("is_starred", block)) || 0;
 
-        // Check for duplicate name
-        const duplicate = existingPeople.find(p => 
-          p.firstName.toLowerCase() === firstName.toLowerCase() && 
-          p.lastName.toLowerCase() === lastName.toLowerCase()
-        );
-        
-        if (duplicate) {
+        // Check for duplicate by First Name AND UUID
+        const lookupKey = `${firstName.toLowerCase()}:${id}`;
+        if (existingPeopleMap.has(lookupKey)) {
           skippedCounts.people++;
           continue; // Skip this duplicate
         }
@@ -644,7 +651,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             isStarred: isStarred,
           });
           importedCounts.people++;
-          existingPeople.push({ id, firstName, lastName } as any);
+          existingPeopleMap.set(lookupKey, true);
         } catch (error) {
           console.error(`Error importing person ${id}:`, error);
         }
@@ -687,6 +694,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const typeId = unescapeXml(parseXmlTag("type_id", block));
         const notes = unescapeXml(parseXmlTag("notes", block));
 
+        // Check for duplicate by UUID
+        if (existingRelationshipUuids.has(id)) {
+          skippedCounts.relationships++;
+          continue; // Skip this duplicate
+        }
+
         try {
           await storage.createRelationshipWithId({
             id,
@@ -696,6 +709,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             notes: notes || null,
           });
           importedCounts.relationships++;
+          existingRelationshipUuids.add(id);
         } catch (error) {
           console.error(`Error importing relationship ${id}:`, error);
         }
@@ -713,6 +727,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const peopleIds = parseXmlArray("people_ids", "person_id", block);
         const groupIds = parseXmlArray("group_ids", "group_id", block);
 
+        // Check for duplicate by UUID
+        if (existingInteractionUuids.has(id)) {
+          skippedCounts.interactions++;
+          continue; // Skip this duplicate
+        }
+
         // Replace zero UUIDs with ME user UUID in peopleIds
         const processedPeopleIds = peopleIds.map(personId => replaceZeroUUID(personId));
 
@@ -728,6 +748,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             imageUrl: imageUrl || undefined,
           });
           importedCounts.interactions++;
+          existingInteractionUuids.add(id);
         } catch (error) {
           console.error(`Error importing interaction ${id}:`, error);
         }
@@ -776,6 +797,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const following = parseXmlArray("following", "account_id", block);
         const followers = parseXmlArray("followers", "account_id", block);
 
+        // Check for duplicate by UUID
+        if (existingSocialAccountUuids.has(id)) {
+          skippedCounts.socialAccounts++;
+          continue; // Skip this duplicate
+        }
+
         // Replace zero UUID with ME user UUID in ownerUuid
         const processedOwnerUuid = replaceZeroUUID(ownerUuid);
 
@@ -791,6 +818,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             followers: followers.length > 0 ? followers : [],
           });
           importedCounts.socialAccounts++;
+          existingSocialAccountUuids.add(id);
         } catch (error) {
           console.error(`Error importing social account ${id}:`, error);
         }
