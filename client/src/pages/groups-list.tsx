@@ -79,7 +79,7 @@ export default function GroupsList() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-4">
+      <div className="border-b px-4 py-3">
         <div className="flex items-center justify-between gap-4 mb-4">
           <h1 className="text-3xl font-semibold" data-testid="text-page-title">
             Groups
