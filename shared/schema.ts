@@ -30,6 +30,7 @@ export const ssoConfig = pgTable("sso_config", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: integer("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
   enabled: integer("enabled").notNull().default(0), // 0 = disabled, 1 = enabled (SQLite compatibility)
+  autoSso: integer("auto_sso").notNull().default(0), // 0 = disabled, 1 = auto-redirect to SSO when not signed in
   clientId: text("client_id").notNull(),
   clientSecret: text("client_secret").notNull(), // Stored encrypted
   authUrl: text("auth_url").notNull(),
