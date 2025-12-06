@@ -1154,16 +1154,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Check if any user has SSO enabled
       const allUsers = await storage.getAllUsers();
       let isEnabled = false;
+      let isAutoSso = false;
       
       for (const user of allUsers) {
         const config = await storage.getSsoConfig(user.id);
         if (config && config.enabled === 1) {
           isEnabled = true;
+          if (config.autoSso === 1) {
+            isAutoSso = true;
+          }
           break;
         }
       }
 
-      res.json({ enabled: isEnabled ? 1 : 0 });
+      res.json({ enabled: isEnabled ? 1 : 0, autoSso: isAutoSso ? 1 : 0 });
     } catch (error) {
       console.error("Error fetching SSO status:", error);
       res.status(500).json({ error: "Failed to fetch SSO status" });
@@ -1198,6 +1202,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const {
         enabled,
+        autoSso,
         clientId,
         clientSecret,
         authUrl,
@@ -1222,6 +1227,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const configData = {
         userId: req.user.id,
         enabled: enabled ? 1 : 0,
+        autoSso: autoSso ? 1 : 0,
         clientId,
         clientSecret: finalClientSecret,
         authUrl,

@@ -47,6 +47,7 @@ const updateUserSchema = z.object({
 
 const ssoConfigSchema = z.object({
   enabled: z.boolean(),
+  autoSso: z.boolean(),
   clientId: z.string().min(1, "Client ID is required"),
   clientSecret: z.string().min(1, "Client Secret is required"),
   authUrl: z.string().url("Must be a valid URL"),
@@ -88,6 +89,7 @@ export default function UserOptionsPage() {
   // Fetch SSO config
   const { data: ssoConfig } = useQuery<{
     enabled: number;
+    autoSso: number;
     clientId: string;
     clientSecret: string;
     authUrl: string;
@@ -107,6 +109,7 @@ export default function UserOptionsPage() {
     resolver: zodResolver(ssoConfigSchema),
     defaultValues: {
       enabled: false,
+      autoSso: false,
       clientId: "",
       clientSecret: "",
       authUrl: "",
@@ -148,6 +151,7 @@ export default function UserOptionsPage() {
       ssoFormInitialized.current = true;
       ssoForm.reset({
         enabled: ssoConfig.enabled === 1,
+        autoSso: ssoConfig.autoSso === 1,
         clientId: ssoConfig.clientId || "",
         clientSecret: ssoConfig.clientSecret || "",
         authUrl: ssoConfig.authUrl || "",
@@ -398,6 +402,28 @@ export default function UserOptionsPage() {
                         checked={field.value}
                         onCheckedChange={field.onChange}
                         data-testid="switch-sso-enabled"
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={ssoForm.control}
+                name="autoSso"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-md border p-4">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-base">Auto SSO</FormLabel>
+                      <FormDescription>
+                        Automatically redirect to SSO when not signed in. Use /auth-direct to bypass.
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                        data-testid="switch-auto-sso"
                       />
                     </FormControl>
                   </FormItem>

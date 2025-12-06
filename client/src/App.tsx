@@ -32,6 +32,7 @@ import Graph from "@/pages/graph";
 import Graph3D from "@/pages/graph-3d";
 import ApiPlayground from "@/pages/api-playground";
 import AuthPage from "@/pages/auth-page";
+import AuthDirectPage from "@/pages/auth-direct";
 import WelcomePage from "@/pages/welcome-page";
 import SettingsLayout from "@/pages/settings-layout";
 import NotFound from "@/pages/not-found";
@@ -41,6 +42,7 @@ function Router() {
     <Switch>
       <Route path="/welcome" component={WelcomePage} />
       <Route path="/auth" component={AuthPage} />
+      <Route path="/auth-direct" component={AuthDirectPage} />
       <ProtectedRoute path="/" component={PeopleList} />
       <ProtectedRoute path="/people" component={PeopleList} />
       <ProtectedRoute path="/person/:id" component={PersonProfile} />
@@ -65,7 +67,7 @@ function AppLayout() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [isAddPersonDialogOpen, setIsAddPersonDialogOpen] = useState(false);
-  const isAuthPage = location === "/auth";
+  const isAuthPage = location === "/auth" || location === "/auth-direct";
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");
 
