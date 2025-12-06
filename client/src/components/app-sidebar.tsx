@@ -32,11 +32,7 @@ const menuItems = [
     url: "/social-accounts",
     icon: AtSign,
   },
-  {
-    title: "Graph (2D)",
-    url: "/graph",
-    icon: Network,
-  },
+
   {
     title: "Graph (3D)",
     url: "/graph-3d",
