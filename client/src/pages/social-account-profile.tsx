@@ -47,6 +47,12 @@ export default function SocialAccountProfile() {
     queryKey: ["/api/social-accounts"],
   });
 
+  // Query followers (accounts that have this account in their following list)
+  const { data: followers } = useQuery<SocialAccount[]>({
+    queryKey: ["/api/social-accounts", uuid, "followers"],
+    enabled: !!uuid,
+  });
+
   const removeFollowingMutation = useMutation({
     mutationFn: async (accountIdToRemove: string) => {
       const currentFollowing = account?.following || [];
@@ -336,40 +342,33 @@ export default function SocialAccountProfile() {
           {/* Followers Column */}
           <Card className="p-4">
             <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
-              Followers ({account.followers?.length || 0})
+              Followers ({followers?.length || 0})
             </h3>
-            {account.followers && account.followers.length > 0 ? (
+            {followers && followers.length > 0 ? (
               <div className="space-y-2">
-                {account.followers.map((followerId) => {
-                  const followerAccount = allSocialAccounts?.find(a => a.id === followerId);
-                  return (
-                    <div 
-                      key={followerId} 
-                      className="flex items-center gap-3 p-2 rounded-md hover-elevate"
-                      data-testid={`card-follower-${followerId}`}
-                    >
-                      <Avatar className="w-8 h-8">
-                        {followerAccount?.imageUrl && (
-                          <AvatarImage src={followerAccount.imageUrl} alt={followerAccount.username} />
-                        )}
-                        <AvatarFallback className="text-xs">
-                          {followerAccount ? getInitials(followerAccount.username) : "?"}
-                        </AvatarFallback>
-                      </Avatar>
-                      {followerAccount ? (
-                        <Link 
-                          href={`/social-accounts/${followerAccount.id}`}
-                          className="text-sm font-medium hover:underline"
-                          data-testid={`link-follower-${followerId}`}
-                        >
-                          {followerAccount.username}
-                        </Link>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">{followerId}</span>
+                {followers.map((followerAccount) => (
+                  <div 
+                    key={followerAccount.id} 
+                    className="flex items-center gap-3 p-2 rounded-md hover-elevate"
+                    data-testid={`card-follower-${followerAccount.id}`}
+                  >
+                    <Avatar className="w-8 h-8">
+                      {followerAccount.imageUrl && (
+                        <AvatarImage src={followerAccount.imageUrl} alt={followerAccount.username} />
                       )}
-                    </div>
-                  );
-                })}
+                      <AvatarFallback className="text-xs">
+                        {getInitials(followerAccount.username)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <Link 
+                      href={`/social-accounts/${followerAccount.id}`}
+                      className="text-sm font-medium hover:underline"
+                      data-testid={`link-follower-${followerAccount.id}`}
+                    >
+                      {followerAccount.username}
+                    </Link>
+                  </div>
+                ))}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground italic">No followers yet</p>

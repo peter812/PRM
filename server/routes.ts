@@ -2094,6 +2094,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get accounts that follow a specific account (query based on following arrays)
+  app.get("/api/social-accounts/:id/followers", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const allAccounts = await storage.getAllSocialAccounts();
+      
+      // Find accounts where this account's id is in their following array
+      const followers = allAccounts.filter(account => 
+        account.following && account.following.includes(id)
+      );
+      
+      res.json(followers);
+    } catch (error) {
+      console.error("Error fetching followers:", error);
+      res.status(500).json({ error: "Failed to fetch followers" });
+    }
+  });
+
   // Social account follower/following management
   app.post("/api/social-accounts/:id/followers", async (req, res) => {
     try {
