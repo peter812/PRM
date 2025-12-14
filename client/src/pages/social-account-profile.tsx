@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -41,6 +41,35 @@ export default function SocialAccountProfile() {
   const { data: mePerson } = useQuery<Person>({
     queryKey: user?.personId ? [`/api/people/${user.personId}`] : [],
     enabled: !!user?.personId,
+  });
+
+  const { data: allSocialAccounts } = useQuery<SocialAccount[]>({
+    queryKey: ["/api/social-accounts"],
+  });
+
+  const removeFollowingMutation = useMutation({
+    mutationFn: async (accountIdToRemove: string) => {
+      const currentFollowing = account?.following || [];
+      const newFollowing = currentFollowing.filter(id => id !== accountIdToRemove);
+      return await apiRequest("PATCH", `/api/social-accounts/${uuid}`, {
+        following: newFollowing,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      toast({
+        title: "Success",
+        description: "Account removed from following",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to remove account",
+        variant: "destructive",
+      });
+    },
   });
 
   const updateNotesMutation = useMutation({
@@ -303,29 +332,52 @@ export default function SocialAccountProfile() {
 
       {/* Lower Section - Two Columns */}
       <div className="flex-1 overflow-auto">
-        <div className="px-6 py-6 grid grid-cols-2 gap-6">
+        <div className="px-6 py-6 grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Followers Column */}
-          <div>
+          <Card className="p-4">
             <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
               Followers ({account.followers?.length || 0})
             </h3>
             {account.followers && account.followers.length > 0 ? (
               <div className="space-y-2">
-                {account.followers.map((followerId) => (
-                  <Card key={followerId} className="p-3" data-testid={`card-follower-${followerId}`}>
-                    <p className="text-sm text-muted-foreground" data-testid={`text-follower-id-${followerId}`}>
-                      {followerId}
-                    </p>
-                  </Card>
-                ))}
+                {account.followers.map((followerId) => {
+                  const followerAccount = allSocialAccounts?.find(a => a.id === followerId);
+                  return (
+                    <div 
+                      key={followerId} 
+                      className="flex items-center gap-3 p-2 rounded-md hover-elevate"
+                      data-testid={`card-follower-${followerId}`}
+                    >
+                      <Avatar className="w-8 h-8">
+                        {followerAccount?.imageUrl && (
+                          <AvatarImage src={followerAccount.imageUrl} alt={followerAccount.username} />
+                        )}
+                        <AvatarFallback className="text-xs">
+                          {followerAccount ? getInitials(followerAccount.username) : "?"}
+                        </AvatarFallback>
+                      </Avatar>
+                      {followerAccount ? (
+                        <Link 
+                          href={`/social-accounts/${followerAccount.id}`}
+                          className="text-sm font-medium hover:underline"
+                          data-testid={`link-follower-${followerId}`}
+                        >
+                          {followerAccount.username}
+                        </Link>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">{followerId}</span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground italic">No followers yet</p>
             )}
-          </div>
+          </Card>
 
           {/* Following Column */}
-          <div>
+          <Card className="p-4">
             <div className="flex items-center justify-between gap-2 mb-4">
               <h3 className="text-lg font-semibold" data-testid="text-following-header">
                 Following ({account.following?.length || 0})
@@ -341,18 +393,53 @@ export default function SocialAccountProfile() {
             </div>
             {account.following && account.following.length > 0 ? (
               <div className="space-y-2">
-                {account.following.map((followingId) => (
-                  <Card key={followingId} className="p-3" data-testid={`card-following-${followingId}`}>
-                    <p className="text-sm text-muted-foreground" data-testid={`text-following-id-${followingId}`}>
-                      {followingId}
-                    </p>
-                  </Card>
-                ))}
+                {account.following.map((followingId) => {
+                  const followingAccount = allSocialAccounts?.find(a => a.id === followingId);
+                  return (
+                    <div 
+                      key={followingId} 
+                      className="flex items-center justify-between gap-3 p-2 rounded-md hover-elevate"
+                      data-testid={`card-following-${followingId}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Avatar className="w-8 h-8">
+                          {followingAccount?.imageUrl && (
+                            <AvatarImage src={followingAccount.imageUrl} alt={followingAccount.username} />
+                          )}
+                          <AvatarFallback className="text-xs">
+                            {followingAccount ? getInitials(followingAccount.username) : "?"}
+                          </AvatarFallback>
+                        </Avatar>
+                        {followingAccount ? (
+                          <Link 
+                            href={`/social-accounts/${followingAccount.id}`}
+                            className="text-sm font-medium hover:underline"
+                            data-testid={`link-following-${followingId}`}
+                          >
+                            {followingAccount.username}
+                          </Link>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">{followingId}</span>
+                        )}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => removeFollowingMutation.mutate(followingId)}
+                        disabled={removeFollowingMutation.isPending}
+                        data-testid={`button-remove-following-${followingId}`}
+                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground italic">Not following anyone yet</p>
             )}
-          </div>
+          </Card>
         </div>
       </div>
 
