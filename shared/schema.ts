@@ -133,12 +133,21 @@ export const groupNotes = pgTable("group_notes", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Social account types table
+export const socialAccountTypes = pgTable("social_account_types", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  color: text("color").notNull(), // hex color code
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Social accounts table
 export const socialAccounts = pgTable("social_accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull(),
   accountUrl: text("account_url").notNull(),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
+  typeId: varchar("type_id").references(() => socialAccountTypes.id, { onDelete: "set null" }),
   imageUrl: text("image_url"),
   notes: text("notes"),
   following: text("following").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts this account follows
@@ -211,6 +220,17 @@ export const groupNotesRelations = relations(groupNotes, ({ one }) => ({
   group: one(groups, {
     fields: [groupNotes.groupId],
     references: [groups.id],
+  }),
+}));
+
+export const socialAccountTypesRelations = relations(socialAccountTypes, ({ many }) => ({
+  socialAccounts: many(socialAccounts),
+}));
+
+export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
+  type: one(socialAccountTypes, {
+    fields: [socialAccounts.typeId],
+    references: [socialAccountTypes.id],
   }),
 }));
 
@@ -293,6 +313,11 @@ export const insertSocialAccountSchema = createInsertSchema(socialAccounts).omit
   createdAt: true,
 });
 
+export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTypes).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -326,6 +351,9 @@ export type InsertInteractionType = z.infer<typeof insertInteractionTypeSchema>;
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
 export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
+
+export type SocialAccountType = typeof socialAccountTypes.$inferSelect;
+export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSchema>;
 
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {
