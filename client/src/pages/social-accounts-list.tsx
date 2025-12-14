@@ -21,9 +21,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { SocialAccount, Person } from "@shared/schema";
+import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
+
+function isValidHexColor(color: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
+}
 
 export default function SocialAccountsList() {
   const [, navigate] = useLocation();
@@ -45,6 +49,10 @@ export default function SocialAccountsList() {
   const { data: mePerson } = useQuery<Person>({
     queryKey: user?.personId ? [`/api/people/${user.personId}`] : [],
     enabled: !!user?.personId,
+  });
+
+  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
+    queryKey: ["/api/social-account-types"],
   });
 
   const deleteMutation = useMutation({
@@ -177,6 +185,9 @@ export default function SocialAccountsList() {
               const isFollowingYou = meAccountIds.some((meId) =>
                 account.followers?.includes(meId)
               );
+              const accountType = account.typeId 
+                ? socialAccountTypes?.find(t => t.id === account.typeId) 
+                : null;
               
               return (
                 <div
@@ -203,6 +214,16 @@ export default function SocialAccountsList() {
                           <h3 className="font-medium truncate" data-testid={`text-username-${account.id}`}>
                             {account.username}
                           </h3>
+                          {accountType && (
+                            <Badge 
+                              variant="outline" 
+                              className="text-xs"
+                              style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                              data-testid={`badge-type-${account.id}`}
+                            >
+                              {accountType.name}
+                            </Badge>
+                          )}
                           {isFollowingYou && (
                             <Badge variant="secondary" className="text-xs">
                               Follows you

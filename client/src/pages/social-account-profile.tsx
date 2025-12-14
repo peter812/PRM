@@ -10,10 +10,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccount, Person } from "@shared/schema";
+import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
 import { Link } from "wouter";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
+
+function isValidHexColor(color: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
+}
 
 export default function SocialAccountProfile() {
   const { uuid } = useParams<{ uuid: string }>();
@@ -45,6 +49,10 @@ export default function SocialAccountProfile() {
 
   const { data: allSocialAccounts } = useQuery<SocialAccount[]>({
     queryKey: ["/api/social-accounts"],
+  });
+
+  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
+    queryKey: ["/api/social-account-types"],
   });
 
   // Query followers (accounts that have this account in their following list)
@@ -176,6 +184,10 @@ export default function SocialAccountProfile() {
     account.followers?.includes(meId)
   );
 
+  const accountType = account.typeId 
+    ? socialAccountTypes?.find(t => t.id === account.typeId) 
+    : null;
+
   const getInitials = (username: string) => {
     if (username.length >= 2) {
       return username.slice(0, 2).toUpperCase();
@@ -214,6 +226,15 @@ export default function SocialAccountProfile() {
                 <h1 className="text-3xl font-semibold" data-testid="text-account-username">
                   {account.username}
                 </h1>
+                {accountType && (
+                  <Badge 
+                    variant="outline" 
+                    style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                    data-testid="badge-account-type"
+                  >
+                    {accountType.name}
+                  </Badge>
+                )}
                 {isFollowingYou && (
                   <Badge variant="secondary" data-testid="badge-follows-you">
                     Follows you
