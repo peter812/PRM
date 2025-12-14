@@ -12,6 +12,7 @@ import {
   apiKeys,
   ssoConfig,
   socialAccounts,
+  socialAccountTypes,
   type Person,
   type InsertPerson,
   type Note,
@@ -39,6 +40,8 @@ import {
   type InsertSsoConfig,
   type SocialAccount,
   type InsertSocialAccount,
+  type SocialAccountType,
+  type InsertSocialAccountType,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -136,6 +139,13 @@ export interface IStorage {
   removeFollower(accountId: string, followerId: string): Promise<void>;
   addFollowing(accountId: string, followingId: string): Promise<void>;
   removeFollowing(accountId: string, followingId: string): Promise<void>;
+
+  // Social account type operations
+  getAllSocialAccountTypes(): Promise<SocialAccountType[]>;
+  getSocialAccountTypeById(id: string): Promise<SocialAccountType | undefined>;
+  createSocialAccountType(type: InsertSocialAccountType): Promise<SocialAccountType>;
+  updateSocialAccountType(id: string, type: Partial<InsertSocialAccountType>): Promise<SocialAccountType | undefined>;
+  deleteSocialAccountType(id: string): Promise<void>;
   
   // Session store
   sessionStore: session.Store;
@@ -1073,6 +1083,43 @@ export class DatabaseStorage implements IStorage {
       .update(socialAccounts)
       .set({ following: updatedFollowing })
       .where(eq(socialAccounts.id, accountId));
+  }
+
+  // Social account type operations
+  async getAllSocialAccountTypes(): Promise<SocialAccountType[]> {
+    return await db.select().from(socialAccountTypes);
+  }
+
+  async getSocialAccountTypeById(id: string): Promise<SocialAccountType | undefined> {
+    const [type] = await db
+      .select()
+      .from(socialAccountTypes)
+      .where(eq(socialAccountTypes.id, id));
+    return type || undefined;
+  }
+
+  async createSocialAccountType(type: InsertSocialAccountType): Promise<SocialAccountType> {
+    const [created] = await db
+      .insert(socialAccountTypes)
+      .values(type)
+      .returning();
+    return created;
+  }
+
+  async updateSocialAccountType(
+    id: string,
+    type: Partial<InsertSocialAccountType>
+  ): Promise<SocialAccountType | undefined> {
+    const [updated] = await db
+      .update(socialAccountTypes)
+      .set(type)
+      .where(eq(socialAccountTypes.id, id))
+      .returning();
+    return updated || undefined;
+  }
+
+  async deleteSocialAccountType(id: string): Promise<void> {
+    await db.delete(socialAccountTypes).where(eq(socialAccountTypes.id, id));
   }
 
   // Export helper methods

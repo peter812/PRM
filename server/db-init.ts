@@ -119,6 +119,37 @@ async function seedInteractionTypes(): Promise<void> {
 }
 
 /**
+ * Seeds the database with default social account types
+ */
+async function seedSocialAccountTypes(): Promise<void> {
+  log("Seeding default social account types...");
+  
+  try {
+    const defaultTypes = [
+      { id: '00000000-0000-0000-0001-000000000001', name: 'Instagram', color: '#E4405F' },
+      { id: '00000000-0000-0000-0001-000000000002', name: 'Facebook', color: '#1877F2' },
+      { id: '00000000-0000-0000-0001-000000000003', name: 'Discord', color: '#5865F2' },
+      { id: '00000000-0000-0000-0001-000000000004', name: 'X.com', color: '#000000' },
+      { id: '00000000-0000-0000-0001-000000000005', name: 'Generic', color: '#6b7280' },
+    ];
+    
+    for (const type of defaultTypes) {
+      await pool.query(
+        `INSERT INTO social_account_types (id, name, color) 
+         VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [type.id, type.name, type.color]
+      );
+    }
+    
+    log("Seeded default social account types");
+  } catch (error) {
+    log(`Error seeding social account types: ${error}`);
+    // Don't throw - seeding is optional
+  }
+}
+
+/**
  * Checks if there are any users in the database
  */
 async function hasUsers(): Promise<boolean> {
@@ -214,6 +245,7 @@ async function validateAndSyncSchema(): Promise<void> {
       },
       social_accounts: {
         notes: "TEXT",
+        type_id: "VARCHAR REFERENCES social_account_types(id) ON DELETE SET NULL",
       },
     };
 
@@ -353,9 +385,10 @@ export async function resetDatabase(
       CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
     `);
     
-    // Seed default relationship and interaction types
+    // Seed default relationship, interaction, and social account types
     await seedRelationshipTypes();
     await seedInteractionTypes();
+    await seedSocialAccountTypes();
     
     // Only recreate user if userData is provided
     if (userData) {
@@ -414,6 +447,7 @@ export async function initializeDatabase(): Promise<void> {
       // Seed default data
       await seedRelationshipTypes();
       await seedInteractionTypes();
+      await seedSocialAccountTypes();
       
       log("Database initialized successfully!");
     } else {

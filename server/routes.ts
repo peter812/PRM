@@ -16,6 +16,7 @@ import {
   insertUserSchema,
   insertApiKeySchema,
   insertSocialAccountSchema,
+  insertSocialAccountTypeSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -2166,6 +2167,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error removing following:", error);
       res.status(500).json({ error: "Failed to remove following" });
+    }
+  });
+
+  // Social account types endpoints
+  app.get("/api/social-account-types", async (req, res) => {
+    try {
+      const types = await storage.getAllSocialAccountTypes();
+      res.json(types);
+    } catch (error) {
+      console.error("Error fetching social account types:", error);
+      res.status(500).json({ error: "Failed to fetch social account types" });
+    }
+  });
+
+  app.get("/api/social-account-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const type = await storage.getSocialAccountTypeById(id);
+
+      if (!type) {
+        return res.status(404).json({ error: "Social account type not found" });
+      }
+
+      res.json(type);
+    } catch (error) {
+      console.error("Error fetching social account type:", error);
+      res.status(500).json({ error: "Failed to fetch social account type" });
+    }
+  });
+
+  app.post("/api/social-account-types", async (req, res) => {
+    try {
+      const validatedData = insertSocialAccountTypeSchema.parse(req.body);
+      const type = await storage.createSocialAccountType(validatedData);
+      res.status(201).json(type);
+    } catch (error) {
+      console.error("Error creating social account type:", error);
+      res.status(400).json({ error: "Failed to create social account type" });
+    }
+  });
+
+  app.patch("/api/social-account-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const validatedData = insertSocialAccountTypeSchema.partial().parse(req.body);
+      const type = await storage.updateSocialAccountType(id, validatedData);
+
+      if (!type) {
+        return res.status(404).json({ error: "Social account type not found" });
+      }
+
+      res.json(type);
+    } catch (error) {
+      console.error("Error updating social account type:", error);
+      res.status(400).json({ error: "Failed to update social account type" });
+    }
+  });
+
+  app.delete("/api/social-account-types/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteSocialAccountType(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting social account type:", error);
+      res.status(500).json({ error: "Failed to delete social account type" });
     }
   });
 
