@@ -82,13 +82,13 @@ export default function Graph() {
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const wheelHandlerRef = useRef<((e: WheelEvent) => void) | null>(null);
   const isMountedRef = useRef<boolean>(true);
-  
+
   // Physics parameter refs for live updates without reinit
   const centerForceRef = useRef(0.001);
   const repelForceRef = useRef(3000);
   const linkForceRef = useRef(0.01);
   const linkDistanceRef = useRef(100);
-  
+
   const [, navigate] = useLocation();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [showGroups, setShowGroups] = useState(true);
@@ -102,20 +102,20 @@ export default function Graph() {
   const [linkDistance, setLinkDistance] = useState(100);
   const [hideOrphans, setHideOrphans] = useState(false);
   const [anonymizePeople, setAnonymizePeople] = useState(false);
-  
+
   // Sync state to refs for live physics updates
   useEffect(() => {
     centerForceRef.current = centerForce;
   }, [centerForce]);
-  
+
   useEffect(() => {
     repelForceRef.current = repelForce;
   }, [repelForce]);
-  
+
   useEffect(() => {
     linkForceRef.current = linkForce;
   }, [linkForce]);
-  
+
   useEffect(() => {
     linkDistanceRef.current = linkDistance;
   }, [linkDistance]);
@@ -141,42 +141,44 @@ export default function Graph() {
   }, [meData?.id]);
 
   // Filter out orphans if hideOrphans is enabled
-  const people = hideOrphans 
+  const people = hideOrphans
     ? allPeople.filter(person => {
-        // Check if person has any relationships
-        const hasRelationship = relationships.some(
-          rel => rel.fromPersonId === person.id || rel.toPersonId === person.id
-        );
-        // Check if person is a member of any group
-        const isInGroup = groups.some(group => group.members.includes(person.id));
-        return hasRelationship || isInGroup;
-      })
+      // Check if person has any relationships
+      const hasRelationship = relationships.some(
+        rel => rel.fromPersonId === person.id || rel.toPersonId === person.id
+      );
+      // Check if person is a member of any group
+      const isInGroup = groups.some(group => group.members.includes(person.id));
+      return hasRelationship || isInGroup;
+    })
     : allPeople;
 
   useEffect(() => {
     if (!canvasRef.current || !people.length) return;
-    
+
+    let active = true;
+
     // Reset mounted flag and cancel any pending operations
     isMountedRef.current = false;
     if (animationRef.current) {
       cancelAnimationFrame(animationRef.current);
       animationRef.current = 0;
     }
-    
+
     // Mark as mounted after cleanup
     isMountedRef.current = true;
 
     const initPixi = async () => {
       try {
-        // Double-check still mounted before starting async work
-        if (!isMountedRef.current) return;
-        
+        // Double-check still active before starting async work
+        if (!active) return;
+
         // Stop any existing animation
         if (animationRef.current) {
           cancelAnimationFrame(animationRef.current);
           animationRef.current = 0;
         }
-        
+
         // Clean up existing app
         if (appRef.current) {
           try {
@@ -186,7 +188,7 @@ export default function Graph() {
           }
           appRef.current = null;
         }
-        
+
         // Clear refs
         nodesRef.current.clear();
         edgesRef.current = [];
@@ -198,7 +200,7 @@ export default function Graph() {
             canvasRef.current.removeChild(canvasRef.current.firstChild);
           }
         }
-        
+
         // Check if still mounted after async cleanup
         if (!isMountedRef.current) return;
 
@@ -206,10 +208,10 @@ export default function Graph() {
         const styles = getComputedStyle(document.documentElement);
         const backgroundHSL = styles.getPropertyValue('--background').trim();
         const foregroundHSL = styles.getPropertyValue('--foreground').trim();
-        
+
         const bgColor = parseHSL(backgroundHSL);
         const fgColor = parseHSL(foregroundHSL);
-        
+
         const backgroundColor = hslToHex(bgColor.h, bgColor.s, bgColor.l);
         const foregroundColor = hslToHex(fgColor.h, fgColor.s, fgColor.l);
         const defaultRelationshipColor = 0x6b7280; // Gray for relationships without a type
@@ -226,6 +228,11 @@ export default function Graph() {
           preference: 'webgl',
           autoStart: false, // Disable auto-rendering
         });
+
+        if (!active) {
+          app.destroy();
+          return;
+        }
 
         if (canvasRef.current) {
           canvasRef.current.appendChild(app.canvas);
@@ -273,7 +280,7 @@ export default function Graph() {
           text.anchor.set(0.5, -1.5);
           text.x = x;
           text.y = y;
-          
+
           // Hide text if anonymize is enabled and this is not the Me node
           if (anonymizePeople && person.id !== meData?.id) {
             text.visible = false;
@@ -293,7 +300,7 @@ export default function Graph() {
               const dx = e.global.x - dragStartRef.current.x;
               const dy = e.global.y - dragStartRef.current.y;
               const distance = Math.sqrt(dx * dx + dy * dy);
-              
+
               if (distance < 5) {
                 navigate(`/person/${person.id}?from=graph`);
               }
@@ -380,7 +387,7 @@ export default function Graph() {
                 const dx = e.global.x - dragStartRef.current.x;
                 const dy = e.global.y - dragStartRef.current.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
-                
+
                 if (distance < 5) {
                   navigate(`/group/${group.id}`);
                 }
@@ -434,10 +441,10 @@ export default function Graph() {
 
             if (fromNode && toNode) {
               const graphics = new Graphics();
-              
+
               // Use relationship type color if available, otherwise default to gray
               const edgeColor = rel.typeColor ? hexToNumber(rel.typeColor) : defaultRelationshipColor;
-              
+
               graphics.moveTo(fromNode.x, fromNode.y);
               graphics.lineTo(toNode.x, toNode.y);
               graphics.stroke({ color: edgeColor, width: 2, alpha: 0.6 });
@@ -464,7 +471,7 @@ export default function Graph() {
 
                 if (groupNode && personNode) {
                   const graphics = new Graphics();
-                  
+
                   graphics.moveTo(groupNode.x, groupNode.y);
                   graphics.lineTo(personNode.x, personNode.y);
                   const groupColor = group.color ? hexToNumber(group.color) : 0x8b5cf6;
@@ -493,7 +500,7 @@ export default function Graph() {
             // Get connected person IDs
             const connectedPersonIds = new Set<string>();
             connectedPersonIds.add(highlightedPersonId);
-            
+
             // Add people with direct relationships (both directions) - only if person lines are not disabled
             if (!disablePersonLines) {
               relationships.forEach((rel) => {
@@ -504,7 +511,7 @@ export default function Graph() {
                 }
               });
             }
-            
+
             // Get groups the highlighted person is a member of
             const userGroupIds = new Set<string>();
             groups.forEach((group) => {
@@ -512,7 +519,7 @@ export default function Graph() {
                 userGroupIds.add(`group-${group.id}`);
               }
             });
-            
+
             // Hide nodes that aren't connected or in the same groups
             nodes.forEach((node, nodeId) => {
               if (node.type === 'person') {
@@ -527,10 +534,10 @@ export default function Graph() {
                 }
               }
             });
-            
+
             // Hide edges that don't connect to highlighted nodes
             edges.forEach((edge) => {
-              const shouldShow = 
+              const shouldShow =
                 (edge.type === 'relationship' && connectedPersonIds.has(edge.from) && connectedPersonIds.has(edge.to)) ||
                 (edge.type === 'group-member' && userGroupIds.has(edge.from) && connectedPersonIds.has(edge.to));
               edge.graphics.visible = shouldShow;
@@ -541,7 +548,7 @@ export default function Graph() {
         // Physics simulation
         const simulate = () => {
           // Guard: Stop simulation if component unmounted or app destroyed
-          if (!isMountedRef.current || !appRef.current || !containerRef.current || nodesRef.current.size === 0) {
+          if (!active || !isMountedRef.current || !appRef.current || !containerRef.current || nodesRef.current.size === 0) {
             // Cancel animation frame to stop the loop
             if (animationRef.current) {
               cancelAnimationFrame(animationRef.current);
@@ -549,7 +556,7 @@ export default function Graph() {
             }
             return;
           }
-          
+
           const nodes = Array.from(nodesRef.current.values());
           const damping = 0.9;
 
@@ -558,7 +565,7 @@ export default function Graph() {
             if (!node.graphics || !node.text) return; // Skip if graphics destroyed
             if (node.graphics.destroyed || node.text.destroyed) return; // Skip if destroyed by Pixi
             if (!node.graphics.visible) return; // Skip hidden nodes
-            
+
             let fx = 0;
             let fy = 0;
 
@@ -579,9 +586,9 @@ export default function Graph() {
             // Attraction along edges with desired distance
             edgesRef.current.forEach((edge) => {
               if (!edge.graphics || edge.graphics.destroyed || !edge.graphics.visible) return; // Skip hidden/destroyed edges
-              
+
               let other: Node | undefined;
-              
+
               if (edge.from === node.id) {
                 other = nodesRef.current.get(edge.to);
               } else if (edge.to === node.id) {
@@ -592,11 +599,11 @@ export default function Graph() {
                 const dx = other.x - node.x;
                 const dy = other.y - node.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
-                
+
                 // Spring force: attractive if too far, repulsive if too close
                 const displacement = distance - linkDistanceRef.current;
                 const force = displacement * linkForceRef.current;
-                
+
                 if (distance > 0) {
                   fx += (dx / distance) * force;
                   fy += (dy / distance) * force;
@@ -619,7 +626,7 @@ export default function Graph() {
             if (!node.graphics || !node.text) return; // Skip if graphics destroyed
             if (node.graphics.destroyed || node.text.destroyed) return; // Skip if destroyed by Pixi
             if (!node.graphics.visible) return; // Skip hidden nodes
-            
+
             if (isDraggingRef.current !== node.id) {
               node.x += node.vx;
               node.y += node.vy;
@@ -631,32 +638,32 @@ export default function Graph() {
           });
 
           // Check if still mounted before edge updates
-          if (!isMountedRef.current || !appRef.current || !containerRef.current) {
+          if (!active || !isMountedRef.current || !appRef.current || !containerRef.current) {
             return;
           }
-          
+
           // Update edge positions
           edgesRef.current.forEach((edge) => {
             if (!edge.graphics) return; // Skip if graphics destroyed
             if (edge.graphics.destroyed) return; // Skip if destroyed by Pixi
             if (!edge.graphics.visible) return; // Skip hidden edges
-            
+
             const fromNode = nodesRef.current.get(edge.from);
             const toNode = nodesRef.current.get(edge.to);
-            if (fromNode && toNode && fromNode.graphics && toNode.graphics && 
-                !fromNode.graphics.destroyed && !toNode.graphics.destroyed &&
-                fromNode.graphics.visible && toNode.graphics.visible) {
+            if (fromNode && toNode && fromNode.graphics && toNode.graphics &&
+              !fromNode.graphics.destroyed && !toNode.graphics.destroyed &&
+              fromNode.graphics.visible && toNode.graphics.visible) {
               try {
                 // Check again before graphics operations
-                if (!isMountedRef.current || edge.graphics.destroyed) return;
-                
+                if (!active || !isMountedRef.current || edge.graphics.destroyed) return;
+
                 // Temporarily set renderable to false to prevent rendering during clear/redraw
                 const g = edge.graphics;
                 const wasRenderable = g.renderable;
                 g.renderable = false;
-                
+
                 g.clear();
-                
+
                 if (edge.type === 'relationship') {
                   g.moveTo(fromNode.x, fromNode.y);
                   g.lineTo(toNode.x, toNode.y);
@@ -666,7 +673,7 @@ export default function Graph() {
                   g.lineTo(toNode.x, toNode.y);
                   g.stroke({ color: edge.color, width: 1, alpha: 0.5 });
                 }
-                
+
                 // Restore renderable state after drawing is complete
                 g.renderable = wasRenderable;
               } catch (e) {
@@ -683,9 +690,9 @@ export default function Graph() {
               // Renderer may be destroyed, skip
             }
           }
-          
+
           // Final check before scheduling next frame
-          if (isMountedRef.current && appRef.current) {
+          if (active && isMountedRef.current && appRef.current) {
             animationRef.current = requestAnimationFrame(simulate);
           }
         };
@@ -697,13 +704,13 @@ export default function Graph() {
         app.stage.on('pointermove', (e) => {
           if (isDraggingRef.current) {
             const node = nodesRef.current.get(isDraggingRef.current);
-            if (node && containerRef.current && node.graphics && node.text && 
-                !node.graphics.destroyed && !node.text.destroyed) {
+            if (node && containerRef.current && node.graphics && node.text &&
+              !node.graphics.destroyed && !node.text.destroyed) {
               // Convert screen coordinates to world coordinates accounting for zoom
               const currentScale = containerRef.current.scale.x;
               const worldX = (e.global.x - containerRef.current.x) / currentScale;
               const worldY = (e.global.y - containerRef.current.y) / currentScale;
-              
+
               node.x = worldX;
               node.y = worldY;
               node.vx = 0;
@@ -741,41 +748,41 @@ export default function Graph() {
         // Scroll wheel zoom
         const handleWheel = (e: WheelEvent) => {
           e.preventDefault();
-          
+
           if (!containerRef.current) return;
-          
+
           const zoomSpeed = 0.001;
           const minZoom = 0.2;
           const maxZoom = 4;
-          
+
           // Calculate zoom delta
           const delta = -e.deltaY * zoomSpeed;
           const currentScale = containerRef.current.scale.x;
           const newScale = Math.min(Math.max(currentScale * (1 + delta), minZoom), maxZoom);
-          
+
           // Get mouse position relative to canvas
           const rect = app.canvas.getBoundingClientRect();
           const mouseX = e.clientX - rect.left;
           const mouseY = e.clientY - rect.top;
-          
+
           // Calculate world position before zoom
           const worldX = (mouseX - containerRef.current.x) / currentScale;
           const worldY = (mouseY - containerRef.current.y) / currentScale;
-          
+
           // Apply new scale
           containerRef.current.scale.set(newScale);
-          
+
           // Adjust position to zoom towards mouse
           containerRef.current.x = mouseX - worldX * newScale;
           containerRef.current.y = mouseY - worldY * newScale;
         };
-        
+
         wheelHandlerRef.current = handleWheel;
         app.canvas.addEventListener('wheel', handleWheel, { passive: false });
       } catch (error) {
         console.error('Failed to initialize Pixi.js:', error);
         // Fallback: show error message instead of crashing
-        if (canvasRef.current) {
+        if (canvasRef.current && active) {
           canvasRef.current.innerHTML = `
             <div style="display: flex; flex-direction: column; align-items: center; justify-center; height: 100%; text-align: center; padding: 2rem;">
               <h3 style="font-size: 1.125rem; font-weight: 500; margin-bottom: 0.5rem;">Graph visualization temporarily unavailable</h3>
@@ -789,15 +796,16 @@ export default function Graph() {
     initPixi();
 
     return () => {
+      active = false;
       // Mark as unmounted FIRST to stop all operations
       isMountedRef.current = false;
-      
+
       // Cancel animation frame immediately to stop rendering loop
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
         animationRef.current = 0;
       }
-      
+
       // Remove wheel event listener immediately
       if (appRef.current?.canvas && wheelHandlerRef.current) {
         try {
@@ -807,19 +815,19 @@ export default function Graph() {
         }
         wheelHandlerRef.current = null;
       }
-      
+
       // Remove canvas from DOM IMMEDIATELY to prevent Pixi from rendering
       if (canvasRef.current && canvasRef.current.firstChild) {
         while (canvasRef.current.firstChild) {
           canvasRef.current.removeChild(canvasRef.current.firstChild);
         }
       }
-      
+
       // Clear refs
       containerRef.current = null;
       nodesRef.current.clear();
       edgesRef.current = [];
-      
+
       // Destroy PIXI app synchronously
       if (appRef.current) {
         try {
@@ -844,8 +852,8 @@ export default function Graph() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             size="sm"
             onClick={() => navigate('/graph-3d')}
             data-testid="button-switch-to-3d"
@@ -853,8 +861,8 @@ export default function Graph() {
             <Box className="h-4 w-4 mr-2" />
             3D View
           </Button>
-          <Button 
-            variant="ghost" 
+          <Button
+            variant="ghost"
             size="icon"
             className="lg:hidden"
             onClick={() => setIsOptionsPanelOpen(!isOptionsPanelOpen)}

@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
 import { setupAuth } from "./auth";
 import { registerRoutes } from "./routes";
@@ -65,7 +66,7 @@ app.use((req, res, next) => {
 (async () => {
   // Initialize database (reset if no users exist)
   await initializeDatabase();
-  
+
   const server = await registerRoutes(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
