@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Dialog,
@@ -33,6 +33,13 @@ interface EditSocialAccountDialogProps {
   account: SocialAccount;
 }
 
+const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [
+  { pattern: /instagram\.com/i, typeName: "Instagram" },
+  { pattern: /facebook\.com/i, typeName: "Facebook" },
+  { pattern: /x\.com/i, typeName: "X.com" },
+  { pattern: /twitter\.com/i, typeName: "X.com" },
+];
+
 export function EditSocialAccountDialog({
   open,
   onOpenChange,
@@ -43,10 +50,48 @@ export function EditSocialAccountDialog({
   const [accountUrl, setAccountUrl] = useState(account.accountUrl);
   const [imageUrl, setImageUrl] = useState(account.imageUrl || "");
   const [typeId, setTypeId] = useState(account.typeId || "");
+  const [isTypeAutoSelected, setIsTypeAutoSelected] = useState(false);
 
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
   });
+
+  useEffect(() => {
+    if (!socialAccountTypes) return;
+
+    const url = accountUrl?.trim().toLowerCase() || "";
+    
+    if (!url) {
+      if (isTypeAutoSelected) {
+        setTypeId("");
+        setIsTypeAutoSelected(false);
+      }
+      return;
+    }
+
+    for (const mapping of URL_TYPE_MAPPINGS) {
+      if (mapping.pattern.test(url)) {
+        const matchedType = socialAccountTypes.find(
+          (t) => t.name.toLowerCase() === mapping.typeName.toLowerCase()
+        );
+        if (matchedType && (isTypeAutoSelected || !typeId)) {
+          setTypeId(matchedType.id);
+          setIsTypeAutoSelected(true);
+          return;
+        }
+      }
+    }
+
+    if (isTypeAutoSelected) {
+      setTypeId("");
+      setIsTypeAutoSelected(false);
+    }
+  }, [accountUrl, socialAccountTypes]);
+
+  const handleTypeChange = (value: string) => {
+    setTypeId(value);
+    setIsTypeAutoSelected(false);
+  };
 
   const updateMutation = useMutation({
     mutationFn: async () => {
@@ -81,6 +126,7 @@ export function EditSocialAccountDialog({
       setAccountUrl(account.accountUrl);
       setImageUrl(account.imageUrl || "");
       setTypeId(account.typeId || "");
+      setIsTypeAutoSelected(false);
     }
     onOpenChange(newOpen);
   };
@@ -130,7 +176,7 @@ export function EditSocialAccountDialog({
             <Label htmlFor="type" className="text-sm font-medium">
               Account Type
             </Label>
-            <Select value={typeId || "none"} onValueChange={setTypeId}>
+            <Select value={typeId || "none"} onValueChange={handleTypeChange}>
               <SelectTrigger data-testid="select-type">
                 <SelectValue placeholder="Select type" />
               </SelectTrigger>

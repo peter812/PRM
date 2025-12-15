@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -39,10 +39,18 @@ interface AddSocialAccountDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
+const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [
+  { pattern: /instagram\.com/i, typeName: "Instagram" },
+  { pattern: /facebook\.com/i, typeName: "Facebook" },
+  { pattern: /x\.com/i, typeName: "X.com" },
+  { pattern: /twitter\.com/i, typeName: "X.com" },
+];
+
 export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountDialogProps) {
   const { toast } = useToast();
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [selectedTypeId, setSelectedTypeId] = useState<string>("");
+  const [isTypeAutoSelected, setIsTypeAutoSelected] = useState(false);
 
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
@@ -60,6 +68,45 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
       typeId: null,
     },
   });
+
+  const accountUrl = form.watch("accountUrl");
+
+  useEffect(() => {
+    if (!socialAccountTypes) return;
+
+    const url = accountUrl?.trim().toLowerCase() || "";
+    
+    if (!url) {
+      if (isTypeAutoSelected) {
+        setSelectedTypeId("");
+        setIsTypeAutoSelected(false);
+      }
+      return;
+    }
+
+    for (const mapping of URL_TYPE_MAPPINGS) {
+      if (mapping.pattern.test(url)) {
+        const matchedType = socialAccountTypes.find(
+          (t) => t.name.toLowerCase() === mapping.typeName.toLowerCase()
+        );
+        if (matchedType) {
+          setSelectedTypeId(matchedType.id);
+          setIsTypeAutoSelected(true);
+          return;
+        }
+      }
+    }
+
+    if (isTypeAutoSelected) {
+      setSelectedTypeId("");
+      setIsTypeAutoSelected(false);
+    }
+  }, [accountUrl, socialAccountTypes, isTypeAutoSelected]);
+
+  const handleTypeChange = (value: string) => {
+    setSelectedTypeId(value);
+    setIsTypeAutoSelected(false);
+  };
 
   const createMutation = useMutation({
     mutationFn: async (data: InsertSocialAccount) => {
@@ -142,7 +189,7 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
 
                 <div>
                   <FormLabel>Account Type</FormLabel>
-                  <Select value={selectedTypeId || "none"} onValueChange={setSelectedTypeId}>
+                  <Select value={selectedTypeId || "none"} onValueChange={handleTypeChange}>
                     <SelectTrigger data-testid="select-type">
                       <SelectValue placeholder="Select type" />
                     </SelectTrigger>
