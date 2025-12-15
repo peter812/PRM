@@ -1,6 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Plus, X, Users2, Edit2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,13 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,6 +38,7 @@ function isValidHexColor(color: string): boolean {
 
 export default function SocialAccountsList() {
   const [, navigate] = useLocation();
+  const searchParams = useSearch();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<SocialAccount | null>(null);
   const [accountToEdit, setAccountToEdit] = useState<SocialAccount | null>(null);
@@ -38,8 +46,35 @@ export default function SocialAccountsList() {
   const [showFollowsYou, setShowFollowsYou] = useState(false);
   const { toast } = useToast();
 
+  const urlParams = new URLSearchParams(searchParams);
+  const typeIdFromUrl = urlParams.get("type") || "";
+  const [selectedTypeId, setSelectedTypeId] = useState(typeIdFromUrl);
+
+  useEffect(() => {
+    setSelectedTypeId(typeIdFromUrl);
+  }, [typeIdFromUrl]);
+
+  const handleTypeChange = (value: string) => {
+    setSelectedTypeId(value);
+    if (value && value !== "all") {
+      navigate(`/social-accounts?type=${value}`);
+    } else {
+      navigate("/social-accounts");
+    }
+  };
+
   const { data: accounts, isLoading, isError, error } = useQuery<SocialAccount[]>({
-    queryKey: ["/api/social-accounts"],
+    queryKey: ["/api/social-accounts", selectedTypeId],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (selectedTypeId && selectedTypeId !== "all") {
+        params.set("typeId", selectedTypeId);
+      }
+      const url = params.toString() ? `/api/social-accounts?${params.toString()}` : "/api/social-accounts";
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch social accounts");
+      return response.json();
+    },
   });
 
   const { data: user } = useQuery<{ id: number; username: string; personId: string }>({
@@ -60,7 +95,7 @@ export default function SocialAccountsList() {
       return await apiRequest("DELETE", `/api/social-accounts/${id}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       toast({
         title: "Success",
         description: "Social account deleted successfully",
@@ -127,8 +162,8 @@ export default function SocialAccountsList() {
           </Button>
         </div>
         
-        <div className="flex items-center gap-4">
-          <div className="flex-1">
+        <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex-1 min-w-[200px]">
             <Input
               placeholder="Search accounts..."
               value={searchQuery}
@@ -137,6 +172,27 @@ export default function SocialAccountsList() {
               className="max-w-md"
             />
           </div>
+          <Select value={selectedTypeId || "all"} onValueChange={handleTypeChange}>
+            <SelectTrigger className="w-[180px]" data-testid="select-type-filter">
+              <SelectValue placeholder="All Types" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Types</SelectItem>
+              {socialAccountTypes?.map((type) => (
+                <SelectItem key={type.id} value={type.id}>
+                  <span className="flex items-center gap-2">
+                    {isValidHexColor(type.color) && (
+                      <span 
+                        className="w-2 h-2 rounded-full" 
+                        style={{ backgroundColor: type.color }}
+                      />
+                    )}
+                    {type.name}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <div className="flex items-center gap-2">
             <Switch
               id="follows-you"
@@ -217,9 +273,14 @@ export default function SocialAccountsList() {
                           {accountType && (
                             <Badge 
                               variant="outline" 
-                              className="text-xs"
+                              className="text-xs cursor-pointer"
                               style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
                               data-testid={`badge-type-${account.id}`}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                navigate(`/social-accounts?type=${accountType.id}`);
+                              }}
                             >
                               {accountType.name}
                             </Badge>
@@ -290,14 +351,14 @@ export default function SocialAccountsList() {
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Users2 className="h-16 w-16 text-muted-foreground mb-4" />
             <h3 className="text-lg font-medium mb-2">
-              {searchQuery || showFollowsYou ? "No accounts found" : "No social accounts"}
+              {searchQuery || showFollowsYou || (selectedTypeId && selectedTypeId !== "all") ? "No accounts found" : "No social accounts"}
             </h3>
             <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-              {searchQuery || showFollowsYou
+              {searchQuery || showFollowsYou || (selectedTypeId && selectedTypeId !== "all")
                 ? "Try adjusting your search or filters"
                 : "Get started by adding your first social account"}
             </p>
-            {!searchQuery && !showFollowsYou && (
+            {!searchQuery && !showFollowsYou && (!selectedTypeId || selectedTypeId === "all") && (
               <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-account-empty">
                 <Plus className="h-4 w-4" />
                 Add Account

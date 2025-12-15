@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -11,10 +11,21 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Loader2 } from "lucide-react";
-import type { SocialAccount } from "@shared/schema";
+import type { SocialAccount, SocialAccountType } from "@shared/schema";
+
+function isValidHexColor(color: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
+}
 
 interface EditSocialAccountDialogProps {
   open: boolean;
@@ -31,6 +42,11 @@ export function EditSocialAccountDialog({
   const [username, setUsername] = useState(account.username);
   const [accountUrl, setAccountUrl] = useState(account.accountUrl);
   const [imageUrl, setImageUrl] = useState(account.imageUrl || "");
+  const [typeId, setTypeId] = useState(account.typeId || "");
+
+  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
+    queryKey: ["/api/social-account-types"],
+  });
 
   const updateMutation = useMutation({
     mutationFn: async () => {
@@ -38,11 +54,12 @@ export function EditSocialAccountDialog({
         username,
         accountUrl,
         imageUrl: imageUrl || null,
+        typeId: typeId && typeId !== "none" ? typeId : null,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", account.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       toast({
         title: "Success",
         description: "Social account updated successfully",
@@ -60,10 +77,10 @@ export function EditSocialAccountDialog({
 
   const handleOpenChange = (newOpen: boolean) => {
     if (newOpen) {
-      // Reset form when opening
       setUsername(account.username);
       setAccountUrl(account.accountUrl);
       setImageUrl(account.imageUrl || "");
+      setTypeId(account.typeId || "");
     }
     onOpenChange(newOpen);
   };
@@ -107,6 +124,33 @@ export function EditSocialAccountDialog({
               data-testid="input-account-url"
               required
             />
+          </div>
+
+          <div>
+            <Label htmlFor="type" className="text-sm font-medium">
+              Account Type
+            </Label>
+            <Select value={typeId || "none"} onValueChange={setTypeId}>
+              <SelectTrigger data-testid="select-type">
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No Type</SelectItem>
+                {socialAccountTypes?.map((type) => (
+                  <SelectItem key={type.id} value={type.id}>
+                    <span className="flex items-center gap-2">
+                      {isValidHexColor(type.color) && (
+                        <span 
+                          className="w-2 h-2 rounded-full" 
+                          style={{ backgroundColor: type.color }}
+                        />
+                      )}
+                      {type.name}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div>

@@ -71,7 +71,7 @@ export default function SocialAccountProfile() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       toast({
         title: "Success",
         description: "Account removed from following",
@@ -94,6 +94,7 @@ export default function SocialAccountProfile() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       toast({
         title: "Success",
         description: "Notes updated successfully",
@@ -114,7 +115,7 @@ export default function SocialAccountProfile() {
       return await apiRequest("DELETE", `/api/social-accounts/${uuid}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       toast({
         title: "Success",
         description: "Social account deleted successfully",
@@ -227,13 +228,16 @@ export default function SocialAccountProfile() {
                   {account.username}
                 </h1>
                 {accountType && (
-                  <Badge 
-                    variant="outline" 
-                    style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                    data-testid="badge-account-type"
-                  >
-                    {accountType.name}
-                  </Badge>
+                  <Link href={`/social-accounts?type=${accountType.id}`}>
+                    <Badge 
+                      variant="outline" 
+                      className="cursor-pointer"
+                      style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                      data-testid="badge-account-type"
+                    >
+                      {accountType.name}
+                    </Badge>
+                  </Link>
                 )}
                 {isFollowingYou && (
                   <Badge variant="secondary" data-testid="badge-follows-you">

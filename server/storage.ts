@@ -130,7 +130,7 @@ export interface IStorage {
   deleteGroupNote(id: string): Promise<void>;
 
   // Social account operations
-  getAllSocialAccounts(searchQuery?: string): Promise<SocialAccount[]>;
+  getAllSocialAccounts(searchQuery?: string, typeId?: string): Promise<SocialAccount[]>;
   getSocialAccountById(id: string): Promise<SocialAccount | undefined>;
   createSocialAccount(account: InsertSocialAccount): Promise<SocialAccount>;
   updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
@@ -970,28 +970,39 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Social account operations
-  async getAllSocialAccounts(searchQuery?: string): Promise<SocialAccount[]> {
-    if (!searchQuery) {
-      return await db.select().from(socialAccounts).orderBy(socialAccounts.username);
-    }
-
-    const query = `%${searchQuery}%`;
-    const startQuery = `${searchQuery}%`;
+  async getAllSocialAccounts(searchQuery?: string, typeId?: string): Promise<SocialAccount[]> {
+    const conditions = [];
     
-    return await db
-      .select()
-      .from(socialAccounts)
-      .where(
+    if (searchQuery) {
+      const query = `%${searchQuery}%`;
+      conditions.push(
         or(
           ilike(socialAccounts.username, query),
           ilike(socialAccounts.accountUrl, query)
         )
-      )
+      );
+    }
+    
+    if (typeId) {
+      conditions.push(eq(socialAccounts.typeId, typeId));
+    }
+    
+    if (conditions.length === 0) {
+      return await db.select().from(socialAccounts).orderBy(socialAccounts.username);
+    }
+
+    const startQuery = searchQuery ? `${searchQuery}%` : null;
+    
+    const whereClause = conditions.length === 1 ? conditions[0] : and(...conditions);
+    
+    return await db
+      .select()
+      .from(socialAccounts)
+      .where(whereClause)
       .orderBy(
-        sql`CASE
-          WHEN ${socialAccounts.username} ILIKE ${startQuery} THEN 0
-          ELSE 1
-        END`,
+        startQuery 
+          ? sql`CASE WHEN ${socialAccounts.username} ILIKE ${startQuery} THEN 0 ELSE 1 END`
+          : socialAccounts.username,
         socialAccounts.username
       );
   }

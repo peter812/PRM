@@ -2035,7 +2035,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/social-accounts", async (req, res) => {
     try {
       const searchQuery = req.query.search as string | undefined;
-      const accounts = await storage.getAllSocialAccounts(searchQuery);
+      const typeId = req.query.typeId as string | undefined;
+      const accounts = await storage.getAllSocialAccounts(searchQuery, typeId);
       res.json(accounts);
     } catch (error) {
       console.error("Error fetching social accounts:", error);

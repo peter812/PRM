@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -18,10 +18,21 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertSocialAccountSchema, type InsertSocialAccount } from "@shared/schema";
+import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType } from "@shared/schema";
 import { ImageUpload } from "./image-upload";
+
+function isValidHexColor(color: string): boolean {
+  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
+}
 
 interface AddSocialAccountDialogProps {
   open: boolean;
@@ -31,6 +42,11 @@ interface AddSocialAccountDialogProps {
 export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountDialogProps) {
   const { toast } = useToast();
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [selectedTypeId, setSelectedTypeId] = useState<string>("");
+
+  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
+    queryKey: ["/api/social-account-types"],
+  });
 
   const form = useForm<InsertSocialAccount>({
     resolver: zodResolver(insertSocialAccountSchema),
@@ -41,6 +57,7 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
       imageUrl: null,
       following: [],
       followers: [],
+      typeId: null,
     },
   });
 
@@ -49,13 +66,14 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
       return await apiRequest("POST", "/api/social-accounts", data);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       toast({
         title: "Success",
         description: "Social account added successfully",
       });
       form.reset();
       setImageUrl(null);
+      setSelectedTypeId("");
       onOpenChange(false);
     },
     onError: () => {
@@ -71,6 +89,7 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
     createMutation.mutate({
       ...data,
       imageUrl: imageUrl || null,
+      typeId: selectedTypeId && selectedTypeId !== "none" ? selectedTypeId : null,
     });
   };
 
@@ -120,6 +139,31 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
                     </FormItem>
                   )}
                 />
+
+                <div>
+                  <FormLabel>Account Type</FormLabel>
+                  <Select value={selectedTypeId || "none"} onValueChange={setSelectedTypeId}>
+                    <SelectTrigger data-testid="select-type">
+                      <SelectValue placeholder="Select type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No Type</SelectItem>
+                      {socialAccountTypes?.map((type) => (
+                        <SelectItem key={type.id} value={type.id}>
+                          <span className="flex items-center gap-2">
+                            {isValidHexColor(type.color) && (
+                              <span 
+                                className="w-2 h-2 rounded-full" 
+                                style={{ backgroundColor: type.color }}
+                              />
+                            )}
+                            {type.name}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div className="flex-shrink-0">
