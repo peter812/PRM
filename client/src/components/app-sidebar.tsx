@@ -52,7 +52,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>PRM 1.4</SidebarGroupLabel>
+          <SidebarGroupLabel>PRM 2.0</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {menuItems.map((item) => (
