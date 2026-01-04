@@ -17,6 +17,7 @@ import {
   insertApiKeySchema,
   insertSocialAccountSchema,
   insertSocialAccountTypeSchema,
+  insertCommunicationSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -2381,6 +2382,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting interaction type:", error);
       res.status(500).json({ error: "Failed to delete interaction type" });
+    }
+  });
+
+  // Communications endpoints
+  app.get("/api/communications", async (req, res) => {
+    try {
+      const personId = req.query.personId as string | undefined;
+      if (personId) {
+        const communications = await storage.getCommunicationsByPersonId(personId);
+        res.json(communications);
+      } else {
+        const communications = await storage.getAllCommunications();
+        res.json(communications);
+      }
+    } catch (error) {
+      console.error("Error fetching communications:", error);
+      res.status(500).json({ error: "Failed to fetch communications" });
+    }
+  });
+
+  app.get("/api/communications/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const communication = await storage.getCommunicationById(id);
+
+      if (!communication) {
+        return res.status(404).json({ error: "Communication not found" });
+      }
+
+      res.json(communication);
+    } catch (error) {
+      console.error("Error fetching communication:", error);
+      res.status(500).json({ error: "Failed to fetch communication" });
+    }
+  });
+
+  app.post("/api/communications", async (req, res) => {
+    try {
+      const validatedData = insertCommunicationSchema.parse(req.body);
+      const communication = await storage.createCommunication(validatedData);
+      res.status(201).json(communication);
+    } catch (error) {
+      console.error("Error creating communication:", error);
+      res.status(400).json({ error: "Failed to create communication" });
+    }
+  });
+
+  app.patch("/api/communications/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const validatedData = insertCommunicationSchema.partial().parse(req.body);
+      const communication = await storage.updateCommunication(id, validatedData);
+
+      if (!communication) {
+        return res.status(404).json({ error: "Communication not found" });
+      }
+
+      res.json(communication);
+    } catch (error) {
+      console.error("Error updating communication:", error);
+      res.status(400).json({ error: "Failed to update communication" });
+    }
+  });
+
+  app.delete("/api/communications/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteCommunication(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting communication:", error);
+      res.status(500).json({ error: "Failed to delete communication" });
     }
   });
 

@@ -439,10 +439,27 @@ export class DatabaseStorage implements IStorage {
     if (!person) return undefined;
 
     // Run all independent queries in parallel
-    const [personNotes, personInteractions, personGroups, relationshipsFrom, relationshipsTo] = await Promise.all([
+    const [personNotes, personInteractions, personGroups, personCommunications, relationshipsFrom, relationshipsTo] = await Promise.all([
       db.select().from(notes).where(eq(notes.personId, id)),
       db.select().from(interactions).where(sql`${id} = ANY(${interactions.peopleIds})`),
       db.select().from(groups).where(arrayContains(groups.members, [id])),
+      db
+        .select({
+          id: communications.id,
+          userId: communications.userId,
+          personId: communications.personId,
+          content: communications.content,
+          typeId: communications.typeId,
+          direction: communications.direction,
+          date: communications.date,
+          notes: communications.notes,
+          createdAt: communications.createdAt,
+          type: socialAccountTypes,
+        })
+        .from(communications)
+        .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
+        .where(eq(communications.personId, id))
+        .orderBy(communications.date),
       db
         .select({
           id: relationships.id,
@@ -493,6 +510,10 @@ export class DatabaseStorage implements IStorage {
       interactions: personInteractions,
       groups: personGroups,
       relationships: allRelationships,
+      communications: personCommunications.map(c => ({
+        ...c,
+        type: c.type || undefined,
+      })),
     };
   }
 
