@@ -155,6 +155,19 @@ export const socialAccounts = pgTable("social_accounts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Communications table - tracks messages between people
+export const communications = pgTable("communications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  content: text("content").notNull(),
+  typeId: varchar("type_id").references(() => socialAccountTypes.id, { onDelete: "set null" }),
+  direction: text("direction").notNull(), // 'inbound' or 'outbound'
+  date: timestamp("date").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ one }) => ({
   person: one(people, {
@@ -169,6 +182,7 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
     references: [users.id],
   }),
   notes: many(notes),
+  communications: many(communications),
   relationshipsFrom: many(relationships, { relationName: "relationshipsFrom" }),
   relationshipsTo: many(relationships, { relationName: "relationshipsTo" }),
 }));
@@ -231,6 +245,21 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
   type: one(socialAccountTypes, {
     fields: [socialAccounts.typeId],
     references: [socialAccountTypes.id],
+  }),
+}));
+
+export const communicationsRelations = relations(communications, ({ one }) => ({
+  person: one(people, {
+    fields: [communications.personId],
+    references: [people.id],
+  }),
+  type: one(socialAccountTypes, {
+    fields: [communications.typeId],
+    references: [socialAccountTypes.id],
+  }),
+  user: one(users, {
+    fields: [communications.userId],
+    references: [users.id],
   }),
 }));
 
@@ -318,6 +347,16 @@ export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTyp
   createdAt: true,
 });
 
+export const insertCommunicationSchema = createInsertSchema(communications)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    date: z.coerce.date(),
+    direction: z.enum(["inbound", "outbound"]),
+  });
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -355,10 +394,17 @@ export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
 export type SocialAccountType = typeof socialAccountTypes.$inferSelect;
 export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSchema>;
 
+export type Communication = typeof communications.$inferSelect;
+export type InsertCommunication = z.infer<typeof insertCommunicationSchema>;
+
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {
   toPerson: Person;
   type?: RelationshipType;
+};
+
+export type CommunicationWithType = Communication & {
+  type?: SocialAccountType;
 };
 
 export type PersonWithRelations = Person & {
@@ -366,6 +412,7 @@ export type PersonWithRelations = Person & {
   interactions: Interaction[];
   groups: Group[];
   relationships: RelationshipWithPerson[];
+  communications: CommunicationWithType[];
 };
 
 export type GroupWithNotes = Group & {

@@ -13,6 +13,7 @@ import {
   ssoConfig,
   socialAccounts,
   socialAccountTypes,
+  communications,
   type Person,
   type InsertPerson,
   type Note,
@@ -42,6 +43,9 @@ import {
   type InsertSocialAccount,
   type SocialAccountType,
   type InsertSocialAccountType,
+  type Communication,
+  type InsertCommunication,
+  type CommunicationWithType,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -183,6 +187,14 @@ export interface IStorage {
   createSocialAccountType(type: InsertSocialAccountType): Promise<SocialAccountType>;
   updateSocialAccountType(id: string, type: Partial<InsertSocialAccountType>): Promise<SocialAccountType | undefined>;
   deleteSocialAccountType(id: string): Promise<void>;
+
+  // Communication operations
+  getCommunicationsByPersonId(personId: string): Promise<CommunicationWithType[]>;
+  getCommunicationById(id: string): Promise<CommunicationWithType | undefined>;
+  createCommunication(communication: InsertCommunication): Promise<Communication>;
+  updateCommunication(id: string, communication: Partial<InsertCommunication>): Promise<Communication | undefined>;
+  deleteCommunication(id: string): Promise<void>;
+  getAllCommunications(): Promise<Communication[]>;
   
   // Session store
   sessionStore: session.Store;
@@ -1227,6 +1239,107 @@ export class DatabaseStorage implements IStorage {
   async createSocialAccountWithId(account: InsertSocialAccount & { id: string }): Promise<SocialAccount> {
     const [newAccount] = await db.insert(socialAccounts).values(account).returning();
     return newAccount;
+  }
+
+  // Communication operations
+  async getCommunicationsByPersonId(personId: string): Promise<CommunicationWithType[]> {
+    const result = await db
+      .select({
+        id: communications.id,
+        userId: communications.userId,
+        personId: communications.personId,
+        content: communications.content,
+        typeId: communications.typeId,
+        direction: communications.direction,
+        date: communications.date,
+        notes: communications.notes,
+        createdAt: communications.createdAt,
+        type: socialAccountTypes,
+      })
+      .from(communications)
+      .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
+      .where(eq(communications.personId, personId))
+      .orderBy(communications.date);
+    
+    return result.map(row => ({
+      id: row.id,
+      userId: row.userId,
+      personId: row.personId,
+      content: row.content,
+      typeId: row.typeId,
+      direction: row.direction,
+      date: row.date,
+      notes: row.notes,
+      createdAt: row.createdAt,
+      type: row.type || undefined,
+    }));
+  }
+
+  async getCommunicationById(id: string): Promise<CommunicationWithType | undefined> {
+    const [result] = await db
+      .select({
+        id: communications.id,
+        userId: communications.userId,
+        personId: communications.personId,
+        content: communications.content,
+        typeId: communications.typeId,
+        direction: communications.direction,
+        date: communications.date,
+        notes: communications.notes,
+        createdAt: communications.createdAt,
+        type: socialAccountTypes,
+      })
+      .from(communications)
+      .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
+      .where(eq(communications.id, id));
+    
+    if (!result) return undefined;
+    
+    return {
+      id: result.id,
+      userId: result.userId,
+      personId: result.personId,
+      content: result.content,
+      typeId: result.typeId,
+      direction: result.direction,
+      date: result.date,
+      notes: result.notes,
+      createdAt: result.createdAt,
+      type: result.type || undefined,
+    };
+  }
+
+  async createCommunication(communication: InsertCommunication): Promise<Communication> {
+    const [created] = await db
+      .insert(communications)
+      .values(communication)
+      .returning();
+    return created;
+  }
+
+  async updateCommunication(
+    id: string,
+    communication: Partial<InsertCommunication>
+  ): Promise<Communication | undefined> {
+    const [updated] = await db
+      .update(communications)
+      .set(communication)
+      .where(eq(communications.id, id))
+      .returning();
+    return updated || undefined;
+  }
+
+  async deleteCommunication(id: string): Promise<void> {
+    await db.delete(communications).where(eq(communications.id, id));
+  }
+
+  async getAllCommunications(): Promise<Communication[]> {
+    return await db.select().from(communications);
+  }
+
+  async createCommunicationWithId(communication: InsertCommunication & { id: string }): Promise<Communication> {
+    const [newCommunication] = await db.insert(communications).values(communication).returning();
+    return newCommunication;
   }
 }
 

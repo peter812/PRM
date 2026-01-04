@@ -1,0 +1,108 @@
+# Implementation Plan - Communications & Folding Sections
+
+## Goal Description
+
+1. **Fold Notes & Interactions**: Refactor the 
+    
+    PersonProfile and 
+    
+    MeProfile pages to use collapsible **Accordions** instead of **Tabs** for Notes, Interactions, Relationships, and Groups. This allows users to "fold" (collapse) these sections.
+2. **Communications Feature**: Add a new data entity for "Communications" to track messages (email, text, DM, etc.) between people, with support for group chats and tagging.
+
+## Proposed Changes
+
+### Database Schema (
+
+shared/schema.ts)
+
+#### [NEW] `communications` table
+
+- id: UUID (PK)
+- `userId`: integer (FK to `users`, owner)
+- `personId`: UUID (FK to `people`, the contact) - _Simpler link for Person Profile_
+- `content`: text
+- `typeId`: UUID (FK to `social_account_types`) - _Bound to Social Account Type_
+- `direction`: text (inbound, outbound)
+- date: timestamp
+- `notes`: text
+- `createdAt`: timestamp
+
+_Note: Ensure "Email" and "Phone" reference generic types in `social_account_types`._
+
+#### [MODIFY] 
+
+schema.ts export
+
+- Export `communications` table.
+- Add `insertCommunicationSchema`.
+- Add `Communication` and `InsertCommunication` types.
+- Add relations: `people` has many `communications`.
+
+### Backend (
+
+server/routes.ts)
+
+#### [MODIFY] 
+
+registerRoutes
+
+- Add CRUD endpoints for communications:
+    - `GET /api/communications`: Get all communications (filter by `personId`).
+    - `POST /api/communications`: Create new communication.
+    - `PUT /api/communications/:id`: Update communication.
+    - `DELETE /api/communications/:id`: Delete communication.
+- Ensure `social_account_types` are seeded with "Email" and "Phone" if missing (or handle conceptually).
+
+### Frontend
+
+#### [NEW] `client/src/components/communications-flow.tsx`
+
+- The "Flow" section component.
+- Renders a chat-like stream of communications.
+- Styles bubbles based on `socialAccountType.color`.
+- "Instagram DM" -> Dark purple background example.
+- Click handler to open details modal.
+
+#### [NEW] `client/src/components/communication-detail-dialog.tsx`
+
+- Modal for viewing/editing a communication.
+- Shows timestamp, full content.
+- Editable "Notes" field.
+- Editable "Interaction" details (as requested: "edit things like interactions"). _Clarification: The user might mean treating equality as an interaction or just editing the communication data itself. I will assume editing communication fields like content/notes/date._
+
+#### [NEW] `client/src/components/add-communication-dialog.tsx`
+
+- Dialog to add a new communication to the Flow.
+- Select Type (from Social Account Types), Date, Direction, Content, Notes.
+
+#### [MODIFY] 
+
+client/src/pages/person-profile.tsx & 
+
+client/src/pages/me-profile.tsx
+
+- **Folding**: Replace `Tabs` with `Accordion` (shadcn/ui or similar collapsible).
+    - Sections: Notes, Flow, Interactions, Relationships, Groups.
+- **Flow**: Integrate `CommunicationsFlow` into the "Flow" section.
+
+## Verification Plan
+
+### Automated Tests
+
+- No existing backend tests found.
+- I will verify by manually testing the UI and API flows.
+
+### Manual Verification
+
+1. **Schema & API**:
+    - Use "Add Communication" in the UI.
+    - Check Network tab for successful POST.
+    - Refresh page to verify persistence (GET).
+2. **Folding**:
+    - Go to Person Profile.
+    - Click Accordion headers (Notes, Interactions, etc.) to expand/collapse.
+    - Verify content is hidden/shown correctly.
+3. **Features**:
+    - Create a communication with "Group Chat" (multiple people).
+    - Create a communication with Tags.
+    - Verify icons/types show up correctly in the list.
