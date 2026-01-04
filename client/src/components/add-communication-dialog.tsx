@@ -77,6 +77,7 @@ export function AddCommunicationDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       toast({ title: "Communication added" });
       form.reset();
       onOpenChange(false);

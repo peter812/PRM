@@ -106,6 +106,7 @@ export function CommunicationDetailDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       toast({ title: "Communication updated" });
       onOpenChange(false);
     },
@@ -121,6 +122,7 @@ export function CommunicationDetailDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/communications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       toast({ title: "Communication deleted" });
       onOpenChange(false);
     },
