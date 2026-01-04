@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { PersonWithRelations, CommunicationWithType } from "@shared/schema";
+import type { PersonWithRelations, CommunicationWithType, Note, Interaction } from "@shared/schema";
 import { queryClient } from "@/lib/queryClient";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
@@ -17,7 +17,7 @@ import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
-import { CommunicationsFlow } from "@/components/communications-flow";
+import { PersonFlowTab } from "@/components/person-flow-tab";
 import { AddCommunicationDialog } from "@/components/add-communication-dialog";
 import { CommunicationDetailDialog } from "@/components/communication-detail-dialog";
 
@@ -250,10 +250,13 @@ export default function MeProfile() {
           </TabsContent>
 
           <TabsContent value="flow" className="mt-0 h-full">
-            <CommunicationsFlow
-              communications={person.communications || []}
+            <PersonFlowTab
               personId={person.id}
+              onAddNote={() => setIsAddNoteOpen(true)}
+              onAddInteraction={() => setIsAddInteractionOpen(true)}
               onAddCommunication={() => setIsAddCommunicationOpen(true)}
+              onSelectNote={() => {}}
+              onSelectInteraction={() => {}}
               onSelectCommunication={(comm) => setSelectedCommunication(comm)}
             />
           </TabsContent>

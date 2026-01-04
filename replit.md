@@ -54,6 +54,7 @@ The "Reset Database" feature performs a complete wipe of all data including the 
 -   **ME User in Interactions:** The ME user appears first in people selection lists when creating or editing interactions.
 -   **XML Import/Export:** Full data backup and migration, preserving UUIDs, excluding images.
 -   **API Documentation & Playground:** Interactive API documentation organized into collapsible sections (People, Notes, Interactions, Relationships, Groups, Group Notes) with endpoint details, request/response examples, and copy-to-clipboard functionality. Dedicated testing page at `/api-playground` with resource/operation selection, live code examples, and result execution.
+-   **Unified Flow Tab:** Person profiles feature a Flow tab that displays notes, interactions, and communications in a single chronological timeline with infinite scroll. Uses cursor-based pagination, date separators between different days, and different layouts for each item type (chat bubbles for communications, centered cards for notes/interactions).
 
 ### Interactions System
 
