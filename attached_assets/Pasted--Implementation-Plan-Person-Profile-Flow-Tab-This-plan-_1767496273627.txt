@@ -1,0 +1,97 @@
+# Implementation Plan - Person Profile "Flow" Tab
+
+This plan details the implementation of the "Flow" section for the Person Profile, unifying Messages, Notes, and Interactions into a single, chronological, chat-style interface.
+
+## User Review Required
+
+IMPORTANT
+
+**Backend Strategy**: To support efficient paging of mixed data types (Notes, Interactions, Communications), a new specialized backend endpoint `GET /api/people/:id/flow` will be created. This implementation handles sorting and pagination on the server side to ensure correct chronological order across all content types.
+
+NOTE
+
+**Generic Social Types**: The plan assumes "Email" and "Phone" will be identified by checking the `socialAccountType` name or falling back to a default "generic" style if no specific social account is linked.
+
+## Proposed Changes
+
+### Backend
+
+#### [NEW] Flow Endpoint (
+
+server/routes.ts, 
+
+server/storage.ts)
+
+- Implement `getFlowData(personId: string, limit: number, cursor?: Date)` in 
+    
+    storage.ts.
+    - Fetch `notes`, `interactions`, and `communications` for the `personId` occurring before the `cursor` (or latest if no cursor).
+    - Use `UNION` or fetch-and-merge strategy to combine results.
+    - Sort by 
+        
+        date (Interactions/Communications) or `createdAt` (Notes) descending.
+    - Return combined list.
+- Add route `GET /api/people/:id/flow` to 
+    
+    routes.ts.
+
+### Frontend
+
+#### [NEW] Flow Component (`client/src/components/person-flow-tab.tsx`)
+
+- Create a new component `PersonFlowTab` to replace or wrap the content of `TabsContent value="flow"`.
+- **State Management**: Use `useInfiniteQuery` for pagination.
+- **Rendering**:
+    - **Scroll Logic**: Implement infinite scrolling, triggering fetch when user is close to the bottom (maintaining ~1.8x page buffer if possible, or standard infinite scroll behavior).
+    - **Date Separators**: Logic to insert `MMM - DD - YYYY` separators between items of different days.
+    - **Item Rendering**: switch case for `note`, `interaction`, `communication`.
+        - **Communications**:
+            - `outbound` -> Right aligned.
+            - `inbound` -> Left aligned.
+            - **Colors**:
+                - Message Bubble Color: Dependent on `socialAccountType.color`.
+                
+                - Generic (Email/Phone) -> Standard generic color.
+        - **Notes/Interactions**:
+            - Centered.
+            - Standard background color.
+            - Timestamp logic as requested (small greyed out).
+- **Interactions**:
+    - Clicking an item opens the respective Edit/View dialog.
+
+#### [MODIFY] Person Profile Page (
+
+client/src/pages/person-profile.tsx)
+
+- Replace the existing `CommunicationsFlow` usage (or update it) to use the new `PersonFlowTab` in the "Flow" tab.
+- Pass necessary props (handlers for opening dialogs).
+
+### Schema Update (Optional but likely needed for "Generic" types)
+
+- Ensure we have a way to identify "Instagram" or "Email" types safely (likely by name string matching or fixed IDs if feasible).
+
+## Verification Plan
+
+### Automated Tests
+
+- None specified (will rely on manual verification as per project standard).
+
+### Manual Verification
+
+1. **Load Profile**: Navigate to a person profile.
+2. **Check Flow Tab**:
+    - Verify Notes, Interactions, and Communications appear in correct chronological order.
+    - Verify Date separators appear correctly.
+3. **Check Alignment**:
+    - Inbound messages -> Left.
+    - Outbound messages -> Right.
+    - Notes/Interactions -> Center.
+4. **Check Styling**:
+    - Verify Instagram messages are Dark Purple.
+    - Verify other messages follow their social type color.
+5. **Check Scrolling**:
+    - Scroll up/down to verify infinite loading works smoothly.
+6. **Check Actions**:
+    - Click a Note -> Open Edit Note dialog.
+    - Click an Interaction -> Open Edit Interaction dialog.
+    - Click a Message -> Open Message details.

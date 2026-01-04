@@ -1562,6 +1562,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Flow endpoint - unified timeline for notes, interactions, and communications
+  app.get("/api/people/:id/flow", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const cursor = req.query.cursor as string | undefined;
+
+      const flowData = await storage.getFlowData(id, limit, cursor);
+      res.json(flowData);
+    } catch (error) {
+      console.error("Error fetching flow data:", error);
+      res.status(500).json({ error: "Failed to fetch flow data" });
+    }
+  });
+
   app.post("/api/people", async (req, res) => {
     try {
       const validatedData = insertPersonSchema.parse(req.body);

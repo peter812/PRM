@@ -46,6 +46,8 @@ import {
   type Communication,
   type InsertCommunication,
   type CommunicationWithType,
+  type FlowItem,
+  type FlowResponse,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -195,6 +197,9 @@ export interface IStorage {
   updateCommunication(id: string, communication: Partial<InsertCommunication>): Promise<Communication | undefined>;
   deleteCommunication(id: string): Promise<void>;
   getAllCommunications(): Promise<Communication[]>;
+  
+  // Flow operations (unified timeline)
+  getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse>;
   
   // Session store
   sessionStore: session.Store;
@@ -1361,6 +1366,116 @@ export class DatabaseStorage implements IStorage {
   async createCommunicationWithId(communication: InsertCommunication & { id: string }): Promise<Communication> {
     const [newCommunication] = await db.insert(communications).values(communication).returning();
     return newCommunication;
+  }
+
+  async getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse> {
+    const cursorDate = cursor ? new Date(cursor) : new Date();
+    
+    // Fetch all three data types in parallel
+    const [personNotes, personInteractions, personCommunications] = await Promise.all([
+      db
+        .select()
+        .from(notes)
+        .where(and(
+          eq(notes.personId, personId),
+          sql`${notes.createdAt} < ${cursorDate}`
+        ))
+        .orderBy(sql`${notes.createdAt} DESC`)
+        .limit(limit + 1),
+      db
+        .select({
+          id: interactions.id,
+          peopleIds: interactions.peopleIds,
+          groupIds: interactions.groupIds,
+          typeId: interactions.typeId,
+          title: interactions.title,
+          date: interactions.date,
+          description: interactions.description,
+          imageUrl: interactions.imageUrl,
+          createdAt: interactions.createdAt,
+          type: interactionTypes,
+        })
+        .from(interactions)
+        .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id))
+        .where(and(
+          sql`${personId} = ANY(${interactions.peopleIds})`,
+          sql`${interactions.date} < ${cursorDate}`
+        ))
+        .orderBy(sql`${interactions.date} DESC`)
+        .limit(limit + 1),
+      db
+        .select({
+          id: communications.id,
+          userId: communications.userId,
+          personId: communications.personId,
+          content: communications.content,
+          typeId: communications.typeId,
+          direction: communications.direction,
+          date: communications.date,
+          notes: communications.notes,
+          createdAt: communications.createdAt,
+          type: socialAccountTypes,
+        })
+        .from(communications)
+        .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
+        .where(and(
+          eq(communications.personId, personId),
+          sql`${communications.date} < ${cursorDate}`
+        ))
+        .orderBy(sql`${communications.date} DESC`)
+        .limit(limit + 1),
+    ]);
+
+    // Transform each type into FlowItem format
+    const noteItems: FlowItem[] = personNotes.map(note => ({
+      id: note.id,
+      type: 'note' as const,
+      date: note.createdAt,
+      content: note.content,
+      imageUrl: note.imageUrl,
+    }));
+
+    const interactionItems: FlowItem[] = personInteractions.map(interaction => ({
+      id: interaction.id,
+      type: 'interaction' as const,
+      date: interaction.date,
+      content: interaction.description || '',
+      title: interaction.title,
+      description: interaction.description,
+      interactionType: interaction.type || undefined,
+      peopleIds: interaction.peopleIds || [],
+      groupIds: interaction.groupIds || [],
+      imageUrl: interaction.imageUrl,
+    }));
+
+    const communicationItems: FlowItem[] = personCommunications.map(comm => ({
+      id: comm.id,
+      type: 'communication' as const,
+      date: comm.date,
+      content: comm.content,
+      direction: comm.direction as 'inbound' | 'outbound',
+      socialAccountType: comm.type || undefined,
+      notes: comm.notes,
+    }));
+
+    // Merge and sort all items by date descending
+    const allItems = [...noteItems, ...interactionItems, ...communicationItems]
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Check if there are more items
+    const hasMore = allItems.length > limit;
+    const items = allItems.slice(0, limit);
+
+    // Calculate next cursor from the oldest item
+    const nextCursor = hasMore && items.length > 0
+      ? items[items.length - 1].date.toISOString()
+      : null;
+
+    return {
+      items,
+      nextCursor,
+      hasMore,
+    };
   }
 }
 

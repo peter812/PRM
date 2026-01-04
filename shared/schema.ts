@@ -418,3 +418,31 @@ export type PersonWithRelations = Person & {
 export type GroupWithNotes = Group & {
   notes: GroupNote[];
 };
+
+// Flow item types for unified timeline view
+export type FlowItemType = 'note' | 'interaction' | 'communication';
+
+export type FlowItem = {
+  id: string;
+  type: FlowItemType;
+  date: Date;
+  content: string;
+  // Note-specific
+  imageUrl?: string | null;
+  // Communication-specific
+  direction?: 'inbound' | 'outbound';
+  socialAccountType?: SocialAccountType | null;
+  notes?: string | null;
+  // Interaction-specific
+  title?: string | null;
+  description?: string | null;
+  interactionType?: InteractionType | null;
+  peopleIds?: string[];
+  groupIds?: string[];
+};
+
+export type FlowResponse = {
+  items: FlowItem[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
