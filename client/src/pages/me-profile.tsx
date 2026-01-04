@@ -87,19 +87,43 @@ export default function MeProfile() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-3">
-        <div className="flex items-start gap-6">
-          <Avatar className="w-24 h-24">
-            {person.imageUrl && (
-              <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
-            )}
-            <AvatarFallback className="text-2xl">
-              {getInitials(person.firstName, person.lastName)}
-            </AvatarFallback>
-          </Avatar>
+      <div className="border-b px-4 md:px-6 py-3">
+        <div className="flex flex-col md:flex-row md:items-start gap-3 md:gap-6">
+          <div className="flex items-center justify-between md:block">
+            <Avatar className="w-20 h-20 md:w-24 md:h-24">
+              {person.imageUrl && (
+                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+              )}
+              <AvatarFallback className="text-xl md:text-2xl">
+                {getInitials(person.firstName, person.lastName)}
+              </AvatarFallback>
+            </Avatar>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsEditPersonOpen(true)}
+              data-testid="button-edit-person-mobile"
+              className="md:hidden"
+            >
+              <Edit className="h-4 w-4" />
+            </Button>
+          </div>
 
           <div className="flex-1">
-            <div className="flex items-start justify-between gap-4 mb-1">
+            <div className="md:hidden mb-2">
+              <h1 className="text-2xl font-semibold" data-testid="text-person-name-mobile">
+                {person.firstName} {person.lastName}
+              </h1>
+              {(person.company || person.title) && (
+                <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                  {person.title && <span>{person.title}</span>}
+                  {person.title && person.company && <span>•</span>}
+                  {person.company && <span>{person.company}</span>}
+                </div>
+              )}
+            </div>
+
+            <div className="hidden md:flex items-start justify-between gap-4 mb-1">
               <div>
                 <h1 className="text-3xl font-semibold mb-1" data-testid="text-person-name">
                   {person.firstName} {person.lastName}
@@ -132,19 +156,7 @@ export default function MeProfile() {
               }}
             />
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
-              {person.email && (
-                <div className="flex items-center gap-2 text-sm">
-                  <Mail className="h-4 w-4 text-muted-foreground" />
-                  <a
-                    href={`mailto:${person.email}`}
-                    className="hover:underline"
-                    data-testid="link-email"
-                  >
-                    {person.email}
-                  </a>
-                </div>
-              )}
+            <div className="flex flex-col md:grid md:grid-cols-2 gap-1 md:gap-2 mt-2">
               {person.phone && (
                 <div className="flex items-center gap-2 text-sm">
                   <Phone className="h-4 w-4 text-muted-foreground" />
@@ -154,6 +166,18 @@ export default function MeProfile() {
                     data-testid="link-phone"
                   >
                     {person.phone}
+                  </a>
+                </div>
+              )}
+              {person.email && (
+                <div className="flex items-center gap-2 text-sm">
+                  <Mail className="h-4 w-4 text-muted-foreground" />
+                  <a
+                    href={`mailto:${person.email}`}
+                    className="hover:underline"
+                    data-testid="link-email"
+                  >
+                    {person.email}
                   </a>
                 </div>
               )}
