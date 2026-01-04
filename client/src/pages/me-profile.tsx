@@ -11,8 +11,6 @@ import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
 import { EditPersonDialog } from "@/components/edit-person-dialog";
 import { AddRelationshipDialog } from "@/components/add-relationship-dialog";
-import { NotesTab } from "@/components/notes-tab";
-import { InteractionsTab } from "@/components/interactions-tab";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
@@ -199,29 +197,15 @@ export default function MeProfile() {
         </div>
       </div>
 
-      <Tabs defaultValue="notes" className="flex-1 flex flex-col overflow-hidden">
+      <Tabs defaultValue="flow" className="flex-1 flex flex-col overflow-hidden">
         <div className="border-b px-6">
           <TabsList className="h-12 bg-transparent p-0 flex-nowrap touch-scroll">
-            <TabsTrigger
-              value="notes"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-notes"
-            >
-              Notes
-            </TabsTrigger>
             <TabsTrigger
               value="flow"
               className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
               data-testid="tab-flow"
             >
-              Communications
-            </TabsTrigger>
-            <TabsTrigger
-              value="interactions"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-interactions"
-            >
-              Interactions
+              Flow
             </TabsTrigger>
             <TabsTrigger
               value="relationships"
@@ -241,14 +225,6 @@ export default function MeProfile() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <TabsContent value="notes" className="mt-0 h-full">
-            <NotesTab
-              notes={person.notes}
-              personId={person.id}
-              onAddNote={() => setIsAddNoteOpen(true)}
-            />
-          </TabsContent>
-
           <TabsContent value="flow" className="mt-0 h-full">
             <PersonFlowTab
               personId={person.id}
@@ -258,14 +234,6 @@ export default function MeProfile() {
               onSelectNote={() => {}}
               onSelectInteraction={() => {}}
               onSelectCommunication={(comm) => setSelectedCommunication(comm)}
-            />
-          </TabsContent>
-
-          <TabsContent value="interactions" className="mt-0 h-full">
-            <InteractionsTab
-              interactions={person.interactions}
-              personId={person.id}
-              onAddInteraction={() => setIsAddInteractionOpen(true)}
             />
           </TabsContent>
 
