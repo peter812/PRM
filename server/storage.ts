@@ -50,6 +50,43 @@ import connectPg from "connect-pg-simple";
 
 const PostgresSessionStore = connectPg(session);
 
+// Simple TTL-based cache for static data
+class TTLCache<T> {
+  private cache: Map<string, { data: T; expiry: number }> = new Map();
+  private ttlMs: number;
+
+  constructor(ttlSeconds: number = 300) {
+    this.ttlMs = ttlSeconds * 1000;
+  }
+
+  get(key: string): T | undefined {
+    const entry = this.cache.get(key);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expiry) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    return entry.data;
+  }
+
+  set(key: string, data: T): void {
+    this.cache.set(key, { data, expiry: Date.now() + this.ttlMs });
+  }
+
+  invalidate(key: string): void {
+    this.cache.delete(key);
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
+// Cache instances for static data (5 minute TTL)
+const relationshipTypesCache = new TTLCache<RelationshipType[]>(300);
+const interactionTypesCache = new TTLCache<InteractionType[]>(300);
+const socialAccountTypesCache = new TTLCache<SocialAccountType[]>(300);
+
 export interface IStorage {
   // Graph operations
   getGraphData(): Promise<{
@@ -255,64 +292,67 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>> {
-    const allPeople = await db.select().from(people);
-    
-    const peopleWithRelationships = await Promise.all(
-      allPeople.map(async (person) => {
-        // Get relationships where this person is the "from" person
-        const relationshipsFrom = await db
-          .select({
-            id: relationships.id,
-            fromPersonId: relationships.fromPersonId,
-            toPersonId: relationships.toPersonId,
-            typeId: relationships.typeId,
-            notes: relationships.notes,
-            createdAt: relationships.createdAt,
-            toPerson: people,
-            type: relationshipTypes,
-          })
-          .from(relationships)
-          .innerJoin(people, eq(relationships.toPersonId, people.id))
-          .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
-          .where(eq(relationships.fromPersonId, person.id));
+    // Fetch all people and all relationships in just 2 queries (instead of N+1)
+    const [allPeople, allRelationshipsData] = await Promise.all([
+      db.select().from(people),
+      db
+        .select({
+          id: relationships.id,
+          fromPersonId: relationships.fromPersonId,
+          toPersonId: relationships.toPersonId,
+          typeId: relationships.typeId,
+          notes: relationships.notes,
+          createdAt: relationships.createdAt,
+          relatedPerson: people,
+          type: relationshipTypes,
+          direction: sql<string>`'from'`.as('direction'),
+        })
+        .from(relationships)
+        .innerJoin(people, eq(relationships.toPersonId, people.id))
+        .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+        .unionAll(
+          db
+            .select({
+              id: relationships.id,
+              fromPersonId: relationships.fromPersonId,
+              toPersonId: relationships.toPersonId,
+              typeId: relationships.typeId,
+              notes: relationships.notes,
+              createdAt: relationships.createdAt,
+              relatedPerson: people,
+              type: relationshipTypes,
+              direction: sql<string>`'to'`.as('direction'),
+            })
+            .from(relationships)
+            .innerJoin(people, eq(relationships.fromPersonId, people.id))
+            .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+        ),
+    ]);
 
-        // Get relationships where this person is the "to" person (bidirectional)
-        const relationshipsTo = await db
-          .select({
-            id: relationships.id,
-            fromPersonId: relationships.fromPersonId,
-            toPersonId: relationships.toPersonId,
-            typeId: relationships.typeId,
-            notes: relationships.notes,
-            createdAt: relationships.createdAt,
-            toPerson: people,
-            type: relationshipTypes,
-          })
-          .from(relationships)
-          .innerJoin(people, eq(relationships.fromPersonId, people.id))
-          .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
-          .where(eq(relationships.toPersonId, person.id));
+    // Group relationships by person ID in memory
+    const relationshipsByPersonId = new Map<string, any[]>();
+    for (const rel of allRelationshipsData) {
+      const personId = rel.direction === 'from' ? rel.fromPersonId : rel.toPersonId;
+      if (!relationshipsByPersonId.has(personId)) {
+        relationshipsByPersonId.set(personId, []);
+      }
+      relationshipsByPersonId.get(personId)!.push({
+        id: rel.id,
+        fromPersonId: rel.fromPersonId,
+        toPersonId: rel.toPersonId,
+        typeId: rel.typeId,
+        notes: rel.notes,
+        createdAt: rel.createdAt,
+        toPerson: rel.relatedPerson,
+        type: rel.type || undefined,
+      });
+    }
 
-        // Combine both directions
-        const allRelationships = [
-          ...relationshipsFrom.map(rel => ({
-            ...rel,
-            type: rel.type || undefined,
-          })),
-          ...relationshipsTo.map(rel => ({
-            ...rel,
-            type: rel.type || undefined,
-          }))
-        ];
-
-        return {
-          ...person,
-          relationships: allRelationships,
-        };
-      })
-    );
-
-    return peopleWithRelationships;
+    // Map people with their relationships
+    return allPeople.map(person => ({
+      ...person,
+      relationships: relationshipsByPersonId.get(person.id) || [],
+    }));
   }
 
   async getPeoplePaginated(
@@ -386,55 +426,42 @@ export class DatabaseStorage implements IStorage {
     const [person] = await db.select().from(people).where(eq(people.id, id));
     if (!person) return undefined;
 
-    const personNotes = await db
-      .select()
-      .from(notes)
-      .where(eq(notes.personId, id));
-
-    const personInteractions = await db
-      .select()
-      .from(interactions)
-      .where(sql`${id} = ANY(${interactions.peopleIds})`);
-
-    // Get groups where this person is a member
-    const personGroups = await db
-      .select()
-      .from(groups)
-      .where(arrayContains(groups.members, [id]));
-
-    // Get relationships where this person is the "from" person
-    const relationshipsFrom = await db
-      .select({
-        id: relationships.id,
-        fromPersonId: relationships.fromPersonId,
-        toPersonId: relationships.toPersonId,
-        typeId: relationships.typeId,
-        notes: relationships.notes,
-        createdAt: relationships.createdAt,
-        toPerson: people,
-        type: relationshipTypes,
-      })
-      .from(relationships)
-      .innerJoin(people, eq(relationships.toPersonId, people.id))
-      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
-      .where(eq(relationships.fromPersonId, id));
-
-    // Get relationships where this person is the "to" person (bidirectional)
-    const relationshipsTo = await db
-      .select({
-        id: relationships.id,
-        fromPersonId: relationships.fromPersonId,
-        toPersonId: relationships.toPersonId,
-        typeId: relationships.typeId,
-        notes: relationships.notes,
-        createdAt: relationships.createdAt,
-        toPerson: people,
-        type: relationshipTypes,
-      })
-      .from(relationships)
-      .innerJoin(people, eq(relationships.fromPersonId, people.id))
-      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
-      .where(eq(relationships.toPersonId, id));
+    // Run all independent queries in parallel
+    const [personNotes, personInteractions, personGroups, relationshipsFrom, relationshipsTo] = await Promise.all([
+      db.select().from(notes).where(eq(notes.personId, id)),
+      db.select().from(interactions).where(sql`${id} = ANY(${interactions.peopleIds})`),
+      db.select().from(groups).where(arrayContains(groups.members, [id])),
+      db
+        .select({
+          id: relationships.id,
+          fromPersonId: relationships.fromPersonId,
+          toPersonId: relationships.toPersonId,
+          typeId: relationships.typeId,
+          notes: relationships.notes,
+          createdAt: relationships.createdAt,
+          toPerson: people,
+          type: relationshipTypes,
+        })
+        .from(relationships)
+        .innerJoin(people, eq(relationships.toPersonId, people.id))
+        .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+        .where(eq(relationships.fromPersonId, id)),
+      db
+        .select({
+          id: relationships.id,
+          fromPersonId: relationships.fromPersonId,
+          toPersonId: relationships.toPersonId,
+          typeId: relationships.typeId,
+          notes: relationships.notes,
+          createdAt: relationships.createdAt,
+          toPerson: people,
+          type: relationshipTypes,
+        })
+        .from(relationships)
+        .innerJoin(people, eq(relationships.fromPersonId, people.id))
+        .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
+        .where(eq(relationships.toPersonId, id)),
+    ]);
 
     // Combine both directions
     const allRelationships = [
@@ -603,7 +630,12 @@ export class DatabaseStorage implements IStorage {
 
   // Relationship type operations
   async getAllRelationshipTypes(): Promise<RelationshipType[]> {
-    return await db.select().from(relationshipTypes);
+    const cached = relationshipTypesCache.get('all');
+    if (cached) return cached;
+    
+    const result = await db.select().from(relationshipTypes);
+    relationshipTypesCache.set('all', result);
+    return result;
   }
 
   async getRelationshipTypeById(id: string): Promise<RelationshipType | undefined> {
@@ -619,6 +651,7 @@ export class DatabaseStorage implements IStorage {
       .insert(relationshipTypes)
       .values(relationshipType)
       .returning();
+    relationshipTypesCache.invalidate('all');
     return created;
   }
 
@@ -631,16 +664,23 @@ export class DatabaseStorage implements IStorage {
       .set(relationshipType)
       .where(eq(relationshipTypes.id, id))
       .returning();
+    relationshipTypesCache.invalidate('all');
     return updated || undefined;
   }
 
   async deleteRelationshipType(id: string): Promise<void> {
     await db.delete(relationshipTypes).where(eq(relationshipTypes.id, id));
+    relationshipTypesCache.invalidate('all');
   }
 
   // Interaction type operations
   async getAllInteractionTypes(): Promise<InteractionType[]> {
-    return await db.select().from(interactionTypes);
+    const cached = interactionTypesCache.get('all');
+    if (cached) return cached;
+    
+    const result = await db.select().from(interactionTypes);
+    interactionTypesCache.set('all', result);
+    return result;
   }
 
   async getInteractionTypeById(id: string): Promise<InteractionType | undefined> {
@@ -656,6 +696,7 @@ export class DatabaseStorage implements IStorage {
       .insert(interactionTypes)
       .values(interactionType)
       .returning();
+    interactionTypesCache.invalidate('all');
     return created;
   }
 
@@ -668,11 +709,13 @@ export class DatabaseStorage implements IStorage {
       .set(interactionType)
       .where(eq(interactionTypes.id, id))
       .returning();
+    interactionTypesCache.invalidate('all');
     return updated || undefined;
   }
 
   async deleteInteractionType(id: string): Promise<void> {
     await db.delete(interactionTypes).where(eq(interactionTypes.id, id));
+    interactionTypesCache.invalidate('all');
   }
 
   // User operations
@@ -905,26 +948,14 @@ export class DatabaseStorage implements IStorage {
     const [group] = await db.select().from(groups).where(eq(groups.id, id));
     if (!group) return undefined;
 
-    const groupNotesList = await db
-      .select()
-      .from(groupNotes)
-      .where(eq(groupNotes.groupId, id));
-
-    // Fetch member details
-    const memberDetails: Person[] = [];
-    if (group.members && group.members.length > 0) {
-      const membersData = await db
-        .select()
-        .from(people)
-        .where(inArray(people.id, group.members));
-      memberDetails.push(...membersData);
-    }
-
-    // Fetch interactions involving this group
-    const groupInteractions = await db
-      .select()
-      .from(interactions)
-      .where(arrayContains(interactions.groupIds, [id]));
+    // Run all independent queries in parallel
+    const [groupNotesList, memberDetails, groupInteractions] = await Promise.all([
+      db.select().from(groupNotes).where(eq(groupNotes.groupId, id)),
+      group.members && group.members.length > 0
+        ? db.select().from(people).where(inArray(people.id, group.members))
+        : Promise.resolve([]),
+      db.select().from(interactions).where(arrayContains(interactions.groupIds, [id])),
+    ]);
 
     return {
       ...group,
@@ -1098,7 +1129,12 @@ export class DatabaseStorage implements IStorage {
 
   // Social account type operations
   async getAllSocialAccountTypes(): Promise<SocialAccountType[]> {
-    return await db.select().from(socialAccountTypes);
+    const cached = socialAccountTypesCache.get('all');
+    if (cached) return cached;
+    
+    const result = await db.select().from(socialAccountTypes);
+    socialAccountTypesCache.set('all', result);
+    return result;
   }
 
   async getSocialAccountTypeById(id: string): Promise<SocialAccountType | undefined> {
@@ -1114,6 +1150,7 @@ export class DatabaseStorage implements IStorage {
       .insert(socialAccountTypes)
       .values(type)
       .returning();
+    socialAccountTypesCache.invalidate('all');
     return created;
   }
 
@@ -1126,11 +1163,13 @@ export class DatabaseStorage implements IStorage {
       .set(type)
       .where(eq(socialAccountTypes.id, id))
       .returning();
+    socialAccountTypesCache.invalidate('all');
     return updated || undefined;
   }
 
   async deleteSocialAccountType(id: string): Promise<void> {
     await db.delete(socialAccountTypes).where(eq(socialAccountTypes.id, id));
+    socialAccountTypesCache.invalidate('all');
   }
 
   // Export helper methods

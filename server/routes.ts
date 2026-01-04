@@ -262,20 +262,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      // Fetch all data from database
-      const [user] = await storage.getAllUsers();
-      const allPeople = await storage.getAllPeople();
-      const allRelationshipTypes = await storage.getAllRelationshipTypes();
-      const allRelationships = await storage.getAllRelationships();
-      const allInteractionTypes = await storage.getAllInteractionTypes();
-      const allInteractions = await storage.getAllInteractions();
-      const groups = await storage.getAllGroups();
-      const allNotes = await storage.getAllNotes();
-      const allGroupNotes = await storage.getAllGroupNotes();
-      const allSocialAccounts = await storage.getAllSocialAccounts();
+      // Fetch all data from database in parallel for better performance
+      const [
+        allUsers,
+        allPeople,
+        allRelationshipTypes,
+        allRelationships,
+        allInteractionTypes,
+        allInteractions,
+        allGroups,
+        allNotes,
+        allGroupNotes,
+        allSocialAccounts,
+        mePersonResult,
+      ] = await Promise.all([
+        storage.getAllUsers(),
+        storage.getAllPeople(),
+        storage.getAllRelationshipTypes(),
+        storage.getAllRelationships(),
+        storage.getAllInteractionTypes(),
+        storage.getAllInteractions(),
+        storage.getAllGroups(),
+        storage.getAllNotes(),
+        storage.getAllGroupNotes(),
+        storage.getAllSocialAccounts(),
+        db.select().from(people).where(isNotNull(people.userId)).limit(1),
+      ]);
       
-      // Find ME user's person ID
-      const mePersonResult = await db.select().from(people).where(isNotNull(people.userId)).limit(1);
+      const user = allUsers[0];
+      const groups = allGroups;
       const mePersonId = mePersonResult[0]?.id || null;
       const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
       
