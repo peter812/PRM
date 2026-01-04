@@ -1,13 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { Mail, Phone, Building2, Briefcase, ArrowLeft, Plus, Edit } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, StickyNote, Users, Handshake, FolderOpen, MessageSquare } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { PersonWithRelations } from "@shared/schema";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import type { PersonWithRelations, CommunicationWithType } from "@shared/schema";
 import { queryClient } from "@/lib/queryClient";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
@@ -19,6 +22,9 @@ import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
+import { CommunicationsFlow } from "@/components/communications-flow";
+import { AddCommunicationDialog } from "@/components/add-communication-dialog";
+import { CommunicationDetailDialog } from "@/components/communication-detail-dialog";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -27,8 +33,9 @@ export default function PersonProfile() {
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
+  const [isAddCommunicationOpen, setIsAddCommunicationOpen] = useState(false);
+  const [selectedCommunication, setSelectedCommunication] = useState<CommunicationWithType | null>(null);
 
-  // Parse query parameters to determine where to navigate back to
   const params = new URLSearchParams(window.location.search);
   const from = params.get('from');
   const groupId = params.get('groupId');
@@ -154,7 +161,6 @@ export default function PersonProfile() {
               personId={person.id}
               socialAccountUuids={person.socialAccountUuids || []}
               onUpdate={() => {
-                // Refetch person data to update chips
                 queryClient.invalidateQueries({
                   queryKey: ["/api/people", person.id],
                 });
@@ -193,73 +199,89 @@ export default function PersonProfile() {
         </div>
       </div>
 
-      <Tabs defaultValue="notes" className="flex-1 flex flex-col overflow-hidden">
-        <div className="border-b px-6">
-          <TabsList className="h-12 bg-transparent p-0 flex-nowrap touch-scroll">
-            <TabsTrigger
-              value="notes"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-notes"
-            >
-              Notes
-            </TabsTrigger>
-            <TabsTrigger
-              value="interactions"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-interactions"
-            >
-              Interactions
-            </TabsTrigger>
-            <TabsTrigger
-              value="relationships"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-relationships"
-            >
-              Relationships
-            </TabsTrigger>
-            <TabsTrigger
-              value="groups"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-groups"
-            >
-              Groups
-            </TabsTrigger>
-          </TabsList>
-        </div>
+      <div className="flex-1 overflow-auto px-6">
+        <Accordion type="multiple" defaultValue={["notes", "flow"]} className="w-full">
+          <AccordionItem value="notes">
+            <AccordionTrigger data-testid="accordion-notes">
+              <div className="flex items-center gap-2">
+                <StickyNote className="h-4 w-4" />
+                Notes ({person.notes?.length || 0})
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <NotesTab
+                notes={person.notes}
+                personId={person.id}
+                onAddNote={() => setIsAddNoteOpen(true)}
+              />
+            </AccordionContent>
+          </AccordionItem>
 
-        <div className="flex-1 overflow-auto">
-          <TabsContent value="notes" className="mt-0 h-full">
-            <NotesTab
-              notes={person.notes}
-              personId={person.id}
-              onAddNote={() => setIsAddNoteOpen(true)}
-            />
-          </TabsContent>
+          <AccordionItem value="flow">
+            <AccordionTrigger data-testid="accordion-flow">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-4 w-4" />
+                Communications Flow ({person.communications?.length || 0})
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <CommunicationsFlow
+                communications={person.communications || []}
+                personId={person.id}
+                onAddCommunication={() => setIsAddCommunicationOpen(true)}
+                onSelectCommunication={(comm) => setSelectedCommunication(comm)}
+              />
+            </AccordionContent>
+          </AccordionItem>
 
-          <TabsContent value="interactions" className="mt-0 h-full">
-            <InteractionsTab
-              interactions={person.interactions}
-              personId={person.id}
-              onAddInteraction={() => setIsAddInteractionOpen(true)}
-            />
-          </TabsContent>
+          <AccordionItem value="interactions">
+            <AccordionTrigger data-testid="accordion-interactions">
+              <div className="flex items-center gap-2">
+                <Users className="h-4 w-4" />
+                Interactions ({person.interactions?.length || 0})
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <InteractionsTab
+                interactions={person.interactions}
+                personId={person.id}
+                onAddInteraction={() => setIsAddInteractionOpen(true)}
+              />
+            </AccordionContent>
+          </AccordionItem>
 
-          <TabsContent value="relationships" className="mt-0 h-full">
-            <RelationshipsTab
-              relationships={person.relationships}
-              personId={person.id}
-              onAddRelationship={() => setIsAddRelationshipOpen(true)}
-            />
-          </TabsContent>
+          <AccordionItem value="relationships">
+            <AccordionTrigger data-testid="accordion-relationships">
+              <div className="flex items-center gap-2">
+                <Handshake className="h-4 w-4" />
+                Relationships ({person.relationships?.length || 0})
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <RelationshipsTab
+                relationships={person.relationships}
+                personId={person.id}
+                onAddRelationship={() => setIsAddRelationshipOpen(true)}
+              />
+            </AccordionContent>
+          </AccordionItem>
 
-          <TabsContent value="groups" className="mt-0 h-full">
-            <PersonGroupsTab
-              personId={person.id}
-              personGroups={person.groups}
-            />
-          </TabsContent>
-        </div>
-      </Tabs>
+          <AccordionItem value="groups">
+            <AccordionTrigger data-testid="accordion-groups">
+              <div className="flex items-center gap-2">
+                <FolderOpen className="h-4 w-4" />
+                Groups ({person.groups?.length || 0})
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              <PersonGroupsTab
+                personId={person.id}
+                personGroups={person.groups}
+              />
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      </div>
 
       <AddNoteDialog
         open={isAddNoteOpen}
@@ -282,6 +304,17 @@ export default function PersonProfile() {
         onOpenChange={setIsEditPersonOpen}
         person={person}
         onDelete={() => navigate("/people")}
+      />
+      <AddCommunicationDialog
+        open={isAddCommunicationOpen}
+        onOpenChange={setIsAddCommunicationOpen}
+        personId={person.id}
+      />
+      <CommunicationDetailDialog
+        open={!!selectedCommunication}
+        onOpenChange={(open) => !open && setSelectedCommunication(null)}
+        communication={selectedCommunication}
+        personId={person.id}
       />
     </div>
   );

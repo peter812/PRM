@@ -65,16 +65,13 @@ export function AddCommunicationDialog({
 
   const createMutation = useMutation({
     mutationFn: async (data: FormData) => {
-      return apiRequest("/api/communications", {
-        method: "POST",
-        body: JSON.stringify({
-          personId,
-          content: data.content,
-          typeId: data.typeId,
-          direction: data.direction,
-          date: new Date(data.date).toISOString(),
-          notes: data.notes || null,
-        }),
+      return apiRequest("POST", "/api/communications", {
+        personId,
+        content: data.content,
+        typeId: data.typeId,
+        direction: data.direction,
+        date: new Date(data.date).toISOString(),
+        notes: data.notes || null,
       });
     },
     onSuccess: () => {

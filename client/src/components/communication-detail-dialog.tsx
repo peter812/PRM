@@ -95,15 +95,12 @@ export function CommunicationDetailDialog({
 
   const updateMutation = useMutation({
     mutationFn: async (data: FormData) => {
-      return apiRequest(`/api/communications/${communication?.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          content: data.content,
-          typeId: data.typeId,
-          direction: data.direction,
-          date: new Date(data.date).toISOString(),
-          notes: data.notes || null,
-        }),
+      return apiRequest("PATCH", `/api/communications/${communication?.id}`, {
+        content: data.content,
+        typeId: data.typeId,
+        direction: data.direction,
+        date: new Date(data.date).toISOString(),
+        notes: data.notes || null,
       });
     },
     onSuccess: () => {
@@ -119,9 +116,7 @@ export function CommunicationDetailDialog({
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest(`/api/communications/${communication?.id}`, {
-        method: "DELETE",
-      });
+      return apiRequest("DELETE", `/api/communications/${communication?.id}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
