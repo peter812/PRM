@@ -1,15 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, StickyNote, Users, Handshake, FolderOpen, MessageSquare } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations, CommunicationWithType } from "@shared/schema";
 import { queryClient } from "@/lib/queryClient";
 import { AddNoteDialog } from "@/components/add-note-dialog";
@@ -204,89 +199,89 @@ export default function MeProfile() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-4 md:px-6">
-        <Accordion type="multiple" defaultValue={["notes", "flow"]} className="w-full">
-          <AccordionItem value="notes">
-            <AccordionTrigger data-testid="accordion-notes">
-              <div className="flex items-center gap-2">
-                <StickyNote className="h-4 w-4" />
-                Notes ({person.notes?.length || 0})
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <NotesTab
-                notes={person.notes}
-                personId={person.id}
-                onAddNote={() => setIsAddNoteOpen(true)}
-              />
-            </AccordionContent>
-          </AccordionItem>
+      <Tabs defaultValue="notes" className="flex-1 flex flex-col overflow-hidden">
+        <div className="border-b px-6">
+          <TabsList className="h-12 bg-transparent p-0 flex-nowrap touch-scroll">
+            <TabsTrigger
+              value="notes"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-notes"
+            >
+              Notes
+            </TabsTrigger>
+            <TabsTrigger
+              value="flow"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-flow"
+            >
+              Communications
+            </TabsTrigger>
+            <TabsTrigger
+              value="interactions"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-interactions"
+            >
+              Interactions
+            </TabsTrigger>
+            <TabsTrigger
+              value="relationships"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-relationships"
+            >
+              Relationships
+            </TabsTrigger>
+            <TabsTrigger
+              value="groups"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-groups"
+            >
+              Groups
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
-          <AccordionItem value="flow">
-            <AccordionTrigger data-testid="accordion-flow">
-              <div className="flex items-center gap-2">
-                <MessageSquare className="h-4 w-4" />
-                Communications Flow ({person.communications?.length || 0})
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <CommunicationsFlow
-                communications={person.communications || []}
-                personId={person.id}
-                onAddCommunication={() => setIsAddCommunicationOpen(true)}
-                onSelectCommunication={(comm) => setSelectedCommunication(comm)}
-              />
-            </AccordionContent>
-          </AccordionItem>
+        <div className="flex-1 overflow-auto">
+          <TabsContent value="notes" className="mt-0 h-full">
+            <NotesTab
+              notes={person.notes}
+              personId={person.id}
+              onAddNote={() => setIsAddNoteOpen(true)}
+            />
+          </TabsContent>
 
-          <AccordionItem value="interactions">
-            <AccordionTrigger data-testid="accordion-interactions">
-              <div className="flex items-center gap-2">
-                <Users className="h-4 w-4" />
-                Interactions ({person.interactions?.length || 0})
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <InteractionsTab
-                interactions={person.interactions}
-                personId={person.id}
-                onAddInteraction={() => setIsAddInteractionOpen(true)}
-              />
-            </AccordionContent>
-          </AccordionItem>
+          <TabsContent value="flow" className="mt-0 h-full">
+            <CommunicationsFlow
+              communications={person.communications || []}
+              personId={person.id}
+              onAddCommunication={() => setIsAddCommunicationOpen(true)}
+              onSelectCommunication={(comm) => setSelectedCommunication(comm)}
+            />
+          </TabsContent>
 
-          <AccordionItem value="relationships">
-            <AccordionTrigger data-testid="accordion-relationships">
-              <div className="flex items-center gap-2">
-                <Handshake className="h-4 w-4" />
-                Relationships ({person.relationships?.length || 0})
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <RelationshipsTab
-                relationships={person.relationships}
-                personId={person.id}
-                onAddRelationship={() => setIsAddRelationshipOpen(true)}
-              />
-            </AccordionContent>
-          </AccordionItem>
+          <TabsContent value="interactions" className="mt-0 h-full">
+            <InteractionsTab
+              interactions={person.interactions}
+              personId={person.id}
+              onAddInteraction={() => setIsAddInteractionOpen(true)}
+            />
+          </TabsContent>
 
-          <AccordionItem value="groups">
-            <AccordionTrigger data-testid="accordion-groups">
-              <div className="flex items-center gap-2">
-                <FolderOpen className="h-4 w-4" />
-                Groups ({person.groups?.length || 0})
-              </div>
-            </AccordionTrigger>
-            <AccordionContent>
-              <PersonGroupsTab
-                personGroups={person.groups || []}
-                personId={person.id}
-              />
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
-      </div>
+          <TabsContent value="relationships" className="mt-0 h-full">
+            <RelationshipsTab
+              relationships={person.relationships}
+              personId={person.id}
+              onAddRelationship={() => setIsAddRelationshipOpen(true)}
+            />
+          </TabsContent>
+
+          <TabsContent value="groups" className="mt-0 h-full">
+            <PersonGroupsTab
+              personGroups={person.groups || []}
+              personId={person.id}
+            />
+          </TabsContent>
+        </div>
+      </Tabs>
 
       <AddNoteDialog
         open={isAddNoteOpen}
