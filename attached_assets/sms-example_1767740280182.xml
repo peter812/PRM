@@ -1,0 +1,75 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<!--File Created By SMS Backup & Restore v10.22.001 on 06/01/2026 13:54:24-->
+<!--
+
+To view this file in a more readable format, visit https://synctech.com.au/view-backup/
+
+-->
+<smses count="531" backup_set="793ef4c2-a279-4c29-8d9c-6ddfff017528" backup_date="1767736464353" type="full">
+  <sms protocol="0" address="+15093591185" date="1748879111434" type="1" subject="proto:CjoKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SFCIAKhBNCo3R9eFBpIx/elutjiJK" body="From EWU - Win $150 Eagle Flex Cash! Register for the Fall term by Sunday, June 15th, to be entered into a drawing to win. 20 students will be randomly drawn to receive the prize. See you on campus and GO EAGS! Register here: https://inside.ewu.edu/records-and-registration/registration/" toa="null" sc_toa="null" service_center="6502531234" read="1" status="-1" locked="0" date_sent="1748879110000" sub_id="1" readable_date="Jun 2, 2025 8:45:11 AM" contact_name="(Unknown)" />
+  <sms protocol="0" address="+18884873139" date="1748912186339" type="1" subject="proto:CjoKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SFCIAKhAXXJbcIPdNory+RZxRDpKU" body="ACCREDO: Your order has shipped. Check its status at FedEx Tracking https://www.fedex.com/fedextrack/?trknbr=459504207962 . Reply HELP for help, STOP to cancel. Msg&amp;data rates may apply" toa="null" sc_toa="null" service_center="6502531234" read="1" status="-1" locked="0" date_sent="1748912185000" sub_id="1" readable_date="Jun 2, 2025 5:56:26 PM" contact_name="(Unknown)" />
+  <sms protocol="0" address="+15092902463" date="1748922455100" type="1" subject="proto:CjoKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SFCIAKhD0uOPIB9lAQbfzexrPkvZA" body="New voicemail from +1 206-795-3558 (00:01):&#10;&#10;No transcript available.&#10;&#10;To listen to this message, call +1 650-503-4700." toa="null" sc_toa="null" service_center="6502531234" read="1" status="-1" locked="0" date_sent="1748922455000" sub_id="1" readable_date="Jun 2, 2025 8:47:35 PM" contact_name="Peter Erickson" />
+  <sms protocol="0" address="+18884873139" date="1748969441684" type="1" subject="proto:CjoKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SFCIAKhAmlvSAIhlI2IBYKpqil/TU" body="ACCREDO: Your order has shipped. Check its status at FedEx Tracking https://www.fedex.com/fedextrack/?trknbr=459504207962 . Reply HELP for help, STOP to cancel. Msg&amp;data rates may apply" toa="null" sc_toa="null" service_center="6502531234" read="1" status="-1" locked="0" date_sent="1748969432000" sub_id="1" readable_date="Jun 3, 2025 9:50:41 AM" contact_name="(Unknown)" />
+  <sms protocol="0" address="+15093591185" date="1752764462380" type="1" subject="proto:CjoKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SFCIAKhA57M4NzE1PzI4a8E+Dg4Gq" body="Hi from EWU! We see you are not yet registered for the Fall term. Have a hold? Go to the Navigate Student app for more info on how to resolve your hold. Click here to register: https://inside.ewu.edu/records-and-registration/registration/ Questions? Contact your advisor. GO EAGS!" toa="null" sc_toa="null" service_center="6502531234" read="1" status="-1" locked="0" date_sent="1752764461000" sub_id="1" readable_date="Jul 17, 2025 8:01:02 AM" contact_name="(Unknown)" />
+  <sms protocol="0" address="+19499104714" date="1752793840889" type="1" subject="proto:CjoKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SFCIAKhDyQfgU/ERMYpdAMTiBkjPj" body="Bro I thought these were photoshop but I think this is a real camera " toa="null" sc_toa="null" service_center="6502531234" read="1" status="-1" locked="0" date_sent="1752793840000" sub_id="1" readable_date="Jul 17, 2025 4:10:40 PM" contact_name="Mark Diamond" />
+  <sms protocol="0" address="+18884873139" date="1753126299582" type="1" subject="proto:CjoKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SFCIAKhBPGbIz+LhGiIDC3ORQI47O" body="ACCREDO: Your medicine is due to be filled. Call us at 8006896592 to place your order. Reply HELP for help, STOP to cancel. Msg&amp;data rates may apply" toa="null" sc_toa="null" service_center="6502531234" read="1" status="-1" locked="0" date_sent="1753126291000" sub_id="1" readable_date="Jul 21, 2025 12:31:39 PM" contact_name="(Unknown)" />
+  <mms date="1748828230000" spam_report="0" predefined_id="-1" ct_t="text/plain" msg_box="1" address="+15093680122" sub_cs="106" re_type="0" retr_st="null" re_original_body="null" d_tm="null" exp="null" locked="0" msg_id="0" app_id="0" from_address="null" m_id="D2955B3A-E33C-4FAF-A977-583E869065FA" spam_type="0" retr_txt="null" date_sent="1748828230" read="1" rpt_a="null" ct_cls="135" bin_info="0" pri="null" sub_id="1" re_content_type="null" object_id="null" resp_txt="null" re_content_uri="null" ct_l="null" re_original_key="null" d_rpt="null" reserved="0" using_mode="0" _id="23401" rr_st="0" m_type="132" favorite="0" rr="null" sub="" hidden="0" deletable="0" read_status="null" d_rpt_st="0" callback_set="0" re_count_info_custom_reaction="null" seen="1" re_recipient_address="null" device_name="null" cmc_prop="null" resp_st="null" text_only="1" sim_slot="0" st="null" retr_txt_cs="null" creator="com.google.android.apps.messaging" m_size="0" sim_imsi="null" block_filtered_status="null" correlation_tag="null" re_body="null" safe_message="0" tr_id="proto:CmAKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SOhImKiREMjk1NUIzQS1FMzNDLTRGQUYtQTk3Ny01ODNFODY5MDY1RkEqEMLHg8QJPEPLujCmyfGwodo=" m_cls="null" v="null" secret_mode="0" re_file_name="null" re_count_info="null" readable_date="Jun 1, 2025 6:37:10 PM" contact_name="(Unknown)">
+    <parts>
+      <part seq="0" ct="text/plain" name="body" chset="106" cd="null" fn="null" cid="null" cl="null" ctt_s="null" ctt_t="null" text="https://www.google.com/maps/search/7307+N+Nevada+St.+The+entrance?entry=gmail&amp;source=g" sef_type="0" decorate_bubble_value="null" sub_id="-1" />
+    </parts>
+    <addrs>
+      <addr address="+15093680122" type="130" charset="106" />
+      <addr address="+15093680122" type="137" charset="106" />
+      <addr address="+15092902463" type="151" charset="106" />
+    </addrs>
+  </mms>
+  <mms date="1748887161000" spam_report="0" predefined_id="-1" ct_t="text/plain" msg_box="1" address="+12067953558" sub_cs="106" re_type="0" retr_st="null" re_original_body="null" d_tm="null" exp="null" locked="0" msg_id="0" app_id="0" from_address="null" m_id="Mx3MjZTczuSj66hha2d3pOtw" spam_type="0" retr_txt="null" date_sent="1748887161" read="1" rpt_a="null" ct_cls="135" bin_info="0" pri="null" sub_id="1" re_content_type="null" object_id="null" resp_txt="null" re_content_uri="null" ct_l="null" re_original_key="null" d_rpt="null" reserved="0" using_mode="0" _id="23403" rr_st="0" m_type="132" favorite="0" rr="null" sub="" hidden="0" deletable="0" read_status="null" d_rpt_st="0" callback_set="0" re_count_info_custom_reaction="null" seen="1" re_recipient_address="null" device_name="null" cmc_prop="null" resp_st="null" text_only="1" sim_slot="0" st="null" retr_txt_cs="null" creator="com.google.android.apps.messaging" m_size="0" sim_imsi="null" block_filtered_status="null" correlation_tag="null" re_body="null" safe_message="0" tr_id="proto:ClQKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SLhIaKhhNeDNNalpUY3p1U2o2NmhoYTJkM3BPdHcqEF1BxgxlS0Kxlp9Er5Pg8k0=" m_cls="null" v="null" secret_mode="0" re_file_name="null" re_count_info="null" readable_date="Jun 2, 2025 10:59:21 AM" contact_name="Sarah Erickson">
+    <parts>
+      <part seq="0" ct="text/plain" name="body" chset="106" cd="null" fn="null" cid="null" cl="null" ctt_s="null" ctt_t="null" text="Hey, Peter! This is Melanie in EWU Housing. We are following up with students that haven't registered for Fall yet. Do you plan to attend EWU this coming Fall? (Please reply Yes or No)" sef_type="0" decorate_bubble_value="null" sub_id="-1" />
+    </parts>
+    <addrs>
+      <addr address="+12067953558" type="130" charset="106" />
+      <addr address="+12067953558" type="137" charset="106" />
+      <addr address="+15092902463" type="151" charset="106" />
+    </addrs>
+  </mms>
+  <mms date="1748892459000" spam_report="0" predefined_id="-1" ct_t="application/vnd.wap.multipart.related" msg_box="1" address="+15092129767~+13604870446~+15094609448~+15095809099~+15093080159~+13605815162~+13608806841~+15099706527~+15097609394~+12535084764~+15098237961" sub_cs="null" re_type="0" retr_st="null" re_original_body="null" d_tm="null" exp="1748978858" locked="0" msg_id="0" app_id="0" from_address="null" m_id="null" spam_type="0" retr_txt="null" date_sent="1748892458" read="1" rpt_a="null" ct_cls="null" bin_info="0" pri="129" sub_id="1" re_content_type="null" object_id="null" resp_txt="null" re_content_uri="null" ct_l="https://android.googleapis.com/nova/nms/get_message?id=-6851110661238291954&amp;sc=2" re_original_key="null" d_rpt="null" reserved="0" using_mode="0" _id="23405" rr_st="0" m_type="132" favorite="0" rr="null" sub="null" hidden="0" deletable="0" read_status="null" d_rpt_st="0" callback_set="0" re_count_info_custom_reaction="null" seen="1" re_recipient_address="null" device_name="null" cmc_prop="null" resp_st="null" text_only="1" sim_slot="0" st="null" retr_txt_cs="null" creator="com.google.android.apps.messaging" m_size="942" sim_imsi="null" block_filtered_status="null" correlation_tag="null" re_body="null" safe_message="0" tr_id="proto:CkAKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SGhoYChYtNjg1MTExMDY2MTIzODI5MTk1NC0y" m_cls="personal" v="16" secret_mode="0" re_file_name="null" re_count_info="null" readable_date="Jun 2, 2025 12:27:39 PM" contact_name="Ashley P Cru, Kevin Ruark, Levi Slape">
+    <parts>
+      <part seq="-1" ct="application/smil" name="smil.xml" chset="null" cd="null" fn="null" cid="&lt;smil&gt;" cl="smil.xml" ctt_s="null" ctt_t="null" text='&lt;smil&gt;&lt;head&gt;&lt;layout&gt;&lt;root-layout/&gt;&lt;region id="Text" top="0" left="0" height="100%" width="100%"/&gt;&lt;/layout&gt;&lt;/head&gt;&lt;body&gt;&lt;par dur="5000ms"&gt;&lt;text src="text000001.txt" region="Text" /&gt;&lt;/par&gt;&lt;/body&gt;&lt;/smil&gt;' sef_type="0" decorate_bubble_value="null" sub_id="-1" />
+      <part seq="0" ct="text/plain" name="text000001.txt" chset="106" cd="null" fn="null" cid="&lt;text000001&gt;" cl="text000001.txt" ctt_s="null" ctt_t="null" text="Plan for CG tomorrow:&#10;-Eat pizza at our place around 5:30. If you want anything else (sides/drinks/desserts) other than pizza feel free to bring something!&#10;-The other Tuesday CG will be hanging out at Hagelin at 6:30, so we'll meet up with them there!" sef_type="0" decorate_bubble_value="null" sub_id="-1" />
+    </parts>
+    <addrs>
+      <addr address="+15093080159" type="130" charset="106" />
+      <addr address="+13605815162" type="130" charset="106" />
+      <addr address="+13604870446" type="130" charset="106" />
+      <addr address="+15094609448" type="130" charset="106" />
+      <addr address="+13608806841" type="130" charset="106" />
+      <addr address="+12535084764" type="130" charset="106" />
+      <addr address="+15097609394" type="130" charset="106" />
+      <addr address="+15099706527" type="130" charset="106" />
+      <addr address="+15095809099" type="130" charset="106" />
+      <addr address="+15098237961" type="130" charset="106" />
+      <addr address="+15092129767" type="137" charset="106" />
+      <addr address="+15092902463" type="151" charset="106" />
+    </addrs>
+  </mms>
+  <mms date="1748892807000" spam_report="0" predefined_id="-1" ct_t="application/vnd.wap.multipart.related" msg_box="1" address="+15092129767~+13604870446~+15094609448~+15095809099~+15093080159~+13605815162~+13608806841~+15099706527~+15097609394~+12535084764~+15098237961" sub_cs="null" re_type="0" retr_st="null" re_original_body="null" d_tm="null" exp="1748979206" locked="0" msg_id="0" app_id="0" from_address="null" m_id="null" spam_type="0" retr_txt="null" date_sent="1748892807" read="1" rpt_a="null" ct_cls="null" bin_info="0" pri="129" sub_id="1" re_content_type="null" object_id="null" resp_txt="null" re_content_uri="null" ct_l="https://android.googleapis.com/nova/nms/get_message?id=-2115284205167431338&amp;sc=2" re_original_key="null" d_rpt="null" reserved="0" using_mode="0" _id="23407" rr_st="0" m_type="132" favorite="0" rr="null" sub="null" hidden="0" deletable="0" read_status="null" d_rpt_st="0" callback_set="0" re_count_info_custom_reaction="null" seen="1" re_recipient_address="null" device_name="null" cmc_prop="null" resp_st="null" text_only="1" sim_slot="0" st="null" retr_txt_cs="null" creator="com.google.android.apps.messaging" m_size="562" sim_imsi="null" block_filtered_status="null" correlation_tag="null" re_body="null" safe_message="0" tr_id="proto:CkAKImNvbS5nb29nbGUuYW5kcm9pZC5hcHBzLm1lc3NhZ2luZy4SGhoYChYtMjExNTI4NDIwNTE2NzQzMTMzOC0y" m_cls="personal" v="16" secret_mode="0" re_file_name="null" re_count_info="null" readable_date="Jun 2, 2025 12:33:27 PM" contact_name="Ashley P Cru, Kevin Ruark, Levi Slape">
+    <parts>
+      <part seq="0" ct="text/plain" name="text_0.txt" chset="106" cd="null" fn="null" cid="&lt;0.0C7E0105-DEB1-4E15-B223-580C0C8277B3@ext&gt;" cl="text_0.txt" ctt_s="null" ctt_t="null" text="Loved “Plan for CG tomorrow:&#10;-Eat pizza at our place arou…”" sef_type="0" decorate_bubble_value="null" sub_id="-1" />
+    </parts>
+    <addrs>
+      <addr address="+15092129767" type="130" charset="106" />
+      <addr address="+15093080159" type="130" charset="106" />
+      <addr address="+13605815162" type="130" charset="106" />
+      <addr address="+13604870446" type="130" charset="106" />
+      <addr address="+15094609448" type="130" charset="106" />
+      <addr address="+13608806841" type="130" charset="106" />
+      <addr address="+12535084764" type="130" charset="106" />
+      <addr address="+15097609394" type="130" charset="106" />
+      <addr address="+15095809099" type="130" charset="106" />
+      <addr address="+15098237961" type="130" charset="106" />
+      <addr address="+15099706527" type="137" charset="106" />
+      <addr address="+15092902463" type="151" charset="106" />
+    </addrs>
+  </mms>
+</smses>

@@ -853,6 +853,224 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // SMS/MMS Import endpoint (SMS Backup & Restore format)
+  app.post("/api/import-sms", upload.single("xml"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No XML file provided" });
+      }
+
+      const xmlText = req.file.buffer.toString("utf-8");
+      let importedCount = 0;
+      let skippedCount = 0;
+
+      // Helper to parse SMS element attributes
+      const parseSmsAttributes = (smsMatch: string) => {
+        const getAttr = (name: string): string => {
+          const regex = new RegExp(`${name}="([^"]*)"`, 's');
+          const match = smsMatch.match(regex);
+          return match ? match[1] : '';
+        };
+
+        const address = getAttr('address');
+        const dateStr = getAttr('date');
+        const type = getAttr('type'); // 1 = received, 2 = sent
+        const body = getAttr('body');
+
+        return { address, dateStr, type, body };
+      };
+
+      // Helper to parse MMS element with proper type handling
+      // MMS addr types: 130 = TO, 137 = FROM/SENDER, 151 = BCC (device owner)
+      const parseMmsElement = (mmsBlock: string) => {
+        const getAttr = (name: string): string => {
+          const regex = new RegExp(`${name}="([^"]*)"`, 's');
+          const match = mmsBlock.match(regex);
+          return match ? match[1] : '';
+        };
+
+        const address = getAttr('address');
+        const dateStr = getAttr('date');
+        const msgBox = getAttr('msg_box'); // 1 = received, 2 = sent
+
+        // Extract text content from parts
+        const partsMatch = mmsBlock.match(/<parts>([\s\S]*?)<\/parts>/);
+        let textContent = '';
+        if (partsMatch) {
+          const partRegex = /<part[^>]*text="([^"]*)"[^>]*\/>/g;
+          let partMatch;
+          while ((partMatch = partRegex.exec(partsMatch[1])) !== null) {
+            const partText = partMatch[1];
+            if (partText && !partText.startsWith('<smil>')) {
+              textContent += (textContent ? '\n' : '') + partText;
+            }
+          }
+        }
+
+        // Extract addresses with their types from addrs
+        const addrsMatch = mmsBlock.match(/<addrs>([\s\S]*?)<\/addrs>/);
+        const toAddresses: string[] = [];      // type 130 = TO recipients
+        const fromAddresses: string[] = [];    // type 137 = FROM/SENDER
+        let deviceOwner = '';                  // type 151 = BCC (device owner)
+        
+        if (addrsMatch) {
+          // Match individual addr elements
+          const addrElementRegex = /<addr[^>]+\/>/g;
+          let addrElement;
+          while ((addrElement = addrElementRegex.exec(addrsMatch[1])) !== null) {
+            const element = addrElement[0];
+            // Extract address and type attributes (can be in any order)
+            const addrValueMatch = element.match(/address="([^"]*)"/);
+            const addrTypeMatch = element.match(/type="(\d+)"/);
+            
+            if (!addrValueMatch || !addrTypeMatch) continue;
+            
+            const addrValue = addrValueMatch[1];
+            const addrType = addrTypeMatch[1];
+            
+            if (!addrValue || addrValue.trim() === '') continue;
+            
+            if (addrType === '151') {
+              deviceOwner = addrValue;
+            } else if (addrType === '137') {
+              if (!fromAddresses.includes(addrValue)) {
+                fromAddresses.push(addrValue);
+              }
+            } else if (addrType === '130') {
+              if (!toAddresses.includes(addrValue)) {
+                toAddresses.push(addrValue);
+              }
+            }
+          }
+        }
+
+        return { address, dateStr, msgBox, textContent, toAddresses, fromAddresses, deviceOwner };
+      };
+
+      // Unescape XML entities
+      const unescapeXmlEntities = (text: string): string => {
+        return text
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .replace(/&#10;/g, '\n')
+          .replace(/&#13;/g, '\r');
+      };
+
+      // Get device owner's phone number from XML if present (from type=151 addr entries)
+      // Type 151 indicates the device owner in MMS addr entries
+      let deviceOwnerPhone = '';
+      const ownerMatch = xmlText.match(/<addr[^>]*type="151"[^>]*address="([^"]*)"[^>]*\/>/);
+      if (ownerMatch) {
+        deviceOwnerPhone = ownerMatch[1];
+      }
+
+      // Parse SMS messages
+      const smsRegex = /<sms[^>]+\/>/g;
+      let smsMatch;
+      while ((smsMatch = smsRegex.exec(xmlText)) !== null) {
+        const { address, dateStr, type, body } = parseSmsAttributes(smsMatch[0]);
+        
+        if (!address || !dateStr || !body) continue;
+
+        // SMS date is in milliseconds
+        const sentTimestamp = new Date(parseInt(dateStr));
+        const isReceived = type === '1';
+        
+        // Use actual phone numbers - the other party is "address", device owner is our phone or 'device_owner'
+        const ownerIdentifier = deviceOwnerPhone || 'device_owner';
+        const sender = isReceived ? address : ownerIdentifier;
+        const receivers = isReceived ? [ownerIdentifier] : [address];
+
+        try {
+          await storage.createMessage({
+            sentTimestamp,
+            type: 'phone',
+            sender,
+            receivers,
+            content: unescapeXmlEntities(body),
+            imageUrls: [],
+            isOrphan: true,
+          });
+          importedCount++;
+        } catch (error) {
+          console.error('Error importing SMS:', error);
+          skippedCount++;
+        }
+      }
+
+      // Parse MMS messages
+      const mmsRegex = /<mms[^>]*>[\s\S]*?<\/mms>/g;
+      let mmsMatch;
+      while ((mmsMatch = mmsRegex.exec(xmlText)) !== null) {
+        const { address, dateStr, msgBox, textContent, toAddresses, fromAddresses, deviceOwner } = parseMmsElement(mmsMatch[0]);
+        
+        if (!dateStr) continue;
+
+        // MMS date in SMS Backup & Restore is in milliseconds (like date_sent but in ms)
+        // However some older formats use seconds, so check the magnitude
+        let dateValue = parseInt(dateStr);
+        // If date value is too small (before year 2000 in ms), it's likely seconds
+        if (dateValue < 946684800000) {
+          dateValue = dateValue * 1000;
+        }
+        const sentTimestamp = new Date(dateValue);
+        const isReceived = msgBox === '1';
+
+        // Use device owner from this MMS or fall back to previously detected
+        const ownerPhone = deviceOwner || deviceOwnerPhone || 'device_owner';
+        
+        let sender: string;
+        let receivers: string[];
+
+        if (isReceived) {
+          // For received MMS: sender is from type=137 (FROM), receivers include device owner
+          sender = fromAddresses[0] || address.split('~')[0] || 'unknown';
+          receivers = [ownerPhone];
+        } else {
+          // For sent MMS: sender is device owner, receivers are type=130 (TO) addresses
+          sender = ownerPhone;
+          // Use TO addresses, or parse from tilde-separated address attribute
+          if (toAddresses.length > 0) {
+            receivers = toAddresses.filter(a => a !== ownerPhone);
+          } else {
+            // Parse tilde-separated addresses from main address attribute
+            receivers = address.split('~').filter(a => a && a !== ownerPhone);
+          }
+        }
+
+        if (!sender || receivers.length === 0) continue;
+
+        try {
+          await storage.createMessage({
+            sentTimestamp,
+            type: 'phone',
+            sender,
+            receivers,
+            content: textContent ? unescapeXmlEntities(textContent) : null,
+            imageUrls: [],
+            isOrphan: true,
+          });
+          importedCount++;
+        } catch (error) {
+          console.error('Error importing MMS:', error);
+          skippedCount++;
+        }
+      }
+
+      res.json({
+        success: true,
+        imported: importedCount,
+        skipped: skippedCount,
+      });
+    } catch (error) {
+      console.error("Error importing SMS:", error);
+      res.status(500).json({ error: "Failed to import SMS messages" });
+    }
+  });
+
   // Database reset endpoint
   app.post("/api/reset-database", async (req, res) => {
     try {

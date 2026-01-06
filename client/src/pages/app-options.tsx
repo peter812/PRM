@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Upload, FileText, AlertCircle, CheckCircle2, Download, Trash2, ChevronRight } from "lucide-react";
+import { Upload, FileText, AlertCircle, CheckCircle2, Download, Trash2, ChevronRight, MessageSquare } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -21,6 +21,7 @@ import { useLocation } from "wouter";
 export default function AppOptionsPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedXmlFile, setSelectedXmlFile] = useState<File | null>(null);
+  const [selectedSmsFile, setSelectedSmsFile] = useState<File | null>(null);
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [confirmSliderValue, setConfirmSliderValue] = useState([0]);
   const [includeExamples, setIncludeExamples] = useState(false);
@@ -165,6 +166,68 @@ export default function AppOptionsPage() {
   const handleXmlImport = () => {
     if (selectedXmlFile) {
       importXmlMutation.mutate(selectedXmlFile);
+    }
+  };
+
+  const importSmsMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append("xml", file);
+
+      const response = await fetch("/api/import-sms", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to import SMS");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/messages"] });
+      
+      toast({
+        title: "SMS Import Successful",
+        description: `Successfully imported ${data.imported} messages${data.skipped > 0 ? ` (${data.skipped} duplicates skipped)` : ""}`,
+      });
+
+      setSelectedSmsFile(null);
+      
+      const fileInput = document.getElementById("sms-file-input") as HTMLInputElement;
+      if (fileInput) {
+        fileInput.value = "";
+      }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "SMS Import Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSmsFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (!file.name.endsWith(".xml")) {
+        toast({
+          title: "Invalid File",
+          description: "Please select an XML file",
+          variant: "destructive",
+        });
+        return;
+      }
+      setSelectedSmsFile(file);
+    }
+  };
+
+  const handleSmsImport = () => {
+    if (selectedSmsFile) {
+      importSmsMutation.mutate(selectedSmsFile);
     }
   };
 
@@ -481,6 +544,113 @@ export default function AppOptionsPage() {
                     {" "}{importXmlMutation.data.imported.relationships} relationships,
                     {" "}{importXmlMutation.data.imported.interactions} interactions,
                     {" "}{importXmlMutation.data.imported.notes} notes
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MessageSquare className="h-5 w-5" />
+            Import SMS Messages
+          </CardTitle>
+          <CardDescription>Import SMS and MMS messages from an XML backup file (SMS Backup & Restore format)</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="sms-file-input">Select SMS Backup XML File</Label>
+              <div className="flex items-center gap-3">
+                <Input
+                  id="sms-file-input"
+                  type="file"
+                  accept=".xml"
+                  onChange={handleSmsFileChange}
+                  disabled={importSmsMutation.isPending}
+                  data-testid="input-sms-file"
+                  className="cursor-pointer"
+                />
+              </div>
+              {selectedSmsFile && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <FileText className="h-4 w-4" />
+                  <span data-testid="text-selected-sms-filename">{selectedSmsFile.name}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md bg-muted p-4 space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                <div className="space-y-1 text-sm text-muted-foreground">
+                  <p className="font-medium">SMS Import Notes:</p>
+                  <ul className="list-disc list-inside space-y-1">
+                    <li>Supports XML files from "SMS Backup & Restore" app</li>
+                    <li>Both SMS and MMS messages are imported</li>
+                    <li>Messages are stored as "phone" type in the system</li>
+                    <li>Phone numbers are used as sender/receiver identifiers</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={handleSmsImport}
+                disabled={!selectedSmsFile || importSmsMutation.isPending}
+                data-testid="button-import-sms"
+                className="gap-2"
+              >
+                {importSmsMutation.isPending ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4" />
+                    Import SMS Messages
+                  </>
+                )}
+              </Button>
+              
+              {selectedSmsFile && !importSmsMutation.isPending && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSelectedSmsFile(null);
+                    const fileInput = document.getElementById("sms-file-input") as HTMLInputElement;
+                    if (fileInput) {
+                      fileInput.value = "";
+                    }
+                  }}
+                  data-testid="button-clear-sms-file"
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {importSmsMutation.isSuccess && importSmsMutation.data && (
+            <div className="rounded-md bg-primary/10 border border-primary/20 p-4">
+              <div className="flex items-start gap-3">
+                <CheckCircle2 className="h-5 w-5 text-primary mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-medium" data-testid="text-sms-import-success">
+                    SMS Import Complete
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Imported {importSmsMutation.data.imported} message{importSmsMutation.data.imported !== 1 ? "s" : ""}
+                    {importSmsMutation.data.skipped > 0 && (
+                      <span className="ml-1">
+                        ({importSmsMutation.data.skipped} duplicate{importSmsMutation.data.skipped !== 1 ? "s" : ""} skipped)
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
