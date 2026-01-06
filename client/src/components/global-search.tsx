@@ -169,7 +169,6 @@ function DraggableList({
 export function GlobalSearch() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [preferences, setPreferences] = useState<SearchPreferences>(loadPreferences);
   const [, setLocation] = useLocation();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -208,20 +207,13 @@ export function GlobalSearch() {
     }
   }, [searchQuery]);
 
-  const handleReorder = useCallback((newOrder: SearchCategory[]) => {
-    const newPrefs = { ...preferences, order: newOrder };
-    setPreferences(newPrefs);
-    savePreferences(newPrefs);
-  }, [preferences]);
-
-  const handleToggle = useCallback((category: SearchCategory, checked: boolean) => {
-    const newPrefs = {
-      ...preferences,
-      enabled: { ...preferences.enabled, [category]: checked },
+  useEffect(() => {
+    const handlePreferencesChanged = () => {
+      setPreferences(loadPreferences());
     };
-    setPreferences(newPrefs);
-    savePreferences(newPrefs);
-  }, [preferences]);
+    window.addEventListener('searchPreferencesChanged', handlePreferencesChanged);
+    return () => window.removeEventListener('searchPreferencesChanged', handlePreferencesChanged);
+  }, []);
 
   const handleNavigate = (path: string) => {
     setLocation(path);
@@ -469,46 +461,12 @@ export function GlobalSearch() {
         <Input
           type="search"
           placeholder="Search..."
-          className="pl-9 pr-9"
+          className="pl-9"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => searchQuery.length > 0 && setIsOpen(true)}
           data-testid="input-global-search"
         />
-        <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-          <DialogTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 z-10"
-              data-testid="button-search-settings"
-            >
-              <MoreVertical className="h-4 w-4" />
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Search Settings</DialogTitle>
-              <DialogDescription>
-                Customize the order and visibility of search results.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div>
-                <h4 className="text-sm font-medium mb-3">Search Order</h4>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Drag items to reorder how results appear. Uncheck to exclude from search.
-                </p>
-                <DraggableList
-                  items={preferences.order}
-                  enabled={preferences.enabled}
-                  onReorder={handleReorder}
-                  onToggle={handleToggle}
-                />
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
       </div>
 
       {isOpen && searchQuery.length > 0 && (
@@ -525,5 +483,64 @@ export function GlobalSearch() {
         </Card>
       )}
     </div>
+  );
+}
+
+export function SearchSettingsButton() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [preferences, setPreferences] = useState<SearchPreferences>(loadPreferences);
+
+  const handleReorder = useCallback((newOrder: SearchCategory[]) => {
+    const newPrefs = { ...preferences, order: newOrder };
+    setPreferences(newPrefs);
+    savePreferences(newPrefs);
+    window.dispatchEvent(new Event('searchPreferencesChanged'));
+  }, [preferences]);
+
+  const handleToggle = useCallback((category: SearchCategory, checked: boolean) => {
+    const newPrefs = {
+      ...preferences,
+      enabled: { ...preferences.enabled, [category]: checked },
+    };
+    setPreferences(newPrefs);
+    savePreferences(newPrefs);
+    window.dispatchEvent(new Event('searchPreferencesChanged'));
+  }, [preferences]);
+
+  return (
+    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+      <DialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="button-search-settings"
+          title="Search Settings"
+        >
+          <SearchIcon className="h-5 w-5" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Search Settings</DialogTitle>
+          <DialogDescription>
+            Customize the order and visibility of search results.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+          <div>
+            <h4 className="text-sm font-medium mb-3">Search Order</h4>
+            <p className="text-sm text-muted-foreground mb-4">
+              Drag items to reorder how results appear. Uncheck to exclude from search.
+            </p>
+            <DraggableList
+              items={preferences.order}
+              enabled={preferences.enabled}
+              onReorder={handleReorder}
+              onToggle={handleToggle}
+            />
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

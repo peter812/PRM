@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { LogOut, Settings, Menu, Moon, Sun } from "lucide-react";
 import { useState } from "react";
-import { GlobalSearch } from "@/components/global-search";
+import { GlobalSearch, SearchSettingsButton } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
 import { AddPersonDialog } from "@/components/add-person-dialog";
 import PeopleList from "@/pages/people-list";
@@ -130,6 +130,7 @@ function AppLayout() {
                   <Settings className="h-5 w-5" />
                 </Button>
               )}
+              <SearchSettingsButton />
               <ThemeToggle />
               {user && (
                 <Button
@@ -145,6 +146,7 @@ function AppLayout() {
             </div>
             {/* Mobile Menu - Visible only on mobile */}
             <div className="flex md:hidden items-center gap-2">
+              <SearchSettingsButton />
               {user && (
                 <DropdownMenu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
                   <DropdownMenuTrigger asChild>
