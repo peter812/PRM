@@ -947,6 +947,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return { address, dateStr, msgBox, textContent, toAddresses, fromAddresses, deviceOwner };
       };
 
+      // Strip +1 country code from phone numbers
+      const normalizePhone = (phone: string): string => {
+        return phone.replace(/^\+1/, '');
+      };
+
       // Unescape XML entities
       const unescapeXmlEntities = (text: string): string => {
         return text
@@ -980,9 +985,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const isReceived = type === '1';
         
         // Use actual phone numbers - the other party is "address", device owner is our phone or 'device_owner'
-        const ownerIdentifier = deviceOwnerPhone || 'device_owner';
-        const sender = isReceived ? address : ownerIdentifier;
-        const receivers = isReceived ? [ownerIdentifier] : [address];
+        const ownerIdentifier = deviceOwnerPhone ? normalizePhone(deviceOwnerPhone) : 'device_owner';
+        const normalizedAddress = normalizePhone(address);
+        const sender = isReceived ? normalizedAddress : ownerIdentifier;
+        const receivers = isReceived ? [ownerIdentifier] : [normalizedAddress];
 
         try {
           await storage.createMessage({
@@ -1020,24 +1026,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const isReceived = msgBox === '1';
 
         // Use device owner from this MMS or fall back to previously detected
-        const ownerPhone = deviceOwner || deviceOwnerPhone || 'device_owner';
+        const ownerPhone = normalizePhone(deviceOwner || deviceOwnerPhone || '') || 'device_owner';
         
         let sender: string;
         let receivers: string[];
 
         if (isReceived) {
           // For received MMS: sender is from type=137 (FROM), receivers include device owner
-          sender = fromAddresses[0] || address.split('~')[0] || 'unknown';
+          const rawSender = fromAddresses[0] || address.split('~')[0] || 'unknown';
+          sender = normalizePhone(rawSender);
           receivers = [ownerPhone];
         } else {
           // For sent MMS: sender is device owner, receivers are type=130 (TO) addresses
           sender = ownerPhone;
           // Use TO addresses, or parse from tilde-separated address attribute
           if (toAddresses.length > 0) {
-            receivers = toAddresses.filter(a => a !== ownerPhone);
+            receivers = toAddresses.filter(a => normalizePhone(a) !== ownerPhone).map(normalizePhone);
           } else {
             // Parse tilde-separated addresses from main address attribute
-            receivers = address.split('~').filter(a => a && a !== ownerPhone);
+            receivers = address.split('~').filter(a => a && normalizePhone(a) !== ownerPhone).map(normalizePhone);
           }
         }
 
