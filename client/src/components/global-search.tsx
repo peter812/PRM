@@ -465,12 +465,22 @@ export function GlobalSearch() {
   return (
     <div className="relative flex-1 max-w-md" ref={containerRef}>
       <div className="relative flex items-center">
+        <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          type="search"
+          placeholder="Search..."
+          className="pl-9 pr-9"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onFocus={() => searchQuery.length > 0 && setIsOpen(true)}
+          data-testid="input-global-search"
+        />
         <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
           <DialogTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
-              className="absolute left-1 top-1/2 -translate-y-1/2 h-7 w-7 z-10"
+              className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 z-10"
               data-testid="button-search-settings"
             >
               <MoreVertical className="h-4 w-4" />
@@ -499,16 +509,6 @@ export function GlobalSearch() {
             </div>
           </DialogContent>
         </Dialog>
-        <SearchIcon className="absolute left-10 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          type="search"
-          placeholder="Search..."
-          className="pl-16"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          onFocus={() => searchQuery.length > 0 && setIsOpen(true)}
-          data-testid="input-global-search"
-        />
       </div>
 
       {isOpen && searchQuery.length > 0 && (
