@@ -114,7 +114,7 @@ function AppLayout() {
       <div className="flex h-screen w-full">
         <AppSidebar />
         <div className="flex flex-col flex-1 overflow-hidden">
-          <header className="flex items-center justify-between gap-2 px-4 py-2 border-b">
+          <header className="flex items-center justify-between gap-2 px-4 py-3 border-b">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
             <GlobalSearch />
             {/* Desktop Menu - Hidden on mobile */}
