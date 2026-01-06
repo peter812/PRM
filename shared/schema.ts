@@ -446,3 +446,11 @@ export type FlowResponse = {
   nextCursor: string | null;
   hasMore: boolean;
 };
+
+export type MegaSearchResult = {
+  people: Person[];
+  groups: Group[];
+  interactions: Interaction[];
+  notes: Note[];
+  socialProfiles: SocialAccount[];
+};

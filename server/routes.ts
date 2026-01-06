@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
 import { interactions, relationshipTypes, interactionTypes, people } from "@shared/schema";
+import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
 import {
   insertPersonSchema,
@@ -963,7 +964,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Search endpoint
+  // Search endpoint (legacy)
   app.get("/api/search", async (req, res) => {
     try {
       const query = req.query.q as string | undefined;
@@ -980,6 +981,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ people, groups });
     } catch (error) {
       console.error("Error searching:", error);
+      res.status(500).json({ error: "Failed to search" });
+    }
+  });
+
+  // Mega search endpoint with configurable result types
+  app.get("/api/mega-search", async (req, res) => {
+    try {
+      const querySchema = z.object({
+        q: z.string().optional(),
+        includePeople: z.enum(['true', 'false']).optional(),
+        includeGroups: z.enum(['true', 'false']).optional(),
+        includeInteractions: z.enum(['true', 'false']).optional(),
+        includeNotes: z.enum(['true', 'false']).optional(),
+        includeSocialProfiles: z.enum(['true', 'false']).optional(),
+      });
+
+      const parsed = querySchema.safeParse(req.query);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Invalid query parameters" });
+      }
+
+      const { q: query } = parsed.data;
+      
+      if (!query) {
+        return res.json({
+          people: [],
+          groups: [],
+          interactions: [],
+          notes: [],
+          socialProfiles: [],
+        });
+      }
+
+      const options = {
+        includePeople: parsed.data.includePeople !== 'false',
+        includeGroups: parsed.data.includeGroups !== 'false',
+        includeInteractions: parsed.data.includeInteractions !== 'false',
+        includeNotes: parsed.data.includeNotes !== 'false',
+        includeSocialProfiles: parsed.data.includeSocialProfiles !== 'false',
+      };
+
+      const results = await storage.megaSearch(query, options);
+
+      res.json(results);
+    } catch (error) {
+      console.error("Error mega searching:", error);
       res.status(500).json({ error: "Failed to search" });
     }
   });

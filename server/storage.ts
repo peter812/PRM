@@ -48,6 +48,7 @@ import {
   type CommunicationWithType,
   type FlowItem,
   type FlowResponse,
+  type MegaSearchResult,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -200,6 +201,15 @@ export interface IStorage {
   
   // Flow operations (unified timeline)
   getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse>;
+  
+  // Mega search operations
+  megaSearch(query: string, options: {
+    includePeople?: boolean;
+    includeGroups?: boolean;
+    includeInteractions?: boolean;
+    includeNotes?: boolean;
+    includeSocialProfiles?: boolean;
+  }): Promise<MegaSearchResult>;
   
   // Session store
   sessionStore: session.Store;
@@ -1476,6 +1486,103 @@ export class DatabaseStorage implements IStorage {
       nextCursor,
       hasMore,
     };
+  }
+
+  async megaSearch(query: string, options: {
+    includePeople?: boolean;
+    includeGroups?: boolean;
+    includeInteractions?: boolean;
+    includeNotes?: boolean;
+    includeSocialProfiles?: boolean;
+  }): Promise<MegaSearchResult> {
+    const searchPattern = `%${query}%`;
+    const startPattern = `${query}%`;
+    
+    const results: MegaSearchResult = {
+      people: [],
+      groups: [],
+      interactions: [],
+      notes: [],
+      socialProfiles: [],
+    };
+
+    const searchPromises: Promise<void>[] = [];
+
+    if (options.includePeople !== false) {
+      searchPromises.push(
+        db.select().from(people)
+          .where(or(
+            ilike(people.firstName, searchPattern),
+            ilike(people.lastName, searchPattern),
+            ilike(people.company, searchPattern),
+            ilike(people.title, searchPattern),
+            ilike(people.email, searchPattern)
+          ))
+          .orderBy(
+            sql`CASE WHEN ${people.firstName} ILIKE ${startPattern} OR ${people.lastName} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
+            people.firstName,
+            people.lastName
+          )
+          .limit(10)
+          .then(res => { results.people = res; })
+      );
+    }
+
+    if (options.includeGroups !== false) {
+      searchPromises.push(
+        db.select().from(groups)
+          .where(ilike(groups.name, searchPattern))
+          .orderBy(
+            sql`CASE WHEN ${groups.name} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
+            groups.name
+          )
+          .limit(10)
+          .then(res => { results.groups = res; })
+      );
+    }
+
+    if (options.includeInteractions !== false) {
+      searchPromises.push(
+        db.select().from(interactions)
+          .where(or(
+            ilike(interactions.title, searchPattern),
+            ilike(interactions.description, searchPattern)
+          ))
+          .orderBy(interactions.date)
+          .limit(10)
+          .then(res => { results.interactions = res; })
+      );
+    }
+
+    if (options.includeNotes !== false) {
+      searchPromises.push(
+        db.select().from(notes)
+          .where(ilike(notes.content, searchPattern))
+          .orderBy(notes.createdAt)
+          .limit(10)
+          .then(res => { results.notes = res; })
+      );
+    }
+
+    if (options.includeSocialProfiles !== false) {
+      searchPromises.push(
+        db.select().from(socialAccounts)
+          .where(or(
+            ilike(socialAccounts.username, searchPattern),
+            ilike(socialAccounts.accountUrl, searchPattern)
+          ))
+          .orderBy(
+            sql`CASE WHEN ${socialAccounts.username} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
+            socialAccounts.username
+          )
+          .limit(10)
+          .then(res => { results.socialProfiles = res; })
+      );
+    }
+
+    await Promise.all(searchPromises);
+
+    return results;
   }
 }
 
