@@ -431,6 +431,8 @@ export type FlowResponse = {
   items: FlowItem[];
   nextCursor: string | null;
   hasMore: boolean;
+  personIdentifiers?: string[];
+  identifierToName?: Record<string, string>;
 };
 
 export type MegaSearchResult = {

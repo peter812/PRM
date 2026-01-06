@@ -1,9 +1,8 @@
-import { useRef, useCallback, useEffect } from "react";
+import { useRef, useCallback, useEffect, useMemo } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { format, isSameDay } from "date-fns";
 import { MessageSquare, StickyNote, Users, Loader2, Mail, Phone, AtSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import type { FlowItem, FlowResponse, Note, Interaction, Message } from "@shared/schema";
 
 const typeIcons = {
@@ -79,6 +78,16 @@ export function PersonFlowTab({
   }, [handleScroll]);
 
   const allItems = data?.pages.flatMap((page) => page.items) || [];
+  
+  // Get person identifiers and name mapping from the first page
+  const personIdentifiers = useMemo(() => 
+    data?.pages[0]?.personIdentifiers || [], 
+    [data?.pages]
+  );
+  const identifierToName = useMemo(() => 
+    data?.pages[0]?.identifierToName || {}, 
+    [data?.pages]
+  );
 
   const handleItemClick = (item: FlowItem) => {
     if (item.type === "note") {
@@ -169,7 +178,12 @@ export function PersonFlowTab({
       <div key={item.id}>
         {showDateSeparator && renderDateSeparator(itemDate)}
         {item.type === "message" ? (
-          <MessageBubble item={item} onClick={() => handleItemClick(item)} />
+          <MessageBubble 
+            item={item} 
+            onClick={() => handleItemClick(item)} 
+            personIdentifiers={personIdentifiers}
+            identifierToName={identifierToName}
+          />
         ) : (
           <CenteredItem item={item} onClick={() => handleItemClick(item)} />
         )}
@@ -209,36 +223,53 @@ export function PersonFlowTab({
   );
 }
 
-function MessageBubble({ item, onClick }: { item: FlowItem; onClick: () => void }) {
+function MessageBubble({ 
+  item, 
+  onClick, 
+  personIdentifiers,
+  identifierToName 
+}: { 
+  item: FlowItem; 
+  onClick: () => void;
+  personIdentifiers: string[];
+  identifierToName: Record<string, string>;
+}) {
   const msgType = item.messageType || "email";
   const TypeIcon = typeIcons[msgType as keyof typeof typeIcons] || Mail;
   const typeColor = typeColors[msgType as keyof typeof typeColors] || "#6b7280";
 
+  // Determine if message is sent BY the person (sender matches person's identifier)
+  const isSentByPerson = item.sender && personIdentifiers.includes(item.sender);
+  
+  // Get display name for sender - use name from mapping or fall back to identifier
+  const senderDisplay = item.sender 
+    ? (identifierToName[item.sender] || item.sender)
+    : "Unknown";
+
   return (
-    <div className="flex justify-start mb-3">
+    <div className={`flex mb-3 ${isSentByPerson ? 'justify-end' : 'justify-start'}`}>
       <div
-        className="max-w-[80%] p-3 rounded-lg cursor-pointer hover-elevate transition-all"
+        className={`max-w-[80%] p-3 rounded-lg cursor-pointer hover-elevate transition-all ${
+          isSentByPerson ? 'rounded-br-sm' : 'rounded-bl-sm'
+        }`}
         style={{
           backgroundColor: typeColor + "20",
-          borderLeft: `3px solid ${typeColor}`,
+          [isSentByPerson ? 'borderRight' : 'borderLeft']: `3px solid ${typeColor}`,
         }}
         onClick={onClick}
         data-testid={`flow-message-${item.id}`}
       >
         <div className="flex items-center gap-2 mb-1 flex-wrap">
-          <Badge
-            style={{ backgroundColor: typeColor }}
-            className="text-white text-xs"
-          >
-            <TypeIcon className="h-3 w-3 mr-1" />
-            {msgType}
-          </Badge>
+          <TypeIcon 
+            className="h-3 w-3" 
+            style={{ color: typeColor }}
+          />
+          <span className="text-xs font-medium">
+            {senderDisplay}
+          </span>
           <span className="text-xs text-muted-foreground">
             {format(new Date(item.date), "h:mm a")}
           </span>
-        </div>
-        <div className="text-xs text-muted-foreground mb-1">
-          From: {item.sender} → To: {item.receivers?.join(", ") || "N/A"}
         </div>
         {item.content && (
           <p className="text-sm whitespace-pre-wrap break-words">{item.content}</p>

@@ -1467,10 +1467,50 @@ export class DatabaseStorage implements IStorage {
       ? items[items.length - 1].date.toISOString()
       : null;
 
+    // Build identifier to name mapping for all unique senders/receivers in messages
+    const allMessageIdentifiers = new Set<string>();
+    for (const msg of personMessages) {
+      if (msg.sender) allMessageIdentifiers.add(msg.sender);
+      if (msg.receivers) {
+        for (const r of msg.receivers) {
+          allMessageIdentifiers.add(r);
+        }
+      }
+    }
+
+    // Look up names for identifiers by matching against people's phone/email
+    const identifierToName: Record<string, string> = {};
+    if (allMessageIdentifiers.size > 0) {
+      const identifierArray = Array.from(allMessageIdentifiers);
+      const matchingPeople = await db.select({
+        firstName: people.firstName,
+        lastName: people.lastName,
+        phone: people.phone,
+        email: people.email,
+      }).from(people).where(
+        or(
+          inArray(people.phone, identifierArray),
+          inArray(people.email, identifierArray)
+        )
+      );
+
+      for (const p of matchingPeople) {
+        const name = [p.firstName, p.lastName].filter(Boolean).join(' ');
+        if (p.phone && identifierArray.includes(p.phone)) {
+          identifierToName[p.phone] = name;
+        }
+        if (p.email && identifierArray.includes(p.email)) {
+          identifierToName[p.email] = name;
+        }
+      }
+    }
+
     return {
       items,
       nextCursor,
       hasMore,
+      personIdentifiers: identifiers,
+      identifierToName,
     };
   }
 
