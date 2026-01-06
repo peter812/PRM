@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { PersonWithRelations, CommunicationWithType, Note, Interaction } from "@shared/schema";
+import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
 import { queryClient } from "@/lib/queryClient";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
@@ -16,8 +16,6 @@ import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
-import { AddCommunicationDialog } from "@/components/add-communication-dialog";
-import { CommunicationDetailDialog } from "@/components/communication-detail-dialog";
 
 export default function MeProfile() {
   const [, navigate] = useLocation();
@@ -25,8 +23,6 @@ export default function MeProfile() {
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
-  const [isAddCommunicationOpen, setIsAddCommunicationOpen] = useState(false);
-  const [selectedCommunication, setSelectedCommunication] = useState<CommunicationWithType | null>(null);
 
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
     queryKey: ["/api/me"],
@@ -230,10 +226,10 @@ export default function MeProfile() {
               personId={person.id}
               onAddNote={() => setIsAddNoteOpen(true)}
               onAddInteraction={() => setIsAddInteractionOpen(true)}
-              onAddCommunication={() => setIsAddCommunicationOpen(true)}
+              onAddMessage={() => navigate("/messages")}
               onSelectNote={() => {}}
               onSelectInteraction={() => {}}
-              onSelectCommunication={(comm) => setSelectedCommunication(comm)}
+              onSelectMessage={() => navigate("/messages")}
             />
           </TabsContent>
 
@@ -274,17 +270,6 @@ export default function MeProfile() {
         onOpenChange={setIsEditPersonOpen}
         person={person}
         onDelete={() => navigate("/people")}
-      />
-      <AddCommunicationDialog
-        open={isAddCommunicationOpen}
-        onOpenChange={setIsAddCommunicationOpen}
-        personId={person.id}
-      />
-      <CommunicationDetailDialog
-        open={!!selectedCommunication}
-        onOpenChange={(open) => !open && setSelectedCommunication(null)}
-        communication={selectedCommunication}
-        personId={person.id}
       />
     </div>
   );

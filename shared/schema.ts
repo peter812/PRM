@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -155,17 +155,17 @@ export const socialAccounts = pgTable("social_accounts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// Communications table - tracks messages between people
-export const communications = pgTable("communications", {
+// Messages table - tracks messages between contacts
+export const messages = pgTable("messages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
-  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
-  content: text("content").notNull(),
-  typeId: varchar("type_id").references(() => socialAccountTypes.id, { onDelete: "set null" }),
-  direction: text("direction").notNull(), // 'inbound' or 'outbound'
-  date: timestamp("date").notNull(),
-  notes: text("notes"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  uploadTimestamp: timestamp("upload_timestamp").notNull().defaultNow(),
+  sentTimestamp: timestamp("sent_timestamp").notNull(),
+  type: text("type").notNull(), // 'email', 'phone', 'social'
+  sender: text("sender").notNull(), // phone number, email, or social account uuid
+  receivers: text("receivers").array().notNull().default(sql`ARRAY[]::text[]`), // array of phone numbers, emails, or social account uuids
+  content: text("content"),
+  imageUrls: text("image_urls").array().default(sql`ARRAY[]::text[]`), // array of image URLs
+  isOrphan: boolean("is_orphan").notNull().default(true), // true when imported but no known contacts for sender/receiver
 });
 
 // Relations
@@ -182,7 +182,6 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
     references: [users.id],
   }),
   notes: many(notes),
-  communications: many(communications),
   relationshipsFrom: many(relationships, { relationName: "relationshipsFrom" }),
   relationshipsTo: many(relationships, { relationName: "relationshipsTo" }),
 }));
@@ -248,20 +247,6 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
   }),
 }));
 
-export const communicationsRelations = relations(communications, ({ one }) => ({
-  person: one(people, {
-    fields: [communications.personId],
-    references: [people.id],
-  }),
-  type: one(socialAccountTypes, {
-    fields: [communications.typeId],
-    references: [socialAccountTypes.id],
-  }),
-  user: one(users, {
-    fields: [communications.userId],
-    references: [users.id],
-  }),
-}));
 
 // Insert schemas
 export const insertPersonSchema = createInsertSchema(people).omit({
@@ -347,14 +332,17 @@ export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTyp
   createdAt: true,
 });
 
-export const insertCommunicationSchema = createInsertSchema(communications)
+export const insertMessageSchema = createInsertSchema(messages)
   .omit({
     id: true,
-    createdAt: true,
+    uploadTimestamp: true,
   })
   .extend({
-    date: z.coerce.date(),
-    direction: z.enum(["inbound", "outbound"]),
+    sentTimestamp: z.coerce.date(),
+    type: z.enum(["email", "phone", "social"]),
+    receivers: z.array(z.string()).min(1, "At least one receiver is required"),
+    imageUrls: z.array(z.string()).optional(),
+    isOrphan: z.boolean().optional(),
   });
 
 // Types
@@ -394,8 +382,8 @@ export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
 export type SocialAccountType = typeof socialAccountTypes.$inferSelect;
 export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSchema>;
 
-export type Communication = typeof communications.$inferSelect;
-export type InsertCommunication = z.infer<typeof insertCommunicationSchema>;
+export type Message = typeof messages.$inferSelect;
+export type InsertMessage = z.infer<typeof insertMessageSchema>;
 
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {
@@ -403,16 +391,12 @@ export type RelationshipWithPerson = Relationship & {
   type?: RelationshipType;
 };
 
-export type CommunicationWithType = Communication & {
-  type?: SocialAccountType;
-};
-
 export type PersonWithRelations = Person & {
   notes: Note[];
   interactions: Interaction[];
   groups: Group[];
   relationships: RelationshipWithPerson[];
-  communications: CommunicationWithType[];
+  messages: Message[];
 };
 
 export type GroupWithNotes = Group & {
@@ -420,7 +404,7 @@ export type GroupWithNotes = Group & {
 };
 
 // Flow item types for unified timeline view
-export type FlowItemType = 'note' | 'interaction' | 'communication';
+export type FlowItemType = 'note' | 'interaction' | 'message';
 
 export type FlowItem = {
   id: string;
@@ -429,10 +413,12 @@ export type FlowItem = {
   content: string;
   // Note-specific
   imageUrl?: string | null;
-  // Communication-specific
-  direction?: 'inbound' | 'outbound';
-  socialAccountType?: SocialAccountType | null;
-  notes?: string | null;
+  // Message-specific
+  messageType?: 'email' | 'phone' | 'social';
+  sender?: string;
+  receivers?: string[];
+  imageUrls?: string[] | null;
+  isOrphan?: boolean;
   // Interaction-specific
   title?: string | null;
   description?: string | null;

@@ -13,7 +13,7 @@ import {
   ssoConfig,
   socialAccounts,
   socialAccountTypes,
-  communications,
+  messages,
   type Person,
   type InsertPerson,
   type Note,
@@ -43,9 +43,8 @@ import {
   type InsertSocialAccount,
   type SocialAccountType,
   type InsertSocialAccountType,
-  type Communication,
-  type InsertCommunication,
-  type CommunicationWithType,
+  type Message,
+  type InsertMessage,
   type FlowItem,
   type FlowResponse,
   type MegaSearchResult,
@@ -191,13 +190,17 @@ export interface IStorage {
   updateSocialAccountType(id: string, type: Partial<InsertSocialAccountType>): Promise<SocialAccountType | undefined>;
   deleteSocialAccountType(id: string): Promise<void>;
 
-  // Communication operations
-  getCommunicationsByPersonId(personId: string): Promise<CommunicationWithType[]>;
-  getCommunicationById(id: string): Promise<CommunicationWithType | undefined>;
-  createCommunication(communication: InsertCommunication): Promise<Communication>;
-  updateCommunication(id: string, communication: Partial<InsertCommunication>): Promise<Communication | undefined>;
-  deleteCommunication(id: string): Promise<void>;
-  getAllCommunications(): Promise<Communication[]>;
+  // Message operations
+  getAllMessages(): Promise<Message[]>;
+  getMessageById(id: string): Promise<Message | undefined>;
+  getMessagesBySenderOrReceiver(identifier: string): Promise<Message[]>;
+  getOrphanMessages(): Promise<Message[]>;
+  createMessage(message: InsertMessage): Promise<Message>;
+  createMessageWithId(message: InsertMessage & { id: string }): Promise<Message>;
+  updateMessage(id: string, message: Partial<InsertMessage>): Promise<Message | undefined>;
+  deleteMessage(id: string): Promise<void>;
+  deleteMultipleMessages(ids: string[]): Promise<void>;
+  updateMessageOrphanStatus(id: string, isOrphan: boolean): Promise<Message | undefined>;
   
   // Flow operations (unified timeline)
   getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse>;
@@ -453,28 +456,32 @@ export class DatabaseStorage implements IStorage {
     const [person] = await db.select().from(people).where(eq(people.id, id));
     if (!person) return undefined;
 
+    // Build list of identifiers for this person (email, phone, social account UUIDs)
+    const identifiers: string[] = [];
+    if (person.email) identifiers.push(person.email);
+    if (person.phone) identifiers.push(person.phone);
+    if (person.socialAccountUuids && person.socialAccountUuids.length > 0) {
+      identifiers.push(...person.socialAccountUuids);
+    }
+
     // Run all independent queries in parallel
-    const [personNotes, personInteractions, personGroups, personCommunications, relationshipsFrom, relationshipsTo] = await Promise.all([
+    const [personNotes, personInteractions, personGroups, personMessages, relationshipsFrom, relationshipsTo] = await Promise.all([
       db.select().from(notes).where(eq(notes.personId, id)),
       db.select().from(interactions).where(sql`${id} = ANY(${interactions.peopleIds})`),
       db.select().from(groups).where(arrayContains(groups.members, [id])),
-      db
-        .select({
-          id: communications.id,
-          userId: communications.userId,
-          personId: communications.personId,
-          content: communications.content,
-          typeId: communications.typeId,
-          direction: communications.direction,
-          date: communications.date,
-          notes: communications.notes,
-          createdAt: communications.createdAt,
-          type: socialAccountTypes,
-        })
-        .from(communications)
-        .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
-        .where(eq(communications.personId, id))
-        .orderBy(communications.date),
+      // Get messages where person's identifiers appear in sender or receivers
+      identifiers.length > 0
+        ? db
+            .select()
+            .from(messages)
+            .where(
+              or(
+                inArray(messages.sender, identifiers),
+                sql`${messages.receivers} && ${sql`ARRAY[${sql.join(identifiers.map(i => sql`${i}`), sql`, `)}]::text[]`}`
+              )
+            )
+            .orderBy(messages.sentTimestamp)
+        : Promise.resolve([]),
       db
         .select({
           id: relationships.id,
@@ -525,10 +532,7 @@ export class DatabaseStorage implements IStorage {
       interactions: personInteractions,
       groups: personGroups,
       relationships: allRelationships,
-      communications: personCommunications.map(c => ({
-        ...c,
-        type: c.type || undefined,
-      })),
+      messages: personMessages,
     };
   }
 
@@ -1277,112 +1281,98 @@ export class DatabaseStorage implements IStorage {
     return newAccount;
   }
 
-  // Communication operations
-  async getCommunicationsByPersonId(personId: string): Promise<CommunicationWithType[]> {
-    const result = await db
-      .select({
-        id: communications.id,
-        userId: communications.userId,
-        personId: communications.personId,
-        content: communications.content,
-        typeId: communications.typeId,
-        direction: communications.direction,
-        date: communications.date,
-        notes: communications.notes,
-        createdAt: communications.createdAt,
-        type: socialAccountTypes,
-      })
-      .from(communications)
-      .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
-      .where(eq(communications.personId, personId))
-      .orderBy(communications.date);
-    
-    return result.map(row => ({
-      id: row.id,
-      userId: row.userId,
-      personId: row.personId,
-      content: row.content,
-      typeId: row.typeId,
-      direction: row.direction,
-      date: row.date,
-      notes: row.notes,
-      createdAt: row.createdAt,
-      type: row.type || undefined,
-    }));
+  // Message operations
+  async getAllMessages(): Promise<Message[]> {
+    return await db.select().from(messages).orderBy(messages.sentTimestamp);
   }
 
-  async getCommunicationById(id: string): Promise<CommunicationWithType | undefined> {
-    const [result] = await db
-      .select({
-        id: communications.id,
-        userId: communications.userId,
-        personId: communications.personId,
-        content: communications.content,
-        typeId: communications.typeId,
-        direction: communications.direction,
-        date: communications.date,
-        notes: communications.notes,
-        createdAt: communications.createdAt,
-        type: socialAccountTypes,
-      })
-      .from(communications)
-      .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
-      .where(eq(communications.id, id));
-    
-    if (!result) return undefined;
-    
-    return {
-      id: result.id,
-      userId: result.userId,
-      personId: result.personId,
-      content: result.content,
-      typeId: result.typeId,
-      direction: result.direction,
-      date: result.date,
-      notes: result.notes,
-      createdAt: result.createdAt,
-      type: result.type || undefined,
-    };
+  async getMessageById(id: string): Promise<Message | undefined> {
+    const [result] = await db.select().from(messages).where(eq(messages.id, id));
+    return result || undefined;
   }
 
-  async createCommunication(communication: InsertCommunication): Promise<Communication> {
+  async getMessagesBySenderOrReceiver(identifier: string): Promise<Message[]> {
+    return await db
+      .select()
+      .from(messages)
+      .where(
+        or(
+          eq(messages.sender, identifier),
+          sql`${identifier} = ANY(${messages.receivers})`
+        )
+      )
+      .orderBy(messages.sentTimestamp);
+  }
+
+  async getOrphanMessages(): Promise<Message[]> {
+    return await db
+      .select()
+      .from(messages)
+      .where(eq(messages.isOrphan, true))
+      .orderBy(messages.sentTimestamp);
+  }
+
+  async createMessage(message: InsertMessage): Promise<Message> {
     const [created] = await db
-      .insert(communications)
-      .values(communication)
+      .insert(messages)
+      .values(message)
       .returning();
     return created;
   }
 
-  async updateCommunication(
+  async createMessageWithId(message: InsertMessage & { id: string }): Promise<Message> {
+    const [newMessage] = await db.insert(messages).values(message).returning();
+    return newMessage;
+  }
+
+  async updateMessage(
     id: string,
-    communication: Partial<InsertCommunication>
-  ): Promise<Communication | undefined> {
+    message: Partial<InsertMessage>
+  ): Promise<Message | undefined> {
     const [updated] = await db
-      .update(communications)
-      .set(communication)
-      .where(eq(communications.id, id))
+      .update(messages)
+      .set(message)
+      .where(eq(messages.id, id))
       .returning();
     return updated || undefined;
   }
 
-  async deleteCommunication(id: string): Promise<void> {
-    await db.delete(communications).where(eq(communications.id, id));
+  async deleteMessage(id: string): Promise<void> {
+    await db.delete(messages).where(eq(messages.id, id));
   }
 
-  async getAllCommunications(): Promise<Communication[]> {
-    return await db.select().from(communications);
+  async deleteMultipleMessages(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await db.delete(messages).where(inArray(messages.id, ids));
   }
 
-  async createCommunicationWithId(communication: InsertCommunication & { id: string }): Promise<Communication> {
-    const [newCommunication] = await db.insert(communications).values(communication).returning();
-    return newCommunication;
+  async updateMessageOrphanStatus(id: string, isOrphan: boolean): Promise<Message | undefined> {
+    const [updated] = await db
+      .update(messages)
+      .set({ isOrphan })
+      .where(eq(messages.id, id))
+      .returning();
+    return updated || undefined;
   }
 
   async getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse> {
     const cursorDate = cursor ? new Date(cursor) : new Date();
     
+    // Get person to find their identifiers
+    const [person] = await db.select().from(people).where(eq(people.id, personId));
+    
+    // Build list of identifiers for this person
+    const identifiers: string[] = [];
+    if (person) {
+      if (person.email) identifiers.push(person.email);
+      if (person.phone) identifiers.push(person.phone);
+      if (person.socialAccountUuids && person.socialAccountUuids.length > 0) {
+        identifiers.push(...person.socialAccountUuids);
+      }
+    }
+    
     // Fetch all three data types in parallel
-    const [personNotes, personInteractions, personCommunications] = await Promise.all([
+    const [personNotes, personInteractions, personMessages] = await Promise.all([
       db
         .select()
         .from(notes)
@@ -1413,27 +1403,21 @@ export class DatabaseStorage implements IStorage {
         ))
         .orderBy(sql`${interactions.date} DESC`)
         .limit(limit + 1),
-      db
-        .select({
-          id: communications.id,
-          userId: communications.userId,
-          personId: communications.personId,
-          content: communications.content,
-          typeId: communications.typeId,
-          direction: communications.direction,
-          date: communications.date,
-          notes: communications.notes,
-          createdAt: communications.createdAt,
-          type: socialAccountTypes,
-        })
-        .from(communications)
-        .leftJoin(socialAccountTypes, eq(communications.typeId, socialAccountTypes.id))
-        .where(and(
-          eq(communications.personId, personId),
-          sql`${communications.date} < ${cursorDate}`
-        ))
-        .orderBy(sql`${communications.date} DESC`)
-        .limit(limit + 1),
+      // Get messages where person's identifiers appear in sender or receivers
+      identifiers.length > 0
+        ? db
+            .select()
+            .from(messages)
+            .where(and(
+              or(
+                inArray(messages.sender, identifiers),
+                sql`${messages.receivers} && ${sql`ARRAY[${sql.join(identifiers.map(i => sql`${i}`), sql`, `)}]::text[]`}`
+              ),
+              sql`${messages.sentTimestamp} < ${cursorDate}`
+            ))
+            .orderBy(sql`${messages.sentTimestamp} DESC`)
+            .limit(limit + 1)
+        : Promise.resolve([]),
     ]);
 
     // Transform each type into FlowItem format
@@ -1458,18 +1442,20 @@ export class DatabaseStorage implements IStorage {
       imageUrl: interaction.imageUrl,
     }));
 
-    const communicationItems: FlowItem[] = personCommunications.map(comm => ({
-      id: comm.id,
-      type: 'communication' as const,
-      date: comm.date,
-      content: comm.content,
-      direction: comm.direction as 'inbound' | 'outbound',
-      socialAccountType: comm.type || undefined,
-      notes: comm.notes,
+    const messageItems: FlowItem[] = personMessages.map(msg => ({
+      id: msg.id,
+      type: 'message' as const,
+      date: msg.sentTimestamp,
+      content: msg.content || '',
+      messageType: msg.type as 'email' | 'phone' | 'social',
+      sender: msg.sender,
+      receivers: msg.receivers || [],
+      imageUrls: msg.imageUrls,
+      isOrphan: msg.isOrphan,
     }));
 
     // Merge and sort all items by date descending
-    const allItems = [...noteItems, ...interactionItems, ...communicationItems]
+    const allItems = [...noteItems, ...interactionItems, ...messageItems]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     // Check if there are more items

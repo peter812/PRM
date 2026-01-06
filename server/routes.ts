@@ -18,7 +18,7 @@ import {
   insertApiKeySchema,
   insertSocialAccountSchema,
   insertSocialAccountTypeSchema,
-  insertCommunicationSchema,
+  insertMessageSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -1609,7 +1609,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Flow endpoint - unified timeline for notes, interactions, and communications
+  // Flow endpoint - unified timeline for notes, interactions, and messages
   app.get("/api/people/:id/flow", async (req, res) => {
     try {
       const id = req.params.id;
@@ -2447,75 +2447,121 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Communications endpoints
-  app.get("/api/communications", async (req, res) => {
+  // Messages endpoints
+  app.get("/api/messages", async (req, res) => {
     try {
-      const personId = req.query.personId as string | undefined;
-      if (personId) {
-        const communications = await storage.getCommunicationsByPersonId(personId);
-        res.json(communications);
+      const identifier = req.query.identifier as string | undefined;
+      const orphansOnly = req.query.orphansOnly === "true";
+      
+      if (orphansOnly) {
+        const messages = await storage.getOrphanMessages();
+        res.json(messages);
+      } else if (identifier) {
+        const messages = await storage.getMessagesBySenderOrReceiver(identifier);
+        res.json(messages);
       } else {
-        const communications = await storage.getAllCommunications();
-        res.json(communications);
+        const messages = await storage.getAllMessages();
+        res.json(messages);
       }
     } catch (error) {
-      console.error("Error fetching communications:", error);
-      res.status(500).json({ error: "Failed to fetch communications" });
+      console.error("Error fetching messages:", error);
+      res.status(500).json({ error: "Failed to fetch messages" });
     }
   });
 
-  app.get("/api/communications/:id", async (req, res) => {
+  app.get("/api/messages/orphans", async (req, res) => {
+    try {
+      const messages = await storage.getOrphanMessages();
+      res.json(messages);
+    } catch (error) {
+      console.error("Error fetching orphan messages:", error);
+      res.status(500).json({ error: "Failed to fetch orphan messages" });
+    }
+  });
+
+  app.get("/api/messages/:id", async (req, res) => {
     try {
       const id = req.params.id;
-      const communication = await storage.getCommunicationById(id);
+      const message = await storage.getMessageById(id);
 
-      if (!communication) {
-        return res.status(404).json({ error: "Communication not found" });
+      if (!message) {
+        return res.status(404).json({ error: "Message not found" });
       }
 
-      res.json(communication);
+      res.json(message);
     } catch (error) {
-      console.error("Error fetching communication:", error);
-      res.status(500).json({ error: "Failed to fetch communication" });
+      console.error("Error fetching message:", error);
+      res.status(500).json({ error: "Failed to fetch message" });
     }
   });
 
-  app.post("/api/communications", async (req, res) => {
+  app.post("/api/messages", async (req, res) => {
     try {
-      const validatedData = insertCommunicationSchema.parse(req.body);
-      const communication = await storage.createCommunication(validatedData);
-      res.status(201).json(communication);
+      const validatedData = insertMessageSchema.parse(req.body);
+      const message = await storage.createMessage(validatedData);
+      res.status(201).json(message);
     } catch (error) {
-      console.error("Error creating communication:", error);
-      res.status(400).json({ error: "Failed to create communication" });
+      console.error("Error creating message:", error);
+      res.status(400).json({ error: "Failed to create message" });
     }
   });
 
-  app.patch("/api/communications/:id", async (req, res) => {
+  app.patch("/api/messages/:id", async (req, res) => {
     try {
       const id = req.params.id;
-      const validatedData = insertCommunicationSchema.partial().parse(req.body);
-      const communication = await storage.updateCommunication(id, validatedData);
+      const validatedData = insertMessageSchema.partial().parse(req.body);
+      const message = await storage.updateMessage(id, validatedData);
 
-      if (!communication) {
-        return res.status(404).json({ error: "Communication not found" });
+      if (!message) {
+        return res.status(404).json({ error: "Message not found" });
       }
 
-      res.json(communication);
+      res.json(message);
     } catch (error) {
-      console.error("Error updating communication:", error);
-      res.status(400).json({ error: "Failed to update communication" });
+      console.error("Error updating message:", error);
+      res.status(400).json({ error: "Failed to update message" });
     }
   });
 
-  app.delete("/api/communications/:id", async (req, res) => {
+  app.patch("/api/messages/:id/orphan-status", async (req, res) => {
     try {
       const id = req.params.id;
-      await storage.deleteCommunication(id);
+      const { isOrphan } = req.body;
+      const message = await storage.updateMessageOrphanStatus(id, isOrphan);
+
+      if (!message) {
+        return res.status(404).json({ error: "Message not found" });
+      }
+
+      res.json(message);
+    } catch (error) {
+      console.error("Error updating message orphan status:", error);
+      res.status(400).json({ error: "Failed to update message orphan status" });
+    }
+  });
+
+  app.delete("/api/messages/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      await storage.deleteMessage(id);
       res.json({ success: true });
     } catch (error) {
-      console.error("Error deleting communication:", error);
-      res.status(500).json({ error: "Failed to delete communication" });
+      console.error("Error deleting message:", error);
+      res.status(500).json({ error: "Failed to delete message" });
+    }
+  });
+
+  app.delete("/api/messages", async (req, res) => {
+    try {
+      const ids = req.body.ids as string[];
+      if (!ids || !Array.isArray(ids)) {
+        return res.status(400).json({ error: "ids array is required" });
+      }
+      await storage.deleteMultipleMessages(ids);
+      res.json({ success: true, deletedCount: ids.length });
+    } catch (error) {
+      console.error("Error deleting multiple messages:", error);
+      res.status(500).json({ error: "Failed to delete messages" });
     }
   });
 

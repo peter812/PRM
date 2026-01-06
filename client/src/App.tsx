@@ -36,6 +36,7 @@ import AuthDirectPage from "@/pages/auth-direct";
 import WelcomePage from "@/pages/welcome-page";
 import SettingsLayout from "@/pages/settings-layout";
 import DummyAuth from "@/pages/dummy-auth";
+import MessagesList from "@/pages/messages-list";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -55,6 +56,7 @@ function Router() {
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/graph-3d" component={Graph3D} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
+      <ProtectedRoute path="/messages" component={MessagesList} />
       <ProtectedRoute path="/settings" component={SettingsLayout} />
       <ProtectedRoute path="/settings/:rest*" component={SettingsLayout} />
       <ProtectedRoute path="/dummy-auth" component={DummyAuth} />

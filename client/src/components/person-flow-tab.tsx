@@ -1,28 +1,41 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useRef, useCallback, useEffect } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { format, isSameDay } from "date-fns";
-import { MessageSquare, StickyNote, Users, Plus, ArrowDownLeft, ArrowUpRight, Loader2 } from "lucide-react";
+import { MessageSquare, StickyNote, Users, Loader2, Mail, Phone, AtSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { FlowItem, FlowResponse, Note, Interaction, CommunicationWithType } from "@shared/schema";
+import { Badge } from "@/components/ui/badge";
+import type { FlowItem, FlowResponse, Note, Interaction, Message } from "@shared/schema";
+
+const typeIcons = {
+  email: Mail,
+  phone: Phone,
+  social: AtSign,
+};
+
+const typeColors = {
+  email: "#3b82f6",
+  phone: "#22c55e",
+  social: "#a855f7",
+};
 
 interface PersonFlowTabProps {
   personId: string;
   onAddNote: () => void;
   onAddInteraction: () => void;
-  onAddCommunication: () => void;
+  onAddMessage: () => void;
   onSelectNote: (note: Note) => void;
   onSelectInteraction: (interaction: Interaction) => void;
-  onSelectCommunication: (communication: CommunicationWithType) => void;
+  onSelectMessage: (message: Message) => void;
 }
 
 export function PersonFlowTab({
   personId,
   onAddNote,
   onAddInteraction,
-  onAddCommunication,
+  onAddMessage,
   onSelectNote,
   onSelectInteraction,
-  onSelectCommunication,
+  onSelectMessage,
 }: PersonFlowTabProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -88,18 +101,17 @@ export function PersonFlowTab({
         imageUrl: item.imageUrl || null,
         createdAt: new Date(item.date),
       });
-    } else if (item.type === "communication") {
-      onSelectCommunication({
+    } else if (item.type === "message") {
+      onSelectMessage({
         id: item.id,
-        userId: null,
-        personId,
-        content: item.content,
-        typeId: item.socialAccountType?.id || null,
-        direction: item.direction || "inbound",
-        date: new Date(item.date),
-        notes: item.notes || null,
-        createdAt: new Date(item.date),
-        type: item.socialAccountType || undefined,
+        uploadTimestamp: new Date(item.date),
+        sentTimestamp: new Date(item.date),
+        type: item.messageType || "email",
+        sender: item.sender || "",
+        receivers: item.receivers || [],
+        content: item.content || null,
+        imageUrls: item.imageUrls || [],
+        isOrphan: item.isOrphan || false,
       });
     }
   };
@@ -120,7 +132,7 @@ export function PersonFlowTab({
         </div>
         <h3 className="text-lg font-medium mb-2">No activity yet</h3>
         <p className="text-muted-foreground mb-6 max-w-sm">
-          Add notes, interactions, or communications to see them here.
+          Add notes, interactions, or messages to see them here.
         </p>
         <div className="flex gap-2 flex-wrap justify-center">
           <Button onClick={onAddNote} variant="outline" data-testid="button-add-first-note">
@@ -131,7 +143,7 @@ export function PersonFlowTab({
             <Users className="h-4 w-4" />
             Add Interaction
           </Button>
-          <Button onClick={onAddCommunication} data-testid="button-add-first-communication">
+          <Button onClick={onAddMessage} data-testid="button-add-first-message">
             <MessageSquare className="h-4 w-4" />
             Add Message
           </Button>
@@ -156,8 +168,8 @@ export function PersonFlowTab({
     return (
       <div key={item.id}>
         {showDateSeparator && renderDateSeparator(itemDate)}
-        {item.type === "communication" ? (
-          <CommunicationBubble item={item} onClick={() => handleItemClick(item)} />
+        {item.type === "message" ? (
+          <MessageBubble item={item} onClick={() => handleItemClick(item)} />
         ) : (
           <CenteredItem item={item} onClick={() => handleItemClick(item)} />
         )}
@@ -176,7 +188,7 @@ export function PersonFlowTab({
           <Button size="sm" variant="ghost" onClick={onAddInteraction} data-testid="button-add-interaction">
             <Users className="h-4 w-4" />
           </Button>
-          <Button size="sm" onClick={onAddCommunication} data-testid="button-add-communication">
+          <Button size="sm" onClick={onAddMessage} data-testid="button-add-message">
             <MessageSquare className="h-4 w-4" />
             Message
           </Button>
@@ -197,45 +209,56 @@ export function PersonFlowTab({
   );
 }
 
-function CommunicationBubble({ item, onClick }: { item: FlowItem; onClick: () => void }) {
-  const isInbound = item.direction === "inbound";
-  const bgColor = item.socialAccountType?.color || "#6b7280";
+function MessageBubble({ item, onClick }: { item: FlowItem; onClick: () => void }) {
+  const msgType = item.messageType || "email";
+  const TypeIcon = typeIcons[msgType as keyof typeof typeIcons] || Mail;
+  const typeColor = typeColors[msgType as keyof typeof typeColors] || "#6b7280";
 
   return (
-    <div className={`flex ${isInbound ? "justify-start" : "justify-end"} mb-3`}>
+    <div className="flex justify-start mb-3">
       <div
-        className={`
-          max-w-[80%] p-3 rounded-lg cursor-pointer
-          hover-elevate transition-all
-          ${isInbound ? "rounded-tl-none" : "rounded-tr-none"}
-        `}
+        className="max-w-[80%] p-3 rounded-lg cursor-pointer hover-elevate transition-all"
         style={{
-          backgroundColor: bgColor + "20",
-          borderLeft: isInbound ? `3px solid ${bgColor}` : undefined,
-          borderRight: !isInbound ? `3px solid ${bgColor}` : undefined,
+          backgroundColor: typeColor + "20",
+          borderLeft: `3px solid ${typeColor}`,
         }}
         onClick={onClick}
-        data-testid={`flow-communication-${item.id}`}
+        data-testid={`flow-message-${item.id}`}
       >
-        <div className="flex items-center gap-2 mb-1">
-          {isInbound ? (
-            <ArrowDownLeft className="h-3 w-3 text-muted-foreground" />
-          ) : (
-            <ArrowUpRight className="h-3 w-3 text-muted-foreground" />
-          )}
-          <span
-            className="text-xs font-medium px-1.5 py-0.5 rounded"
-            style={{ backgroundColor: bgColor, color: "white" }}
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          <Badge
+            style={{ backgroundColor: typeColor }}
+            className="text-white text-xs"
           >
-            {item.socialAccountType?.name || "Message"}
-          </span>
+            <TypeIcon className="h-3 w-3 mr-1" />
+            {msgType}
+          </Badge>
           <span className="text-xs text-muted-foreground">
             {format(new Date(item.date), "h:mm a")}
           </span>
         </div>
-        <p className="text-sm whitespace-pre-wrap break-words">{item.content}</p>
-        {item.notes && (
-          <p className="text-xs text-muted-foreground mt-2 italic">{item.notes}</p>
+        <div className="text-xs text-muted-foreground mb-1">
+          From: {item.sender} → To: {item.receivers?.join(", ") || "N/A"}
+        </div>
+        {item.content && (
+          <p className="text-sm whitespace-pre-wrap break-words">{item.content}</p>
+        )}
+        {item.imageUrls && item.imageUrls.length > 0 && (
+          <div className="flex gap-1 mt-2">
+            {item.imageUrls.slice(0, 2).map((url, idx) => (
+              <img
+                key={idx}
+                src={url}
+                alt={`Attachment ${idx + 1}`}
+                className="h-10 w-10 object-cover rounded"
+              />
+            ))}
+            {item.imageUrls.length > 2 && (
+              <div className="h-10 w-10 rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
+                +{item.imageUrls.length - 2}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
