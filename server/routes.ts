@@ -1129,6 +1129,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let updatedCount = 0;
       const processedAccountIds: string[] = [];
 
+      // Get the Instagram social account type
+      const instagramType = await storage.getSocialAccountTypeByName("instagram");
+      const instagramTypeId = instagramType?.id || null;
+
       // Get all existing social accounts for username lookup
       const allAccounts = await storage.getAllSocialAccounts();
       const accountsByUsername = new Map(allAccounts.map(a => [a.username.toLowerCase(), a]));
@@ -1163,7 +1167,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           processedAccountIds.push(existingAccount.id);
         } else {
-          // Create new account
+          // Create new account with Instagram type
           const newAccount = await storage.createSocialAccount({
             username,
             nickname: fullName || null,
@@ -1173,7 +1177,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             notes: instagramId ? `Instagram ID: ${instagramId}` : null,
             following: [],
             followers: [],
-            typeId: null,
+            typeId: instagramTypeId,
           });
           
           accountsByUsername.set(username.toLowerCase(), newAccount);

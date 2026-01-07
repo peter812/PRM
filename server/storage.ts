@@ -186,6 +186,7 @@ export interface IStorage {
   // Social account type operations
   getAllSocialAccountTypes(): Promise<SocialAccountType[]>;
   getSocialAccountTypeById(id: string): Promise<SocialAccountType | undefined>;
+  getSocialAccountTypeByName(name: string): Promise<SocialAccountType | undefined>;
   createSocialAccountType(type: InsertSocialAccountType): Promise<SocialAccountType>;
   updateSocialAccountType(id: string, type: Partial<InsertSocialAccountType>): Promise<SocialAccountType | undefined>;
   deleteSocialAccountType(id: string): Promise<void>;
@@ -1194,6 +1195,14 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(socialAccountTypes)
       .where(eq(socialAccountTypes.id, id));
+    return type || undefined;
+  }
+
+  async getSocialAccountTypeByName(name: string): Promise<SocialAccountType | undefined> {
+    const [type] = await db
+      .select()
+      .from(socialAccountTypes)
+      .where(sql`LOWER(${socialAccountTypes.name}) = LOWER(${name})`);
     return type || undefined;
   }
 
