@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2 } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -19,6 +19,7 @@ import InteractionTypesList from "@/pages/interaction-types-list";
 import SocialAccountTypesList from "@/pages/social-account-types-list";
 import ApiSettingsPage from "@/pages/api-settings";
 import ApiDocs from "@/pages/api-docs";
+import DeleteOptionsPage from "@/pages/delete-options";
 import NotFound from "@/pages/not-found";
 
 const settingsMenuItems = [
@@ -61,6 +62,11 @@ const settingsMenuItems = [
     title: "API Documentation",
     url: "/settings/api",
     icon: Book,
+  },
+  {
+    title: "Delete Options",
+    url: "/settings/delete",
+    icon: Trash2,
   },
 ];
 
@@ -116,6 +122,7 @@ export default function SettingsLayout() {
               <Route path="/settings/social-account-types" component={SocialAccountTypesList} />
               <Route path="/settings/api-settings" component={ApiSettingsPage} />
               <Route path="/settings/api" component={ApiDocs} />
+              <Route path="/settings/delete" component={DeleteOptionsPage} />
               <Route component={NotFound} />
             </Switch>
           </main>

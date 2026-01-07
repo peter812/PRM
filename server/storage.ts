@@ -178,6 +178,7 @@ export interface IStorage {
   createSocialAccount(account: InsertSocialAccount): Promise<SocialAccount>;
   updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
   deleteSocialAccount(id: string): Promise<void>;
+  deleteAllSocialAccounts(): Promise<number>;
   addFollower(accountId: string, followerId: string): Promise<void>;
   removeFollower(accountId: string, followerId: string): Promise<void>;
   addFollowing(accountId: string, followingId: string): Promise<void>;
@@ -1128,6 +1129,20 @@ export class DatabaseStorage implements IStorage {
     
     // Delete the social account
     await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
+  }
+
+  async deleteAllSocialAccounts(): Promise<number> {
+    // Get the count before deletion
+    const allAccounts = await db.select().from(socialAccounts);
+    const count = allAccounts.length;
+
+    // Clear all people's socialAccountUuids
+    await db.update(people).set({ socialAccountUuids: [] });
+
+    // Delete all social accounts
+    await db.delete(socialAccounts);
+
+    return count;
   }
 
   async addFollower(accountId: string, followerId: string): Promise<void> {

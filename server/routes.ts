@@ -2549,6 +2549,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.delete("/api/social-accounts/delete-all", async (req, res) => {
+    try {
+      const count = await storage.deleteAllSocialAccounts();
+      res.json({ success: true, deleted: count });
+    } catch (error) {
+      console.error("Error deleting all social accounts:", error);
+      res.status(500).json({ error: "Failed to delete all social accounts" });
+    }
+  });
+
   app.delete("/api/social-accounts/:id", async (req, res) => {
     try {
       const id = req.params.id;

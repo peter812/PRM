@@ -3,15 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Slider } from "@/components/ui/slider";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -19,11 +10,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Upload, FileText, AlertCircle, CheckCircle2, Download, Trash2, ChevronRight, MessageSquare, Instagram } from "lucide-react";
+import { Upload, FileText, AlertCircle, CheckCircle2, Download, MessageSquare, Instagram } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { useLocation } from "wouter";
 import type { SocialAccount } from "@shared/schema";
 
 export default function AppOptionsPage() {
@@ -33,12 +23,8 @@ export default function AppOptionsPage() {
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
-  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
-  const [confirmSliderValue, setConfirmSliderValue] = useState([0]);
-  const [includeExamples, setIncludeExamples] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [, navigate] = useLocation();
 
   const { data: socialAccounts } = useQuery<SocialAccount[]>({
     queryKey: ["/api/social-accounts"],
@@ -346,66 +332,6 @@ export default function AppOptionsPage() {
         variant: "destructive",
       });
     }
-  };
-
-  const resetDatabaseMutation = useMutation({
-    mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
-      const response = await fetch("/api/reset-database", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ includeExamples }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to reset database");
-      }
-
-      return response.json();
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Database Reset Complete",
-        description: "Your database has been reset successfully. You can now create a new account.",
-      });
-
-      // Close dialog and reset form
-      setIsResetDialogOpen(false);
-      setConfirmSliderValue([0]);
-      setIncludeExamples(false);
-
-      // Invalidate all queries to refresh data
-      queryClient.invalidateQueries();
-
-      // Redirect to welcome page after a brief delay since session was destroyed and user creation is enabled
-      setTimeout(() => {
-        window.location.href = "/welcome";
-      }, 1500);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Reset Failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const handleResetDatabase = () => {
-    if (confirmSliderValue[0] < 100) {
-      toast({
-        title: "Confirmation Required",
-        description: "Please slide the confirmation slider all the way to the right",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    resetDatabaseMutation.mutate({
-      includeExamples,
-    });
   };
 
   return (
@@ -894,148 +820,6 @@ export default function AppOptionsPage() {
           )}
         </CardContent>
       </Card>
-
-      <Card className="mt-6 border-destructive/50">
-        <CardHeader>
-          <CardTitle className="text-destructive">Reset Database</CardTitle>
-          <CardDescription>Remove all tables from database and reinstall</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
-              <div className="space-y-1 text-sm">
-                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>All existing data will be permanently deleted</li>
-                  <li>All tables will be dropped and recreated</li>
-                  <li>Default relationship and interaction types will be restored</li>
-                  <li>A new "Me" person entry will be created for your user account</li>
-                  <li>Optionally add example people and groups for testing</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between rounded-md border p-4">
-            <div className="space-y-0.5">
-              <Label htmlFor="include-examples" className="text-base font-medium">
-                Add Example Data
-              </Label>
-              <p className="text-sm text-muted-foreground">
-                Include 6 example people and 2 groups in the reset
-              </p>
-            </div>
-            <Switch
-              id="include-examples"
-              checked={includeExamples}
-              onCheckedChange={setIncludeExamples}
-              data-testid="switch-include-examples"
-            />
-          </div>
-
-          <Button
-            variant="destructive"
-            onClick={() => setIsResetDialogOpen(true)}
-            className="gap-2"
-            data-testid="button-reset-database"
-          >
-            <Trash2 className="h-4 w-4" />
-            Reset Database
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Dialog open={isResetDialogOpen} onOpenChange={(open) => {
-        setIsResetDialogOpen(open);
-        if (!open) {
-          setConfirmSliderValue([0]);
-        }
-      }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-destructive">Confirm Database Reset</DialogTitle>
-            <DialogDescription>
-              This will permanently delete all your data. Slide to confirm.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium">
-                  Slide to confirm
-                </Label>
-                <span className="text-xs text-muted-foreground">
-                  {confirmSliderValue[0]}%
-                </span>
-              </div>
-              <div className="relative">
-                <Slider
-                  value={confirmSliderValue}
-                  onValueChange={setConfirmSliderValue}
-                  max={100}
-                  step={1}
-                  disabled={resetDatabaseMutation.isPending}
-                  data-testid="slider-confirm-reset"
-                  className="w-full"
-                />
-                <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                  <span>Cancel</span>
-                  <div className="flex items-center gap-1">
-                    <span className={confirmSliderValue[0] === 100 ? "text-destructive font-medium" : ""}>
-                      Confirm Reset
-                    </span>
-                    <ChevronRight className="h-3 w-3" />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {includeExamples && (
-              <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">
-                <p className="font-medium mb-1">Example data will include:</p>
-                <ul className="list-disc list-inside space-y-0.5 text-xs">
-                  <li>6 example people (Sarah Johnson, Michael Chen, Emily Rodriguez, David Thompson, Jessica Williams, Alex Martinez)</li>
-                  <li>2 example groups (Work Team, Close Friends)</li>
-                </ul>
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsResetDialogOpen(false);
-                setConfirmSliderValue([0]);
-              }}
-              disabled={resetDatabaseMutation.isPending}
-              data-testid="button-cancel-reset"
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleResetDatabase}
-              disabled={
-                resetDatabaseMutation.isPending ||
-                confirmSliderValue[0] < 100
-              }
-              data-testid="button-confirm-reset"
-            >
-              {resetDatabaseMutation.isPending ? (
-                <>
-                  <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin mr-2" />
-                  Resetting...
-                </>
-              ) : (
-                "Reset Database"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
