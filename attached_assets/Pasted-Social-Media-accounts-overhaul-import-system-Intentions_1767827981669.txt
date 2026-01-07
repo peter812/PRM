@@ -1,0 +1,72 @@
+Social Media accounts overhaul + import system:
+
+
+Intentions:
+Update social media account DB schema, update social media account frontend
+Build Import system for CSV import file for followers and following.
+
+
+
+## Update DB schema
+
+Social media accounts should now have the following attributes:
+profile Pic URL (STRING)
+Username (this may already exist)
+nickname (STRING)
+Notes (STRING)
+
+
+
+
+## update frontend
+
+social accounts page:
+
+Social account card:
+Account ICON should default to the profile pic URL (when available)
+the in the following order:
+usernane (bold) (keep the current lettering)
+nickname: right below username smaller front slightly greyed out (if black do not show)
+following and followers section (keep the same)
+remove the profile URL link (move this to a (go to profile icon located to the left of the edit button))
+
+
+
+
+
+## Import system - settings - front end
+
+New import card "instagram import"
+on and off slider option to pick in between importing following and followers
+social media account drop down box (allows user to pick any of the social media accounts created in the system)
+and a file upload to import a CSV file
+
+
+Import method
+
+Context: when i use the terms "US" and "we" i mean the the social media account selected in the drop down box
+
+Followers:
+will get the this form in the CSV file: (per line)
+"followed_by_viewer";"full_name";"id";"is_verified";"profile_pic_url";"requested_by_viewer";"username"
+
+Order of operations: (importing accounts that follow US)
+1. Check if username has already been created in the social account DB (if not make a new one)
+	1. if you need to create one: make the imported User name the username, make the imported full name the nickname, and add the imported id to the notes section. set the profile pic URL
+	2. If you don't need to create a new account cross check the nick name with the imported full name, if they are different, set the nick name to the imported name. update the profile pic URL(from the import)
+2. once the account is known to be in the DB (and up to date)
+	1. add the UUID of every account in the import list to the WE users follower list (make sure to not add in duplicate UUIDs)
+	2. then (if "followed_by_viewer" = true then )
+		1. add the UUID of every account in the import list to the WE users follower list (make sure to not add in duplicate UUIDs)
+
+
+
+Following: (importing accounts that we follow)
+"followed_by_viewer";"full_name";"id";"is_verified";"profile_pic_url";"requested_by_viewer";"username"
+
+1. Check if username has already been created in the social account DB (if not make a new one)
+	1. if you need to create one: make the imported User name the username, make the imported full name the nickname, and add the imported id to the notes section. set the profile pic URL
+	2. If you don't need to create a new account cross check the nick name with the imported full name, if they are different, set the nick name to the imported name. update the profile pic URL(from the import)
+2. once the account is known to be in the DB (and up to date)
+	1. we need to update the following status of the WE user
+	2. add the UUID of every account in the import list to the WE users following list (make sure to not add in duplicate UUIDs)
