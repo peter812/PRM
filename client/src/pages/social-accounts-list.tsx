@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2 } from "lucide-react";
+import { Plus, X, Users2, Edit2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -135,7 +135,8 @@ export default function SocialAccountsList() {
       filtered = filtered.filter(
         (account) =>
           account.username.toLowerCase().includes(query) ||
-          account.accountUrl.toLowerCase().includes(query)
+          account.accountUrl.toLowerCase().includes(query) ||
+          (account.nickname && account.nickname.toLowerCase().includes(query))
       );
     }
 
@@ -266,8 +267,8 @@ export default function SocialAccountsList() {
                       </Avatar>
 
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <h3 className="font-medium truncate" data-testid={`text-username-${account.id}`}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="font-bold truncate" data-testid={`text-username-${account.id}`}>
                             {account.username}
                           </h3>
                           {accountType && (
@@ -291,18 +292,13 @@ export default function SocialAccountsList() {
                             </Badge>
                           )}
                         </div>
-                        <a
-                          href={account.accountUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="text-sm text-muted-foreground hover:underline truncate block"
-                          data-testid={`link-account-url-${account.id}`}
-                        >
-                          {account.accountUrl}
-                        </a>
+                        {account.nickname && (
+                          <p className="text-sm text-muted-foreground truncate" data-testid={`text-nickname-${account.id}`}>
+                            {account.nickname}
+                          </p>
+                        )}
                         
-                        <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                           <span data-testid={`text-followers-${account.id}`}>
                             {account.followers?.length || 0} followers
                           </span>
@@ -313,11 +309,22 @@ export default function SocialAccountsList() {
                         </div>
                       </div>
 
-                      <div className="flex gap-2">
+                      <div className="flex gap-1">
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            window.open(account.accountUrl, "_blank");
+                          }}
+                          data-testid={`button-goto-profile-${account.id}`}
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -330,7 +337,7 @@ export default function SocialAccountsList() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();

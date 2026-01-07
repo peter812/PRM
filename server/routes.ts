@@ -1078,6 +1078,163 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Instagram Import endpoint (followers/following CSV)
+  app.post("/api/import-instagram", upload.single("csv"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No CSV file provided" });
+      }
+
+      const accountId = req.body.accountId as string;
+      const importType = req.body.importType as "followers" | "following";
+
+      if (!accountId) {
+        return res.status(400).json({ error: "Account ID is required" });
+      }
+
+      if (!importType || !["followers", "following"].includes(importType)) {
+        return res.status(400).json({ error: "Import type must be 'followers' or 'following'" });
+      }
+
+      // Get the target account (WE/US)
+      const targetAccount = await storage.getSocialAccountById(accountId);
+      if (!targetAccount) {
+        return res.status(404).json({ error: "Target social account not found" });
+      }
+
+      // Parse CSV file with semicolon delimiter
+      const csvText = req.file.buffer.toString("utf-8");
+      const parseResult = Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: true,
+        delimiter: ";",
+        transformHeader: (header: string) => header.trim().replace(/"/g, ""),
+      });
+
+      if (parseResult.errors.length > 0) {
+        console.error("CSV parsing errors:", parseResult.errors);
+        return res.status(400).json({
+          error: "Failed to parse CSV file",
+          details: parseResult.errors.map(e => e.message),
+        });
+      }
+
+      const rows = parseResult.data as any[];
+
+      if (rows.length === 0) {
+        return res.status(400).json({ error: "CSV file contains no data" });
+      }
+
+      let importedCount = 0;
+      let updatedCount = 0;
+      const processedAccountIds: string[] = [];
+
+      // Get all existing social accounts for username lookup
+      const allAccounts = await storage.getAllSocialAccounts();
+      const accountsByUsername = new Map(allAccounts.map(a => [a.username.toLowerCase(), a]));
+
+      for (const row of rows) {
+        const username = (row.username || row["username"] || "").toString().trim().replace(/"/g, "");
+        const fullName = (row.full_name || row["full_name"] || "").toString().trim().replace(/"/g, "");
+        const instagramId = (row.id || row["id"] || "").toString().trim().replace(/"/g, "");
+        const profilePicUrl = (row.profile_pic_url || row["profile_pic_url"] || "").toString().trim().replace(/"/g, "");
+        const followedByViewer = (row.followed_by_viewer || row["followed_by_viewer"] || "").toString().toLowerCase() === "true";
+
+        if (!username) continue;
+
+        // Check if username already exists
+        let existingAccount = accountsByUsername.get(username.toLowerCase());
+
+        if (existingAccount) {
+          // Update existing account if nickname or profile pic differs
+          const updates: { nickname?: string | null; imageUrl?: string | null } = {};
+          
+          if (fullName && existingAccount.nickname !== fullName) {
+            updates.nickname = fullName;
+          }
+          if (profilePicUrl && existingAccount.imageUrl !== profilePicUrl) {
+            updates.imageUrl = profilePicUrl;
+          }
+
+          if (Object.keys(updates).length > 0) {
+            await storage.updateSocialAccount(existingAccount.id, updates);
+            updatedCount++;
+          }
+
+          processedAccountIds.push(existingAccount.id);
+        } else {
+          // Create new account
+          const newAccount = await storage.createSocialAccount({
+            username,
+            nickname: fullName || null,
+            accountUrl: `https://instagram.com/${username}`,
+            ownerUuid: null,
+            imageUrl: profilePicUrl || null,
+            notes: instagramId ? `Instagram ID: ${instagramId}` : null,
+            following: [],
+            followers: [],
+            typeId: null,
+          });
+          
+          accountsByUsername.set(username.toLowerCase(), newAccount);
+          processedAccountIds.push(newAccount.id);
+          importedCount++;
+        }
+
+        // Handle mutual follows based on followed_by_viewer flag
+        if (followedByViewer) {
+          const importedAccountId = accountsByUsername.get(username.toLowerCase())?.id;
+          if (importedAccountId) {
+            if (importType === "followers") {
+              // Importing followers: followed_by_viewer means we follow them back (mutual)
+              // Add the imported account to our following list
+              const currentFollowing = targetAccount.following || [];
+              if (!currentFollowing.includes(importedAccountId)) {
+                await storage.updateSocialAccount(accountId, {
+                  following: [...currentFollowing, importedAccountId],
+                });
+                targetAccount.following = [...currentFollowing, importedAccountId];
+              }
+            } else {
+              // Importing following: followed_by_viewer means they follow us back (mutual)
+              // Add the imported account to our followers list
+              const currentFollowers = targetAccount.followers || [];
+              if (!currentFollowers.includes(importedAccountId)) {
+                await storage.updateSocialAccount(accountId, {
+                  followers: [...currentFollowers, importedAccountId],
+                });
+                targetAccount.followers = [...currentFollowers, importedAccountId];
+              }
+            }
+          }
+        }
+      }
+
+      // Now update the target account's followers or following list
+      if (importType === "followers") {
+        // Add all imported accounts to our followers list (they follow us)
+        const currentFollowers = targetAccount.followers || [];
+        const newFollowers = Array.from(new Set([...currentFollowers, ...processedAccountIds]));
+        await storage.updateSocialAccount(accountId, { followers: newFollowers });
+      } else {
+        // Add all imported accounts to our following list (we follow them)
+        const currentFollowing = targetAccount.following || [];
+        const newFollowing = Array.from(new Set([...currentFollowing, ...processedAccountIds]));
+        await storage.updateSocialAccount(accountId, { following: newFollowing });
+      }
+
+      res.json({
+        success: true,
+        imported: importedCount,
+        updated: updatedCount,
+        total: processedAccountIds.length,
+      });
+    } catch (error) {
+      console.error("Error importing Instagram data:", error);
+      res.status(500).json({ error: "Failed to import Instagram data" });
+    }
+  });
+
   // Database reset endpoint
   app.post("/api/reset-database", async (req, res) => {
     try {

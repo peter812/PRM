@@ -47,6 +47,7 @@ export function EditSocialAccountDialog({
 }: EditSocialAccountDialogProps) {
   const { toast } = useToast();
   const [username, setUsername] = useState(account.username);
+  const [nickname, setNickname] = useState(account.nickname || "");
   const [accountUrl, setAccountUrl] = useState(account.accountUrl);
   const [imageUrl, setImageUrl] = useState(account.imageUrl || "");
   const [typeId, setTypeId] = useState(account.typeId || "");
@@ -97,6 +98,7 @@ export function EditSocialAccountDialog({
     mutationFn: async () => {
       return await apiRequest("PATCH", `/api/social-accounts/${account.id}`, {
         username,
+        nickname: nickname || null,
         accountUrl,
         imageUrl: imageUrl || null,
         typeId: typeId && typeId !== "none" ? typeId : null,
@@ -123,6 +125,7 @@ export function EditSocialAccountDialog({
   const handleOpenChange = (newOpen: boolean) => {
     if (newOpen) {
       setUsername(account.username);
+      setNickname(account.nickname || "");
       setAccountUrl(account.accountUrl);
       setImageUrl(account.imageUrl || "");
       setTypeId(account.typeId || "");
@@ -155,6 +158,19 @@ export function EditSocialAccountDialog({
               placeholder="Enter username"
               data-testid="input-username"
               required
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="nickname" className="text-sm font-medium">
+              Nickname <span className="text-muted-foreground text-xs ml-1">(Optional)</span>
+            </Label>
+            <Input
+              id="nickname"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="Display name / Full name"
+              data-testid="input-nickname"
             />
           </div>
 

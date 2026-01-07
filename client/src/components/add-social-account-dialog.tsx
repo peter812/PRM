@@ -60,6 +60,7 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
     resolver: zodResolver(insertSocialAccountSchema),
     defaultValues: {
       username: "",
+      nickname: "",
       accountUrl: "",
       ownerUuid: null,
       imageUrl: null,
@@ -162,6 +163,25 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
                           placeholder="e.g., @johndoe"
                           {...field}
                           data-testid="input-username"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="nickname"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Nickname <span className="text-muted-foreground text-xs">(Optional)</span></FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder="Display name / Full name"
+                          {...field}
+                          value={field.value || ""}
+                          data-testid="input-nickname"
                         />
                       </FormControl>
                       <FormMessage />

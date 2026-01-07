@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, X } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, X, ExternalLink } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -222,9 +222,9 @@ export default function SocialAccountProfile() {
           </Avatar>
 
           <div className="flex-1">
-            <div className="flex items-start justify-between gap-3 mb-4">
-              <div className="flex items-start gap-3">
-                <h1 className="text-3xl font-semibold" data-testid="text-account-username">
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div className="flex items-start gap-3 flex-wrap">
+                <h1 className="text-3xl font-bold" data-testid="text-account-username">
                   {account.username}
                 </h1>
                 {accountType && (
@@ -248,16 +248,23 @@ export default function SocialAccountProfile() {
               <div className="flex gap-2">
                 <Button
                   variant="outline"
-                  size="sm"
+                  size="icon"
+                  onClick={() => window.open(account.accountUrl, "_blank")}
+                  data-testid="button-goto-profile"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
                   onClick={() => setIsEditDialogOpen(true)}
                   data-testid="button-edit-account"
                 >
                   <Edit2 className="h-4 w-4" />
-                  Edit
                 </Button>
                 <Button
                   variant="outline"
-                  size="sm"
+                  size="icon"
                   onClick={() => deleteMutation.mutate()}
                   disabled={deleteMutation.isPending}
                   data-testid="button-delete-account"
@@ -272,15 +279,11 @@ export default function SocialAccountProfile() {
               </div>
             </div>
 
-            <a
-              href={account.accountUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-muted-foreground hover:underline mb-4 block"
-              data-testid="link-account-url"
-            >
-              {account.accountUrl}
-            </a>
+            {account.nickname && (
+              <p className="text-lg text-muted-foreground mb-4" data-testid="text-account-nickname">
+                {account.nickname}
+              </p>
+            )}
 
             {owner && (
               <div className="text-sm">

@@ -145,6 +145,7 @@ export const socialAccountTypes = pgTable("social_account_types", {
 export const socialAccounts = pgTable("social_accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull(),
+  nickname: text("nickname"), // Display name / full name
   accountUrl: text("account_url").notNull(),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
   typeId: varchar("type_id").references(() => socialAccountTypes.id, { onDelete: "set null" }),
