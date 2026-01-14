@@ -1381,6 +1381,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         includeInteractions: z.enum(['true', 'false']).optional(),
         includeNotes: z.enum(['true', 'false']).optional(),
         includeSocialProfiles: z.enum(['true', 'false']).optional(),
+        includeMessages: z.enum(['true', 'false']).optional(),
       });
 
       const parsed = querySchema.safeParse(req.query);
@@ -1397,6 +1398,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           interactions: [],
           notes: [],
           socialProfiles: [],
+          messages: [],
         });
       }
 
@@ -1406,6 +1408,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         includeInteractions: parsed.data.includeInteractions !== 'false',
         includeNotes: parsed.data.includeNotes !== 'false',
         includeSocialProfiles: parsed.data.includeSocialProfiles !== 'false',
+        includeMessages: parsed.data.includeMessages !== 'false',
       };
 
       const results = await storage.megaSearch(query, options);

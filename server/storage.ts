@@ -214,6 +214,7 @@ export interface IStorage {
     includeInteractions?: boolean;
     includeNotes?: boolean;
     includeSocialProfiles?: boolean;
+    includeMessages?: boolean;
   }): Promise<MegaSearchResult>;
   
   // Session store
@@ -1544,6 +1545,7 @@ export class DatabaseStorage implements IStorage {
     includeInteractions?: boolean;
     includeNotes?: boolean;
     includeSocialProfiles?: boolean;
+    includeMessages?: boolean;
   }): Promise<MegaSearchResult> {
     const searchPattern = `%${query}%`;
     const startPattern = `${query}%`;
@@ -1554,6 +1556,7 @@ export class DatabaseStorage implements IStorage {
       interactions: [],
       notes: [],
       socialProfiles: [],
+      messages: [],
     };
 
     const searchPromises: Promise<void>[] = [];
@@ -1627,6 +1630,16 @@ export class DatabaseStorage implements IStorage {
           )
           .limit(10)
           .then(res => { results.socialProfiles = res; })
+      );
+    }
+
+    if (options.includeMessages !== false) {
+      searchPromises.push(
+        db.select().from(messages)
+          .where(ilike(messages.content, searchPattern))
+          .orderBy(messages.sentTimestamp)
+          .limit(10)
+          .then(res => { results.messages = res; })
       );
     }
 

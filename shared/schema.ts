@@ -442,4 +442,5 @@ export type MegaSearchResult = {
   interactions: Interaction[];
   notes: Note[];
   socialProfiles: SocialAccount[];
+  messages: Message[];
 };
