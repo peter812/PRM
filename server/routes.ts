@@ -864,12 +864,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let importedCount = 0;
       let skippedCount = 0;
 
-      // Get the Me user's phone number to use as fallback for 'device_owner'
-      let meUserPhone = '';
-      if (req.user) {
+      // Get the import user's phone number to use as fallback for 'device_owner'
+      let importUserPhone = '';
+      const importUserId = req.body.importUserId as string | undefined;
+      
+      if (importUserId) {
+        // Use the specified import user's phone
+        const importPerson = await storage.getPersonById(importUserId);
+        if (importPerson?.phone) {
+          importUserPhone = importPerson.phone.replace(/^\+1/, ''); // normalize
+        }
+      } else if (req.user) {
+        // Fall back to Me user's phone if no import user specified
         const mePerson = await storage.getMePerson(req.user.id);
         if (mePerson?.phone) {
-          meUserPhone = mePerson.phone.replace(/^\+1/, ''); // normalize
+          importUserPhone = mePerson.phone.replace(/^\+1/, ''); // normalize
         }
       }
 
@@ -993,8 +1002,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const sentTimestamp = new Date(parseInt(dateStr));
         const isReceived = type === '1';
         
-        // Use actual phone numbers - the other party is "address", device owner is our phone or Me user's phone
-        const ownerIdentifier = deviceOwnerPhone ? normalizePhone(deviceOwnerPhone) : (meUserPhone || 'device_owner');
+        // Use actual phone numbers - the other party is "address", device owner is our phone or import user's phone
+        const ownerIdentifier = deviceOwnerPhone ? normalizePhone(deviceOwnerPhone) : (importUserPhone || 'device_owner');
         const normalizedAddress = normalizePhone(address);
         const sender = isReceived ? normalizedAddress : ownerIdentifier;
         const receivers = isReceived ? [ownerIdentifier] : [normalizedAddress];
@@ -1034,8 +1043,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const sentTimestamp = new Date(dateValue);
         const isReceived = msgBox === '1';
 
-        // Use device owner from this MMS or fall back to previously detected or Me user's phone
-        const ownerPhone = normalizePhone(deviceOwner || deviceOwnerPhone || '') || meUserPhone || 'device_owner';
+        // Use device owner from this MMS or fall back to previously detected or import user's phone
+        const ownerPhone = normalizePhone(deviceOwner || deviceOwnerPhone || '') || importUserPhone || 'device_owner';
         
         let sender: string;
         let receivers: string[];
