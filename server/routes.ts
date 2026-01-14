@@ -864,6 +864,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let importedCount = 0;
       let skippedCount = 0;
 
+      // Get the Me user's phone number to use as fallback for 'device_owner'
+      let meUserPhone = '';
+      if (req.user) {
+        const mePerson = await storage.getMePerson(req.user.id);
+        if (mePerson?.phone) {
+          meUserPhone = mePerson.phone.replace(/^\+1/, ''); // normalize
+        }
+      }
+
       // Helper to parse SMS element attributes
       const parseSmsAttributes = (smsMatch: string) => {
         const getAttr = (name: string): string => {
@@ -984,8 +993,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const sentTimestamp = new Date(parseInt(dateStr));
         const isReceived = type === '1';
         
-        // Use actual phone numbers - the other party is "address", device owner is our phone or 'device_owner'
-        const ownerIdentifier = deviceOwnerPhone ? normalizePhone(deviceOwnerPhone) : 'device_owner';
+        // Use actual phone numbers - the other party is "address", device owner is our phone or Me user's phone
+        const ownerIdentifier = deviceOwnerPhone ? normalizePhone(deviceOwnerPhone) : (meUserPhone || 'device_owner');
         const normalizedAddress = normalizePhone(address);
         const sender = isReceived ? normalizedAddress : ownerIdentifier;
         const receivers = isReceived ? [ownerIdentifier] : [normalizedAddress];
@@ -1025,8 +1034,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const sentTimestamp = new Date(dateValue);
         const isReceived = msgBox === '1';
 
-        // Use device owner from this MMS or fall back to previously detected
-        const ownerPhone = normalizePhone(deviceOwner || deviceOwnerPhone || '') || 'device_owner';
+        // Use device owner from this MMS or fall back to previously detected or Me user's phone
+        const ownerPhone = normalizePhone(deviceOwner || deviceOwnerPhone || '') || meUserPhone || 'device_owner';
         
         let sender: string;
         let receivers: string[];
