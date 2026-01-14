@@ -2957,6 +2957,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.delete("/api/messages/delete-all", async (req, res) => {
+    try {
+      const messageType = req.query.type as string | undefined;
+      const count = await storage.deleteAllMessages(messageType);
+      res.json({ success: true, deleted: count });
+    } catch (error) {
+      console.error("Error deleting all messages:", error);
+      res.status(500).json({ error: "Failed to delete messages" });
+    }
+  });
+
   app.delete("/api/messages/:id", async (req, res) => {
     try {
       const id = req.params.id;
@@ -2978,17 +2989,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, deletedCount: ids.length });
     } catch (error) {
       console.error("Error deleting multiple messages:", error);
-      res.status(500).json({ error: "Failed to delete messages" });
-    }
-  });
-
-  app.delete("/api/messages/delete-all", async (req, res) => {
-    try {
-      const messageType = req.query.type as string | undefined;
-      const count = await storage.deleteAllMessages(messageType);
-      res.json({ success: true, deleted: count });
-    } catch (error) {
-      console.error("Error deleting all messages:", error);
       res.status(500).json({ error: "Failed to delete messages" });
     }
   });
