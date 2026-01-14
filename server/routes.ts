@@ -2982,6 +2982,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.delete("/api/messages/delete-all", async (req, res) => {
+    try {
+      const messageType = req.query.type as string | undefined;
+      const count = await storage.deleteAllMessages(messageType);
+      res.json({ success: true, deleted: count });
+    } catch (error) {
+      console.error("Error deleting all messages:", error);
+      res.status(500).json({ error: "Failed to delete messages" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

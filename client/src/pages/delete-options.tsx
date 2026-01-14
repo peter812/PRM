@@ -4,6 +4,13 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -11,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertCircle, Trash2, Users } from "lucide-react";
+import { AlertCircle, Trash2, Users, MessageSquare } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -24,11 +31,16 @@ export default function DeleteOptionsPage() {
   const [confirmSwitch1, setConfirmSwitch1] = useState(false);
   const [confirmSwitch2, setConfirmSwitch2] = useState(false);
   const [confirmSwitch3, setConfirmSwitch3] = useState(false);
+  const [msgConfirmSwitch1, setMsgConfirmSwitch1] = useState(false);
+  const [msgConfirmSwitch2, setMsgConfirmSwitch2] = useState(false);
+  const [msgConfirmSwitch3, setMsgConfirmSwitch3] = useState(false);
+  const [messageTypeToDelete, setMessageTypeToDelete] = useState<string>("all");
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
 
   const allSwitchesOn = confirmSwitch1 && confirmSwitch2 && confirmSwitch3;
+  const allMsgSwitchesOn = msgConfirmSwitch1 && msgConfirmSwitch2 && msgConfirmSwitch3;
 
   const resetDatabaseMutation = useMutation({
     mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
@@ -106,6 +118,44 @@ export default function DeleteOptionsPage() {
     },
   });
 
+  const deleteAllMessagesMutation = useMutation({
+    mutationFn: async (messageType: string) => {
+      const url = messageType === "all" 
+        ? "/api/messages/delete-all"
+        : `/api/messages/delete-all?type=${encodeURIComponent(messageType)}`;
+      const response = await fetch(url, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to delete messages");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      const typeLabel = messageTypeToDelete === "all" ? "all" : messageTypeToDelete;
+      toast({
+        title: "Messages Deleted",
+        description: `Successfully deleted ${data.deleted} ${typeLabel} messages.`,
+      });
+
+      setMsgConfirmSwitch1(false);
+      setMsgConfirmSwitch2(false);
+      setMsgConfirmSwitch3(false);
+
+      queryClient.invalidateQueries({ queryKey: ["/api/messages"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Delete Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleResetDatabase = () => {
     if (confirmSliderValue[0] === 100) {
       resetDatabaseMutation.mutate({ includeExamples });
@@ -117,6 +167,20 @@ export default function DeleteOptionsPage() {
       deleteAllSocialAccountsMutation.mutate();
     }
   };
+
+  const handleDeleteAllMessages = () => {
+    if (allMsgSwitchesOn) {
+      deleteAllMessagesMutation.mutate(messageTypeToDelete);
+    }
+  };
+
+  const messageTypes = [
+    { value: "all", label: "All Messages" },
+    { value: "sms", label: "SMS" },
+    { value: "discord", label: "Discord" },
+    { value: "instagram", label: "Instagram" },
+    { value: "email", label: "Email" },
+  ];
 
   return (
     <div className="container max-w-2xl py-8">
@@ -204,6 +268,106 @@ export default function DeleteOptionsPage() {
               <>
                 <Trash2 className="h-4 w-4" />
                 Remove All Social Accounts
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6 border-destructive/50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <MessageSquare className="h-5 w-5" />
+            Remove All Messages
+          </CardTitle>
+          <CardDescription>Permanently delete messages from the database</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                  <li>Selected messages will be permanently deleted</li>
+                  <li>Message history cannot be recovered</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Message Type to Delete</Label>
+            <Select value={messageTypeToDelete} onValueChange={setMessageTypeToDelete}>
+              <SelectTrigger data-testid="select-message-type-delete">
+                <SelectValue placeholder="Select message type" />
+              </SelectTrigger>
+              <SelectContent>
+                {messageTypes.map((type) => (
+                  <SelectItem key={type.value} value={type.value}>
+                    {type.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-sm font-medium">Confirm by enabling all three switches:</p>
+            
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="msg-confirm-switch-1" className="text-sm">
+                I understand I am about to delete {messageTypeToDelete === "all" ? "all" : messageTypeToDelete} messages
+              </Label>
+              <Switch
+                id="msg-confirm-switch-1"
+                checked={msgConfirmSwitch1}
+                onCheckedChange={setMsgConfirmSwitch1}
+                data-testid="switch-msg-confirm-1"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="msg-confirm-switch-2" className="text-sm">
+                I understand I am about to delete {messageTypeToDelete === "all" ? "all" : messageTypeToDelete} messages
+              </Label>
+              <Switch
+                id="msg-confirm-switch-2"
+                checked={msgConfirmSwitch2}
+                onCheckedChange={setMsgConfirmSwitch2}
+                data-testid="switch-msg-confirm-2"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="msg-confirm-switch-3" className="text-sm">
+                I understand I am about to delete {messageTypeToDelete === "all" ? "all" : messageTypeToDelete} messages
+              </Label>
+              <Switch
+                id="msg-confirm-switch-3"
+                checked={msgConfirmSwitch3}
+                onCheckedChange={setMsgConfirmSwitch3}
+                data-testid="switch-msg-confirm-3"
+              />
+            </div>
+          </div>
+
+          <Button
+            variant="destructive"
+            onClick={handleDeleteAllMessages}
+            disabled={!allMsgSwitchesOn || deleteAllMessagesMutation.isPending}
+            className="gap-2"
+            data-testid="button-delete-all-messages"
+          >
+            {deleteAllMessagesMutation.isPending ? (
+              <>
+                <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
+                Deleting...
+              </>
+            ) : (
+              <>
+                <Trash2 className="h-4 w-4" />
+                Remove {messageTypeToDelete === "all" ? "All" : messageTypeToDelete} Messages
               </>
             )}
           </Button>

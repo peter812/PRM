@@ -202,6 +202,7 @@ export interface IStorage {
   updateMessage(id: string, message: Partial<InsertMessage>): Promise<Message | undefined>;
   deleteMessage(id: string): Promise<void>;
   deleteMultipleMessages(ids: string[]): Promise<void>;
+  deleteAllMessages(messageType?: string): Promise<number>;
   updateMessageOrphanStatus(id: string, isOrphan: boolean): Promise<Message | undefined>;
   
   // Flow operations (unified timeline)
@@ -1369,6 +1370,25 @@ export class DatabaseStorage implements IStorage {
   async deleteMultipleMessages(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     await db.delete(messages).where(inArray(messages.id, ids));
+  }
+
+  async deleteAllMessages(messageType?: string): Promise<number> {
+    if (messageType && messageType !== "all") {
+      const matchingMessages = await db
+        .select()
+        .from(messages)
+        .where(eq(messages.type, messageType));
+      const count = matchingMessages.length;
+      if (count > 0) {
+        await db.delete(messages).where(eq(messages.type, messageType));
+      }
+      return count;
+    } else {
+      const allMessages = await db.select().from(messages);
+      const count = allMessages.length;
+      await db.delete(messages);
+      return count;
+    }
   }
 
   async updateMessageOrphanStatus(id: string, isOrphan: boolean): Promise<Message | undefined> {
