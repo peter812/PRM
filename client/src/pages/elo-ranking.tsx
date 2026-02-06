@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { Trophy, RefreshCw, ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -242,6 +242,24 @@ export default function EloRanking() {
 
   const leftPerson = pair?.[0];
   const rightPerson = pair?.[1];
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isLoading || isVoting || !leftPerson || !rightPerson) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        handleVote(leftPerson.id, rightPerson.id);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        handleVote(rightPerson.id, leftPerson.id);
+      } else if (e.key === " ") {
+        e.preventDefault();
+        refetch();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isLoading, isVoting, leftPerson, rightPerson, handleVote, refetch]);
 
   return (
     <div className="flex flex-col h-full">
