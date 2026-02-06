@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { Trophy, RefreshCw, ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,6 +8,184 @@ import { Badge } from "@/components/ui/badge";
 import type { Person } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+
+function SwipeableCards({
+  leftPerson,
+  rightPerson,
+  isVoting,
+  onVote,
+}: {
+  leftPerson: Person;
+  rightPerson: Person;
+  isVoting: boolean;
+  onVote: (winnerId: string, loserId: string) => void;
+}) {
+  const [swipeX, setSwipeX] = useState(0);
+  const [swipeTransition, setSwipeTransition] = useState(false);
+  const [activeCard, setActiveCard] = useState<"left" | "right">("left");
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const isDragging = useRef(false);
+  const isHorizontalSwipe = useRef<boolean | null>(null);
+
+  const getInitials = (firstName: string, lastName: string) => {
+    return `${firstName[0]}${lastName[0]}`.toUpperCase();
+  };
+
+  const SWIPE_THRESHOLD = 80;
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (isVoting) return;
+    startX.current = e.touches[0].clientX;
+    startY.current = e.touches[0].clientY;
+    isDragging.current = true;
+    isHorizontalSwipe.current = null;
+    setSwipeTransition(false);
+  }, [isVoting]);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!isDragging.current || isVoting) return;
+    const currentX = e.touches[0].clientX;
+    const currentY = e.touches[0].clientY;
+    const diffX = currentX - startX.current;
+    const diffY = currentY - startY.current;
+
+    if (isHorizontalSwipe.current === null) {
+      if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) {
+        isHorizontalSwipe.current = Math.abs(diffX) > Math.abs(diffY);
+      }
+    }
+
+    if (isHorizontalSwipe.current) {
+      e.preventDefault();
+      setSwipeX(diffX);
+    }
+  }, [isVoting]);
+
+  const handleTouchEnd = useCallback(() => {
+    if (!isDragging.current || isVoting) return;
+    isDragging.current = false;
+    setSwipeTransition(true);
+
+    const topPerson = activeCard === "left" ? leftPerson : rightPerson;
+    const bottomPerson = activeCard === "left" ? rightPerson : leftPerson;
+
+    if (swipeX > SWIPE_THRESHOLD) {
+      setSwipeX(400);
+      setTimeout(() => {
+        onVote(topPerson.id, bottomPerson.id);
+        setSwipeX(0);
+        setSwipeTransition(false);
+        setActiveCard(prev => prev === "left" ? "right" : "left");
+      }, 250);
+    } else if (swipeX < -SWIPE_THRESHOLD) {
+      setSwipeX(-400);
+      setTimeout(() => {
+        onVote(bottomPerson.id, topPerson.id);
+        setSwipeX(0);
+        setSwipeTransition(false);
+        setActiveCard(prev => prev === "left" ? "right" : "left");
+      }, 250);
+    } else {
+      setSwipeX(0);
+    }
+  }, [swipeX, isVoting, leftPerson, rightPerson, activeCard, onVote]);
+
+  const topPerson = activeCard === "left" ? leftPerson : rightPerson;
+  const bottomPerson = activeCard === "left" ? rightPerson : leftPerson;
+
+  const rotation = swipeX * 0.08;
+  const opacity = Math.max(0, 1 - Math.abs(swipeX) / 400);
+
+  const renderPersonCard = (person: Person, testIdSuffix: string) => (
+    <div className="flex flex-col items-center gap-3 flex-1 justify-center">
+      <Avatar className="w-20 h-20">
+        {person.imageUrl && (
+          <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+        )}
+        <AvatarFallback className="text-xl">
+          {getInitials(person.firstName, person.lastName)}
+        </AvatarFallback>
+      </Avatar>
+      <h2 className="text-lg font-semibold text-center" data-testid={`text-elo-name-${testIdSuffix}`}>
+        {person.firstName} {person.lastName}
+      </h2>
+      {(person.company || person.title) && (
+        <p className="text-sm text-muted-foreground text-center">
+          {person.title}{person.title && person.company ? " at " : ""}{person.company}
+        </p>
+      )}
+      {person.email && (
+        <p className="text-xs text-muted-foreground text-center truncate max-w-full">
+          {person.email}
+        </p>
+      )}
+      <Badge variant="secondary" className="mt-2" data-testid={`badge-elo-score-${testIdSuffix}`}>
+        <Trophy className="h-3 w-3 mr-1" />
+        {person.eloScore}
+      </Badge>
+    </div>
+  );
+
+  const swipeIndicatorOpacity = Math.min(1, Math.abs(swipeX) / SWIPE_THRESHOLD);
+  const showRightIndicator = swipeX > 20;
+  const showLeftIndicator = swipeX < -20;
+
+  return (
+    <div className="relative w-full max-w-sm mx-auto h-full max-h-[420px]">
+      <Card
+        className="absolute inset-0 p-4 flex flex-col"
+        data-testid={`card-elo-bottom`}
+      >
+        {renderPersonCard(bottomPerson, "bottom")}
+      </Card>
+
+      <Card
+        className={`absolute inset-0 p-4 flex flex-col touch-pan-y ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+        style={{
+          transform: `translateX(${swipeX}px) rotate(${rotation}deg)`,
+          transition: swipeTransition ? "transform 0.25s ease-out, opacity 0.25s ease-out" : "none",
+          opacity,
+          zIndex: 10,
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        data-testid={`card-elo-top`}
+      >
+        {showRightIndicator && (
+          <div
+            className="absolute top-4 right-4 z-20"
+            style={{ opacity: swipeIndicatorOpacity }}
+          >
+            <Badge variant="default" className="bg-green-600 text-white border-green-600">
+              <Trophy className="h-3 w-3 mr-1" />
+              Pick
+            </Badge>
+          </div>
+        )}
+        {showLeftIndicator && (
+          <div
+            className="absolute top-4 left-4 z-20"
+            style={{ opacity: swipeIndicatorOpacity }}
+          >
+            <Badge variant="default" className="bg-red-500 text-white border-red-500">
+              Skip
+            </Badge>
+          </div>
+        )}
+        {renderPersonCard(topPerson, "top")}
+      </Card>
+
+      <div className="absolute -bottom-8 left-0 right-0 flex justify-center gap-2">
+        <span className="text-xs text-muted-foreground flex items-center gap-1">
+          <ArrowLeft className="h-3 w-3" /> Swipe to pick
+          <ArrowRight className="h-3 w-3" />
+        </span>
+      </div>
+    </div>
+  );
+}
 
 export default function EloRanking() {
   const { toast } = useToast();
@@ -46,11 +224,11 @@ export default function EloRanking() {
     },
   });
 
-  const handleVote = (winnerId: string, loserId: string) => {
+  const handleVote = useCallback((winnerId: string, loserId: string) => {
     if (isVoting || voteMutation.isPending) return;
     setIsVoting(true);
     voteMutation.mutate({ winnerId, loserId });
-  };
+  }, [isVoting, voteMutation]);
 
   const getInitials = (firstName: string, lastName: string) => {
     return `${firstName[0]}${lastName[0]}`.toUpperCase();
@@ -94,8 +272,8 @@ export default function EloRanking() {
                 <div className="h-4 bg-muted rounded w-1/2" />
               </div>
             </Card>
-            <div className="text-2xl font-bold text-muted-foreground">VS</div>
-            <Card className="flex-1 max-w-sm p-6 animate-pulse">
+            <div className="hidden md:block text-2xl font-bold text-muted-foreground">VS</div>
+            <Card className="hidden md:block flex-1 max-w-sm p-6 animate-pulse">
               <div className="flex flex-col items-center gap-4">
                 <div className="w-20 h-20 rounded-full bg-muted" />
                 <div className="h-5 bg-muted rounded w-2/3" />
@@ -112,87 +290,100 @@ export default function EloRanking() {
             </p>
           </div>
         ) : (
-          <div className="flex items-stretch justify-center gap-3 md:gap-8 h-full max-h-[500px]">
-            <Card
-              className={`flex-1 max-w-sm p-4 md:p-6 cursor-pointer hover-elevate transition-all flex flex-col ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
-              onClick={() => handleVote(leftPerson.id, rightPerson.id)}
-              data-testid={`card-elo-left-${leftPerson.id}`}
-            >
-              <div className="flex flex-col items-center gap-3 flex-1 justify-center">
-                <div className="flex items-center gap-1 text-muted-foreground mb-2">
-                  <ArrowLeft className="h-4 w-4" />
-                  <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
-                </div>
-                <Avatar className="w-20 h-20 md:w-24 md:h-24">
-                  {leftPerson.imageUrl && (
-                    <AvatarImage src={leftPerson.imageUrl} alt={`${leftPerson.firstName} ${leftPerson.lastName}`} />
-                  )}
-                  <AvatarFallback className="text-xl md:text-2xl">
-                    {getInitials(leftPerson.firstName, leftPerson.lastName)}
-                  </AvatarFallback>
-                </Avatar>
-                <h2 className="text-lg md:text-xl font-semibold text-center" data-testid={`text-elo-name-left`}>
-                  {leftPerson.firstName} {leftPerson.lastName}
-                </h2>
-                {(leftPerson.company || leftPerson.title) && (
-                  <p className="text-sm text-muted-foreground text-center">
-                    {leftPerson.title}{leftPerson.title && leftPerson.company ? " at " : ""}{leftPerson.company}
-                  </p>
-                )}
-                {leftPerson.email && (
-                  <p className="text-xs text-muted-foreground text-center truncate max-w-full">
-                    {leftPerson.email}
-                  </p>
-                )}
-                <Badge variant="secondary" className="mt-2" data-testid="badge-elo-score-left">
-                  <Trophy className="h-3 w-3 mr-1" />
-                  {leftPerson.eloScore}
-                </Badge>
-              </div>
-            </Card>
-
-            <div className="hidden md:flex items-center">
-              <span className="text-2xl font-bold text-muted-foreground">VS</span>
+          <>
+            {/* Mobile: Swipeable stacked cards */}
+            <div className="flex md:hidden items-center justify-center h-full pb-10">
+              <SwipeableCards
+                leftPerson={leftPerson}
+                rightPerson={rightPerson}
+                isVoting={isVoting}
+                onVote={handleVote}
+              />
             </div>
 
-            <Card
-              className={`flex-1 max-w-sm p-4 md:p-6 cursor-pointer hover-elevate transition-all flex flex-col ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
-              onClick={() => handleVote(rightPerson.id, leftPerson.id)}
-              data-testid={`card-elo-right-${rightPerson.id}`}
-            >
-              <div className="flex flex-col items-center gap-3 flex-1 justify-center">
-                <div className="flex items-center gap-1 text-muted-foreground mb-2">
-                  <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
-                  <ArrowRight className="h-4 w-4" />
-                </div>
-                <Avatar className="w-20 h-20 md:w-24 md:h-24">
-                  {rightPerson.imageUrl && (
-                    <AvatarImage src={rightPerson.imageUrl} alt={`${rightPerson.firstName} ${rightPerson.lastName}`} />
+            {/* Desktop: Side-by-side cards */}
+            <div className="hidden md:flex items-stretch justify-center gap-8 h-full max-h-[500px]">
+              <Card
+                className={`flex-1 max-w-sm p-6 cursor-pointer hover-elevate transition-all flex flex-col ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+                onClick={() => handleVote(leftPerson.id, rightPerson.id)}
+                data-testid={`card-elo-left-${leftPerson.id}`}
+              >
+                <div className="flex flex-col items-center gap-3 flex-1 justify-center">
+                  <div className="flex items-center gap-1 text-muted-foreground mb-2">
+                    <ArrowLeft className="h-4 w-4" />
+                    <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
+                  </div>
+                  <Avatar className="w-24 h-24">
+                    {leftPerson.imageUrl && (
+                      <AvatarImage src={leftPerson.imageUrl} alt={`${leftPerson.firstName} ${leftPerson.lastName}`} />
+                    )}
+                    <AvatarFallback className="text-2xl">
+                      {getInitials(leftPerson.firstName, leftPerson.lastName)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <h2 className="text-xl font-semibold text-center" data-testid={`text-elo-name-left`}>
+                    {leftPerson.firstName} {leftPerson.lastName}
+                  </h2>
+                  {(leftPerson.company || leftPerson.title) && (
+                    <p className="text-sm text-muted-foreground text-center">
+                      {leftPerson.title}{leftPerson.title && leftPerson.company ? " at " : ""}{leftPerson.company}
+                    </p>
                   )}
-                  <AvatarFallback className="text-xl md:text-2xl">
-                    {getInitials(rightPerson.firstName, rightPerson.lastName)}
-                  </AvatarFallback>
-                </Avatar>
-                <h2 className="text-lg md:text-xl font-semibold text-center" data-testid={`text-elo-name-right`}>
-                  {rightPerson.firstName} {rightPerson.lastName}
-                </h2>
-                {(rightPerson.company || rightPerson.title) && (
-                  <p className="text-sm text-muted-foreground text-center">
-                    {rightPerson.title}{rightPerson.title && rightPerson.company ? " at " : ""}{rightPerson.company}
-                  </p>
-                )}
-                {rightPerson.email && (
-                  <p className="text-xs text-muted-foreground text-center truncate max-w-full">
-                    {rightPerson.email}
-                  </p>
-                )}
-                <Badge variant="secondary" className="mt-2" data-testid="badge-elo-score-right">
-                  <Trophy className="h-3 w-3 mr-1" />
-                  {rightPerson.eloScore}
-                </Badge>
+                  {leftPerson.email && (
+                    <p className="text-xs text-muted-foreground text-center truncate max-w-full">
+                      {leftPerson.email}
+                    </p>
+                  )}
+                  <Badge variant="secondary" className="mt-2" data-testid="badge-elo-score-left">
+                    <Trophy className="h-3 w-3 mr-1" />
+                    {leftPerson.eloScore}
+                  </Badge>
+                </div>
+              </Card>
+
+              <div className="flex items-center">
+                <span className="text-2xl font-bold text-muted-foreground">VS</span>
               </div>
-            </Card>
-          </div>
+
+              <Card
+                className={`flex-1 max-w-sm p-6 cursor-pointer hover-elevate transition-all flex flex-col ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+                onClick={() => handleVote(rightPerson.id, leftPerson.id)}
+                data-testid={`card-elo-right-${rightPerson.id}`}
+              >
+                <div className="flex flex-col items-center gap-3 flex-1 justify-center">
+                  <div className="flex items-center gap-1 text-muted-foreground mb-2">
+                    <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </div>
+                  <Avatar className="w-24 h-24">
+                    {rightPerson.imageUrl && (
+                      <AvatarImage src={rightPerson.imageUrl} alt={`${rightPerson.firstName} ${rightPerson.lastName}`} />
+                    )}
+                    <AvatarFallback className="text-2xl">
+                      {getInitials(rightPerson.firstName, rightPerson.lastName)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <h2 className="text-xl font-semibold text-center" data-testid={`text-elo-name-right`}>
+                    {rightPerson.firstName} {rightPerson.lastName}
+                  </h2>
+                  {(rightPerson.company || rightPerson.title) && (
+                    <p className="text-sm text-muted-foreground text-center">
+                      {rightPerson.title}{rightPerson.title && rightPerson.company ? " at " : ""}{rightPerson.company}
+                    </p>
+                  )}
+                  {rightPerson.email && (
+                    <p className="text-xs text-muted-foreground text-center truncate max-w-full">
+                      {rightPerson.email}
+                    </p>
+                  )}
+                  <Badge variant="secondary" className="mt-2" data-testid="badge-elo-score-right">
+                    <Trophy className="h-3 w-3 mr-1" />
+                    {rightPerson.eloScore}
+                  </Badge>
+                </div>
+              </Card>
+            </div>
+          </>
         )}
       </div>
     </div>
