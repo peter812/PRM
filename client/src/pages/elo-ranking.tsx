@@ -151,8 +151,8 @@ export default function EloRanking() {
               </div>
             </Card>
 
-            <div className="flex items-center">
-              <span className="text-xl md:text-2xl font-bold text-muted-foreground">VS</span>
+            <div className="hidden md:flex items-center">
+              <span className="text-2xl font-bold text-muted-foreground">VS</span>
             </div>
 
             <Card
