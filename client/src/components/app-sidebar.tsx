@@ -1,4 +1,4 @@
-import { Users, Network, Users2, User, Code, Box, AtSign, MessageSquare } from "lucide-react";
+import { Users, Network, Users2, User, Code, Box, AtSign, MessageSquare, Trophy } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -41,6 +41,11 @@ const menuItems = [
     title: "Graph (3D)",
     url: "/graph-3d",
     icon: Box,
+  },
+  {
+    title: "ELO Ranking",
+    url: "/elo-ranking",
+    icon: Trophy,
   },
   {
     title: "API Playground",

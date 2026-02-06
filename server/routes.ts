@@ -1931,6 +1931,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const offset = parseInt(req.query.offset as string) || 0;
       const limit = parseInt(req.query.limit as string) || 30;
+      const sortByElo = req.query.sortByElo === "true";
       
       // Get ME user's person ID to filter relationships
       const userId = req.user?.id;
@@ -1940,11 +1941,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
         mePersonId = mePerson?.id;
       }
       
-      const people = await storage.getPeoplePaginated(offset, limit, mePersonId);
+      const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortByElo);
       res.json(people);
     } catch (error) {
       console.error("Error fetching paginated people:", error);
       res.status(500).json({ error: "Failed to fetch people" });
+    }
+  });
+
+  app.get("/api/people/elo/pair", async (req, res) => {
+    try {
+      const pair = await storage.getRandomPeoplePair();
+      if (pair.length < 2) {
+        return res.status(400).json({ error: "Not enough people to compare" });
+      }
+      res.json(pair);
+    } catch (error) {
+      console.error("Error fetching ELO pair:", error);
+      res.status(500).json({ error: "Failed to fetch random pair" });
+    }
+  });
+
+  app.post("/api/people/elo/vote", async (req, res) => {
+    try {
+      const { winnerId, loserId } = req.body;
+      if (!winnerId || !loserId) {
+        return res.status(400).json({ error: "winnerId and loserId are required" });
+      }
+      if (winnerId === loserId) {
+        return res.status(400).json({ error: "Cannot vote for the same person" });
+      }
+      const result = await storage.updateEloScores(winnerId, loserId);
+      res.json(result);
+    } catch (error) {
+      console.error("Error updating ELO scores:", error);
+      res.status(500).json({ error: "Failed to update ELO scores" });
     }
   });
 

@@ -37,6 +37,7 @@ import WelcomePage from "@/pages/welcome-page";
 import SettingsLayout from "@/pages/settings-layout";
 import DummyAuth from "@/pages/dummy-auth";
 import MessagesList from "@/pages/messages-list";
+import EloRanking from "@/pages/elo-ranking";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -55,6 +56,7 @@ function Router() {
       <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/graph-3d" component={Graph3D} />
+      <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
       <ProtectedRoute path="/messages" component={MessagesList} />
       <ProtectedRoute path="/settings" component={SettingsLayout} />

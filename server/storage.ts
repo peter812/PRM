@@ -104,11 +104,13 @@ export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
   getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
-  getPeoplePaginated(offset: number, limit: number, mePersonId?: string): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>>;
+  getPeoplePaginated(offset: number, limit: number, mePersonId?: string, sortByElo?: boolean): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>>;
   getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
   deletePerson(id: string): Promise<void>;
+  updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }>;
+  getRandomPeoplePair(): Promise<Person[]>;
 
   // Note operations
   createNote(note: InsertNote): Promise<Note>;
@@ -392,7 +394,8 @@ export class DatabaseStorage implements IStorage {
   async getPeoplePaginated(
     offset: number,
     limit: number,
-    mePersonId?: string
+    mePersonId?: string,
+    sortByElo?: boolean
   ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>> {
     // Get all people (excluding ME user) with their highest-value relationship WITH THE ME USER
     const result = await db
@@ -440,9 +443,10 @@ export class DatabaseStorage implements IStorage {
       .where(sql`${people.userId} IS NULL`)
       .groupBy(people.id)
       .orderBy(
-        sql`MAX(${relationshipTypes.value}) DESC NULLS LAST`,
-        people.firstName,
-        people.lastName
+        ...(sortByElo
+          ? [sql`${people.eloScore} DESC`, people.firstName, people.lastName]
+          : [sql`MAX(${relationshipTypes.value}) DESC NULLS LAST`, people.firstName, people.lastName]
+        )
       )
       .limit(limit)
       .offset(offset);
@@ -575,6 +579,40 @@ export class DatabaseStorage implements IStorage {
     
     // Delete person (cascade will handle notes, relationships)
     await db.delete(people).where(eq(people.id, id));
+  }
+
+  async updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }> {
+    const K = 32;
+    const [winnerPerson] = await db.select().from(people).where(eq(people.id, winnerId));
+    const [loserPerson] = await db.select().from(people).where(eq(people.id, loserId));
+
+    if (!winnerPerson || !loserPerson) {
+      throw new Error("One or both people not found");
+    }
+
+    const rA = winnerPerson.eloScore;
+    const rB = loserPerson.eloScore;
+
+    const expectedA = 1 / (1 + Math.pow(10, (rB - rA) / 400));
+    const expectedB = 1 / (1 + Math.pow(10, (rA - rB) / 400));
+
+    const newRatingA = Math.round(rA + K * (1 - expectedA));
+    const newRatingB = Math.round(rB + K * (0 - expectedB));
+
+    const [updatedWinner] = await db.update(people).set({ eloScore: newRatingA }).where(eq(people.id, winnerId)).returning();
+    const [updatedLoser] = await db.update(people).set({ eloScore: newRatingB }).where(eq(people.id, loserId)).returning();
+
+    return { winner: updatedWinner, loser: updatedLoser };
+  }
+
+  async getRandomPeoplePair(): Promise<Person[]> {
+    const result = await db
+      .select()
+      .from(people)
+      .where(sql`${people.userId} IS NULL`)
+      .orderBy(sql`RANDOM()`)
+      .limit(2);
+    return result;
   }
 
   private async removePersonFromInteractions(personId: string): Promise<void> {

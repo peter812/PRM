@@ -1,11 +1,13 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Plus, X, Star } from "lucide-react";
+import { Plus, X, Star, Trophy } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,6 +35,7 @@ export default function PeopleList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [personToDelete, setPersonToDelete] = useState<PersonWithRelationship | null>(null);
   const [starredStates, setStarredStates] = useState<Record<string, number>>({});
+  const [sortByElo, setSortByElo] = useState(false);
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -45,9 +48,9 @@ export default function PeopleList() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery<PersonWithRelationship[]>({
-    queryKey: ["/api/people/paginated"],
+    queryKey: ["/api/people/paginated", { sortByElo }],
     queryFn: async ({ pageParam = 0 }) => {
-      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30`);
+      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortByElo=${sortByElo}`);
       if (!response.ok) throw new Error("Failed to fetch people");
       return response.json();
     },
@@ -137,10 +140,22 @@ export default function PeopleList() {
           <h1 className="text-3xl font-semibold" data-testid="text-page-title">
             People
           </h1>
-          <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person">
-            <Plus className="h-4 w-4" />
-            Add Person
-          </Button>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Trophy className="h-4 w-4 text-muted-foreground" />
+              <Label htmlFor="elo-toggle" className="text-sm cursor-pointer" data-testid="label-elo-toggle">ELO Rank</Label>
+              <Switch
+                id="elo-toggle"
+                checked={sortByElo}
+                onCheckedChange={setSortByElo}
+                data-testid="switch-elo-toggle"
+              />
+            </div>
+            <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person">
+              <Plus className="h-4 w-4" />
+              Add Person
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -225,6 +240,16 @@ export default function PeopleList() {
                         )}
                       </div>
                       <div className="flex flex-wrap gap-1 mt-1">
+                        {sortByElo && (
+                          <Badge
+                            variant="secondary"
+                            className="text-[0.65rem] md:text-xs"
+                            data-testid={`badge-elo-${person.id}`}
+                          >
+                            <Trophy className="h-3 w-3 mr-1" />
+                            {person.eloScore}
+                          </Badge>
+                        )}
                         {person.relationshipTypeName && (
                           <Badge
                             variant="secondary"
