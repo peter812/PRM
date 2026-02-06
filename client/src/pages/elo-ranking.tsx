@@ -1,24 +1,185 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Trophy, RefreshCw, ArrowLeft, ArrowRight } from "lucide-react";
+import { Trophy, RefreshCw, ArrowLeft, ArrowRight, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import type { Person } from "@shared/schema";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import type { Person, RelationshipType, RelationshipWithPerson } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+
+const GREY_COLOR = "#9ca3af";
+
+function useRelationshipColor(personId: string | undefined, meUserId: string | undefined) {
+  const { data: relationships } = useQuery<RelationshipWithPerson[]>({
+    queryKey: ["/api/relationships", personId],
+    enabled: !!personId,
+    select: (data: any) => {
+      if (Array.isArray(data)) return data;
+      if (data?.relationships) return data.relationships;
+      return [];
+    },
+  });
+
+  if (!personId || !meUserId || !relationships) return { color: GREY_COLOR, hasRelationship: false };
+
+  const meRel = relationships.find(
+    (r) => r.toPerson?.id === meUserId || r.fromPersonId === meUserId
+  );
+
+  if (meRel?.type?.color) {
+    return { color: meRel.type.color, hasRelationship: true };
+  }
+
+  return { color: GREY_COLOR, hasRelationship: false };
+}
+
+interface PersonCardContentProps {
+  person: Person;
+  meUserId: string | undefined;
+  relationshipColor: string;
+  hasRelationship: boolean;
+  relationshipTypes: RelationshipType[] | undefined;
+  onDelete: (person: Person) => void;
+  onAddRelationship: (personId: string, typeId: string) => void;
+  isAddingRelationship: boolean;
+  size: "sm" | "lg";
+  testIdSuffix: string;
+}
+
+function PersonCardContent({
+  person,
+  relationshipColor,
+  hasRelationship,
+  relationshipTypes,
+  onDelete,
+  onAddRelationship,
+  isAddingRelationship,
+  size,
+  testIdSuffix,
+}: PersonCardContentProps) {
+  const getInitials = (firstName: string, lastName: string) => {
+    return `${firstName[0]}${lastName[0]}`.toUpperCase();
+  };
+
+  const avatarSize = size === "lg" ? "w-24 h-24" : "w-16 h-16";
+  const nameSize = size === "lg" ? "text-xl" : "text-base";
+  const fallbackSize = size === "lg" ? "text-2xl" : "text-lg";
+  const gap = size === "lg" ? "gap-3" : "gap-2";
+
+  return (
+    <>
+      <Button
+        size="icon"
+        variant="ghost"
+        className="absolute top-1 left-1 h-7 w-7 text-destructive z-20"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete(person);
+        }}
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
+        data-testid={`button-delete-elo-${testIdSuffix}`}
+      >
+        <X className="h-4 w-4" />
+      </Button>
+      <div className={`flex flex-col items-center ${gap} flex-1 justify-center`}>
+        <Avatar className={avatarSize}>
+          {person.imageUrl && (
+            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+          )}
+          <AvatarFallback className={fallbackSize}>
+            {getInitials(person.firstName, person.lastName)}
+          </AvatarFallback>
+        </Avatar>
+        <h2 className={`${nameSize} font-semibold text-center`} data-testid={`text-elo-name-${testIdSuffix}`}>
+          {person.firstName} {person.lastName}
+        </h2>
+        {(person.company || person.title) && (
+          <p className="text-xs text-muted-foreground text-center line-clamp-2">
+            {person.title}{person.title && person.company ? " at " : ""}{person.company}
+          </p>
+        )}
+        <Badge variant="secondary" className="mt-1" data-testid={`badge-elo-score-${testIdSuffix}`}>
+          <Trophy className="h-3 w-3 mr-1" />
+          {person.eloScore}
+        </Badge>
+      </div>
+      {!hasRelationship && relationshipTypes && relationshipTypes.length > 0 && (
+        <div
+          className="mt-2 w-full"
+          onClick={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
+        >
+          <Select
+            onValueChange={(typeId) => onAddRelationship(person.id, typeId)}
+            disabled={isAddingRelationship}
+          >
+            <SelectTrigger
+              className="w-full text-xs"
+              data-testid={`select-add-rel-${testIdSuffix}`}
+            >
+              <SelectValue placeholder="Add relationship..." />
+            </SelectTrigger>
+            <SelectContent>
+              {relationshipTypes.map((type) => (
+                <SelectItem key={type.id} value={type.id}>
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-3 h-3 rounded-full shrink-0"
+                      style={{ backgroundColor: type.color }}
+                    />
+                    {type.name}
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+    </>
+  );
+}
 
 function MobileSwipeableView({
   leftPerson,
   rightPerson,
   isVoting,
   onVote,
+  meUserId,
+  relationshipTypes,
+  onDelete,
+  onAddRelationship,
+  isAddingRelationship,
 }: {
   leftPerson: Person;
   rightPerson: Person;
   isVoting: boolean;
   onVote: (winnerId: string, loserId: string) => void;
+  meUserId: string | undefined;
+  relationshipTypes: RelationshipType[] | undefined;
+  onDelete: (person: Person) => void;
+  onAddRelationship: (personId: string, typeId: string) => void;
+  isAddingRelationship: boolean;
 }) {
   const [swipeX, setSwipeX] = useState(0);
   const [swipeTransition, setSwipeTransition] = useState(false);
@@ -29,11 +190,10 @@ function MobileSwipeableView({
   const hasMoved = useRef(false);
   const tappedSide = useRef<"left" | "right" | null>(null);
 
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
-  };
-
   const SWIPE_THRESHOLD = 60;
+
+  const leftRel = useRelationshipColor(leftPerson.id, meUserId);
+  const rightRel = useRelationshipColor(rightPerson.id, meUserId);
 
   const handleTouchStart = useCallback((e: React.TouchEvent, side: "left" | "right" | null) => {
     if (isVoting) return;
@@ -108,41 +268,6 @@ function MobileSwipeableView({
   const rightHighlight = swipeX > 20;
   const highlightIntensity = Math.min(1, Math.abs(swipeX) / SWIPE_THRESHOLD);
 
-  const renderMobileCard = (person: Person, side: "left" | "right", highlighted: boolean) => (
-    <Card
-      className={`flex-1 p-3 flex flex-col transition-all duration-150 ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
-      style={{
-        transform: highlighted ? `scale(${1 + highlightIntensity * 0.05})` : `scale(${1 - highlightIntensity * 0.03})`,
-        opacity: highlighted ? 1 : (1 - highlightIntensity * 0.4),
-        boxShadow: highlighted ? `0 0 0 2px hsl(var(--primary) / ${highlightIntensity})` : "none",
-      }}
-      data-testid={`card-elo-${side}-${person.id}`}
-    >
-      <div className="flex flex-col items-center gap-2 flex-1 justify-center">
-        <Avatar className="w-16 h-16">
-          {person.imageUrl && (
-            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
-          )}
-          <AvatarFallback className="text-lg">
-            {getInitials(person.firstName, person.lastName)}
-          </AvatarFallback>
-        </Avatar>
-        <h2 className="text-base font-semibold text-center" data-testid={`text-elo-name-${side}`}>
-          {person.firstName} {person.lastName}
-        </h2>
-        {(person.company || person.title) && (
-          <p className="text-xs text-muted-foreground text-center line-clamp-2">
-            {person.title}{person.title && person.company ? " at " : ""}{person.company}
-          </p>
-        )}
-        <Badge variant="secondary" className="mt-1" data-testid={`badge-elo-score-${side}`}>
-          <Trophy className="h-3 w-3 mr-1" />
-          {person.eloScore}
-        </Badge>
-      </div>
-    </Card>
-  );
-
   return (
     <div className="flex flex-col items-center gap-3 w-full h-full justify-center">
       <div
@@ -167,7 +292,29 @@ function MobileSwipeableView({
               Pick
             </Badge>
           </div>
-          {renderMobileCard(leftPerson, "left", leftHighlight)}
+          <Card
+            className={`flex-1 p-3 flex flex-col relative w-full transition-all duration-150 ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+            style={{
+              transform: leftHighlight ? `scale(${1 + highlightIntensity * 0.05})` : `scale(${1 - highlightIntensity * 0.03})`,
+              opacity: leftHighlight ? 1 : (1 - highlightIntensity * 0.4),
+              borderColor: leftRel.color,
+              borderWidth: "2px",
+            }}
+            data-testid={`card-elo-left-${leftPerson.id}`}
+          >
+            <PersonCardContent
+              person={leftPerson}
+              meUserId={meUserId}
+              relationshipColor={leftRel.color}
+              hasRelationship={leftRel.hasRelationship}
+              relationshipTypes={relationshipTypes}
+              onDelete={onDelete}
+              onAddRelationship={onAddRelationship}
+              isAddingRelationship={isAddingRelationship}
+              size="sm"
+              testIdSuffix="left"
+            />
+          </Card>
         </div>
         <div
           className="flex-1 flex flex-col gap-1 items-center"
@@ -182,7 +329,29 @@ function MobileSwipeableView({
               Pick
             </Badge>
           </div>
-          {renderMobileCard(rightPerson, "right", rightHighlight)}
+          <Card
+            className={`flex-1 p-3 flex flex-col relative w-full transition-all duration-150 ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+            style={{
+              transform: rightHighlight ? `scale(${1 + highlightIntensity * 0.05})` : `scale(${1 - highlightIntensity * 0.03})`,
+              opacity: rightHighlight ? 1 : (1 - highlightIntensity * 0.4),
+              borderColor: rightRel.color,
+              borderWidth: "2px",
+            }}
+            data-testid={`card-elo-right-${rightPerson.id}`}
+          >
+            <PersonCardContent
+              person={rightPerson}
+              meUserId={meUserId}
+              relationshipColor={rightRel.color}
+              hasRelationship={rightRel.hasRelationship}
+              relationshipTypes={relationshipTypes}
+              onDelete={onDelete}
+              onAddRelationship={onAddRelationship}
+              isAddingRelationship={isAddingRelationship}
+              size="sm"
+              testIdSuffix="right"
+            />
+          </Card>
         </div>
       </div>
       <span className="text-xs text-muted-foreground flex items-center gap-1 mt-2">
@@ -196,6 +365,15 @@ function MobileSwipeableView({
 export default function EloRanking() {
   const { toast } = useToast();
   const [isVoting, setIsVoting] = useState(false);
+  const [personToDelete, setPersonToDelete] = useState<Person | null>(null);
+
+  const { data: meUser } = useQuery<Person>({
+    queryKey: ["/api/me"],
+  });
+
+  const { data: relationshipTypes } = useQuery<RelationshipType[]>({
+    queryKey: ["/api/relationship-types"],
+  });
 
   const {
     data: pair,
@@ -230,22 +408,82 @@ export default function EloRanking() {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async (personId: string) => {
+      await apiRequest("DELETE", `/api/people/${personId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/elo/pair"] });
+      toast({
+        title: "Person deleted",
+        description: "The person and all associated data have been removed.",
+      });
+      setPersonToDelete(null);
+      refetch();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete person",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const addRelationshipMutation = useMutation({
+    mutationFn: async ({ personId, typeId }: { personId: string; typeId: string }) => {
+      await apiRequest("POST", "/api/relationships", {
+        fromPersonId: personId,
+        toPersonId: meUser!.id,
+        typeId,
+        notes: "",
+      });
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/relationships", variables.personId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/relationships", meUser?.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      toast({
+        title: "Relationship added",
+        description: "Relationship to you has been created.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to add relationship",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleVote = useCallback((winnerId: string, loserId: string) => {
     if (isVoting || voteMutation.isPending) return;
     setIsVoting(true);
     voteMutation.mutate({ winnerId, loserId });
   }, [isVoting, voteMutation]);
 
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
-  };
+  const handleDelete = useCallback((person: Person) => {
+    setPersonToDelete(person);
+  }, []);
+
+  const handleAddRelationship = useCallback((personId: string, typeId: string) => {
+    if (!meUser) return;
+    addRelationshipMutation.mutate({ personId, typeId });
+  }, [meUser, addRelationshipMutation]);
 
   const leftPerson = pair?.[0];
   const rightPerson = pair?.[1];
 
+  const leftRel = useRelationshipColor(leftPerson?.id, meUser?.id);
+  const rightRel = useRelationshipColor(rightPerson?.id, meUser?.id);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isLoading || isVoting || !leftPerson || !rightPerson) return;
+      if (personToDelete) return;
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         handleVote(leftPerson.id, rightPerson.id);
@@ -259,7 +497,7 @@ export default function EloRanking() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLoading, isVoting, leftPerson, rightPerson, handleVote, refetch]);
+  }, [isLoading, isVoting, leftPerson, rightPerson, handleVote, refetch, personToDelete]);
 
   return (
     <div className="flex flex-col h-full">
@@ -322,47 +560,41 @@ export default function EloRanking() {
                 rightPerson={rightPerson}
                 isVoting={isVoting}
                 onVote={handleVote}
+                meUserId={meUser?.id}
+                relationshipTypes={relationshipTypes}
+                onDelete={handleDelete}
+                onAddRelationship={handleAddRelationship}
+                isAddingRelationship={addRelationshipMutation.isPending}
               />
             </div>
 
             {/* Desktop: Side-by-side cards */}
             <div className="hidden md:flex items-stretch justify-center gap-8 h-full max-h-[500px]">
               <Card
-                className={`flex-1 max-w-sm p-6 cursor-pointer hover-elevate transition-all flex flex-col ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+                className={`flex-1 max-w-sm p-6 cursor-pointer hover-elevate transition-all flex flex-col relative ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+                style={{
+                  borderColor: leftRel.color,
+                  borderWidth: "2px",
+                }}
                 onClick={() => handleVote(leftPerson.id, rightPerson.id)}
                 data-testid={`card-elo-left-${leftPerson.id}`}
               >
-                <div className="flex flex-col items-center gap-3 flex-1 justify-center">
-                  <div className="flex items-center gap-1 text-muted-foreground mb-2">
-                    <ArrowLeft className="h-4 w-4" />
-                    <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
-                  </div>
-                  <Avatar className="w-24 h-24">
-                    {leftPerson.imageUrl && (
-                      <AvatarImage src={leftPerson.imageUrl} alt={`${leftPerson.firstName} ${leftPerson.lastName}`} />
-                    )}
-                    <AvatarFallback className="text-2xl">
-                      {getInitials(leftPerson.firstName, leftPerson.lastName)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <h2 className="text-xl font-semibold text-center" data-testid={`text-elo-name-left`}>
-                    {leftPerson.firstName} {leftPerson.lastName}
-                  </h2>
-                  {(leftPerson.company || leftPerson.title) && (
-                    <p className="text-sm text-muted-foreground text-center">
-                      {leftPerson.title}{leftPerson.title && leftPerson.company ? " at " : ""}{leftPerson.company}
-                    </p>
-                  )}
-                  {leftPerson.email && (
-                    <p className="text-xs text-muted-foreground text-center truncate max-w-full">
-                      {leftPerson.email}
-                    </p>
-                  )}
-                  <Badge variant="secondary" className="mt-2" data-testid="badge-elo-score-left">
-                    <Trophy className="h-3 w-3 mr-1" />
-                    {leftPerson.eloScore}
-                  </Badge>
+                <div className="flex items-center gap-1 text-muted-foreground mb-2 justify-center">
+                  <ArrowLeft className="h-4 w-4" />
+                  <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
                 </div>
+                <PersonCardContent
+                  person={leftPerson}
+                  meUserId={meUser?.id}
+                  relationshipColor={leftRel.color}
+                  hasRelationship={leftRel.hasRelationship}
+                  relationshipTypes={relationshipTypes}
+                  onDelete={handleDelete}
+                  onAddRelationship={handleAddRelationship}
+                  isAddingRelationship={addRelationshipMutation.isPending}
+                  size="lg"
+                  testIdSuffix="left"
+                />
               </Card>
 
               <div className="flex items-center">
@@ -370,46 +602,56 @@ export default function EloRanking() {
               </div>
 
               <Card
-                className={`flex-1 max-w-sm p-6 cursor-pointer hover-elevate transition-all flex flex-col ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+                className={`flex-1 max-w-sm p-6 cursor-pointer hover-elevate transition-all flex flex-col relative ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+                style={{
+                  borderColor: rightRel.color,
+                  borderWidth: "2px",
+                }}
                 onClick={() => handleVote(rightPerson.id, leftPerson.id)}
                 data-testid={`card-elo-right-${rightPerson.id}`}
               >
-                <div className="flex flex-col items-center gap-3 flex-1 justify-center">
-                  <div className="flex items-center gap-1 text-muted-foreground mb-2">
-                    <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </div>
-                  <Avatar className="w-24 h-24">
-                    {rightPerson.imageUrl && (
-                      <AvatarImage src={rightPerson.imageUrl} alt={`${rightPerson.firstName} ${rightPerson.lastName}`} />
-                    )}
-                    <AvatarFallback className="text-2xl">
-                      {getInitials(rightPerson.firstName, rightPerson.lastName)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <h2 className="text-xl font-semibold text-center" data-testid={`text-elo-name-right`}>
-                    {rightPerson.firstName} {rightPerson.lastName}
-                  </h2>
-                  {(rightPerson.company || rightPerson.title) && (
-                    <p className="text-sm text-muted-foreground text-center">
-                      {rightPerson.title}{rightPerson.title && rightPerson.company ? " at " : ""}{rightPerson.company}
-                    </p>
-                  )}
-                  {rightPerson.email && (
-                    <p className="text-xs text-muted-foreground text-center truncate max-w-full">
-                      {rightPerson.email}
-                    </p>
-                  )}
-                  <Badge variant="secondary" className="mt-2" data-testid="badge-elo-score-right">
-                    <Trophy className="h-3 w-3 mr-1" />
-                    {rightPerson.eloScore}
-                  </Badge>
+                <div className="flex items-center gap-1 text-muted-foreground mb-2 justify-center">
+                  <span className="text-xs font-medium uppercase tracking-wide">Pick</span>
+                  <ArrowRight className="h-4 w-4" />
                 </div>
+                <PersonCardContent
+                  person={rightPerson}
+                  meUserId={meUser?.id}
+                  relationshipColor={rightRel.color}
+                  hasRelationship={rightRel.hasRelationship}
+                  relationshipTypes={relationshipTypes}
+                  onDelete={handleDelete}
+                  onAddRelationship={handleAddRelationship}
+                  isAddingRelationship={addRelationshipMutation.isPending}
+                  size="lg"
+                  testIdSuffix="right"
+                />
               </Card>
             </div>
           </>
         )}
       </div>
+
+      <AlertDialog open={!!personToDelete} onOpenChange={(open) => !open && setPersonToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {personToDelete?.firstName} {personToDelete?.lastName}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete {personToDelete?.firstName} {personToDelete?.lastName}? This will permanently remove this person and all associated notes, interactions, and relationships. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground"
+              onClick={() => personToDelete && deleteMutation.mutate(personToDelete.id)}
+              data-testid="button-confirm-delete"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
