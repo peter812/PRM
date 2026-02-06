@@ -71,6 +71,7 @@ export default function AppOptionsPage() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       
       toast({
         title: "Import Successful",
@@ -134,6 +135,7 @@ export default function AppOptionsPage() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       
       const imported = data.imported;
