@@ -9,7 +9,7 @@ import type { Person } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
-function SwipeableCards({
+function MobileSwipeableView({
   leftPerson,
   rightPerson,
   isVoting,
@@ -22,7 +22,6 @@ function SwipeableCards({
 }) {
   const [swipeX, setSwipeX] = useState(0);
   const [swipeTransition, setSwipeTransition] = useState(false);
-  const [activeCard, setActiveCard] = useState<"left" | "right">("left");
   const startX = useRef(0);
   const startY = useRef(0);
   const isDragging = useRef(false);
@@ -32,7 +31,7 @@ function SwipeableCards({
     return `${firstName[0]}${lastName[0]}`.toUpperCase();
   };
 
-  const SWIPE_THRESHOLD = 80;
+  const SWIPE_THRESHOLD = 60;
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (isVoting) return;
@@ -67,122 +66,105 @@ function SwipeableCards({
     isDragging.current = false;
     setSwipeTransition(true);
 
-    const topPerson = activeCard === "left" ? leftPerson : rightPerson;
-    const bottomPerson = activeCard === "left" ? rightPerson : leftPerson;
-
-    if (swipeX > SWIPE_THRESHOLD) {
-      setSwipeX(400);
+    if (swipeX < -SWIPE_THRESHOLD) {
+      setSwipeX(-300);
       setTimeout(() => {
-        onVote(topPerson.id, bottomPerson.id);
+        onVote(leftPerson.id, rightPerson.id);
         setSwipeX(0);
         setSwipeTransition(false);
-        setActiveCard(prev => prev === "left" ? "right" : "left");
       }, 250);
-    } else if (swipeX < -SWIPE_THRESHOLD) {
-      setSwipeX(-400);
+    } else if (swipeX > SWIPE_THRESHOLD) {
+      setSwipeX(300);
       setTimeout(() => {
-        onVote(bottomPerson.id, topPerson.id);
+        onVote(rightPerson.id, leftPerson.id);
         setSwipeX(0);
         setSwipeTransition(false);
-        setActiveCard(prev => prev === "left" ? "right" : "left");
       }, 250);
     } else {
       setSwipeX(0);
     }
-  }, [swipeX, isVoting, leftPerson, rightPerson, activeCard, onVote]);
+  }, [swipeX, isVoting, leftPerson, rightPerson, onVote]);
 
-  const topPerson = activeCard === "left" ? leftPerson : rightPerson;
-  const bottomPerson = activeCard === "left" ? rightPerson : leftPerson;
+  const leftHighlight = swipeX < -20;
+  const rightHighlight = swipeX > 20;
+  const highlightIntensity = Math.min(1, Math.abs(swipeX) / SWIPE_THRESHOLD);
 
-  const rotation = swipeX * 0.08;
-  const opacity = Math.max(0, 1 - Math.abs(swipeX) / 400);
-
-  const renderPersonCard = (person: Person, testIdSuffix: string) => (
-    <div className="flex flex-col items-center gap-3 flex-1 justify-center">
-      <Avatar className="w-20 h-20">
-        {person.imageUrl && (
-          <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+  const renderMobileCard = (person: Person, side: "left" | "right", highlighted: boolean) => (
+    <Card
+      className={`flex-1 p-3 flex flex-col transition-all duration-150 ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+      style={{
+        transform: highlighted ? `scale(${1 + highlightIntensity * 0.05})` : `scale(${1 - highlightIntensity * 0.03})`,
+        opacity: highlighted ? 1 : (1 - highlightIntensity * 0.4),
+        boxShadow: highlighted ? `0 0 0 2px hsl(var(--primary) / ${highlightIntensity})` : "none",
+      }}
+      data-testid={`card-elo-${side}-${person.id}`}
+    >
+      <div className="flex flex-col items-center gap-2 flex-1 justify-center">
+        <Avatar className="w-16 h-16">
+          {person.imageUrl && (
+            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+          )}
+          <AvatarFallback className="text-lg">
+            {getInitials(person.firstName, person.lastName)}
+          </AvatarFallback>
+        </Avatar>
+        <h2 className="text-base font-semibold text-center" data-testid={`text-elo-name-${side}`}>
+          {person.firstName} {person.lastName}
+        </h2>
+        {(person.company || person.title) && (
+          <p className="text-xs text-muted-foreground text-center line-clamp-2">
+            {person.title}{person.title && person.company ? " at " : ""}{person.company}
+          </p>
         )}
-        <AvatarFallback className="text-xl">
-          {getInitials(person.firstName, person.lastName)}
-        </AvatarFallback>
-      </Avatar>
-      <h2 className="text-lg font-semibold text-center" data-testid={`text-elo-name-${testIdSuffix}`}>
-        {person.firstName} {person.lastName}
-      </h2>
-      {(person.company || person.title) && (
-        <p className="text-sm text-muted-foreground text-center">
-          {person.title}{person.title && person.company ? " at " : ""}{person.company}
-        </p>
-      )}
-      {person.email && (
-        <p className="text-xs text-muted-foreground text-center truncate max-w-full">
-          {person.email}
-        </p>
-      )}
-      <Badge variant="secondary" className="mt-2" data-testid={`badge-elo-score-${testIdSuffix}`}>
-        <Trophy className="h-3 w-3 mr-1" />
-        {person.eloScore}
-      </Badge>
-    </div>
+        <Badge variant="secondary" className="mt-1" data-testid={`badge-elo-score-${side}`}>
+          <Trophy className="h-3 w-3 mr-1" />
+          {person.eloScore}
+        </Badge>
+      </div>
+    </Card>
   );
 
-  const swipeIndicatorOpacity = Math.min(1, Math.abs(swipeX) / SWIPE_THRESHOLD);
-  const showRightIndicator = swipeX > 20;
-  const showLeftIndicator = swipeX < -20;
-
   return (
-    <div className="relative w-full max-w-sm mx-auto h-full max-h-[420px]">
-      <Card
-        className="absolute inset-0 p-4 flex flex-col"
-        data-testid={`card-elo-bottom`}
-      >
-        {renderPersonCard(bottomPerson, "bottom")}
-      </Card>
-
-      <Card
-        className={`absolute inset-0 p-4 flex flex-col touch-pan-y ${isVoting ? "opacity-50 pointer-events-none" : ""}`}
+    <div className="flex flex-col items-center gap-3 w-full h-full justify-center">
+      <div
+        className="flex gap-3 w-full"
         style={{
-          transform: `translateX(${swipeX}px) rotate(${rotation}deg)`,
-          transition: swipeTransition ? "transform 0.25s ease-out, opacity 0.25s ease-out" : "none",
-          opacity,
-          zIndex: 10,
+          transform: `translateX(${swipeX * 0.3}px)`,
+          transition: swipeTransition ? "transform 0.25s ease-out" : "none",
         }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        data-testid={`card-elo-top`}
       >
-        {showRightIndicator && (
+        <div className="flex-1 flex flex-col gap-1 items-center">
           <div
-            className="absolute top-4 right-4 z-20"
-            style={{ opacity: swipeIndicatorOpacity }}
+            className="transition-opacity duration-150"
+            style={{ opacity: leftHighlight ? highlightIntensity : 0 }}
           >
             <Badge variant="default" className="bg-green-600 text-white border-green-600">
               <Trophy className="h-3 w-3 mr-1" />
               Pick
             </Badge>
           </div>
-        )}
-        {showLeftIndicator && (
+          {renderMobileCard(leftPerson, "left", leftHighlight)}
+        </div>
+        <div className="flex-1 flex flex-col gap-1 items-center">
           <div
-            className="absolute top-4 left-4 z-20"
-            style={{ opacity: swipeIndicatorOpacity }}
+            className="transition-opacity duration-150"
+            style={{ opacity: rightHighlight ? highlightIntensity : 0 }}
           >
-            <Badge variant="default" className="bg-red-500 text-white border-red-500">
-              Skip
+            <Badge variant="default" className="bg-green-600 text-white border-green-600">
+              <Trophy className="h-3 w-3 mr-1" />
+              Pick
             </Badge>
           </div>
-        )}
-        {renderPersonCard(topPerson, "top")}
-      </Card>
-
-      <div className="absolute -bottom-8 left-0 right-0 flex justify-center gap-2">
-        <span className="text-xs text-muted-foreground flex items-center gap-1">
-          <ArrowLeft className="h-3 w-3" /> Swipe to pick
-          <ArrowRight className="h-3 w-3" />
-        </span>
+          {renderMobileCard(rightPerson, "right", rightHighlight)}
+        </div>
       </div>
+      <span className="text-xs text-muted-foreground flex items-center gap-1 mt-2">
+        <ArrowLeft className="h-3 w-3" /> Swipe toward your pick
+        <ArrowRight className="h-3 w-3" />
+      </span>
     </div>
   );
 }
@@ -291,9 +273,9 @@ export default function EloRanking() {
           </div>
         ) : (
           <>
-            {/* Mobile: Swipeable stacked cards */}
-            <div className="flex md:hidden items-center justify-center h-full pb-10">
-              <SwipeableCards
+            {/* Mobile: Both cards visible, swipeable */}
+            <div className="flex md:hidden items-center justify-center h-full">
+              <MobileSwipeableView
                 leftPerson={leftPerson}
                 rightPerson={rightPerson}
                 isVoting={isVoting}
