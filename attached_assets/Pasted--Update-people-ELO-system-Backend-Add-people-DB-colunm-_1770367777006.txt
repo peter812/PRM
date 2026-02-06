@@ -1,0 +1,91 @@
+
+Update: people ELO system
+Backend:
+Add people DB colunm for ELO score
+
+Frontend
+make 1 new pages
+
+ELO scoreboard section: (In people page)
+A switch on the people page "ELO rank" (should be next to add person)
+When enabled rack ELO from high to low
+(update paginated people page API call to support this)
+
+
+ELO ranking page:
+New page (add in main menu below the 3d Graph page)
+two accounts with details be low emphasis on the left and right(this should be left and right on all devices mobile included) 
+
+when i pick an option update both peoples ELOs score in the DB
+
+
+
+
+
+
+## understanding ELO:
+The Elo rating system is a method for calculating the relative skill levels of players in zero-sum games, such as chess and competitive video games. Originally developed by Arpad Elo, a physics professor and chess master, it revolutionized how we rank competitors by focusing on **predictive probability** rather than just win/loss streaks.
+
++1
+
+The core philosophy of the system is simple: a player’s rating is not an absolute measure of skill (like a height measurement), but a relative measure compared to the pool of other players.
+
+### The Mathematical Foundation
+
+The Elo system rests on two main mathematical components: calculating the **Expected Score** and calculating the **Rating Update**.
+
+#### 1. The Expected Score ($E_A$)
+
+Before a match begins, the system uses the difference in ratings to predict the outcome. This prediction is modeled using a logistic curve (a "sigmoid" function). If Player A has a rating of $R_A$ and Player B has a rating of $R_B$, the expected score for Player A is calculated as:
+
+$$E_A = \frac{1}{1 + 10^{(R_B - R_A) / 400}}$$
+
+In this formula:
+
+- **$E_A$** ranges from 0 to 1. An $E_A$ of 0.75 predicts that Player A will win 75% of the possible points (or win 3 out of 4 games).
+    
+- **400** is a scaling factor. It ensures that a rating difference of 200 points implies a roughly 75% chance of winning for the higher-rated player.
+    
+- If $R_A = R_B$, the exponent becomes 0, and $10^0 = 1$. The formula simplifies to $1 / (1+1) = 0.5$. Thus, equal ratings predict a 50% chance of winning.
+    
+
+This logistic distribution effectively handles the reality of competition: even a much weaker player has a non-zero (albeit small) statistical chance of upsetting a grandmaster.
+
+#### 2. The Rating Update
+
+Once the game is played, the ratings are updated based on the discrepancy between the **Expected Score** ($E_A$) and the **Actual Score** ($S_A$).
+
+- **Win:** $S_A = 1$
+    
+- **Draw:** $S_A = 0.5$
+    
+- **Loss:** $S_A = 0$
+    
+
+The formula to determine the new rating ($R_A'$) is:
+
+$$R_A' = R_A + K(S_A - E_A)$$
+
+Here, **$K$** represents the **K-factor**, a constant that determines how volatile the ratings are.
+
+### Understanding the Logic
+
+The beauty of the update formula lies in the term $(S_A - E_A)$. This term represents the "surprise" of the result.
+
+- **The Expected Outcome:** If a Grandmaster ($R_A=2800$) plays a novice ($R_B=1000$), $E_A$ will be nearly $1$. If the Grandmaster wins ($S_A=1$), the difference $(1 - 1)$ is zero. The rating barely changes because the result was expected.
+    
+- **The Upset:** If the novice wins ($S_A=1$ for the novice, while $E_{novice} \approx 0$), the term $(1 - 0)$ is $1$. The novice gains the maximum possible points ($1 \times K$), and the Grandmaster loses the same amount.
+    
+
+### The Role of the K-Factor
+
+The variable $K$ is crucial for tuning the system.
+
+- **High K-factor (e.g., $K=40$):** Used for new players or placement matches. Ratings swing wildly after every game to quickly move a player to their correct skill bracket.
+    
+- **Low K-factor (e.g., $K=10$):** Used for established pros. It ensures that one bad game doesn't tank a rating that was built over years of consistent play.
+    
+
+### Why Elo Matters
+
+The Elo system is self-correcting. If a player’s rating is too high, the system predicts they will win often ($E_A$ is high). If they are actually unskilled, they will lose ($S_A=0$), resulting in a large negative $(S_A - E_A)$, which rapidly lowers their rating until it reflects their true ability.
