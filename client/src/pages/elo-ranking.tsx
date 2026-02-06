@@ -26,6 +26,8 @@ function MobileSwipeableView({
   const startY = useRef(0);
   const isDragging = useRef(false);
   const isHorizontalSwipe = useRef<boolean | null>(null);
+  const hasMoved = useRef(false);
+  const tappedSide = useRef<"left" | "right" | null>(null);
 
   const getInitials = (firstName: string, lastName: string) => {
     return `${firstName[0]}${lastName[0]}`.toUpperCase();
@@ -33,12 +35,14 @@ function MobileSwipeableView({
 
   const SWIPE_THRESHOLD = 60;
 
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+  const handleTouchStart = useCallback((e: React.TouchEvent, side: "left" | "right" | null) => {
     if (isVoting) return;
     startX.current = e.touches[0].clientX;
     startY.current = e.touches[0].clientY;
     isDragging.current = true;
     isHorizontalSwipe.current = null;
+    hasMoved.current = false;
+    tappedSide.current = side;
     setSwipeTransition(false);
   }, [isVoting]);
 
@@ -48,6 +52,10 @@ function MobileSwipeableView({
     const currentY = e.touches[0].clientY;
     const diffX = currentX - startX.current;
     const diffY = currentY - startY.current;
+
+    if (Math.abs(diffX) > 8 || Math.abs(diffY) > 8) {
+      hasMoved.current = true;
+    }
 
     if (isHorizontalSwipe.current === null) {
       if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) {
@@ -64,6 +72,17 @@ function MobileSwipeableView({
   const handleTouchEnd = useCallback(() => {
     if (!isDragging.current || isVoting) return;
     isDragging.current = false;
+
+    if (!hasMoved.current && tappedSide.current) {
+      if (tappedSide.current === "left") {
+        onVote(leftPerson.id, rightPerson.id);
+      } else {
+        onVote(rightPerson.id, leftPerson.id);
+      }
+      tappedSide.current = null;
+      return;
+    }
+
     setSwipeTransition(true);
 
     if (swipeX < -SWIPE_THRESHOLD) {
@@ -132,11 +151,13 @@ function MobileSwipeableView({
           transform: `translateX(${swipeX * 0.3}px)`,
           transition: swipeTransition ? "transform 0.25s ease-out" : "none",
         }}
-        onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
       >
-        <div className="flex-1 flex flex-col gap-1 items-center">
+        <div
+          className="flex-1 flex flex-col gap-1 items-center"
+          onTouchStart={(e) => handleTouchStart(e, "left")}
+        >
           <div
             className="transition-opacity duration-150"
             style={{ opacity: leftHighlight ? highlightIntensity : 0 }}
@@ -148,7 +169,10 @@ function MobileSwipeableView({
           </div>
           {renderMobileCard(leftPerson, "left", leftHighlight)}
         </div>
-        <div className="flex-1 flex flex-col gap-1 items-center">
+        <div
+          className="flex-1 flex flex-col gap-1 items-center"
+          onTouchStart={(e) => handleTouchStart(e, "right")}
+        >
           <div
             className="transition-opacity duration-150"
             style={{ opacity: rightHighlight ? highlightIntensity : 0 }}
