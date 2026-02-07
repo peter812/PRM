@@ -38,6 +38,7 @@ export default function SocialGraph3D() {
   const fgRef = useRef<any>(null);
   const [, navigate] = useLocation();
   const [hideOrphans, setHideOrphans] = useState(true);
+  const [minTwoConnections, setMinTwoConnections] = useState(false);
   const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -59,15 +60,30 @@ export default function SocialGraph3D() {
     });
   }
 
-  const filteredSocialAccounts = hideOrphans
-    ? allSocialAccounts.filter(account => {
-        const hasFollowing = account.following && account.following.length > 0;
-        const isFollowed = allSocialAccounts.some(
-          other => other.following && other.following.includes(account.id)
-        );
-        return hasFollowing || isFollowed;
-      })
-    : allSocialAccounts;
+  const connectionCounts = new Map<string, number>();
+  allSocialAccounts.forEach(account => {
+    const followingCount = account.following
+      ? account.following.filter(id => allSocialAccounts.some(a => a.id === id)).length
+      : 0;
+    const followedByCount = allSocialAccounts.filter(
+      other => other.following && other.following.includes(account.id)
+    ).length;
+    connectionCounts.set(account.id, followingCount + followedByCount);
+  });
+
+  let filteredSocialAccounts = allSocialAccounts;
+
+  if (hideOrphans) {
+    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
+      return (connectionCounts.get(account.id) || 0) > 0;
+    });
+  }
+
+  if (minTwoConnections) {
+    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
+      return (connectionCounts.get(account.id) || 0) >= 2;
+    });
+  }
 
   useEffect(() => {
     if (!graphRef.current) return;
@@ -322,6 +338,16 @@ export default function SocialGraph3D() {
                   checked={hideOrphans}
                   onCheckedChange={setHideOrphans}
                   data-testid="switch-hide-orphans"
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <Label htmlFor="min-two-connections">2+ Connections</Label>
+                <Switch
+                  id="min-two-connections"
+                  checked={minTwoConnections}
+                  onCheckedChange={setMinTwoConnections}
+                  data-testid="switch-min-two-connections"
                 />
               </div>
 
