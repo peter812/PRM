@@ -12,7 +12,7 @@ export default function AppOptionsPage() {
         </p>
       </div>
 
-      <Link href="/settings/import-export">
+      <Link href="/import-export">
         <Card className="hover-elevate cursor-pointer" data-testid="card-import-export-link">
           <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
             <div className="flex items-center gap-3">

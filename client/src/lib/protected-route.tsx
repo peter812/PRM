@@ -7,9 +7,11 @@ import { useEffect, useState } from "react";
 export function ProtectedRoute({
   path,
   component: Component,
+  nest,
 }: {
   path: string;
   component: () => React.JSX.Element;
+  nest?: boolean;
 }) {
   const { user, isLoading } = useAuth();
   const [location] = useLocation();
@@ -29,7 +31,7 @@ export function ProtectedRoute({
 
   if (isLoading || (!user && ssoStatusLoading)) {
     return (
-      <Route path={path}>
+      <Route path={path} nest={nest}>
         <div className="flex items-center justify-center min-h-screen">
           <Loader2 className="h-8 w-8 animate-spin text-border" />
         </div>
@@ -39,7 +41,7 @@ export function ProtectedRoute({
 
   if (shouldRedirectToSso) {
     return (
-      <Route path={path}>
+      <Route path={path} nest={nest}>
         <div className="flex items-center justify-center min-h-screen">
           <Loader2 className="h-8 w-8 animate-spin text-border" />
         </div>
@@ -49,11 +51,11 @@ export function ProtectedRoute({
 
   if (!user) {
     return (
-      <Route path={path}>
-        <Redirect to="/auth" />
+      <Route path={path} nest={nest}>
+        <Redirect to="~/auth" />
       </Route>
     );
   }
 
-  return <Route path={path} component={Component} />;
+  return <Route path={path} nest={nest} component={Component} />;
 }

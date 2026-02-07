@@ -45,58 +45,58 @@ interface MenuItem {
 const settingsMenuItems: MenuItem[] = [
   {
     title: "Back to Site",
-    url: "/people",
+    url: "~/people",
     icon: ArrowLeft,
   },
   {
     title: "User Options",
-    url: "/settings/user",
+    url: "/user",
     icon: User,
   },
   {
     title: "App Options",
-    url: "/settings/app",
+    url: "/app",
     icon: Settings,
   },
   {
     title: "Relationship Types",
-    url: "/settings/relationship-types",
+    url: "/relationship-types",
     icon: Heart,
   },
   {
     title: "Interaction Types",
-    url: "/settings/interaction-types",
+    url: "/interaction-types",
     icon: MessageSquare,
   },
   {
     title: "Social Account Types",
-    url: "/settings/social-account-types",
+    url: "/social-account-types",
     icon: AtSign,
   },
   {
     title: "Import & Export",
-    url: "/settings/import-export",
+    url: "/import-export",
     icon: FolderSync,
     subItems: [
-      { title: "Contacts", url: "/settings/import-export/contacts", icon: Users },
-      { title: "Messages", url: "/settings/import-export/messages", icon: MessageSquare },
-      { title: "Social Media", url: "/settings/import-export/social-media", icon: Share2 },
-      { title: "Application Data", url: "/settings/import-export/application", icon: Database },
+      { title: "Contacts", url: "/import-export/contacts", icon: Users },
+      { title: "Messages", url: "/import-export/messages", icon: MessageSquare },
+      { title: "Social Media", url: "/import-export/social-media", icon: Share2 },
+      { title: "Application Data", url: "/import-export/application", icon: Database },
     ],
   },
   {
     title: "API Settings",
-    url: "/settings/api-settings",
+    url: "/api-settings",
     icon: Key,
   },
   {
     title: "API Documentation",
-    url: "/settings/api",
+    url: "/api",
     icon: Book,
   },
   {
     title: "Delete Options",
-    url: "/settings/delete",
+    url: "/delete",
     icon: Trash2,
   },
 ];
@@ -104,7 +104,7 @@ const settingsMenuItems: MenuItem[] = [
 function SettingsSidebar() {
   const [location] = useLocation();
 
-  const isImportExportActive = location.startsWith("/settings/import-export");
+  const isImportExportActive = location.startsWith("/import-export");
 
   return (
     <Sidebar>
@@ -192,20 +192,20 @@ export default function SettingsLayout() {
           </header>
           <main className="flex-1 overflow-auto">
             <Switch>
-              <Route path="/settings" component={() => <Redirect to="/settings/user" />} />
-              <Route path="/settings/user" component={UserOptionsPage} />
-              <Route path="/settings/app" component={AppOptionsPage} />
-              <Route path="/settings/relationship-types" component={RelationshipTypesList} />
-              <Route path="/settings/interaction-types" component={InteractionTypesList} />
-              <Route path="/settings/social-account-types" component={SocialAccountTypesList} />
-              <Route path="/settings/import-export/contacts" component={ImportContactsPage} />
-              <Route path="/settings/import-export/messages" component={ImportMessagesPage} />
-              <Route path="/settings/import-export/social-media" component={ImportSocialMediaPage} />
-              <Route path="/settings/import-export/application" component={ImportExportApplicationPage} />
-              <Route path="/settings/import-export" component={ImportExportHome} />
-              <Route path="/settings/api-settings" component={ApiSettingsPage} />
-              <Route path="/settings/api" component={ApiDocs} />
-              <Route path="/settings/delete" component={DeleteOptionsPage} />
+              <Route path="/" component={() => <Redirect to="/user" />} />
+              <Route path="/user" component={UserOptionsPage} />
+              <Route path="/app" component={AppOptionsPage} />
+              <Route path="/relationship-types" component={RelationshipTypesList} />
+              <Route path="/interaction-types" component={InteractionTypesList} />
+              <Route path="/social-account-types" component={SocialAccountTypesList} />
+              <Route path="/import-export/contacts" component={ImportContactsPage} />
+              <Route path="/import-export/messages" component={ImportMessagesPage} />
+              <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
+              <Route path="/import-export/application" component={ImportExportApplicationPage} />
+              <Route path="/import-export" component={ImportExportHome} />
+              <Route path="/api-settings" component={ApiSettingsPage} />
+              <Route path="/api" component={ApiDocs} />
+              <Route path="/delete" component={DeleteOptionsPage} />
               <Route component={NotFound} />
             </Switch>
           </main>

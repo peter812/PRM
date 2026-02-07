@@ -59,8 +59,7 @@ function Router() {
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
       <ProtectedRoute path="/messages" component={MessagesList} />
-      <ProtectedRoute path="/settings" component={SettingsLayout} />
-      <ProtectedRoute path="/settings/:rest*" component={SettingsLayout} />
+      <ProtectedRoute path="/settings" nest component={SettingsLayout} />
       <ProtectedRoute path="/dummy-auth" component={DummyAuth} />
       <Route component={NotFound} />
     </Switch>

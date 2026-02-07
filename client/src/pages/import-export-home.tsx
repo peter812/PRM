@@ -7,25 +7,25 @@ const importExportSections = [
     title: "Contacts",
     description: "Import people from a Google Contacts CSV export. Names, emails, phone numbers, and tags are automatically parsed and added to your contact list.",
     icon: Users,
-    url: "/settings/import-export/contacts",
+    url: "/import-export/contacts",
   },
   {
     title: "Messages",
     description: "Import SMS and MMS messages from an XML backup file created by the \"SMS Backup & Restore\" app. Messages are matched to existing contacts by phone number.",
     icon: MessageSquare,
-    url: "/settings/import-export/messages",
+    url: "/import-export/messages",
   },
   {
     title: "Social Media",
     description: "Import follower and following data from social media platforms like Instagram. Connect imported accounts to your existing social profiles.",
     icon: Share2,
-    url: "/settings/import-export/social-media",
+    url: "/import-export/social-media",
   },
   {
     title: "Application Data",
     description: "Export all your CRM data to an XML backup file, or restore from a previous backup. Includes people, relationships, groups, interactions, notes, social accounts, messages, and more.",
     icon: Database,
-    url: "/settings/import-export/application",
+    url: "/import-export/application",
   },
 ];
 
