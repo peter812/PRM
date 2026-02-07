@@ -107,6 +107,7 @@ export function EditSocialAccountDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", account.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
       toast({
         title: "Success",
         description: "Social account updated successfully",

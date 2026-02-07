@@ -2693,6 +2693,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/social-accounts/paginated", async (req, res) => {
+    try {
+      const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 30));
+      const searchQuery = req.query.search as string | undefined;
+      const typeId = req.query.typeId as string | undefined;
+      const followsYou = req.query.followsYou === "true";
+
+      let followsAccountIds: string[] | undefined;
+
+      if (followsYou) {
+        const userId = req.user?.id;
+        if (userId) {
+          const mePerson = await storage.getMePerson(userId);
+          if (mePerson && mePerson.socialAccountUuids && mePerson.socialAccountUuids.length > 0) {
+            followsAccountIds = mePerson.socialAccountUuids;
+          } else {
+            res.json([]);
+            return;
+          }
+        } else {
+          res.json([]);
+          return;
+        }
+      }
+
+      const accounts = await storage.getSocialAccountsPaginated({
+        offset,
+        limit,
+        searchQuery: searchQuery || undefined,
+        typeId: typeId || undefined,
+        followsAccountIds,
+      });
+      res.json(accounts);
+    } catch (error) {
+      console.error("Error fetching paginated social accounts:", error);
+      res.status(500).json({ error: "Failed to fetch social accounts" });
+    }
+  });
+
   app.get("/api/social-accounts/:id", async (req, res) => {
     try {
       const account = await storage.getSocialAccountById(req.params.id);

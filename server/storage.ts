@@ -176,6 +176,13 @@ export interface IStorage {
 
   // Social account operations
   getAllSocialAccounts(searchQuery?: string, typeId?: string): Promise<SocialAccount[]>;
+  getSocialAccountsPaginated(options: {
+    offset: number;
+    limit: number;
+    searchQuery?: string;
+    typeId?: string;
+    followsAccountIds?: string[];
+  }): Promise<SocialAccount[]>;
   getSocialAccountById(id: string): Promise<SocialAccount | undefined>;
   createSocialAccount(account: InsertSocialAccount): Promise<SocialAccount>;
   updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
@@ -1131,6 +1138,71 @@ export class DatabaseStorage implements IStorage {
           : socialAccounts.username,
         socialAccounts.username
       );
+  }
+
+  async getSocialAccountsPaginated(options: {
+    offset: number;
+    limit: number;
+    searchQuery?: string;
+    typeId?: string;
+    followsAccountIds?: string[];
+  }): Promise<SocialAccount[]> {
+    const { offset, limit, searchQuery, typeId, followsAccountIds } = options;
+    const conditions = [];
+
+    if (searchQuery) {
+      const query = `%${searchQuery}%`;
+      conditions.push(
+        or(
+          ilike(socialAccounts.username, query),
+          ilike(socialAccounts.accountUrl, query),
+          ilike(socialAccounts.nickname, query)
+        )
+      );
+    }
+
+    if (typeId) {
+      conditions.push(eq(socialAccounts.typeId, typeId));
+    }
+
+    if (followsAccountIds && followsAccountIds.length > 0) {
+      const followConditions = followsAccountIds.map(id =>
+        arrayContains(socialAccounts.following, [id])
+      );
+      conditions.push(
+        followConditions.length === 1 ? followConditions[0]! : or(...followConditions)!
+      );
+    }
+
+    const whereClause = conditions.length === 0
+      ? undefined
+      : conditions.length === 1
+        ? conditions[0]
+        : and(...conditions);
+
+    const startQuery = searchQuery ? `${searchQuery}%` : null;
+
+    const query = db
+      .select()
+      .from(socialAccounts);
+
+    if (whereClause) {
+      return await query
+        .where(whereClause)
+        .orderBy(
+          startQuery
+            ? sql`CASE WHEN ${socialAccounts.username} ILIKE ${startQuery} THEN 0 ELSE 1 END`
+            : socialAccounts.username,
+          socialAccounts.username
+        )
+        .offset(offset)
+        .limit(limit);
+    }
+
+    return await query
+      .orderBy(socialAccounts.username)
+      .offset(offset)
+      .limit(limit);
   }
 
   async getSocialAccountById(id: string): Promise<SocialAccount | undefined> {

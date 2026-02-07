@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { Plus, X, Users2, Edit2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,8 @@ function isValidHexColor(color: string): boolean {
   return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
 }
 
+const PAGE_SIZE = 30;
+
 export default function SocialAccountsList() {
   const [, navigate] = useLocation();
   const searchParams = useSearch();
@@ -43,8 +45,10 @@ export default function SocialAccountsList() {
   const [accountToDelete, setAccountToDelete] = useState<SocialAccount | null>(null);
   const [accountToEdit, setAccountToEdit] = useState<SocialAccount | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [showFollowsYou, setShowFollowsYou] = useState(false);
   const { toast } = useToast();
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const urlParams = new URLSearchParams(searchParams);
   const typeIdFromUrl = urlParams.get("type") || "";
@@ -53,6 +57,13 @@ export default function SocialAccountsList() {
   useEffect(() => {
     setSelectedTypeId(typeIdFromUrl);
   }, [typeIdFromUrl]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const handleTypeChange = (value: string) => {
     setSelectedTypeId(value);
@@ -63,19 +74,35 @@ export default function SocialAccountsList() {
     }
   };
 
-  const { data: accounts, isLoading, isError, error } = useQuery<SocialAccount[]>({
-    queryKey: ["/api/social-accounts", selectedTypeId],
-    queryFn: async () => {
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery<SocialAccount[]>({
+    queryKey: ["/api/social-accounts/paginated", { search: debouncedSearch, typeId: selectedTypeId, followsYou: showFollowsYou }],
+    queryFn: async ({ pageParam = 0 }) => {
       const params = new URLSearchParams();
-      if (selectedTypeId && selectedTypeId !== "all") {
-        params.set("typeId", selectedTypeId);
-      }
-      const url = params.toString() ? `/api/social-accounts?${params.toString()}` : "/api/social-accounts";
-      const response = await fetch(url, { credentials: "include" });
+      params.set("offset", String(pageParam));
+      params.set("limit", String(PAGE_SIZE));
+      if (debouncedSearch) params.set("search", debouncedSearch);
+      if (selectedTypeId && selectedTypeId !== "all") params.set("typeId", selectedTypeId);
+      if (showFollowsYou) params.set("followsYou", "true");
+      const response = await fetch(`/api/social-accounts/paginated?${params.toString()}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch social accounts");
       return response.json();
     },
+    getNextPageParam: (lastPage, allPages) => {
+      if (lastPage.length < PAGE_SIZE) return undefined;
+      return allPages.length * PAGE_SIZE;
+    },
+    initialPageParam: 0,
   });
+
+  const accounts = data?.pages.flat() || [];
 
   const { data: user } = useQuery<{ id: number; username: string; personId: string }>({
     queryKey: ["/api/user"],
@@ -90,12 +117,15 @@ export default function SocialAccountsList() {
     queryKey: ["/api/social-account-types"],
   });
 
+  const meAccountIds = mePerson?.socialAccountUuids || [];
+
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       return await apiRequest("DELETE", `/api/social-accounts/${id}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
       toast({
         title: "Success",
         description: "Social account deleted successfully",
@@ -118,37 +148,22 @@ export default function SocialAccountsList() {
     return username.slice(0, 1).toUpperCase();
   };
 
-  // Get ME user's social account IDs
-  const meAccountIds = useMemo(() => {
-    return mePerson?.socialAccountUuids || [];
-  }, [mePerson]);
-
-  // Filter accounts based on search query and "follows you" toggle
-  const filteredAccounts = useMemo(() => {
-    if (!accounts) return [];
-
-    let filtered = accounts;
-
-    // Apply search filter (live filtering)
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (account) =>
-          account.username.toLowerCase().includes(query) ||
-          account.accountUrl.toLowerCase().includes(query) ||
-          (account.nickname && account.nickname.toLowerCase().includes(query))
-      );
+  const handleScroll = useCallback(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    if (container.scrollHeight - container.scrollTop - container.clientHeight < 300) {
+      if (hasNextPage && !isFetchingNextPage) {
+        fetchNextPage();
+      }
     }
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-    // Apply "follows you" filter
-    if (showFollowsYou && meAccountIds.length > 0) {
-      filtered = filtered.filter((account) =>
-        meAccountIds.some((meId) => account.followers?.includes(meId))
-      );
-    }
-
-    return filtered;
-  }, [accounts, searchQuery, showFollowsYou, meAccountIds]);
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    container.addEventListener("scroll", handleScroll);
+    return () => container.removeEventListener("scroll", handleScroll);
+  }, [handleScroll]);
 
   return (
     <div className="flex flex-col h-full">
@@ -208,7 +223,7 @@ export default function SocialAccountsList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-6">
+      <div className="flex-1 overflow-auto px-6 py-6" ref={scrollContainerRef}>
         {isLoading ? (
           <div className="flex flex-col gap-[5px]">
             {[1, 2, 3, 4].map((i) => (
@@ -236,9 +251,9 @@ export default function SocialAccountsList() {
               Try Again
             </Button>
           </div>
-        ) : filteredAccounts && filteredAccounts.length > 0 ? (
+        ) : accounts.length > 0 ? (
           <div className="flex flex-col gap-[5px]">
-            {filteredAccounts.map((account) => {
+            {accounts.map((account) => {
               const isFollowingYou = meAccountIds.some((meId) =>
                 account.followers?.includes(meId)
               );
@@ -353,19 +368,39 @@ export default function SocialAccountsList() {
                 </div>
               );
             })}
+            {isFetchingNextPage && (
+              <div className="flex flex-col gap-[5px]">
+                {[1, 2].map((i) => (
+                  <Card key={`loading-${i}`} className="p-4 animate-pulse">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-full bg-muted" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-4 bg-muted rounded w-1/3" />
+                        <div className="h-3 bg-muted rounded w-1/4" />
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+            {!hasNextPage && accounts.length >= PAGE_SIZE && (
+              <p className="text-center text-sm text-muted-foreground py-4">
+                All accounts loaded
+              </p>
+            )}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Users2 className="h-16 w-16 text-muted-foreground mb-4" />
             <h3 className="text-lg font-medium mb-2">
-              {searchQuery || showFollowsYou || (selectedTypeId && selectedTypeId !== "all") ? "No accounts found" : "No social accounts"}
+              {debouncedSearch || showFollowsYou || (selectedTypeId && selectedTypeId !== "all") ? "No accounts found" : "No social accounts"}
             </h3>
             <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-              {searchQuery || showFollowsYou || (selectedTypeId && selectedTypeId !== "all")
+              {debouncedSearch || showFollowsYou || (selectedTypeId && selectedTypeId !== "all")
                 ? "Try adjusting your search or filters"
                 : "Get started by adding your first social account"}
             </p>
-            {!searchQuery && !showFollowsYou && (!selectedTypeId || selectedTypeId === "all") && (
+            {!debouncedSearch && !showFollowsYou && (!selectedTypeId || selectedTypeId === "all") && (
               <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-account-empty">
                 <Plus className="h-4 w-4" />
                 Add Account

@@ -115,6 +115,7 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
       toast({
         title: "Success",
         description: "Social account added successfully",
