@@ -60,28 +60,34 @@ export default function SocialGraph3D() {
     });
   }
 
-  const connectionCounts = new Map<string, number>();
+  const uniqueConnectionCounts = new Map<string, number>();
+  const allAccountIds = new Set(allSocialAccounts.map(a => a.id));
   allSocialAccounts.forEach(account => {
-    const followingCount = account.following
-      ? account.following.filter(id => allSocialAccounts.some(a => a.id === id)).length
-      : 0;
-    const followedByCount = allSocialAccounts.filter(
-      other => other.following && other.following.includes(account.id)
-    ).length;
-    connectionCounts.set(account.id, followingCount + followedByCount);
+    const connectedPeers = new Set<string>();
+    if (account.following) {
+      account.following.forEach(id => {
+        if (allAccountIds.has(id)) connectedPeers.add(id);
+      });
+    }
+    allSocialAccounts.forEach(other => {
+      if (other.following && other.following.includes(account.id)) {
+        connectedPeers.add(other.id);
+      }
+    });
+    uniqueConnectionCounts.set(account.id, connectedPeers.size);
   });
 
   let filteredSocialAccounts = allSocialAccounts;
 
   if (hideOrphans) {
     filteredSocialAccounts = filteredSocialAccounts.filter(account => {
-      return (connectionCounts.get(account.id) || 0) > 0;
+      return (uniqueConnectionCounts.get(account.id) || 0) > 0;
     });
   }
 
   if (minTwoConnections) {
     filteredSocialAccounts = filteredSocialAccounts.filter(account => {
-      return (connectionCounts.get(account.id) || 0) >= 2;
+      return (uniqueConnectionCounts.get(account.id) || 0) >= 2;
     });
   }
 
