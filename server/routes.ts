@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, type SocialAccount } from "@shared/schema";
 import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
 import {
@@ -1336,17 +1336,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Now update the target account's followers or following list
+      // Build a lookup by ID from the username map for quick access
+      const accountsById = new Map<string, SocialAccount>();
+      for (const acct of accountsByUsername.values()) {
+        accountsById.set(acct.id, acct);
+      }
+
       if (importType === "followers") {
-        // Add all imported accounts to our followers list (they follow us)
+        // These accounts follow the target, so add the target's ID to each imported account's following array
+        for (const importedId of processedAccountIds) {
+          const importedAccount = accountsById.get(importedId);
+          if (importedAccount) {
+            const currentFollowing = importedAccount.following || [];
+            if (!currentFollowing.includes(accountId)) {
+              await storage.updateSocialAccount(importedId, {
+                following: [...currentFollowing, accountId],
+              });
+            }
+          }
+        }
+        // Also update the target account's followers array for completeness
         const currentFollowers = targetAccount.followers || [];
         const newFollowers = Array.from(new Set([...currentFollowers, ...processedAccountIds]));
         await storage.updateSocialAccount(accountId, { followers: newFollowers });
       } else {
-        // Add all imported accounts to our following list (we follow them)
+        // Target follows these accounts, so add each to target's following array
         const currentFollowing = targetAccount.following || [];
         const newFollowing = Array.from(new Set([...currentFollowing, ...processedAccountIds]));
         await storage.updateSocialAccount(accountId, { following: newFollowing });
+        // Also update each imported account's followers array for completeness
+        for (const importedId of processedAccountIds) {
+          const importedAccount = accountsById.get(importedId);
+          if (importedAccount) {
+            const currentFollowers = importedAccount.followers || [];
+            if (!currentFollowers.includes(accountId)) {
+              await storage.updateSocialAccount(importedId, {
+                followers: [...currentFollowers, accountId],
+              });
+            }
+          }
+        }
       }
 
       res.json({
