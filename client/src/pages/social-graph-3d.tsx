@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import { Button } from "@/components/ui/button";
-import { Settings, Grid2X2, X } from "lucide-react";
+import { Settings, X } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -15,17 +15,12 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-
-interface GraphData {
-  people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
-  relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
-  groups: Array<{ id: string; name: string; color: string; members: string[] }>;
-}
+import type { SocialAccount, SocialAccountType } from "@shared/schema";
 
 interface GraphNode {
   id: string;
   name: string;
-  type: 'person' | 'group';
+  type: 'social-account';
   color?: string;
   val?: number;
 }
@@ -33,131 +28,121 @@ interface GraphNode {
 interface GraphLink {
   source: string;
   target: string;
-  type: 'relationship' | 'group-member';
+  type: 'follows';
   color?: string;
+  mutual?: boolean;
 }
 
-export default function Graph3D() {
+export default function SocialGraph3D() {
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
   const [, navigate] = useLocation();
-  const [showGroups, setShowGroups] = useState(true);
   const [hideOrphans, setHideOrphans] = useState(true);
-  const [anonymizePeople, setAnonymizePeople] = useState(false);
-  const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
+  const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
-  const { data: graphData } = useQuery<GraphData>({
-    queryKey: ["/api/graph"],
+  const { data: socialAccounts } = useQuery<SocialAccount[]>({
+    queryKey: ["/api/social-accounts"],
   });
 
-  const { data: meData } = useQuery<{ id: string }>({
-    queryKey: ["/api/me"],
-    select: (data) => ({ id: data.id }),
+  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
+    queryKey: ["/api/social-account-types"],
   });
 
-  const allPeople = graphData?.people || [];
-  const groups = graphData?.groups || [];
-  const relationships = graphData?.relationships || [];
+  const allSocialAccounts = socialAccounts || [];
 
-  const people = hideOrphans
-    ? allPeople.filter(person => {
-        const hasRelationship = relationships.some(
-          rel => rel.fromPersonId === person.id || rel.toPersonId === person.id
+  const typeColorMap = new Map<string, string>();
+  if (socialAccountTypes) {
+    socialAccountTypes.forEach(t => {
+      if (t.color) typeColorMap.set(t.id, t.color);
+    });
+  }
+
+  const filteredSocialAccounts = hideOrphans
+    ? allSocialAccounts.filter(account => {
+        const hasFollowing = account.following && account.following.length > 0;
+        const isFollowed = allSocialAccounts.some(
+          other => other.following && other.following.includes(account.id)
         );
-        const isInGroup = groups.some(group => group.members.includes(person.id));
-        return hasRelationship || isInGroup;
+        return hasFollowing || isFollowed;
       })
-    : allPeople;
+    : allSocialAccounts;
 
   useEffect(() => {
     if (!graphRef.current) return;
-    if (!people.length) return;
+    if (!filteredSocialAccounts.length) return;
 
-    let nodes: GraphNode[] = [
-      ...people.map(p => ({
-        id: p.id,
-        name: anonymizePeople && p.id !== meData?.id
-          ? "Anonymous"
-          : `${p.firstName} ${p.lastName}`,
-        type: 'person' as const,
-        color: '#6366f1',
+    const accountIds = new Set(filteredSocialAccounts.map(a => a.id));
+
+    let nodes: GraphNode[] = filteredSocialAccounts.map(account => {
+      const typeColor = account.typeId ? typeColorMap.get(account.typeId) : null;
+      return {
+        id: account.id,
+        name: account.nickname || account.username,
+        type: 'social-account' as const,
+        color: typeColor || '#10b981',
         val: 10,
-      })),
-    ];
+      };
+    });
 
-    if (showGroups) {
-      groups.forEach(g => {
-        nodes.push({
-          id: `group-${g.id}`,
-          name: g.name,
-          type: 'group' as const,
-          color: g.color || '#8b5cf6',
-          val: 15,
-        });
-      });
-    }
+    let links: GraphLink[] = [];
+    const mutualPairs = new Set<string>();
 
-    let links: GraphLink[] = [
-      ...relationships.map(r => ({
-        source: r.fromPersonId,
-        target: r.toPersonId,
-        type: 'relationship' as const,
-        color: r.typeColor || '#6b7280',
-      })),
-    ];
+    filteredSocialAccounts.forEach(account => {
+      if (account.following) {
+        account.following.forEach(followedId => {
+          if (!accountIds.has(followedId)) return;
 
-    if (showGroups) {
-      groups.forEach(g => {
-        g.members.forEach(memberId => {
-          if (people.some(p => p.id === memberId)) {
+          const followedAccount = filteredSocialAccounts.find(a => a.id === followedId);
+          const isMutual = followedAccount?.following?.includes(account.id) || false;
+
+          if (isMutual) {
+            const pairKey = [account.id, followedId].sort().join('-');
+            if (mutualPairs.has(pairKey)) return;
+            mutualPairs.add(pairKey);
+
             links.push({
-              source: `group-${g.id}`,
-              target: memberId,
-              type: 'group-member' as const,
-              color: g.color || '#8b5cf6',
+              source: account.id,
+              target: followedId,
+              type: 'follows' as const,
+              color: '#6366f1',
+              mutual: true,
+            });
+          } else {
+            links.push({
+              source: account.id,
+              target: followedId,
+              type: 'follows' as const,
+              color: '#6b7280',
+              mutual: false,
             });
           }
         });
-      });
-    }
+      }
+    });
 
-    if (highlightedPersonId) {
-      const connectedPersonIds = new Set<string>([highlightedPersonId]);
+    if (highlightedAccountId) {
+      const connectedIds = new Set<string>([highlightedAccountId]);
 
-      relationships.forEach(rel => {
-        if (rel.fromPersonId === highlightedPersonId) {
-          connectedPersonIds.add(rel.toPersonId);
-        } else if (rel.toPersonId === highlightedPersonId) {
-          connectedPersonIds.add(rel.fromPersonId);
+      filteredSocialAccounts.forEach(account => {
+        if (account.following?.includes(highlightedAccountId)) {
+          connectedIds.add(account.id);
         }
       });
 
-      const userGroupIds = new Set<string>();
-      groups.forEach(group => {
-        if (group.members.includes(highlightedPersonId)) {
-          userGroupIds.add(`group-${group.id}`);
-        }
-      });
+      const highlightedAccount = filteredSocialAccounts.find(a => a.id === highlightedAccountId);
+      if (highlightedAccount?.following) {
+        highlightedAccount.following.forEach(id => {
+          if (accountIds.has(id)) connectedIds.add(id);
+        });
+      }
 
-      nodes = nodes.filter(node => {
-        if (node.type === 'person') {
-          return connectedPersonIds.has(node.id);
-        } else {
-          return userGroupIds.has(node.id);
-        }
-      });
-
+      nodes = nodes.filter(node => connectedIds.has(node.id));
       links = links.filter(link => {
         const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
         const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
-
-        if (link.type === 'relationship') {
-          return connectedPersonIds.has(sourceId) && connectedPersonIds.has(targetId);
-        } else {
-          return userGroupIds.has(sourceId) && connectedPersonIds.has(targetId);
-        }
+        return connectedIds.has(sourceId) && connectedIds.has(targetId);
       });
     }
 
@@ -184,13 +169,12 @@ export default function Graph3D() {
         .enableNodeDrag(true)
         .enableNavigationControls(true)
         .showNavInfo(false)
+        .linkDirectionalArrowLength((link: any) => link.mutual ? 0 : 4)
+        .linkDirectionalArrowRelPos(1)
+        .linkDirectionalArrowColor('color')
+        .linkCurvature(0)
         .onNodeClick((node: any) => {
-          if (node.type === 'person') {
-            navigate(`/person/${node.id}?from=graph-3d`);
-          } else if (node.type === 'group') {
-            const groupId = node.id.replace('group-', '');
-            navigate(`/group/${groupId}?from=graph-3d`);
-          }
+          navigate(`/social-accounts/${node.id}?from=social-graph-3d`);
         })
         .onNodeHover((node: any) => {
           graphRef.current!.style.cursor = node ? 'pointer' : 'default';
@@ -211,7 +195,7 @@ export default function Graph3D() {
         fgRef.current = null;
       }
     };
-  }, [people, groups, relationships, navigate, showGroups, highlightedPersonId, anonymizePeople, meData?.id]);
+  }, [filteredSocialAccounts, socialAccountTypes, navigate, highlightedAccountId]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -229,29 +213,17 @@ export default function Graph3D() {
     }
   };
 
-  const searchPeople = people.filter(p =>
-    p.id !== meData?.id &&
-    `${p.firstName} ${p.lastName}`.toLowerCase().includes('')
-  );
+  const searchAccounts = filteredSocialAccounts;
 
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
         <div>
           <h1 className="text-sm md:text-2xl font-semibold" data-testid="text-page-title">
-            3D Connection Graph
+            3D Social Account Graph
           </h1>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => navigate('/graph')}
-            data-testid="button-switch-to-2d"
-          >
-            <Grid2X2 className="h-4 w-4 mr-2" />
-            2D View
-          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -264,7 +236,7 @@ export default function Graph3D() {
       </div>
 
       <div className="flex-1 relative">
-        <div ref={graphRef} className="w-full h-full" data-testid="canvas-3d-graph" />
+        <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
         {isOptionsOpen && (
           <div className="absolute top-4 right-4 w-80 bg-background border rounded-lg shadow-lg p-4 space-y-4 z-50">
@@ -282,18 +254,18 @@ export default function Graph3D() {
 
             <div className="space-y-4">
               <div className="space-y-2">
-                <Label>Highlight Person</Label>
+                <Label>Highlight Account</Label>
                 <div className="relative">
-                  {highlightedPersonId && (
+                  {highlightedAccountId && (
                     <Button
                       variant="ghost"
                       size="icon"
                       className="absolute left-0 top-0 h-full z-10 hover:bg-transparent"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setHighlightedPersonId(null);
+                        setHighlightedAccountId(null);
                       }}
-                      data-testid="button-clear-highlight"
+                      data-testid="button-clear-account-highlight"
                     >
                       <X className="h-4 w-4" />
                     </Button>
@@ -303,33 +275,36 @@ export default function Graph3D() {
                       <Button
                         variant="outline"
                         className="w-full justify-start text-left font-normal"
-                        style={{ paddingLeft: highlightedPersonId ? '2.5rem' : undefined }}
-                        data-testid="button-person-search"
+                        style={{ paddingLeft: highlightedAccountId ? '2.5rem' : undefined }}
+                        data-testid="button-account-search"
                       >
-                        {highlightedPersonId
-                          ? people.find(p => p.id === highlightedPersonId)
-                            ? `${people.find(p => p.id === highlightedPersonId)!.firstName} ${people.find(p => p.id === highlightedPersonId)!.lastName}`
-                            : 'Select person...'
-                          : 'Select person...'}
+                        {highlightedAccountId
+                          ? searchAccounts.find(a => a.id === highlightedAccountId)
+                            ? (searchAccounts.find(a => a.id === highlightedAccountId)!.nickname || searchAccounts.find(a => a.id === highlightedAccountId)!.username)
+                            : 'Select account...'
+                          : 'Select account...'}
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-80 p-0" align="start">
                       <Command>
-                        <CommandInput placeholder="Search people..." />
+                        <CommandInput placeholder="Search accounts..." />
                         <CommandList>
-                          <CommandEmpty>No person found.</CommandEmpty>
+                          <CommandEmpty>No account found.</CommandEmpty>
                           <CommandGroup>
-                            {searchPeople.map((person) => (
+                            {searchAccounts.map((account) => (
                               <CommandItem
-                                key={person.id}
-                                value={`${person.firstName} ${person.lastName}`}
+                                key={account.id}
+                                value={`${account.username} ${account.nickname || ''}`}
                                 onSelect={() => {
-                                  setHighlightedPersonId(person.id);
+                                  setHighlightedAccountId(account.id);
                                   setSearchOpen(false);
                                 }}
-                                data-testid={`option-person-${person.id}`}
+                                data-testid={`option-account-${account.id}`}
                               >
-                                {person.firstName} {person.lastName}
+                                {account.nickname || account.username}
+                                {account.nickname && (
+                                  <span className="ml-1 text-muted-foreground">@{account.username}</span>
+                                )}
                               </CommandItem>
                             ))}
                           </CommandGroup>
@@ -338,26 +313,6 @@ export default function Graph3D() {
                     </PopoverContent>
                   </Popover>
                 </div>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <Label htmlFor="show-groups">Show Groups</Label>
-                <Switch
-                  id="show-groups"
-                  checked={showGroups}
-                  onCheckedChange={setShowGroups}
-                  data-testid="switch-show-groups"
-                />
-              </div>
-
-              <div className="flex items-center justify-between">
-                <Label htmlFor="anonymize">Anonymize People</Label>
-                <Switch
-                  id="anonymize"
-                  checked={anonymizePeople}
-                  onCheckedChange={setAnonymizePeople}
-                  data-testid="switch-anonymize"
-                />
               </div>
 
               <div className="flex items-center justify-between">

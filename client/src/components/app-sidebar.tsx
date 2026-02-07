@@ -1,4 +1,4 @@
-import { Users, Network, Users2, User, Code, Box, AtSign, MessageSquare, Trophy } from "lucide-react";
+import { Users, Network, Users2, User, Code, Box, AtSign, MessageSquare, Trophy, Share2 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -31,6 +31,11 @@ const menuItems = [
     title: "Social Accounts",
     url: "/social-accounts",
     icon: AtSign,
+  },
+  {
+    title: "Social Graph",
+    url: "/social-graph-3d",
+    icon: Share2,
   },
   {
     title: "Messages",

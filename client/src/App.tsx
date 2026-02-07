@@ -30,6 +30,7 @@ import SocialAccountsList from "@/pages/social-accounts-list";
 import SocialAccountProfile from "@/pages/social-account-profile";
 import Graph from "@/pages/graph";
 import Graph3D from "@/pages/graph-3d";
+import SocialGraph3D from "@/pages/social-graph-3d";
 import ApiPlayground from "@/pages/api-playground";
 import AuthPage from "@/pages/auth-page";
 import AuthDirectPage from "@/pages/auth-direct";
@@ -56,6 +57,7 @@ function Router() {
       <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
       <ProtectedRoute path="/graph" component={Graph} />
       <ProtectedRoute path="/graph-3d" component={Graph3D} />
+      <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
       <ProtectedRoute path="/messages" component={MessagesList} />
