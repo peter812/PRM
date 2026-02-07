@@ -276,6 +276,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         allNotes,
         allGroupNotes,
         allSocialAccounts,
+        allSocialAccountTypes,
+        allMessages,
         mePersonResult,
       ] = await Promise.all([
         storage.getAllUsers(),
@@ -288,6 +290,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         storage.getAllNotes(),
         storage.getAllGroupNotes(),
         storage.getAllSocialAccounts(),
+        storage.getAllSocialAccountTypes(),
+        storage.getAllMessages(),
         db.select().from(people).where(isNotNull(people.userId)).limit(1),
       ]);
       
@@ -369,6 +373,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <image_url>${escapeXml(person.imageUrl || "")}</image_url>\n`;
         xml += `      <social_account_uuids>${arrayToXml(person.socialAccountUuids || [], "social_account_uuid")}</social_account_uuids>\n`;
         xml += `      <is_starred>${escapeXml(person.isStarred)}</is_starred>\n`;
+        xml += `      <elo_score>${escapeXml(person.eloScore)}</elo_score>\n`;
         xml += `      <created_at>${escapeXml(person.createdAt)}</created_at>\n`;
         xml += '    </person>\n';
       }
@@ -466,8 +471,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    <social_account>\n';
         xml += `      <id>${escapeXml(account.id)}</id>\n`;
         xml += `      <username>${escapeXml(account.username)}</username>\n`;
+        xml += `      <nickname>${escapeXml(account.nickname || "")}</nickname>\n`;
         xml += `      <account_url>${escapeXml(account.accountUrl)}</account_url>\n`;
         xml += `      <owner_uuid>${escapeXml(ownerUuid || "")}</owner_uuid>\n`;
+        xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
         xml += `      <image_url>${escapeXml(account.imageUrl || "")}</image_url>\n`;
         xml += `      <notes>${escapeXml(account.notes || "")}</notes>\n`;
         xml += `      <following>${arrayToXml(account.following || [], "account_id")}</following>\n`;
@@ -476,6 +483,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    </social_account>\n';
       }
       xml += '  </social_accounts>\n';
+
+      // Export social account types
+      xml += '  <social_account_types>\n';
+      for (const type of allSocialAccountTypes) {
+        xml += '    <social_account_type>\n';
+        xml += `      <id>${escapeXml(type.id)}</id>\n`;
+        xml += `      <name>${escapeXml(type.name)}</name>\n`;
+        xml += `      <color>${escapeXml(type.color)}</color>\n`;
+        xml += `      <created_at>${escapeXml(type.createdAt)}</created_at>\n`;
+        xml += '    </social_account_type>\n';
+      }
+      xml += '  </social_account_types>\n';
+
+      // Export messages
+      xml += '  <messages>\n';
+      for (const msg of allMessages) {
+        xml += '    <message>\n';
+        xml += `      <id>${escapeXml(msg.id)}</id>\n`;
+        xml += `      <upload_timestamp>${escapeXml(msg.uploadTimestamp)}</upload_timestamp>\n`;
+        xml += `      <sent_timestamp>${escapeXml(msg.sentTimestamp)}</sent_timestamp>\n`;
+        xml += `      <type>${escapeXml(msg.type)}</type>\n`;
+        xml += `      <sender>${escapeXml(msg.sender)}</sender>\n`;
+        xml += `      <receivers>${arrayToXml(msg.receivers || [], "receiver")}</receivers>\n`;
+        xml += `      <content>${escapeXml(msg.content || "")}</content>\n`;
+        xml += `      <image_urls>${arrayToXml(msg.imageUrls || [], "image_url")}</image_urls>\n`;
+        xml += `      <is_orphan>${escapeXml(msg.isOrphan)}</is_orphan>\n`;
+        xml += '    </message>\n';
+      }
+      xml += '  </messages>\n';
 
       xml += '</crm_data>';
 
@@ -543,7 +579,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return uuid === ZERO_UUID ? mePersonId : uuid;
       };
 
-      let importedCounts = {
+      let importedCounts: Record<string, number> = {
         relationshipTypes: 0,
         interactionTypes: 0,
         people: 0,
@@ -553,15 +589,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         notes: 0,
         groupNotes: 0,
         socialAccounts: 0,
+        socialAccountTypes: 0,
+        messages: 0,
       };
       
-      let skippedCounts = {
+      let skippedCounts: Record<string, number> = {
         relationshipTypes: 0,
         interactionTypes: 0,
         people: 0,
         relationships: 0,
         interactions: 0,
         socialAccounts: 0,
+        socialAccountTypes: 0,
+        messages: 0,
       };
 
       // Get existing data to check for duplicates (by UUID)
@@ -646,6 +686,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const imageUrl = unescapeXml(parseXmlTag("image_url", block));
         const socialAccountUuids = parseXmlArray("social_account_uuids", "social_account_uuid", block);
         const isStarred = parseInt(parseXmlTag("is_starred", block)) || 0;
+        const eloScore = parseInt(parseXmlTag("elo_score", block)) || 1200;
 
         // Check for duplicate by First Name AND UUID
         const lookupKey = `${firstName.toLowerCase()}:${id}`;
@@ -667,6 +708,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             imageUrl: imageUrl || null,
             socialAccountUuids: socialAccountUuids.length > 0 ? socialAccountUuids : [],
             isStarred: isStarred,
+            eloScore: eloScore,
           });
           importedCounts.people++;
           existingPeopleMap.set(lookupKey, true);
@@ -803,13 +845,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Parse and import social account types (before social accounts so typeId references work)
+      const socialAccountTypeBlocks = parseAllTags("social_account_type", xmlText);
+      const existingSocialAccountTypeUuids = new Set((await storage.getAllSocialAccountTypes()).map(t => t.id));
+      for (const block of socialAccountTypeBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const name = unescapeXml(parseXmlTag("name", block));
+        const color = unescapeXml(parseXmlTag("color", block));
+
+        if (existingSocialAccountTypeUuids.has(id)) {
+          skippedCounts.socialAccountTypes = (skippedCounts.socialAccountTypes || 0) + 1;
+          continue;
+        }
+
+        try {
+          await storage.createSocialAccountTypeWithId({ id, name, color });
+          importedCounts.socialAccountTypes = (importedCounts.socialAccountTypes || 0) + 1;
+          existingSocialAccountTypeUuids.add(id);
+        } catch (error) {
+          console.error(`Error importing social account type ${id}:`, error);
+        }
+      }
+
       // Parse and import social accounts
       const socialAccountBlocks = parseAllTags("social_account", xmlText);
       for (const block of socialAccountBlocks) {
         const id = unescapeXml(parseXmlTag("id", block));
         const username = unescapeXml(parseXmlTag("username", block));
+        const nickname = unescapeXml(parseXmlTag("nickname", block));
         const accountUrl = unescapeXml(parseXmlTag("account_url", block));
         const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
+        const typeId = unescapeXml(parseXmlTag("type_id", block));
         const imageUrl = unescapeXml(parseXmlTag("image_url", block));
         const notes = unescapeXml(parseXmlTag("notes", block));
         const following = parseXmlArray("following", "account_id", block);
@@ -828,8 +894,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           await storage.createSocialAccountWithId({
             id,
             username,
+            nickname: nickname || null,
             accountUrl,
             ownerUuid: processedOwnerUuid || null,
+            typeId: typeId || null,
             imageUrl: imageUrl || null,
             notes: notes || null,
             following: following.length > 0 ? following : [],
@@ -839,6 +907,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
           existingSocialAccountUuids.add(id);
         } catch (error) {
           console.error(`Error importing social account ${id}:`, error);
+        }
+      }
+
+      // Parse and import messages
+      const existingMessageUuids = new Set((await storage.getAllMessages()).map(m => m.id));
+      const messageBlocks = parseAllTags("message", xmlText);
+      for (const block of messageBlocks) {
+        const id = unescapeXml(parseXmlTag("id", block));
+        const sentTimestampStr = unescapeXml(parseXmlTag("sent_timestamp", block));
+        const msgType = unescapeXml(parseXmlTag("type", block));
+        const sender = unescapeXml(parseXmlTag("sender", block));
+        const receivers = parseXmlArray("receivers", "receiver", block);
+        const content = unescapeXml(parseXmlTag("content", block));
+        const imageUrls = parseXmlArray("image_urls", "image_url", block);
+        const isOrphanStr = unescapeXml(parseXmlTag("is_orphan", block));
+
+        if (existingMessageUuids.has(id)) {
+          skippedCounts.messages = (skippedCounts.messages || 0) + 1;
+          continue;
+        }
+
+        try {
+          await storage.createMessageWithId({
+            id,
+            sentTimestamp: new Date(sentTimestampStr),
+            type: msgType as "email" | "phone" | "social",
+            sender,
+            receivers: receivers.length > 0 ? receivers : [],
+            content: content || null,
+            imageUrls: imageUrls.length > 0 ? imageUrls : [],
+            isOrphan: isOrphanStr === "true",
+          });
+          importedCounts.messages = (importedCounts.messages || 0) + 1;
+          existingMessageUuids.add(id);
+        } catch (error) {
+          console.error(`Error importing message ${id}:`, error);
         }
       }
 

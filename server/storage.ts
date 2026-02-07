@@ -191,6 +191,7 @@ export interface IStorage {
   getSocialAccountTypeById(id: string): Promise<SocialAccountType | undefined>;
   getSocialAccountTypeByName(name: string): Promise<SocialAccountType | undefined>;
   createSocialAccountType(type: InsertSocialAccountType): Promise<SocialAccountType>;
+  createSocialAccountTypeWithId(type: InsertSocialAccountType & { id: string }): Promise<SocialAccountType>;
   updateSocialAccountType(id: string, type: Partial<InsertSocialAccountType>): Promise<SocialAccountType | undefined>;
   deleteSocialAccountType(id: string): Promise<void>;
 
@@ -1270,6 +1271,16 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
+  async createSocialAccountTypeWithId(type: InsertSocialAccountType & { id: string }): Promise<SocialAccountType> {
+    const [created] = await db
+      .insert(socialAccountTypes)
+      .values(type)
+      .onConflictDoNothing()
+      .returning();
+    socialAccountTypesCache.invalidate('all');
+    return created;
+  }
+
   async updateSocialAccountType(
     id: string,
     type: Partial<InsertSocialAccountType>
@@ -1384,7 +1395,7 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async createMessageWithId(message: InsertMessage & { id: string }): Promise<Message> {
+  async createMessageWithId(message: InsertMessage & { id: string; uploadTimestamp?: Date }): Promise<Message> {
     const [newMessage] = await db.insert(messages).values(message).returning();
     return newMessage;
   }
