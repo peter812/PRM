@@ -456,9 +456,7 @@ export type SocialGraphNode = {
   name: string;
   color: string;
   val: number;
-  size: number;
   connectionValue?: number;
-  absorbedNames?: string[];
 };
 
 export type SocialGraphLink = {
