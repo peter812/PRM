@@ -48,6 +48,10 @@ import {
   type FlowItem,
   type FlowResponse,
   type MegaSearchResult,
+  type SocialGraphSettings,
+  type SocialGraphData,
+  type SocialGraphNode,
+  type SocialGraphLink,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains } from "drizzle-orm";
@@ -173,6 +177,9 @@ export interface IStorage {
   // Group note operations
   createGroupNote(note: InsertGroupNote): Promise<GroupNote>;
   deleteGroupNote(id: string): Promise<void>;
+
+  // Social graph operations
+  getSocialGraph(settings: SocialGraphSettings): Promise<SocialGraphData>;
 
   // Social account operations
   getAllSocialAccounts(searchQuery?: string, typeId?: string): Promise<SocialAccount[]>;
@@ -1100,6 +1107,133 @@ export class DatabaseStorage implements IStorage {
 
   async deleteGroupNote(id: string): Promise<void> {
     await db.delete(groupNotes).where(eq(groupNotes.id, id));
+  }
+
+  // Social graph operations
+  async getSocialGraph(settings: SocialGraphSettings): Promise<SocialGraphData> {
+    const allAccounts = await db.select().from(socialAccounts);
+    const allTypes = await db.select().from(socialAccountTypes);
+
+    const typeColorMap = new Map<string, string>();
+    allTypes.forEach(t => {
+      if (t.color) typeColorMap.set(t.id, t.color);
+    });
+
+    const allAccountIds = new Set(allAccounts.map(a => a.id));
+
+    const uniqueConnectionCounts = new Map<string, number>();
+    const directConnectionsMap = new Map<string, Set<string>>();
+
+    allAccounts.forEach(account => {
+      const connectedPeers = new Set<string>();
+      if (account.following) {
+        account.following.forEach(id => {
+          if (allAccountIds.has(id)) connectedPeers.add(id);
+        });
+      }
+      allAccounts.forEach(other => {
+        if (other.following && other.following.includes(account.id)) {
+          connectedPeers.add(other.id);
+        }
+      });
+      uniqueConnectionCounts.set(account.id, connectedPeers.size);
+      directConnectionsMap.set(account.id, connectedPeers);
+    });
+
+    let filtered = allAccounts;
+
+    if (settings.hideOrphans) {
+      filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) > 0);
+    }
+
+    if (settings.minTwoConnections) {
+      filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) >= 2);
+    }
+
+    if (settings.limitExtras && !settings.minTwoConnections) {
+      const safeIds = new Set<string>();
+      const extraIds = new Set<string>();
+      filtered.forEach(a => {
+        if ((uniqueConnectionCounts.get(a.id) || 0) >= 2) {
+          safeIds.add(a.id);
+        } else {
+          extraIds.add(a.id);
+        }
+      });
+
+      const filteredIds = new Set(filtered.map(a => a.id));
+      const claimedExtras = new Set<string>();
+
+      const sortedSafeIds = Array.from(safeIds).sort();
+      sortedSafeIds.forEach(safeId => {
+        const peers = directConnectionsMap.get(safeId) || new Set();
+        const sortedPeers = Array.from(peers).filter(id => filteredIds.has(id)).sort();
+        let claimed = 0;
+        sortedPeers.forEach(peerId => {
+          if (claimed >= settings.maxExtras) return;
+          if (extraIds.has(peerId) && !claimedExtras.has(peerId)) {
+            claimedExtras.add(peerId);
+            claimed++;
+          }
+        });
+      });
+
+      filtered = filtered.filter(a => safeIds.has(a.id) || claimedExtras.has(a.id));
+    }
+
+    if (settings.highlightedAccountId) {
+      const connectedIds = new Set<string>([settings.highlightedAccountId]);
+      const highlightedAccount = filtered.find(a => a.id === settings.highlightedAccountId);
+
+      filtered.forEach(a => {
+        if (a.following?.includes(settings.highlightedAccountId!)) {
+          connectedIds.add(a.id);
+        }
+      });
+
+      if (highlightedAccount?.following) {
+        const filteredIds = new Set(filtered.map(a => a.id));
+        highlightedAccount.following.forEach(id => {
+          if (filteredIds.has(id)) connectedIds.add(id);
+        });
+      }
+
+      filtered = filtered.filter(a => connectedIds.has(a.id));
+    }
+
+    const accountIds = new Set(filtered.map(a => a.id));
+
+    const nodes: SocialGraphNode[] = filtered.map(a => ({
+      id: a.id,
+      name: a.nickname || a.username,
+      color: (a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981',
+      val: 10,
+    }));
+
+    const links: SocialGraphLink[] = [];
+    const mutualPairs = new Set<string>();
+
+    filtered.forEach(account => {
+      if (account.following) {
+        account.following.forEach(followedId => {
+          if (!accountIds.has(followedId)) return;
+
+          const followedAccount = filtered.find(a => a.id === followedId);
+          const isMutual = followedAccount?.following?.includes(account.id) || false;
+
+          if (isMutual) {
+            const pairKey = [account.id, followedId].sort().join('-');
+            if (mutualPairs.has(pairKey)) return;
+            mutualPairs.add(pairKey);
+            links.push({ source: account.id, target: followedId, color: '#6366f1', mutual: true });
+          } else {
+            links.push({ source: account.id, target: followedId, color: '#6b7280', mutual: false });
+          }
+        });
+      }
+    });
+
+    return { nodes, links };
   }
 
   // Social account operations

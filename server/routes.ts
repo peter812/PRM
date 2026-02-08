@@ -2680,6 +2680,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Social graph endpoint
+  app.post("/api/social-graph", async (req, res) => {
+    try {
+      const settings = req.body as {
+        hideOrphans?: boolean;
+        minTwoConnections?: boolean;
+        limitExtras?: boolean;
+        maxExtras?: number;
+        highlightedAccountId?: string | null;
+      };
+
+      const graphData = await storage.getSocialGraph({
+        hideOrphans: settings.hideOrphans ?? true,
+        minTwoConnections: settings.minTwoConnections ?? false,
+        limitExtras: settings.limitExtras ?? true,
+        maxExtras: settings.maxExtras ?? 20,
+        highlightedAccountId: settings.highlightedAccountId ?? null,
+      });
+
+      res.json(graphData);
+    } catch (error) {
+      console.error("Error computing social graph:", error);
+      res.status(500).json({ error: "Failed to compute social graph" });
+    }
+  });
+
   // Social accounts endpoints
   app.get("/api/social-accounts", async (req, res) => {
     try {

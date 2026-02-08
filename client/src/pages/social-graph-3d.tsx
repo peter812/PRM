@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import * as THREE from "three";
@@ -17,7 +17,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import type { SocialAccount, SocialAccountType } from "@shared/schema";
+import type { SocialAccount, SocialGraphData } from "@shared/schema";
 
 interface GraphNode {
   id: string;
@@ -50,180 +50,53 @@ export default function SocialGraph3D() {
 
   const extrasSteps = [5, 10, 20, 50, 100];
 
+  const graphSettings = useMemo(() => ({
+    hideOrphans,
+    minTwoConnections,
+    limitExtras,
+    maxExtras,
+    highlightedAccountId,
+  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId]);
+
+  const { data: graphData, isLoading: isGraphLoading } = useQuery<SocialGraphData>({
+    queryKey: ["/api/social-graph", graphSettings],
+    queryFn: async () => {
+      const res = await fetch("/api/social-graph", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(graphSettings),
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch graph data");
+      return res.json();
+    },
+  });
+
   const { data: socialAccounts } = useQuery<SocialAccount[]>({
     queryKey: ["/api/social-accounts"],
   });
 
-  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
-    queryKey: ["/api/social-account-types"],
-  });
-
   const allSocialAccounts = socialAccounts || [];
-
-  const typeColorMap = new Map<string, string>();
-  if (socialAccountTypes) {
-    socialAccountTypes.forEach(t => {
-      if (t.color) typeColorMap.set(t.id, t.color);
-    });
-  }
-
-  const uniqueConnectionCounts = new Map<string, number>();
-  const allAccountIds = new Set(allSocialAccounts.map(a => a.id));
-  allSocialAccounts.forEach(account => {
-    const connectedPeers = new Set<string>();
-    if (account.following) {
-      account.following.forEach(id => {
-        if (allAccountIds.has(id)) connectedPeers.add(id);
-      });
-    }
-    allSocialAccounts.forEach(other => {
-      if (other.following && other.following.includes(account.id)) {
-        connectedPeers.add(other.id);
-      }
-    });
-    uniqueConnectionCounts.set(account.id, connectedPeers.size);
-  });
-
-  let filteredSocialAccounts = allSocialAccounts;
-
-  if (hideOrphans) {
-    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
-      return (uniqueConnectionCounts.get(account.id) || 0) > 0;
-    });
-  }
-
-  if (minTwoConnections) {
-    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
-      return (uniqueConnectionCounts.get(account.id) || 0) >= 2;
-    });
-  }
-
-  if (limitExtras && !minTwoConnections) {
-    const safeIds = new Set<string>();
-    const extraIds = new Set<string>();
-    filteredSocialAccounts.forEach(account => {
-      const count = uniqueConnectionCounts.get(account.id) || 0;
-      if (count >= 2) {
-        safeIds.add(account.id);
-      } else {
-        extraIds.add(account.id);
-      }
-    });
-
-    const claimedExtras = new Set<string>();
-    const filteredIds = new Set(filteredSocialAccounts.map(a => a.id));
-
-    const directConnections = new Map<string, Set<string>>();
-    filteredSocialAccounts.forEach(account => {
-      const peers = new Set<string>();
-      if (account.following) {
-        account.following.forEach(id => {
-          if (filteredIds.has(id)) peers.add(id);
-        });
-      }
-      filteredSocialAccounts.forEach(other => {
-        if (other.following && other.following.includes(account.id)) {
-          peers.add(other.id);
-        }
-      });
-      directConnections.set(account.id, peers);
-    });
-
-    const sortedSafeIds = Array.from(safeIds).sort();
-    sortedSafeIds.forEach(safeId => {
-      const peers = directConnections.get(safeId) || new Set();
-      const sortedPeers = Array.from(peers).sort();
-      let claimed = 0;
-      sortedPeers.forEach(peerId => {
-        if (claimed >= maxExtras) return;
-        if (extraIds.has(peerId) && !claimedExtras.has(peerId)) {
-          claimedExtras.add(peerId);
-          claimed++;
-        }
-      });
-    });
-
-    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
-      return safeIds.has(account.id) || claimedExtras.has(account.id);
-    });
-  }
 
   useEffect(() => {
     if (!graphRef.current) return;
-    if (!filteredSocialAccounts.length) return;
+    if (!graphData || !graphData.nodes.length) return;
 
-    const accountIds = new Set(filteredSocialAccounts.map(a => a.id));
+    const nodes: GraphNode[] = graphData.nodes.map(n => ({
+      id: n.id,
+      name: n.name,
+      type: 'social-account' as const,
+      color: n.color,
+      val: n.val,
+    }));
 
-    let nodes: GraphNode[] = filteredSocialAccounts.map(account => {
-      const typeColor = account.typeId ? typeColorMap.get(account.typeId) : null;
-      return {
-        id: account.id,
-        name: account.nickname || account.username,
-        type: 'social-account' as const,
-        color: typeColor || '#10b981',
-        val: 10,
-      };
-    });
-
-    let links: GraphLink[] = [];
-    const mutualPairs = new Set<string>();
-
-    filteredSocialAccounts.forEach(account => {
-      if (account.following) {
-        account.following.forEach(followedId => {
-          if (!accountIds.has(followedId)) return;
-
-          const followedAccount = filteredSocialAccounts.find(a => a.id === followedId);
-          const isMutual = followedAccount?.following?.includes(account.id) || false;
-
-          if (isMutual) {
-            const pairKey = [account.id, followedId].sort().join('-');
-            if (mutualPairs.has(pairKey)) return;
-            mutualPairs.add(pairKey);
-
-            links.push({
-              source: account.id,
-              target: followedId,
-              type: 'follows' as const,
-              color: '#6366f1',
-              mutual: true,
-            });
-          } else {
-            links.push({
-              source: account.id,
-              target: followedId,
-              type: 'follows' as const,
-              color: '#6b7280',
-              mutual: false,
-            });
-          }
-        });
-      }
-    });
-
-    if (highlightedAccountId) {
-      const connectedIds = new Set<string>([highlightedAccountId]);
-
-      filteredSocialAccounts.forEach(account => {
-        if (account.following?.includes(highlightedAccountId)) {
-          connectedIds.add(account.id);
-        }
-      });
-
-      const highlightedAccount = filteredSocialAccounts.find(a => a.id === highlightedAccountId);
-      if (highlightedAccount?.following) {
-        highlightedAccount.following.forEach(id => {
-          if (accountIds.has(id)) connectedIds.add(id);
-        });
-      }
-
-      nodes = nodes.filter(node => connectedIds.has(node.id));
-      links = links.filter(link => {
-        const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
-        const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
-        return connectedIds.has(sourceId) && connectedIds.has(targetId);
-      });
-    }
+    const links: GraphLink[] = graphData.links.map(l => ({
+      source: l.source,
+      target: l.target,
+      type: 'follows' as const,
+      color: l.color,
+      mutual: l.mutual,
+    }));
 
     const gData = { nodes, links };
 
@@ -305,7 +178,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [filteredSocialAccounts, socialAccountTypes, navigate, highlightedAccountId, limitExtras, maxExtras]);
+  }, [graphData, navigate]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -323,8 +196,6 @@ export default function SocialGraph3D() {
     }
   };
 
-  const searchAccounts = filteredSocialAccounts;
-
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
@@ -334,6 +205,9 @@ export default function SocialGraph3D() {
           </h1>
         </div>
         <div className="flex items-center gap-2">
+          {isGraphLoading && (
+            <span className="text-xs text-muted-foreground" data-testid="text-graph-loading">Loading...</span>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -389,8 +263,8 @@ export default function SocialGraph3D() {
                         data-testid="button-account-search"
                       >
                         {highlightedAccountId
-                          ? searchAccounts.find(a => a.id === highlightedAccountId)
-                            ? (searchAccounts.find(a => a.id === highlightedAccountId)!.nickname || searchAccounts.find(a => a.id === highlightedAccountId)!.username)
+                          ? allSocialAccounts.find(a => a.id === highlightedAccountId)
+                            ? (allSocialAccounts.find(a => a.id === highlightedAccountId)!.nickname || allSocialAccounts.find(a => a.id === highlightedAccountId)!.username)
                             : 'Select account...'
                           : 'Select account...'}
                       </Button>
@@ -401,7 +275,7 @@ export default function SocialGraph3D() {
                         <CommandList>
                           <CommandEmpty>No account found.</CommandEmpty>
                           <CommandGroup>
-                            {searchAccounts.map((account) => (
+                            {allSocialAccounts.map((account) => (
                               <CommandItem
                                 key={account.id}
                                 value={`${account.username} ${account.nickname || ''}`}
