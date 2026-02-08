@@ -60,6 +60,7 @@ export default function SocialGraph3D() {
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [graphMode, setGraphMode] = useState<'default' | 'blob'>('default');
+  const [blobForceMultiplier, setBlobForceMultiplier] = useState(1);
 
   const extrasSteps = [5, 10, 20, 50, 100];
 
@@ -209,7 +210,7 @@ export default function SocialGraph3D() {
         if (chargeForce && typeof chargeForce.strength === 'function') {
           chargeForce.strength((node: any) => {
             const nodeVal = node.val || 10;
-            const scale = Math.sqrt(nodeVal / 10);
+            const scale = 1 + (Math.sqrt(nodeVal / 10) - 1) * blobForceMultiplier;
             return -30 * scale;
           });
         }
@@ -224,7 +225,7 @@ export default function SocialGraph3D() {
         if (chargeForce && typeof chargeForce.strength === 'function') {
           chargeForce.strength((node: any) => {
             const nodeVal = node.val || 10;
-            const scale = Math.sqrt(nodeVal / 10);
+            const scale = 1 + (Math.sqrt(nodeVal / 10) - 1) * blobForceMultiplier;
             return -30 * scale;
           });
         }
@@ -239,7 +240,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, colorScheme, connectionsColorMin, connectionsColorMax, interpolateColor, graphMode]);
+  }, [graphData, navigate, colorScheme, connectionsColorMin, connectionsColorMax, interpolateColor, graphMode, blobForceMultiplier]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -260,31 +261,13 @@ export default function SocialGraph3D() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
-        <div className="flex items-center gap-4 flex-wrap">
+        <div>
           <h1 className="text-sm md:text-2xl font-semibold flex items-center gap-2" data-testid="text-page-title">
             3D Social Account Graph
             <span className="text-xs font-medium bg-secondary text-secondary-foreground px-2 py-0.5 rounded-full" data-testid="text-node-count">
               {graphData?.nodes.length || 0}
             </span>
           </h1>
-          <div className="flex items-center gap-1" data-testid="mode-selector">
-            <Button
-              variant={graphMode === 'default' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setGraphMode('default')}
-              data-testid="button-mode-default"
-            >
-              Default
-            </Button>
-            <Button
-              variant={graphMode === 'blob' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setGraphMode('blob')}
-              data-testid="button-mode-blob"
-            >
-              Blob
-            </Button>
-          </div>
         </div>
         <div className="flex items-center gap-2">
           {isGraphLoading && (
@@ -319,6 +302,53 @@ export default function SocialGraph3D() {
             </div>
 
             <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Graph Mode</Label>
+                <div className="flex items-center gap-1" data-testid="mode-selector">
+                  <Button
+                    variant={graphMode === 'default' ? 'default' : 'outline'}
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setGraphMode('default')}
+                    data-testid="button-mode-default"
+                  >
+                    Default
+                  </Button>
+                  <Button
+                    variant={graphMode === 'blob' ? 'default' : 'outline'}
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setGraphMode('blob')}
+                    data-testid="button-mode-blob"
+                  >
+                    Blob
+                  </Button>
+                </div>
+              </div>
+
+              {graphMode === 'blob' && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm text-muted-foreground">Blob Size Force</Label>
+                    <span className="text-sm font-medium" data-testid="text-blob-force-value">{blobForceMultiplier.toFixed(1)}x</span>
+                  </div>
+                  <Slider
+                    value={[blobForceMultiplier * 10]}
+                    min={0}
+                    max={30}
+                    step={1}
+                    onValueChange={(values) => setBlobForceMultiplier(values[0] / 10)}
+                    data-testid="slider-blob-force"
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>0x</span>
+                    <span>1x</span>
+                    <span>2x</span>
+                    <span>3x</span>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label>Highlight Account</Label>
                 <div className="relative">
