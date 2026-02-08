@@ -204,9 +204,29 @@ export default function SocialGraph3D() {
         .warmupTicks(100)
         .cooldownTime(15000);
 
+      try {
+        const chargeForce = fg.d3Force('charge');
+        if (chargeForce && typeof chargeForce.strength === 'function') {
+          chargeForce.strength((node: any) => {
+            const nodeVal = node.val || 10;
+            return -30 * (nodeVal / 10);
+          });
+        }
+      } catch (_) {}
+
+
       fgRef.current = fg;
     } else {
       fgRef.current.graphData(gData);
+      try {
+        const chargeForce = fgRef.current.d3Force('charge');
+        if (chargeForce && typeof chargeForce.strength === 'function') {
+          chargeForce.strength((node: any) => {
+            const nodeVal = node.val || 10;
+            return -30 * (nodeVal / 10);
+          });
+        }
+      } catch (_) {}
     }
 
     return () => {
