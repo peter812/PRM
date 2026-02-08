@@ -2681,69 +2681,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Social accounts endpoints
-  app.get("/api/social-accounts/graph", async (req, res) => {
-    try {
-      const depth = Math.min(2, Math.max(1, parseInt(req.query.depth as string) || 1));
-      const userId = req.user?.id;
-
-      const allAccounts = await storage.getAllSocialAccounts();
-      const accountMap = new Map<string, typeof allAccounts[0]>();
-      allAccounts.forEach(a => accountMap.set(a.id, a));
-
-      let meAccountIds: string[] = [];
-      if (userId) {
-        const mePerson = await storage.getMePerson(userId);
-        if (mePerson?.socialAccountUuids?.length) {
-          meAccountIds = mePerson.socialAccountUuids.filter(id => accountMap.has(id));
-        }
-      }
-
-      if (meAccountIds.length === 0) {
-        res.json([]);
-        return;
-      }
-
-      const resultIds = new Set<string>(meAccountIds);
-
-      const addConnections = (sourceIds: Set<string>) => {
-        const newIds = new Set<string>();
-        sourceIds.forEach(id => {
-          const account = accountMap.get(id);
-          if (!account) return;
-          if (account.following) {
-            account.following.forEach(fId => {
-              if (accountMap.has(fId) && !resultIds.has(fId)) {
-                resultIds.add(fId);
-                newIds.add(fId);
-              }
-            });
-          }
-          if (account.followers) {
-            account.followers.forEach(fId => {
-              if (accountMap.has(fId) && !resultIds.has(fId)) {
-                resultIds.add(fId);
-                newIds.add(fId);
-              }
-            });
-          }
-        });
-        return newIds;
-      };
-
-      const depth1Ids = addConnections(new Set(meAccountIds));
-
-      if (depth >= 2) {
-        addConnections(depth1Ids);
-      }
-
-      const result = allAccounts.filter(a => resultIds.has(a.id));
-      res.json(result);
-    } catch (error) {
-      console.error("Error fetching social accounts graph:", error);
-      res.status(500).json({ error: "Failed to fetch social accounts graph" });
-    }
-  });
-
   app.get("/api/social-accounts", async (req, res) => {
     try {
       const searchQuery = req.query.search as string | undefined;
