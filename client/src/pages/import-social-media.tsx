@@ -52,7 +52,7 @@ export default function ImportSocialMediaPage() {
 
       toast({
         title: "Instagram Import Successful",
-        description: `Successfully imported ${data.imported} accounts${data.updated > 0 ? ` (${data.updated} updated)` : ""}`,
+        description: `Successfully imported ${data.imported} accounts${data.updated > 0 ? ` (${data.updated} updated)` : ""}${data.skippedRows > 0 ? ` (${data.skippedRows} rows skipped due to formatting issues)` : ""}`,
       });
 
       setSelectedInstagramFile(null);

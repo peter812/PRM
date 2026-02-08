@@ -29,7 +29,7 @@ import Papa from "papaparse";
 
 const scryptAsync = promisify(scrypt);
 
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // Flag to track if user creation is allowed (only after database reset)
 let isUserCreationAllowed = false;
@@ -1234,11 +1234,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       if (parseResult.errors.length > 0) {
-        console.error("CSV parsing errors:", parseResult.errors);
-        return res.status(400).json({
-          error: "Failed to parse CSV file",
-          details: parseResult.errors.map(e => e.message),
-        });
+        console.warn("CSV parsing warnings (skipping bad rows):", parseResult.errors.length, "errors");
       }
 
       const rows = parseResult.data as any[];
@@ -1379,11 +1375,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      const skippedRows = parseResult.errors.length;
       res.json({
         success: true,
         imported: importedCount,
         updated: updatedCount,
         total: processedAccountIds.length,
+        skippedRows,
       });
     } catch (error) {
       console.error("Error importing Instagram data:", error);
