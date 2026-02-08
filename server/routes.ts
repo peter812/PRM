@@ -2849,7 +2849,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "followerId is required" });
       }
 
-      await storage.addFollower(id, followerId);
+      await Promise.all([
+        storage.addFollower(id, followerId),
+        storage.updateSocialAccount(id, { latestImportFollowers: new Date() })
+      ]);
       res.json({ success: true });
     } catch (error) {
       console.error("Error adding follower:", error);
@@ -2877,7 +2880,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "followingId is required" });
       }
 
-      await storage.addFollowing(id, followingId);
+      await Promise.all([
+        storage.addFollowing(id, followingId),
+        storage.updateSocialAccount(id, { latestImportFollowing: new Date() })
+      ]);
       res.json({ success: true });
     } catch (error) {
       console.error("Error adding following:", error);
