@@ -222,7 +222,7 @@ export default function SocialGraph3D() {
       <div className="flex-1 relative">
         <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
-        <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm border rounded-md px-2 py-1 text-xs font-medium z-10 select-none shadow-sm" data-testid="text-node-count">
+        <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm border rounded-md px-2 py-1 text-xs font-medium z-[9999] select-none shadow-sm pointer-events-none" data-testid="text-node-count">
           Nodes: {graphData?.nodes.length || 0}
         </div>
 
