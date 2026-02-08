@@ -211,7 +211,7 @@ export function AddRelationshipDialog({
                 <PopoverContent className="w-full p-0" align="start">
                   <Command>
                     <CommandInput placeholder="Search people..." data-testid="input-search-people" />
-                    <CommandList className="max-h-64 overflow-y-auto">
+                    <CommandList className="max-h-64 overflow-y-auto" onWheel={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} onTouchMove={(e) => e.stopPropagation()}>
                       <CommandEmpty>No people found.</CommandEmpty>
                       <CommandGroup>
                         {availablePeople.map((person) => {
