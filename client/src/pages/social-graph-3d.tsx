@@ -42,7 +42,7 @@ export default function SocialGraph3D() {
   const [, navigate] = useLocation();
   const [hideOrphans, setHideOrphans] = useState(true);
   const [minTwoConnections, setMinTwoConnections] = useState(false);
-  const [limitExtras, setLimitExtras] = useState(false);
+  const [limitExtras, setLimitExtras] = useState(true);
   const [maxExtras, setMaxExtras] = useState(20);
   const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
