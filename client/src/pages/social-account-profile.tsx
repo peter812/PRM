@@ -1,12 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, X, ExternalLink } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, X, ExternalLink, Upload, FileText, CheckCircle2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
@@ -14,6 +17,14 @@ import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
 import { Link } from "wouter";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
+import { SiInstagram } from "react-icons/si";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 
 function isValidHexColor(color: string): boolean {
   return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
@@ -27,6 +38,9 @@ export default function SocialAccountProfile() {
   const [isEditingNotes, setIsEditingNotes] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isLinkFollowingOpen, setIsLinkFollowingOpen] = useState(false);
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+  const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
+  const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
 
   const { data: account, isLoading, isError, error } = useQuery<SocialAccount>({
     queryKey: ["/api/social-accounts", uuid],
@@ -130,6 +144,74 @@ export default function SocialAccountProfile() {
       });
     },
   });
+
+  const importInstagramMutation = useMutation({
+    mutationFn: async ({ file, accountId, importType }: { file: File; accountId: string; importType: "followers" | "following" }) => {
+      const formData = new FormData();
+      formData.append("csv", file);
+      formData.append("accountId", accountId);
+      formData.append("importType", importType);
+
+      const response = await fetch("/api/import-instagram", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to import Instagram data");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
+
+      toast({
+        title: "Instagram Import Successful",
+        description: `Successfully imported ${data.imported} accounts${data.updated > 0 ? ` (${data.updated} updated)` : ""}${data.skippedRows > 0 ? ` (${data.skippedRows} rows skipped due to formatting issues)` : ""}`,
+      });
+
+      setSelectedInstagramFile(null);
+      const fileInput = document.getElementById("modal-instagram-file-input") as HTMLInputElement;
+      if (fileInput) {
+        fileInput.value = "";
+      }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Instagram Import Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleInstagramFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (!file.name.endsWith(".csv")) {
+        toast({
+          title: "Invalid File",
+          description: "Please select a CSV file",
+          variant: "destructive",
+        });
+        return;
+      }
+      setSelectedInstagramFile(file);
+    }
+  };
+
+  const handleInstagramImport = () => {
+    if (selectedInstagramFile && account?.id) {
+      importInstagramMutation.mutate({
+        file: selectedInstagramFile,
+        accountId: account.id,
+        importType: instagramImportType,
+      });
+    }
+  };
 
   if (isLoading) {
     return (
@@ -254,6 +336,16 @@ export default function SocialAccountProfile() {
                 >
                   <ExternalLink className="h-4 w-4" />
                 </Button>
+                {accountType?.name?.toLowerCase() === "instagram" && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => setIsImportDialogOpen(true)}
+                    data-testid="button-import-instagram"
+                  >
+                    <Upload className="h-4 w-4" />
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="icon"
@@ -545,6 +637,135 @@ export default function SocialAccountProfile() {
         accountUuid={uuid!}
         linkedAccountIds={account.following || []}
       />
+
+      <Dialog open={isImportDialogOpen} onOpenChange={(open) => {
+        setIsImportDialogOpen(open);
+        if (!open) {
+          setSelectedInstagramFile(null);
+          importInstagramMutation.reset();
+          const fileInput = document.getElementById("modal-instagram-file-input") as HTMLInputElement;
+          if (fileInput) {
+            fileInput.value = "";
+          }
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <SiInstagram className="h-5 w-5" />
+              Instagram Import
+            </DialogTitle>
+            <DialogDescription>
+              Import followers or following data for {account.username}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="modal-import-type-toggle" className="text-base font-medium">
+                  Import Type
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  {instagramImportType === "followers" ? "Import accounts that follow you" : "Import accounts you follow"}
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={instagramImportType === "followers" ? "text-foreground font-medium" : "text-muted-foreground"}>
+                  Followers
+                </span>
+                <Switch
+                  id="modal-import-type-toggle"
+                  checked={instagramImportType === "following"}
+                  onCheckedChange={(checked) => setInstagramImportType(checked ? "following" : "followers")}
+                  data-testid="switch-modal-import-type"
+                />
+                <span className={instagramImportType === "following" ? "text-foreground font-medium" : "text-muted-foreground"}>
+                  Following
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="modal-instagram-file-input">Select CSV File</Label>
+              <div className="flex items-center gap-3">
+                <Input
+                  id="modal-instagram-file-input"
+                  type="file"
+                  accept=".csv"
+                  onChange={handleInstagramFileChange}
+                  disabled={importInstagramMutation.isPending}
+                  data-testid="input-modal-instagram-file"
+                  className="cursor-pointer"
+                />
+              </div>
+              {selectedInstagramFile && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <FileText className="h-4 w-4" />
+                  <span data-testid="text-modal-selected-filename">{selectedInstagramFile.name}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={handleInstagramImport}
+                disabled={!selectedInstagramFile || importInstagramMutation.isPending}
+                data-testid="button-modal-import-instagram"
+                className="gap-2"
+              >
+                {importInstagramMutation.isPending ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4" />
+                    Import {instagramImportType === "followers" ? "Followers" : "Following"}
+                  </>
+                )}
+              </Button>
+
+              {selectedInstagramFile && !importInstagramMutation.isPending && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSelectedInstagramFile(null);
+                    const fileInput = document.getElementById("modal-instagram-file-input") as HTMLInputElement;
+                    if (fileInput) {
+                      fileInput.value = "";
+                    }
+                  }}
+                  data-testid="button-modal-clear-file"
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+
+            {importInstagramMutation.isSuccess && importInstagramMutation.data && (
+              <div className="rounded-md bg-primary/10 border border-primary/20 p-4">
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="h-5 w-5 text-primary mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-medium" data-testid="text-modal-import-success">
+                      Instagram Import Complete
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Imported {importInstagramMutation.data.imported} account{importInstagramMutation.data.imported !== 1 ? "s" : ""}
+                      {importInstagramMutation.data.updated > 0 && (
+                        <span className="ml-1">
+                          ({importInstagramMutation.data.updated} updated)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
