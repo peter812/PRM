@@ -437,6 +437,33 @@ export type FlowResponse = {
   identifierToName?: Record<string, string>;
 };
 
+export type SocialGraphSettings = {
+  hideOrphans: boolean;
+  minTwoConnections: boolean;
+  limitExtras: boolean;
+  maxExtras: number;
+  highlightedAccountId: string | null;
+};
+
+export type SocialGraphNode = {
+  id: string;
+  name: string;
+  color: string;
+  val: number;
+};
+
+export type SocialGraphLink = {
+  source: string;
+  target: string;
+  color: string;
+  mutual: boolean;
+};
+
+export type SocialGraphData = {
+  nodes: SocialGraphNode[];
+  links: SocialGraphLink[];
+};
+
 export type MegaSearchResult = {
   people: Person[];
   groups: Group[];
