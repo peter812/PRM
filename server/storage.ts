@@ -1334,7 +1334,7 @@ export class DatabaseStorage implements IStorage {
       for (const [removedId, absorberId] of Array.from(mergedInto.entries())) {
         const absorber = nodeMap.get(absorberId);
         if (absorber) {
-          absorber.size += 1;
+          absorber.size += (settings.blobMergeMultiplier ?? 0.5);
           const removedNode = nodeMap.get(removedId);
           if (removedNode) {
             if (!absorber.mergedNames) absorber.mergedNames = [];

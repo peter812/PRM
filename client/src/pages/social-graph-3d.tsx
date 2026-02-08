@@ -60,9 +60,11 @@ export default function SocialGraph3D() {
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [graphMode, setGraphMode] = useState<'default' | 'blob'>('default');
+  const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(0.5);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
 
   const extrasSteps = [5, 10, 20, 50, 100];
+  const mergeMultiplierSteps = [0, 0.15, 0.3, 0.5, 0.75, 1];
 
   const graphSettings = useMemo(() => ({
     hideOrphans,
@@ -73,7 +75,8 @@ export default function SocialGraph3D() {
     colorScheme,
     colorSchemeAccountId,
     mode: graphMode,
-  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId, colorScheme, colorSchemeAccountId, graphMode]);
+    blobMergeMultiplier,
+  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId, colorScheme, colorSchemeAccountId, graphMode, blobMergeMultiplier]);
 
   const { data: graphData, isLoading: isGraphLoading } = useQuery<SocialGraphData>({
     queryKey: ["/api/social-graph", graphSettings],
@@ -327,27 +330,49 @@ export default function SocialGraph3D() {
               </div>
 
               {graphMode === 'blob' && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-sm text-muted-foreground">Blob Size Force</Label>
-                    <span className="text-sm font-medium" data-testid="text-blob-force-value">{blobForceMultiplier.toFixed(1)}x</span>
+                <>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Blob Size Multiplier</Label>
+                      <span className="text-sm font-medium" data-testid="text-blob-merge-value">{blobMergeMultiplier.toFixed(2)}x</span>
+                    </div>
+                    <Slider
+                      value={[Math.max(0, mergeMultiplierSteps.indexOf(blobMergeMultiplier))]}
+                      min={0}
+                      max={mergeMultiplierSteps.length - 1}
+                      step={1}
+                      onValueChange={(values) => setBlobMergeMultiplier(mergeMultiplierSteps[values[0]])}
+                      data-testid="slider-blob-merge"
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      {mergeMultiplierSteps.map(step => (
+                        <span key={step}>{step}</span>
+                      ))}
+                    </div>
                   </div>
-                  <Slider
-                    value={[blobForceMultiplier * 10]}
-                    min={20}
-                    max={60}
-                    step={1}
-                    onValueChange={(values) => setBlobForceMultiplier(values[0] / 10)}
-                    data-testid="slider-blob-force"
-                  />
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>2x</span>
-                    <span>3x</span>
-                    <span>4x</span>
-                    <span>5x</span>
-                    <span>6x</span>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Blob Size Force</Label>
+                      <span className="text-sm font-medium" data-testid="text-blob-force-value">{blobForceMultiplier.toFixed(1)}x</span>
+                    </div>
+                    <Slider
+                      value={[blobForceMultiplier * 10]}
+                      min={20}
+                      max={60}
+                      step={1}
+                      onValueChange={(values) => setBlobForceMultiplier(values[0] / 10)}
+                      data-testid="slider-blob-force"
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>2x</span>
+                      <span>3x</span>
+                      <span>4x</span>
+                      <span>5x</span>
+                      <span>6x</span>
+                    </div>
                   </div>
-                </div>
+                </>
               )}
 
               <div className="space-y-2">

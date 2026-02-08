@@ -2717,6 +2717,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         colorScheme: settings.colorScheme ?? 'type',
         colorSchemeAccountId,
         mode: settings.mode ?? 'default',
+        blobMergeMultiplier: settings.blobMergeMultiplier ?? 0.5,
       });
 
       res.json({ ...graphData, defaultColorSchemeAccountId: colorSchemeAccountId });

@@ -450,6 +450,7 @@ export type SocialGraphSettings = {
   colorScheme: 'type' | 'distance' | 'connections';
   colorSchemeAccountId: string | null;
   mode: 'default' | 'blob';
+  blobMergeMultiplier: number;
 };
 
 export type SocialGraphNode = {
