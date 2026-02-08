@@ -10,6 +10,13 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Command,
   CommandEmpty,
   CommandGroup,
@@ -45,6 +52,9 @@ export default function SocialGraph3D() {
   const [limitExtras, setLimitExtras] = useState(true);
   const [maxExtras, setMaxExtras] = useState(20);
   const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
+  const [colorScheme, setColorScheme] = useState<'type' | 'distance'>('type');
+  const [colorSchemeAccountId, setColorSchemeAccountId] = useState<string | null>(null);
+  const [distanceSearchOpen, setDistanceSearchOpen] = useState(false);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -56,7 +66,9 @@ export default function SocialGraph3D() {
     limitExtras,
     maxExtras,
     highlightedAccountId,
-  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId]);
+    colorScheme,
+    colorSchemeAccountId,
+  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId, colorScheme, colorSchemeAccountId]);
 
   const { data: graphData, isLoading: isGraphLoading } = useQuery<SocialGraphData>({
     queryKey: ["/api/social-graph", graphSettings],
@@ -300,6 +312,76 @@ export default function SocialGraph3D() {
                     </PopoverContent>
                   </Popover>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Color Scheme</Label>
+                <Select
+                  value={colorScheme}
+                  onValueChange={(value: 'type' | 'distance') => setColorScheme(value)}
+                >
+                  <SelectTrigger data-testid="select-color-scheme">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="type" data-testid="option-color-type">Account Type</SelectItem>
+                    <SelectItem value="distance" data-testid="option-color-distance">Distance From</SelectItem>
+                  </SelectContent>
+                </Select>
+                {colorScheme === 'distance' && (
+                  <div className="space-y-2 pt-1">
+                    <Label className="text-sm text-muted-foreground">Distance From Account</Label>
+                    <Popover open={distanceSearchOpen} onOpenChange={setDistanceSearchOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="w-full justify-start text-left font-normal"
+                          data-testid="button-distance-account-search"
+                        >
+                          {(colorSchemeAccountId || graphData?.defaultColorSchemeAccountId)
+                            ? (() => {
+                                const accountId = colorSchemeAccountId || graphData?.defaultColorSchemeAccountId;
+                                const account = allSocialAccounts.find(a => a.id === accountId);
+                                return account ? (account.nickname || account.username) : 'Select account...';
+                              })()
+                            : 'Select account...'}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-80 p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search accounts..." />
+                          <CommandList>
+                            <CommandEmpty>No account found.</CommandEmpty>
+                            <CommandGroup>
+                              {allSocialAccounts.map((account) => (
+                                <CommandItem
+                                  key={account.id}
+                                  value={`${account.username} ${account.nickname || ''}`}
+                                  onSelect={() => {
+                                    setColorSchemeAccountId(account.id);
+                                    setDistanceSearchOpen(false);
+                                  }}
+                                  data-testid={`option-distance-account-${account.id}`}
+                                >
+                                  {account.nickname || account.username}
+                                  {account.nickname && (
+                                    <span className="ml-1 text-muted-foreground">@{account.username}</span>
+                                  )}
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                    <div className="text-xs text-muted-foreground space-y-1 pt-1">
+                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#ef4444' }} />Selected account</div>
+                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} />Directly linked</div>
+                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#3b82f6' }} />2nd degree</div>
+                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#9ca3af' }} />Other</div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between">

@@ -1203,10 +1203,52 @@ export class DatabaseStorage implements IStorage {
 
     const accountIds = new Set(filtered.map(a => a.id));
 
+    let nodeColorMap: Map<string, string> | null = null;
+
+    if (settings.colorScheme === 'distance' && settings.colorSchemeAccountId) {
+      const filteredIds = new Set(filtered.map(a => a.id));
+
+      if (filteredIds.has(settings.colorSchemeAccountId)) {
+        const distanceColors = new Map<number, string>();
+        distanceColors.set(0, '#ef4444');
+        distanceColors.set(1, '#22c55e');
+        distanceColors.set(2, '#3b82f6');
+        const defaultDistanceColor = '#9ca3af';
+
+        const distances = new Map<string, number>();
+        distances.set(settings.colorSchemeAccountId, 0);
+        const queue: string[] = [settings.colorSchemeAccountId];
+        let head = 0;
+
+        while (head < queue.length) {
+          const current = queue[head++];
+          const currentDist = distances.get(current)!;
+          const peers = directConnectionsMap.get(current) || new Set<string>();
+          const peersArray = Array.from(peers);
+          for (const peer of peersArray) {
+            if (filteredIds.has(peer) && !distances.has(peer)) {
+              distances.set(peer, currentDist + 1);
+              queue.push(peer);
+            }
+          }
+        }
+
+        nodeColorMap = new Map<string, string>();
+        for (const a of filtered) {
+          const dist = distances.get(a.id);
+          if (dist !== undefined) {
+            nodeColorMap.set(a.id, distanceColors.get(dist) || defaultDistanceColor);
+          } else {
+            nodeColorMap.set(a.id, defaultDistanceColor);
+          }
+        }
+      }
+    }
+
     const nodes: SocialGraphNode[] = filtered.map(a => ({
       id: a.id,
       name: a.nickname || a.username,
-      color: (a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981',
+      color: nodeColorMap ? (nodeColorMap.get(a.id) || '#9ca3af') : ((a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981'),
       val: 10,
     }));
 

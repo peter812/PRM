@@ -2688,7 +2688,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         limitExtras?: boolean;
         maxExtras?: number;
         highlightedAccountId?: string | null;
+        colorScheme?: 'type' | 'distance';
+        colorSchemeAccountId?: string | null;
       };
+
+      let colorSchemeAccountId = settings.colorSchemeAccountId ?? null;
+
+      if (settings.colorScheme === 'distance' && !colorSchemeAccountId) {
+        const userId = (req as any).user?.id;
+        if (userId) {
+          const mePerson = await storage.getMePerson(userId);
+          if (mePerson && mePerson.socialAccountUuids && mePerson.socialAccountUuids.length > 0) {
+            const meAccounts = await storage.getAllSocialAccounts();
+            const meAccountIds = new Set(mePerson.socialAccountUuids);
+            const instagramAccount = meAccounts.find(a => meAccountIds.has(a.id) && a.accountUrl?.includes('instagram'));
+            colorSchemeAccountId = instagramAccount?.id || mePerson.socialAccountUuids[0];
+          }
+        }
+      }
 
       const graphData = await storage.getSocialGraph({
         hideOrphans: settings.hideOrphans ?? true,
@@ -2696,9 +2713,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         limitExtras: settings.limitExtras ?? true,
         maxExtras: settings.maxExtras ?? 20,
         highlightedAccountId: settings.highlightedAccountId ?? null,
+        colorScheme: settings.colorScheme ?? 'type',
+        colorSchemeAccountId,
       });
 
-      res.json(graphData);
+      res.json({ ...graphData, defaultColorSchemeAccountId: colorSchemeAccountId });
     } catch (error) {
       console.error("Error computing social graph:", error);
       res.status(500).json({ error: "Failed to compute social graph" });

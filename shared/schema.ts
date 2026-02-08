@@ -447,6 +447,8 @@ export type SocialGraphSettings = {
   limitExtras: boolean;
   maxExtras: number;
   highlightedAccountId: string | null;
+  colorScheme: 'type' | 'distance';
+  colorSchemeAccountId: string | null;
 };
 
 export type SocialGraphNode = {
@@ -466,6 +468,7 @@ export type SocialGraphLink = {
 export type SocialGraphData = {
   nodes: SocialGraphNode[];
   links: SocialGraphLink[];
+  defaultColorSchemeAccountId?: string | null;
 };
 
 export type MegaSearchResult = {
