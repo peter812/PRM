@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
+import * as THREE from "three";
 import { Button } from "@/components/ui/button";
 import { Settings, X } from "lucide-react";
 import { useLocation } from "wouter";
@@ -36,6 +37,7 @@ interface GraphLink {
 export default function SocialGraph3D() {
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
+  const materialCacheRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
   const [, navigate] = useLocation();
   const [hideOrphans, setHideOrphans] = useState(true);
   const [minTwoConnections, setMinTwoConnections] = useState(false);
@@ -175,6 +177,18 @@ export default function SocialGraph3D() {
     const values = backgroundHSL.split(' ').map(v => parseFloat(v));
     const bgColor = `hsl(${values[0]}, ${values[1]}%, ${values[2]}%)`;
 
+    const getMaterial = (color: string) => {
+      const cache = materialCacheRef.current;
+      if (!cache.has(color)) {
+        cache.set(color, new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.6,
+        }));
+      }
+      return cache.get(color)!;
+    };
+
     if (!fgRef.current) {
       const fg = ForceGraph3D({
         controlType: 'orbit',
@@ -185,15 +199,32 @@ export default function SocialGraph3D() {
         .nodeLabel('name')
         .nodeColor('color')
         .nodeVal('val')
-        .linkColor('color')
-        .linkOpacity(0.6)
-        .linkWidth(2)
         .enableNodeDrag(true)
         .enableNavigationControls(true)
         .showNavInfo(false)
+        .linkThreeObject((link: any) => {
+          const positions = new Float32Array(6);
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          const material = getMaterial(link.color || '#6b7280');
+          return new THREE.Line(geometry, material);
+        })
+        .linkPositionUpdate((obj: any, { start, end }: { start: any; end: any }) => {
+          const line = obj as THREE.Line;
+          const positions = line.geometry.attributes.position as THREE.BufferAttribute;
+          positions.array[0] = start.x;
+          positions.array[1] = start.y;
+          positions.array[2] = start.z;
+          positions.array[3] = end.x;
+          positions.array[4] = end.y;
+          positions.array[5] = end.z;
+          positions.needsUpdate = true;
+          line.geometry.computeBoundingSphere();
+          return true;
+        })
         .linkDirectionalArrowLength((link: any) => link.mutual ? 0 : 4)
         .linkDirectionalArrowRelPos(1)
-        .linkDirectionalArrowColor('color')
+        .linkDirectionalArrowColor((link: any) => link.color || '#6b7280')
         .linkCurvature(0)
         .onNodeClick((node: any) => {
           navigate(`/social-accounts/${node.id}?from=social-graph-3d`);
@@ -216,6 +247,8 @@ export default function SocialGraph3D() {
         fgRef.current._destructor();
         fgRef.current = null;
       }
+      materialCacheRef.current.forEach(m => m.dispose());
+      materialCacheRef.current.clear();
     };
   }, [filteredSocialAccounts, socialAccountTypes, navigate, highlightedAccountId]);
 
