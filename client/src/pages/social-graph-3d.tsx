@@ -60,7 +60,7 @@ export default function SocialGraph3D() {
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [graphMode, setGraphMode] = useState<'default' | 'blob'>('default');
-  const [blobForceMultiplier, setBlobForceMultiplier] = useState(1);
+  const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
 
   const extrasSteps = [5, 10, 20, 50, 100];
 
@@ -334,17 +334,18 @@ export default function SocialGraph3D() {
                   </div>
                   <Slider
                     value={[blobForceMultiplier * 10]}
-                    min={0}
-                    max={30}
+                    min={20}
+                    max={60}
                     step={1}
                     onValueChange={(values) => setBlobForceMultiplier(values[0] / 10)}
                     data-testid="slider-blob-force"
                   />
                   <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>0x</span>
-                    <span>1x</span>
                     <span>2x</span>
                     <span>3x</span>
+                    <span>4x</span>
+                    <span>5x</span>
+                    <span>6x</span>
                   </div>
                 </div>
               )}
