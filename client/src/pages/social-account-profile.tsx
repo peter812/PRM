@@ -280,10 +280,73 @@ export default function SocialAccountProfile() {
             </div>
 
             {account.nickname && (
-              <p className="text-lg text-muted-foreground mb-4" data-testid="text-account-nickname">
+              <p className="text-lg text-muted-foreground mb-1" data-testid="text-account-nickname">
                 {account.nickname}
               </p>
             )}
+
+            <div className="flex flex-col gap-1 text-sm text-muted-foreground mb-4">
+              {account.internalAccountCreationDate && (
+                <div data-testid="text-account-created-date">
+                  Imported on: {(() => {
+                    const date = new Date(account.internalAccountCreationDate);
+                    const now = new Date();
+                    const diffMs = now.getTime() - date.getTime();
+                    const diffHrs = diffMs / (1000 * 60 * 60);
+                    const isWithin24Hrs = diffHrs < 24;
+                    const isMoreThanYear = now.getFullYear() - date.getFullYear() >= 1;
+
+                    if (isWithin24Hrs) {
+                      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+                    } else if (isMoreThanYear) {
+                      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+                    } else {
+                      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                    }
+                  })()} ({account.internalAccountCreationType})
+                </div>
+              )}
+              {account.latestImportFollowers && (
+                <div data-testid="text-account-latest-followers">
+                  Latest followers import: {(() => {
+                    const date = new Date(account.latestImportFollowers);
+                    const now = new Date();
+                    const diffMs = now.getTime() - date.getTime();
+                    const diffHrs = diffMs / (1000 * 60 * 60);
+                    const isWithin24Hrs = diffHrs < 24;
+                    const isMoreThanYear = now.getFullYear() - date.getFullYear() >= 1;
+
+                    if (isWithin24Hrs) {
+                      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+                    } else if (isMoreThanYear) {
+                      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+                    } else {
+                      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                    }
+                  })()}
+                </div>
+              )}
+              {account.latestImportFollowing && (
+                <div data-testid="text-account-latest-following">
+                  Latest following import: {(() => {
+                    const date = new Date(account.latestImportFollowing);
+                    const now = new Date();
+                    const diffMs = now.getTime() - date.getTime();
+                    const diffHrs = diffMs / (1000 * 60 * 60);
+                    const isWithin24Hrs = diffHrs < 24;
+                    const isMoreThanYear = now.getFullYear() - date.getFullYear() >= 1;
+
+                    if (isWithin24Hrs) {
+                      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+                    } else if (isMoreThanYear) {
+                      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+                    } else {
+                      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                    }
+                  })()}
+                </div>
+              )}
+            </div>
 
             {owner && (
               <div className="text-sm">

@@ -154,6 +154,10 @@ export const socialAccounts = pgTable("social_accounts", {
   notes: text("notes"),
   following: text("following").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts this account follows
   followers: text("followers").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts that follow this account
+  internalAccountCreationDate: timestamp("internal_account_creation_date").notNull().defaultNow(),
+  internalAccountCreationType: text("internal_account_creation_type").notNull().default("User"),
+  latestImportFollowers: timestamp("latest_import_followers"),
+  latestImportFollowing: timestamp("latest_import_following"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
