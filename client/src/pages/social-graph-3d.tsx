@@ -200,8 +200,11 @@ export default function SocialGraph3D() {
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
         <div>
-          <h1 className="text-sm md:text-2xl font-semibold" data-testid="text-page-title">
+          <h1 className="text-sm md:text-2xl font-semibold flex items-center gap-2" data-testid="text-page-title">
             3D Social Account Graph
+            <span className="text-xs font-medium bg-secondary text-secondary-foreground px-2 py-0.5 rounded-full" data-testid="text-node-count">
+              {graphData?.nodes.length || 0}
+            </span>
           </h1>
         </div>
         <div className="flex items-center gap-2">
@@ -221,10 +224,6 @@ export default function SocialGraph3D() {
 
       <div className="flex-1 relative">
         <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
-
-        <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm border rounded-md px-2 py-1 text-xs font-medium z-[9999] select-none shadow-sm pointer-events-none" data-testid="text-node-count">
-          Nodes: {graphData?.nodes.length || 0}
-        </div>
 
         {isOptionsOpen && (
           <div className="absolute top-4 right-4 w-80 bg-background border rounded-lg shadow-lg p-4 space-y-4 z-50">
