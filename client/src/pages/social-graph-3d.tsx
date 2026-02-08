@@ -222,6 +222,10 @@ export default function SocialGraph3D() {
       <div className="flex-1 relative">
         <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
+        <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm border rounded-md px-2 py-1 text-xs font-medium z-10 select-none shadow-sm" data-testid="text-node-count">
+          Nodes: {graphData?.nodes.length || 0}
+        </div>
+
         {isOptionsOpen && (
           <div className="absolute top-4 right-4 w-80 bg-background border rounded-lg shadow-lg p-4 space-y-4 z-50">
             <div className="flex items-center justify-between">
