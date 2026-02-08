@@ -7,6 +7,7 @@ import { Settings, X } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Command,
@@ -41,9 +42,13 @@ export default function SocialGraph3D() {
   const [, navigate] = useLocation();
   const [hideOrphans, setHideOrphans] = useState(true);
   const [minTwoConnections, setMinTwoConnections] = useState(false);
+  const [limitExtras, setLimitExtras] = useState(false);
+  const [maxExtras, setMaxExtras] = useState(20);
   const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+
+  const extrasSteps = [5, 10, 20, 50, 100];
 
   const { data: socialAccounts } = useQuery<SocialAccount[]>({
     queryKey: ["/api/social-accounts"],
@@ -90,6 +95,56 @@ export default function SocialGraph3D() {
   if (minTwoConnections) {
     filteredSocialAccounts = filteredSocialAccounts.filter(account => {
       return (uniqueConnectionCounts.get(account.id) || 0) >= 2;
+    });
+  }
+
+  if (limitExtras && !minTwoConnections) {
+    const safeIds = new Set<string>();
+    const extraIds = new Set<string>();
+    filteredSocialAccounts.forEach(account => {
+      const count = uniqueConnectionCounts.get(account.id) || 0;
+      if (count >= 2) {
+        safeIds.add(account.id);
+      } else {
+        extraIds.add(account.id);
+      }
+    });
+
+    const claimedExtras = new Set<string>();
+    const filteredIds = new Set(filteredSocialAccounts.map(a => a.id));
+
+    const directConnections = new Map<string, Set<string>>();
+    filteredSocialAccounts.forEach(account => {
+      const peers = new Set<string>();
+      if (account.following) {
+        account.following.forEach(id => {
+          if (filteredIds.has(id)) peers.add(id);
+        });
+      }
+      filteredSocialAccounts.forEach(other => {
+        if (other.following && other.following.includes(account.id)) {
+          peers.add(other.id);
+        }
+      });
+      directConnections.set(account.id, peers);
+    });
+
+    const sortedSafeIds = Array.from(safeIds).sort();
+    sortedSafeIds.forEach(safeId => {
+      const peers = directConnections.get(safeId) || new Set();
+      const sortedPeers = Array.from(peers).sort();
+      let claimed = 0;
+      sortedPeers.forEach(peerId => {
+        if (claimed >= maxExtras) return;
+        if (extraIds.has(peerId) && !claimedExtras.has(peerId)) {
+          claimedExtras.add(peerId);
+          claimed++;
+        }
+      });
+    });
+
+    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
+      return safeIds.has(account.id) || claimedExtras.has(account.id);
     });
   }
 
@@ -250,7 +305,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [filteredSocialAccounts, socialAccountTypes, navigate, highlightedAccountId]);
+  }, [filteredSocialAccounts, socialAccountTypes, navigate, highlightedAccountId, limitExtras, maxExtras]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -389,6 +444,41 @@ export default function SocialGraph3D() {
                   data-testid="switch-min-two-connections"
                 />
               </div>
+
+              <div className="flex items-center justify-between">
+                <Label htmlFor="limit-extras" className={minTwoConnections ? "text-muted-foreground" : ""}>
+                  Limit Extras
+                </Label>
+                <Switch
+                  id="limit-extras"
+                  checked={limitExtras}
+                  onCheckedChange={setLimitExtras}
+                  disabled={minTwoConnections}
+                  data-testid="switch-limit-extras"
+                />
+              </div>
+
+              {limitExtras && !minTwoConnections && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm text-muted-foreground">Max Extras</Label>
+                    <span className="text-sm font-medium" data-testid="text-max-extras-value">{maxExtras}</span>
+                  </div>
+                  <Slider
+                    value={[Math.max(0, extrasSteps.indexOf(maxExtras))]}
+                    min={0}
+                    max={extrasSteps.length - 1}
+                    step={1}
+                    onValueChange={(values) => setMaxExtras(extrasSteps[values[0]])}
+                    data-testid="slider-max-extras"
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    {extrasSteps.map(step => (
+                      <span key={step}>{step}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="pt-4 border-t space-y-2">
                 <Button
