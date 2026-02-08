@@ -1300,6 +1300,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             following: [],
             followers: [],
             typeId: instagramTypeId,
+            internalAccountCreationType: `${targetAccount.username} import`,
           });
           
           accountsByUsername.set(username.toLowerCase(), newAccount);
