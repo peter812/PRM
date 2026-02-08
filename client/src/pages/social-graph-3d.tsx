@@ -209,7 +209,8 @@ export default function SocialGraph3D() {
         if (chargeForce && typeof chargeForce.strength === 'function') {
           chargeForce.strength((node: any) => {
             const nodeVal = node.val || 10;
-            return -30 * (nodeVal / 10);
+            const scale = Math.sqrt(nodeVal / 10);
+            return -30 * scale;
           });
         }
       } catch (_) {}
@@ -223,7 +224,8 @@ export default function SocialGraph3D() {
         if (chargeForce && typeof chargeForce.strength === 'function') {
           chargeForce.strength((node: any) => {
             const nodeVal = node.val || 10;
-            return -30 * (nodeVal / 10);
+            const scale = Math.sqrt(nodeVal / 10);
+            return -30 * scale;
           });
         }
       } catch (_) {}
