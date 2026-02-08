@@ -2688,7 +2688,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         limitExtras?: boolean;
         maxExtras?: number;
         highlightedAccountId?: string | null;
-        colorScheme?: 'type' | 'distance';
+        colorScheme?: 'type' | 'distance' | 'connections';
         colorSchemeAccountId?: string | null;
       };
 

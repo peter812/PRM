@@ -1245,11 +1245,32 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    let connectionValues: Map<string, number> | null = null;
+
+    if (settings.colorScheme === 'connections') {
+      const connectionCounts = new Map<string, number>();
+      for (const a of filtered) {
+        connectionCounts.set(a.id, uniqueConnectionCounts.get(a.id) || 0);
+      }
+
+      const counts = Array.from(connectionCounts.values());
+      const maxCount = Math.max(...counts, 1);
+      const minCount = Math.min(...counts, 0);
+      const range = maxCount - minCount || 1;
+
+      connectionValues = new Map<string, number>();
+      const entries = Array.from(connectionCounts.entries());
+      for (const entry of entries) {
+        connectionValues.set(entry[0], Math.round(((entry[1] - minCount) / range) * 100));
+      }
+    }
+
     const nodes: SocialGraphNode[] = filtered.map(a => ({
       id: a.id,
       name: a.nickname || a.username,
       color: nodeColorMap ? (nodeColorMap.get(a.id) || '#9ca3af') : ((a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981'),
       val: 10,
+      ...(connectionValues ? { connectionValue: connectionValues.get(a.id) ?? 0 } : {}),
     }));
 
     const links: SocialGraphLink[] = [];

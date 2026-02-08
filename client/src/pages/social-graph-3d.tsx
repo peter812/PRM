@@ -52,9 +52,11 @@ export default function SocialGraph3D() {
   const [limitExtras, setLimitExtras] = useState(true);
   const [maxExtras, setMaxExtras] = useState(20);
   const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
-  const [colorScheme, setColorScheme] = useState<'type' | 'distance'>('type');
+  const [colorScheme, setColorScheme] = useState<'type' | 'distance' | 'connections'>('type');
   const [colorSchemeAccountId, setColorSchemeAccountId] = useState<string | null>(null);
   const [distanceSearchOpen, setDistanceSearchOpen] = useState(false);
+  const [connectionsColorMax, setConnectionsColorMax] = useState('#ef4444');
+  const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -90,17 +92,36 @@ export default function SocialGraph3D() {
 
   const allSocialAccounts = socialAccounts || [];
 
+  const interpolateColor = useCallback((hex1: string, hex2: string, t: number) => {
+    const parse = (hex: string) => {
+      const h = hex.replace('#', '');
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    };
+    const [r1, g1, b1] = parse(hex1);
+    const [r2, g2, b2] = parse(hex2);
+    const r = Math.round(r1 + (r2 - r1) * t);
+    const g = Math.round(g1 + (g2 - g1) * t);
+    const b = Math.round(b1 + (b2 - b1) * t);
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+  }, []);
+
   useEffect(() => {
     if (!graphRef.current) return;
     if (!graphData || !graphData.nodes.length) return;
 
-    const nodes: GraphNode[] = graphData.nodes.map(n => ({
-      id: n.id,
-      name: n.name,
-      type: 'social-account' as const,
-      color: n.color,
-      val: n.val,
-    }));
+    const nodes: GraphNode[] = graphData.nodes.map(n => {
+      let color = n.color;
+      if (colorScheme === 'connections' && n.connectionValue !== undefined) {
+        color = interpolateColor(connectionsColorMin, connectionsColorMax, n.connectionValue / 100);
+      }
+      return {
+        id: n.id,
+        name: n.name,
+        type: 'social-account' as const,
+        color,
+        val: n.val,
+      };
+    });
 
     const links: GraphLink[] = graphData.links.map(l => ({
       source: l.source,
@@ -190,7 +211,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate]);
+  }, [graphData, navigate, colorScheme, connectionsColorMin, connectionsColorMax, interpolateColor]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -318,7 +339,7 @@ export default function SocialGraph3D() {
                 <Label>Color Scheme</Label>
                 <Select
                   value={colorScheme}
-                  onValueChange={(value: 'type' | 'distance') => setColorScheme(value)}
+                  onValueChange={(value: 'type' | 'distance' | 'connections') => setColorScheme(value)}
                 >
                   <SelectTrigger data-testid="select-color-scheme">
                     <SelectValue />
@@ -326,6 +347,7 @@ export default function SocialGraph3D() {
                   <SelectContent>
                     <SelectItem value="type" data-testid="option-color-type">Account Type</SelectItem>
                     <SelectItem value="distance" data-testid="option-color-distance">Distance From</SelectItem>
+                    <SelectItem value="connections" data-testid="option-color-connections">Number of Connections</SelectItem>
                   </SelectContent>
                 </Select>
                 {colorScheme === 'distance' && (
@@ -379,6 +401,50 @@ export default function SocialGraph3D() {
                       <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} />Directly linked</div>
                       <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#3b82f6' }} />2nd degree</div>
                       <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#9ca3af' }} />Other</div>
+                    </div>
+                  </div>
+                )}
+                {colorScheme === 'connections' && (
+                  <div className="space-y-3 pt-1">
+                    <div className="space-y-2">
+                      <Label className="text-sm text-muted-foreground">Most Connections</Label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={connectionsColorMax}
+                          onChange={(e) => setConnectionsColorMax(e.target.value)}
+                          className="w-9 h-9 rounded-md border cursor-pointer"
+                          data-testid="input-color-max"
+                        />
+                        <span className="text-xs text-muted-foreground font-mono">{connectionsColorMax}</span>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-sm text-muted-foreground">Least Connections</Label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={connectionsColorMin}
+                          onChange={(e) => setConnectionsColorMin(e.target.value)}
+                          className="w-9 h-9 rounded-md border cursor-pointer"
+                          data-testid="input-color-min"
+                        />
+                        <span className="text-xs text-muted-foreground font-mono">{connectionsColorMin}</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1 pt-1">
+                      <Label className="text-xs text-muted-foreground">Preview</Label>
+                      <div
+                        className="h-3 rounded-full"
+                        style={{
+                          background: `linear-gradient(to right, ${connectionsColorMin}, ${connectionsColorMax})`,
+                        }}
+                        data-testid="gradient-preview"
+                      />
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Few</span>
+                        <span>Many</span>
+                      </div>
                     </div>
                   </div>
                 )}
