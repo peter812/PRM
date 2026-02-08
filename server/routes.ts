@@ -2690,6 +2690,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         highlightedAccountId?: string | null;
         colorScheme?: 'type' | 'distance' | 'connections';
         colorSchemeAccountId?: string | null;
+        mode?: 'default' | 'blob';
       };
 
       let colorSchemeAccountId = settings.colorSchemeAccountId ?? null;
@@ -2715,6 +2716,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         highlightedAccountId: settings.highlightedAccountId ?? null,
         colorScheme: settings.colorScheme ?? 'type',
         colorSchemeAccountId,
+        mode: settings.mode ?? 'default',
       });
 
       res.json({ ...graphData, defaultColorSchemeAccountId: colorSchemeAccountId });

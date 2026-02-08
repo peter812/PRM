@@ -449,6 +449,7 @@ export type SocialGraphSettings = {
   highlightedAccountId: string | null;
   colorScheme: 'type' | 'distance' | 'connections';
   colorSchemeAccountId: string | null;
+  mode: 'default' | 'blob';
 };
 
 export type SocialGraphNode = {
@@ -456,7 +457,9 @@ export type SocialGraphNode = {
   name: string;
   color: string;
   val: number;
+  size: number;
   connectionValue?: number;
+  mergedNames?: string[];
 };
 
 export type SocialGraphLink = {

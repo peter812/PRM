@@ -1265,15 +1265,16 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    const nodes: SocialGraphNode[] = filtered.map(a => ({
+    let nodes: SocialGraphNode[] = filtered.map(a => ({
       id: a.id,
       name: a.nickname || a.username,
       color: nodeColorMap ? (nodeColorMap.get(a.id) || '#9ca3af') : ((a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981'),
       val: 10,
+      size: 50,
       ...(connectionValues ? { connectionValue: connectionValues.get(a.id) ?? 0 } : {}),
     }));
 
-    const links: SocialGraphLink[] = [];
+    let links: SocialGraphLink[] = [];
     const mutualPairs = new Set<string>();
 
     filtered.forEach(account => {
@@ -1295,6 +1296,60 @@ export class DatabaseStorage implements IStorage {
         });
       }
     });
+
+    if (settings.mode === 'blob') {
+      const nodeLinkCount = new Map<string, number>();
+      nodes.forEach(n => nodeLinkCount.set(n.id, 0));
+      links.forEach(l => {
+        const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+        const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+        nodeLinkCount.set(src, (nodeLinkCount.get(src) || 0) + 1);
+        nodeLinkCount.set(tgt, (nodeLinkCount.get(tgt) || 0) + 1);
+      });
+
+      const singleConnectionNodes = nodes.filter(n => (nodeLinkCount.get(n.id) || 0) === 1);
+      const mergedInto = new Map<string, string>();
+
+      for (const singleNode of singleConnectionNodes) {
+        const connectedLink = links.find(l => {
+          const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+          const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+          return src === singleNode.id || tgt === singleNode.id;
+        });
+        if (!connectedLink) continue;
+
+        const src = typeof connectedLink.source === 'string' ? connectedLink.source : (connectedLink.source as any).id;
+        const tgt = typeof connectedLink.target === 'string' ? connectedLink.target : (connectedLink.target as any).id;
+        const partnerId = src === singleNode.id ? tgt : src;
+        const partnerLinkCount = nodeLinkCount.get(partnerId) || 0;
+
+        if (partnerLinkCount > 1) {
+          mergedInto.set(singleNode.id, partnerId);
+        }
+      }
+
+      const removedIds = new Set(mergedInto.keys());
+
+      const nodeMap = new Map(nodes.map(n => [n.id, n]));
+      for (const [removedId, absorberId] of Array.from(mergedInto.entries())) {
+        const absorber = nodeMap.get(absorberId);
+        if (absorber) {
+          absorber.size += 1;
+          const removedNode = nodeMap.get(removedId);
+          if (removedNode) {
+            if (!absorber.mergedNames) absorber.mergedNames = [];
+            absorber.mergedNames.push(removedNode.name);
+          }
+        }
+      }
+
+      nodes = nodes.filter(n => !removedIds.has(n.id));
+      links = links.filter(l => {
+        const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+        const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+        return !removedIds.has(src) && !removedIds.has(tgt);
+      });
+    }
 
     return { nodes, links };
   }

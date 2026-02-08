@@ -59,6 +59,7 @@ export default function SocialGraph3D() {
   const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [graphMode, setGraphMode] = useState<'default' | 'blob'>('default');
 
   const extrasSteps = [5, 10, 20, 50, 100];
 
@@ -70,7 +71,8 @@ export default function SocialGraph3D() {
     highlightedAccountId,
     colorScheme,
     colorSchemeAccountId,
-  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId, colorScheme, colorSchemeAccountId]);
+    mode: graphMode,
+  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId, colorScheme, colorSchemeAccountId, graphMode]);
 
   const { data: graphData, isLoading: isGraphLoading } = useQuery<SocialGraphData>({
     queryKey: ["/api/social-graph", graphSettings],
@@ -114,12 +116,16 @@ export default function SocialGraph3D() {
       if (colorScheme === 'connections' && n.connectionValue !== undefined) {
         color = interpolateColor(connectionsColorMin, connectionsColorMax, n.connectionValue / 100);
       }
+      let label = n.name;
+      if (n.mergedNames && n.mergedNames.length > 0) {
+        label = `${n.name} (+${n.mergedNames.length} merged)`;
+      }
       return {
         id: n.id,
-        name: n.name,
+        name: label,
         type: 'social-account' as const,
         color,
-        val: n.val,
+        val: graphMode === 'blob' ? (n.size - 50 + 1) * n.val : n.val,
       };
     });
 
@@ -211,7 +217,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, colorScheme, connectionsColorMin, connectionsColorMax, interpolateColor]);
+  }, [graphData, navigate, colorScheme, connectionsColorMin, connectionsColorMax, interpolateColor, graphMode]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -232,13 +238,31 @@ export default function SocialGraph3D() {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
-        <div>
+        <div className="flex items-center gap-4 flex-wrap">
           <h1 className="text-sm md:text-2xl font-semibold flex items-center gap-2" data-testid="text-page-title">
             3D Social Account Graph
             <span className="text-xs font-medium bg-secondary text-secondary-foreground px-2 py-0.5 rounded-full" data-testid="text-node-count">
               {graphData?.nodes.length || 0}
             </span>
           </h1>
+          <div className="flex items-center gap-1" data-testid="mode-selector">
+            <Button
+              variant={graphMode === 'default' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setGraphMode('default')}
+              data-testid="button-mode-default"
+            >
+              Default
+            </Button>
+            <Button
+              variant={graphMode === 'blob' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setGraphMode('blob')}
+              data-testid="button-mode-blob"
+            >
+              Blob
+            </Button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {isGraphLoading && (
