@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
-import { Settings, X } from "lucide-react";
+import { Settings, X, Loader2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -45,61 +45,88 @@ export default function SocialGraph3D() {
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
-  const { data: socialAccounts } = useQuery<SocialAccount[]>({
+  const { data: depth1Accounts, isLoading: isLoadingDepth1 } = useQuery<SocialAccount[]>({
+    queryKey: ["/api/social-accounts/graph?depth=1"],
+  });
+
+  const hasProgressiveData = depth1Accounts && depth1Accounts.length > 0;
+  const needsFallback = depth1Accounts && depth1Accounts.length === 0;
+
+  const { data: depth2Accounts, isLoading: isLoadingDepth2, isError: isErrorDepth2 } = useQuery<SocialAccount[]>({
+    queryKey: ["/api/social-accounts/graph?depth=2"],
+    enabled: !!hasProgressiveData,
+  });
+
+  const { data: allAccountsFallback, isLoading: isLoadingFallback } = useQuery<SocialAccount[]>({
     queryKey: ["/api/social-accounts"],
+    enabled: !!needsFallback,
   });
 
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
   });
 
-  const allSocialAccounts = socialAccounts || [];
+  const mergedAccounts = useMemo(() => {
+    if (needsFallback) return allAccountsFallback || [];
+    if (!depth1Accounts) return [];
+    if (!depth2Accounts) return depth1Accounts;
+    const map = new Map<string, SocialAccount>();
+    depth1Accounts.forEach(a => map.set(a.id, a));
+    depth2Accounts.forEach(a => { if (!map.has(a.id)) map.set(a.id, a); });
+    return Array.from(map.values());
+  }, [depth1Accounts, depth2Accounts, allAccountsFallback, needsFallback]);
 
-  const typeColorMap = new Map<string, string>();
-  if (socialAccountTypes) {
-    socialAccountTypes.forEach(t => {
-      if (t.color) typeColorMap.set(t.id, t.color);
-    });
-  }
+  const isFullyLoaded = needsFallback
+    ? !isLoadingFallback && !!allAccountsFallback
+    : !isLoadingDepth1 && (!isLoadingDepth2 || isErrorDepth2) && (!!depth2Accounts || isErrorDepth2);
+  const isInitialLoading = isLoadingDepth1 || (needsFallback && isLoadingFallback);
 
-  const uniqueConnectionCounts = new Map<string, number>();
-  const allAccountIds = new Set(allSocialAccounts.map(a => a.id));
-  allSocialAccounts.forEach(account => {
-    const connectedPeers = new Set<string>();
-    if (account.following) {
-      account.following.forEach(id => {
-        if (allAccountIds.has(id)) connectedPeers.add(id);
+  const typeColorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    if (socialAccountTypes) {
+      socialAccountTypes.forEach(t => {
+        if (t.color) m.set(t.id, t.color);
       });
     }
-    allSocialAccounts.forEach(other => {
-      if (other.following && other.following.includes(account.id)) {
-        connectedPeers.add(other.id);
+    return m;
+  }, [socialAccountTypes]);
+
+  const { filteredAccounts, uniqueConnectionCounts } = useMemo(() => {
+    const allAccountIds = new Set(mergedAccounts.map(a => a.id));
+    const counts = new Map<string, number>();
+
+    mergedAccounts.forEach(account => {
+      const connectedPeers = new Set<string>();
+      if (account.following) {
+        account.following.forEach(id => {
+          if (allAccountIds.has(id)) connectedPeers.add(id);
+        });
       }
+      mergedAccounts.forEach(other => {
+        if (other.following && other.following.includes(account.id)) {
+          connectedPeers.add(other.id);
+        }
+      });
+      counts.set(account.id, connectedPeers.size);
     });
-    uniqueConnectionCounts.set(account.id, connectedPeers.size);
-  });
 
-  let filteredSocialAccounts = allSocialAccounts;
+    let filtered = mergedAccounts;
 
-  if (hideOrphans) {
-    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
-      return (uniqueConnectionCounts.get(account.id) || 0) > 0;
-    });
-  }
+    if (hideOrphans) {
+      filtered = filtered.filter(account => (counts.get(account.id) || 0) > 0);
+    }
 
-  if (minTwoConnections) {
-    filteredSocialAccounts = filteredSocialAccounts.filter(account => {
-      return (uniqueConnectionCounts.get(account.id) || 0) >= 2;
-    });
-  }
+    if (minTwoConnections) {
+      filtered = filtered.filter(account => (counts.get(account.id) || 0) >= 2);
+    }
 
-  useEffect(() => {
-    if (!graphRef.current) return;
-    if (!filteredSocialAccounts.length) return;
+    return { filteredAccounts: filtered, uniqueConnectionCounts: counts };
+  }, [mergedAccounts, hideOrphans, minTwoConnections]);
 
-    const accountIds = new Set(filteredSocialAccounts.map(a => a.id));
+  const buildGraphData = useCallback((accounts: SocialAccount[]) => {
+    const accountIds = new Set(accounts.map(a => a.id));
 
-    let nodes: GraphNode[] = filteredSocialAccounts.map(account => {
+    let nodes: GraphNode[] = accounts.map(account => {
       const typeColor = account.typeId ? typeColorMap.get(account.typeId) : null;
       return {
         id: account.id,
@@ -113,12 +140,12 @@ export default function SocialGraph3D() {
     let links: GraphLink[] = [];
     const mutualPairs = new Set<string>();
 
-    filteredSocialAccounts.forEach(account => {
+    accounts.forEach(account => {
       if (account.following) {
         account.following.forEach(followedId => {
           if (!accountIds.has(followedId)) return;
 
-          const followedAccount = filteredSocialAccounts.find(a => a.id === followedId);
+          const followedAccount = accounts.find(a => a.id === followedId);
           const isMutual = followedAccount?.following?.includes(account.id) || false;
 
           if (isMutual) {
@@ -149,13 +176,13 @@ export default function SocialGraph3D() {
     if (highlightedAccountId) {
       const connectedIds = new Set<string>([highlightedAccountId]);
 
-      filteredSocialAccounts.forEach(account => {
+      accounts.forEach(account => {
         if (account.following?.includes(highlightedAccountId)) {
           connectedIds.add(account.id);
         }
       });
 
-      const highlightedAccount = filteredSocialAccounts.find(a => a.id === highlightedAccountId);
+      const highlightedAccount = accounts.find(a => a.id === highlightedAccountId);
       if (highlightedAccount?.following) {
         highlightedAccount.following.forEach(id => {
           if (accountIds.has(id)) connectedIds.add(id);
@@ -170,7 +197,14 @@ export default function SocialGraph3D() {
       });
     }
 
-    const gData = { nodes, links };
+    return { nodes, links };
+  }, [typeColorMap, highlightedAccountId]);
+
+  useEffect(() => {
+    if (!graphRef.current) return;
+    if (!filteredAccounts.length) return;
+
+    const gData = buildGraphData(filteredAccounts);
 
     const styles = getComputedStyle(document.documentElement);
     const backgroundHSL = styles.getPropertyValue('--background').trim();
@@ -250,7 +284,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [filteredSocialAccounts, socialAccountTypes, navigate, highlightedAccountId]);
+  }, [filteredAccounts, socialAccountTypes, navigate, highlightedAccountId, buildGraphData]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -268,15 +302,26 @@ export default function SocialGraph3D() {
     }
   };
 
-  const searchAccounts = filteredSocialAccounts;
+  const searchAccounts = filteredAccounts;
 
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b">
-        <div>
+        <div className="flex items-center gap-3">
           <h1 className="text-sm md:text-2xl font-semibold" data-testid="text-page-title">
             3D Social Account Graph
           </h1>
+          {!isFullyLoaded && !isInitialLoading && hasProgressiveData && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="text-loading-status">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>Loading more connections...</span>
+            </div>
+          )}
+          {isFullyLoaded && (
+            <span className="text-xs text-muted-foreground" data-testid="text-account-count">
+              {filteredAccounts.length} accounts
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -291,6 +336,15 @@ export default function SocialGraph3D() {
       </div>
 
       <div className="flex-1 relative">
+        {isInitialLoading && (
+          <div className="absolute inset-0 flex items-center justify-center z-10" data-testid="loading-initial">
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-sm">Loading your connections...</span>
+            </div>
+          </div>
+        )}
+
         <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
         {isOptionsOpen && (
