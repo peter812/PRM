@@ -3232,6 +3232,123 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/account-matching/next", async (req, res) => {
+    try {
+      const allPeople = await storage.getAllPeople();
+      const unmatchedPerson = allPeople.find(
+        (p) =>
+          (!p.socialAccountUuids || p.socialAccountUuids.length === 0) &&
+          p.noSocialMedia === 0
+      );
+
+      if (!unmatchedPerson) {
+        return res.json({ person: null, candidates: [] });
+      }
+
+      const fullName = `${unmatchedPerson.firstName} ${unmatchedPerson.lastName}`.toLowerCase();
+      const firstName = unmatchedPerson.firstName.toLowerCase();
+      const lastName = unmatchedPerson.lastName.toLowerCase();
+
+      const allAccounts = await storage.getAllSocialAccounts();
+      const unownedAccounts = allAccounts.filter((a) => !a.ownerUuid);
+
+      const scored = unownedAccounts.map((account) => {
+        let score = 0;
+        const username = (account.username || "").toLowerCase();
+        const nickname = (account.nickname || "").toLowerCase();
+
+        if (nickname === fullName || username === fullName.replace(/\s+/g, "")) {
+          score += 100;
+        }
+        if (nickname.includes(firstName) || username.includes(firstName)) {
+          score += 40;
+        }
+        if (nickname.includes(lastName) || username.includes(lastName)) {
+          score += 40;
+        }
+        if (nickname.includes(fullName) || username.includes(fullName.replace(/\s+/g, ""))) {
+          score += 60;
+        }
+        const nameParts = fullName.split(" ");
+        for (const part of nameParts) {
+          if (part.length > 2 && (username.includes(part) || nickname.includes(part))) {
+            score += 20;
+          }
+        }
+
+        return { account, score };
+      });
+
+      scored.sort((a, b) => b.score - a.score);
+      const candidates = scored.filter((s) => s.score > 0).slice(0, 8);
+
+      if (candidates.length < 5) {
+        const remaining = unownedAccounts
+          .filter((a) => !candidates.find((c) => c.account.id === a.id))
+          .slice(0, 8 - candidates.length);
+        for (const account of remaining) {
+          candidates.push({ account, score: 0 });
+        }
+      }
+
+      const accountTypes = await storage.getAllSocialAccountTypes();
+      const candidatesWithType = candidates.slice(0, 8).map((c) => ({
+        ...c.account,
+        typeName: accountTypes.find((t) => t.id === c.account.typeId)?.name || null,
+        typeColor: accountTypes.find((t) => t.id === c.account.typeId)?.color || null,
+        matchScore: c.score,
+      }));
+
+      res.json({ person: unmatchedPerson, candidates: candidatesWithType });
+    } catch (error) {
+      console.error("Error getting account matching data:", error);
+      res.status(500).json({ error: "Failed to get account matching data" });
+    }
+  });
+
+  app.post("/api/account-matching/connect", async (req, res) => {
+    try {
+      const connectSchema = z.object({
+        personId: z.string().min(1),
+        socialAccountIds: z.array(z.string()).min(1),
+      });
+      const { personId, socialAccountIds } = connectSchema.parse(req.body);
+
+      const person = await storage.getPersonById(personId);
+      if (!person) {
+        return res.status(404).json({ error: "Person not found" });
+      }
+
+      const currentUuids = person.socialAccountUuids || [];
+      const combined = [...currentUuids, ...socialAccountIds];
+      const newUuids = combined.filter((v, i) => combined.indexOf(v) === i);
+
+      await storage.updatePerson(personId, { socialAccountUuids: newUuids });
+
+      for (const accountId of socialAccountIds) {
+        await storage.updateSocialAccount(accountId, { ownerUuid: personId });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error connecting accounts:", error);
+      res.status(500).json({ error: "Failed to connect accounts" });
+    }
+  });
+
+  app.post("/api/account-matching/ignore", async (req, res) => {
+    try {
+      const ignoreSchema = z.object({ personId: z.string().min(1) });
+      const { personId } = ignoreSchema.parse(req.body);
+
+      await storage.updatePerson(personId, { noSocialMedia: 1 });
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error ignoring person:", error);
+      res.status(500).json({ error: "Failed to update person" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

@@ -60,6 +60,7 @@ export const people = pgTable("people", {
   socialAccountUuids: text("social_account_uuids").array().default(sql`ARRAY[]::text[]`),
   isStarred: integer("is_starred").notNull().default(0), // 0 = not starred, 1 = starred (SQLite compatibility)
   eloScore: integer("elo_score").notNull().default(1200),
+  noSocialMedia: integer("no_social_media").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

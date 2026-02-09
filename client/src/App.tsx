@@ -39,6 +39,7 @@ import SettingsLayout from "@/pages/settings-layout";
 import DummyAuth from "@/pages/dummy-auth";
 import MessagesList from "@/pages/messages-list";
 import EloRanking from "@/pages/elo-ranking";
+import AccountMatching from "@/pages/account-matching";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -59,6 +60,7 @@ function Router() {
       <ProtectedRoute path="/graph-3d" component={Graph3D} />
       <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
+      <ProtectedRoute path="/account-matching" component={AccountMatching} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
       <ProtectedRoute path="/messages" component={MessagesList} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />

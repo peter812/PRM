@@ -46,6 +46,7 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
       title: "",
       tags: [],
       imageUrl: null,
+      noSocialMedia: 0,
     },
   });
 
@@ -215,6 +216,25 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
                     />
                   </FormControl>
                   <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="noSocialMedia"
+              render={({ field }) => (
+                <FormItem className="flex flex-row items-center gap-3 space-y-0">
+                  <FormControl>
+                    <input
+                      type="checkbox"
+                      checked={field.value === 1}
+                      onChange={(e) => field.onChange(e.target.checked ? 1 : 0)}
+                      className="h-4 w-4 rounded border-input"
+                      data-testid="input-no-social-media"
+                    />
+                  </FormControl>
+                  <FormLabel className="font-normal">No social media</FormLabel>
                 </FormItem>
               )}
             />
