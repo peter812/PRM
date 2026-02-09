@@ -1121,23 +1121,23 @@ export class DatabaseStorage implements IStorage {
 
     const allAccountIds = new Set(allAccounts.map(a => a.id));
 
-    const uniqueConnectionCounts = new Map<string, number>();
     const directConnectionsMap = new Map<string, Set<string>>();
+    allAccounts.forEach(a => directConnectionsMap.set(a.id, new Set()));
 
     allAccounts.forEach(account => {
-      const connectedPeers = new Set<string>();
       if (account.following) {
-        account.following.forEach(id => {
-          if (allAccountIds.has(id)) connectedPeers.add(id);
+        account.following.forEach(followedId => {
+          if (allAccountIds.has(followedId)) {
+            directConnectionsMap.get(account.id)!.add(followedId);
+            directConnectionsMap.get(followedId)!.add(account.id);
+          }
         });
       }
-      allAccounts.forEach(other => {
-        if (other.following && other.following.includes(account.id)) {
-          connectedPeers.add(other.id);
-        }
-      });
-      uniqueConnectionCounts.set(account.id, connectedPeers.size);
-      directConnectionsMap.set(account.id, connectedPeers);
+    });
+
+    const uniqueConnectionCounts = new Map<string, number>();
+    directConnectionsMap.forEach((peers, id) => {
+      uniqueConnectionCounts.set(id, peers.size);
     });
 
     let filtered = allAccounts;
@@ -1202,6 +1202,7 @@ export class DatabaseStorage implements IStorage {
     }
 
     const accountIds = new Set(filtered.map(a => a.id));
+    const filteredMap = new Map(filtered.map(a => [a.id, a]));
 
     let nodes: SocialGraphNode[] = filtered.map(a => ({
       id: a.id,
@@ -1220,7 +1221,7 @@ export class DatabaseStorage implements IStorage {
         account.following.forEach(followedId => {
           if (!accountIds.has(followedId)) return;
 
-          const followedAccount = filtered.find(a => a.id === followedId);
+          const followedAccount = filteredMap.get(followedId);
           const isMutual = followedAccount?.following?.includes(account.id) || false;
 
           if (isMutual) {
@@ -1248,12 +1249,16 @@ export class DatabaseStorage implements IStorage {
       const singleConnectionNodes = nodes.filter(n => (nodeLinkCount.get(n.id) || 0) === 1);
       const mergedInto = new Map<string, string>();
 
+      const nodeLinkIndex = new Map<string, SocialGraphLink>();
+      links.forEach(l => {
+        const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+        const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+        if (!nodeLinkIndex.has(src)) nodeLinkIndex.set(src, l);
+        if (!nodeLinkIndex.has(tgt)) nodeLinkIndex.set(tgt, l);
+      });
+
       for (const singleNode of singleConnectionNodes) {
-        const connectedLink = links.find(l => {
-          const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
-          const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-          return src === singleNode.id || tgt === singleNode.id;
-        });
+        const connectedLink = nodeLinkIndex.get(singleNode.id);
         if (!connectedLink) continue;
 
         const src = typeof connectedLink.source === 'string' ? connectedLink.source : (connectedLink.source as any).id;

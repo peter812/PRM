@@ -60,6 +60,7 @@ export default function SocialGraph3D() {
   const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [highlightSearchQuery, setHighlightSearchQuery] = useState('');
   const [graphMode, setGraphMode] = useState<'default' | 'blob'>('default');
   const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(0.5);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
@@ -122,57 +123,83 @@ export default function SocialGraph3D() {
     return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
   }, []);
 
-  useEffect(() => {
-    if (!graphRef.current) return;
-    if (!graphData || !graphData.nodes.length) return;
+  const distanceCacheRef = useRef<{ targetId: string | null; graphDataRef: any; distances: Map<string, number> }>({ targetId: null, graphDataRef: null, distances: new Map() });
 
-    const computeNodeColor = (n: SocialGraphData['nodes'][0]): string => {
-      if (colorScheme === 'type') {
-        return n.typeColor;
+  const computeDistances = useCallback((targetId: string, nodes: SocialGraphData['nodes'], links: SocialGraphData['links']): Map<string, number> => {
+    const cache = distanceCacheRef.current;
+    if (cache.targetId === targetId && cache.graphDataRef === graphData) {
+      return cache.distances;
+    }
+    const adjacency = new Map<string, Set<string>>();
+    nodes.forEach(node => adjacency.set(node.id, new Set()));
+    links.forEach(l => {
+      const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+      const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+      adjacency.get(src)?.add(tgt);
+      adjacency.get(tgt)?.add(src);
+    });
+    const distances = new Map<string, number>();
+    distances.set(targetId, 0);
+    const queue = [targetId];
+    let head = 0;
+    while (head < queue.length) {
+      const current = queue[head++];
+      const currentDist = distances.get(current)!;
+      const peers = adjacency.get(current) || new Set<string>();
+      for (const peer of Array.from(peers)) {
+        if (!distances.has(peer)) {
+          distances.set(peer, currentDist + 1);
+          queue.push(peer);
+        }
       }
-      if (colorScheme === 'connections') {
-        const counts = graphData.nodes.map(node => node.connectionCount);
-        const maxCount = Math.max(...counts, 1);
-        const minCount = Math.min(...counts, 0);
-        const range = maxCount - minCount || 1;
+    }
+    cache.targetId = targetId;
+    cache.graphDataRef = graphData;
+    cache.distances = distances;
+    return distances;
+  }, [graphData]);
+
+  const nodeColorMapRef = useRef<Map<string, string>>(new Map());
+
+  const computeColorMap = useCallback(() => {
+    if (!graphData || !graphData.nodes.length) return new Map<string, string>();
+
+    const colorMap = new Map<string, string>();
+
+    if (colorScheme === 'type') {
+      graphData.nodes.forEach(n => colorMap.set(n.id, n.typeColor));
+    } else if (colorScheme === 'connections') {
+      const counts = graphData.nodes.map(node => node.connectionCount);
+      const maxCount = Math.max(...counts, 1);
+      const minCount = Math.min(...counts, 0);
+      const range = (maxCount - minCount) || 1;
+      graphData.nodes.forEach(n => {
         const normalized = (n.connectionCount - minCount) / range;
-        return interpolateColor(connectionsColorMin, connectionsColorMax, normalized);
-      }
-      if (colorScheme === 'distance') {
-        const targetId = colorSchemeAccountId;
-        if (!targetId || !graphData.nodes.find(node => node.id === targetId)) {
-          return n.typeColor;
-        }
-        const adjacency = new Map<string, Set<string>>();
-        graphData.nodes.forEach(node => adjacency.set(node.id, new Set()));
-        graphData.links.forEach(l => {
-          const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
-          const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-          adjacency.get(src)?.add(tgt);
-          adjacency.get(tgt)?.add(src);
+        colorMap.set(n.id, interpolateColor(connectionsColorMin, connectionsColorMax, normalized));
+      });
+    } else if (colorScheme === 'distance') {
+      const distanceColors: Record<number, string> = { 0: '#ef4444', 1: '#22c55e', 2: '#3b82f6' };
+      if (colorSchemeAccountId && graphData.nodes.find(n => n.id === colorSchemeAccountId)) {
+        const distancesMap = computeDistances(colorSchemeAccountId, graphData.nodes, graphData.links);
+        graphData.nodes.forEach(n => {
+          const dist = distancesMap.get(n.id);
+          colorMap.set(n.id, (dist !== undefined && dist in distanceColors) ? distanceColors[dist] : '#9ca3af');
         });
-        const distances = new Map<string, number>();
-        distances.set(targetId, 0);
-        const queue = [targetId];
-        let head = 0;
-        while (head < queue.length) {
-          const current = queue[head++];
-          const currentDist = distances.get(current)!;
-          const peers = adjacency.get(current) || new Set<string>();
-          for (const peer of Array.from(peers)) {
-            if (!distances.has(peer)) {
-              distances.set(peer, currentDist + 1);
-              queue.push(peer);
-            }
-          }
-        }
-        const dist = distances.get(n.id);
-        const distanceColors: Record<number, string> = { 0: '#ef4444', 1: '#22c55e', 2: '#3b82f6' };
-        if (dist !== undefined && dist in distanceColors) return distanceColors[dist];
-        return '#9ca3af';
+      } else {
+        graphData.nodes.forEach(n => colorMap.set(n.id, n.typeColor));
       }
-      return n.typeColor;
-    };
+    } else {
+      graphData.nodes.forEach(n => colorMap.set(n.id, n.typeColor));
+    }
+
+    return colorMap;
+  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances]);
+
+  useEffect(() => {
+    if (!graphRef.current || !graphData || !graphData.nodes.length) return;
+
+    const colorMap = computeColorMap();
+    nodeColorMapRef.current = colorMap;
 
     const nodes: GraphNode[] = graphData.nodes.map(n => {
       let label = n.name;
@@ -183,7 +210,7 @@ export default function SocialGraph3D() {
         id: n.id,
         name: label,
         type: 'social-account' as const,
-        color: computeNodeColor(n),
+        color: colorMap.get(n.id) || n.typeColor,
         val: graphMode === 'blob' ? (n.size - 50 + 1) * n.val : n.val,
       };
     });
@@ -226,7 +253,7 @@ export default function SocialGraph3D() {
         .graphData(gData)
         .backgroundColor(bgColor)
         .nodeLabel('name')
-        .nodeColor('color')
+        .nodeColor((node: any) => nodeColorMapRef.current.get(node.id) || '#10b981')
         .nodeVal('val')
         .enableNodeDrag(true)
         .enableNavigationControls(true)
@@ -277,7 +304,6 @@ export default function SocialGraph3D() {
         }
       } catch (_) {}
 
-
       fgRef.current = fg;
     } else {
       fgRef.current.graphData(gData);
@@ -301,7 +327,20 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, graphMode, blobForceMultiplier]);
+  }, [graphData, navigate, graphMode, blobForceMultiplier]);
+
+  useEffect(() => {
+    if (!fgRef.current || !graphData || !graphData.nodes.length) return;
+    const colorMap = computeColorMap();
+    nodeColorMapRef.current = colorMap;
+    const currentData = fgRef.current.graphData();
+    if (currentData && currentData.nodes) {
+      currentData.nodes.forEach((node: any) => {
+        node.color = colorMap.get(node.id) || node.color;
+      });
+      fgRef.current.nodeColor(fgRef.current.nodeColor());
+    }
+  }, [colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, computeColorMap, graphData]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -450,7 +489,7 @@ export default function SocialGraph3D() {
                       <X className="h-4 w-4" />
                     </Button>
                   )}
-                  <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+                  <Popover open={searchOpen} onOpenChange={(open) => { setSearchOpen(open); if (!open) setHighlightSearchQuery(''); }}>
                     <PopoverTrigger asChild>
                       <Button
                         variant="outline"
@@ -466,28 +505,47 @@ export default function SocialGraph3D() {
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-80 p-0" align="start">
-                      <Command>
-                        <CommandInput placeholder="Search accounts..." />
+                      <Command shouldFilter={false}>
+                        <CommandInput
+                          placeholder="Type 3+ characters to search..."
+                          value={highlightSearchQuery}
+                          onValueChange={setHighlightSearchQuery}
+                        />
                         <CommandList>
-                          <CommandEmpty>No account found.</CommandEmpty>
-                          <CommandGroup>
-                            {allSocialAccounts.map((account) => (
-                              <CommandItem
-                                key={account.id}
-                                value={`${account.username} ${account.nickname || ''}`}
-                                onSelect={() => {
-                                  setHighlightedAccountId(account.id);
-                                  setSearchOpen(false);
-                                }}
-                                data-testid={`option-account-${account.id}`}
-                              >
-                                {account.nickname || account.username}
-                                {account.nickname && (
-                                  <span className="ml-1 text-muted-foreground">@{account.username}</span>
-                                )}
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
+                          {highlightSearchQuery.length > 0 && highlightSearchQuery.length < 3 && (
+                            <div className="p-3 text-sm text-muted-foreground text-center">
+                              Type {3 - highlightSearchQuery.length} more character{3 - highlightSearchQuery.length > 1 ? 's' : ''} to search...
+                            </div>
+                          )}
+                          {highlightSearchQuery.length >= 3 && (() => {
+                            const query = highlightSearchQuery.toLowerCase();
+                            const filtered = allSocialAccounts.filter(a =>
+                              a.username.toLowerCase().includes(query) ||
+                              (a.nickname && a.nickname.toLowerCase().includes(query))
+                            ).slice(0, 50);
+                            if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
+                            return (
+                              <CommandGroup>
+                                {filtered.map((account) => (
+                                  <CommandItem
+                                    key={account.id}
+                                    value={account.id}
+                                    onSelect={() => {
+                                      setHighlightedAccountId(account.id);
+                                      setSearchOpen(false);
+                                      setHighlightSearchQuery('');
+                                    }}
+                                    data-testid={`option-account-${account.id}`}
+                                  >
+                                    {account.nickname || account.username}
+                                    {account.nickname && (
+                                      <span className="ml-1 text-muted-foreground">@{account.username}</span>
+                                    )}
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                            );
+                          })()}
                         </CommandList>
                       </Command>
                     </PopoverContent>
