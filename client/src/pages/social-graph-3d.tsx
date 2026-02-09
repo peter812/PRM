@@ -48,7 +48,7 @@ export default function SocialGraph3D() {
   const materialCacheRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
   const [, navigate] = useLocation();
   const [hideOrphans, setHideOrphans] = useState(true);
-  const [minTwoConnections, setMinTwoConnections] = useState(false);
+  const [minConnections, setMinConnections] = useState(0);
   const [limitExtras, setLimitExtras] = useState(true);
   const [maxExtras, setMaxExtras] = useState(20);
   const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
@@ -70,7 +70,7 @@ export default function SocialGraph3D() {
 
   const [appliedSettings, setAppliedSettings] = useState({
     hideOrphans,
-    minTwoConnections,
+    minConnections,
     limitExtras,
     maxExtras,
     highlightedAccountId,
@@ -95,7 +95,7 @@ export default function SocialGraph3D() {
   const handleUpdateGraph = () => {
     setAppliedSettings({
       hideOrphans,
-      minTwoConnections,
+      minConnections,
       limitExtras,
       maxExtras,
       highlightedAccountId,
@@ -690,30 +690,44 @@ export default function SocialGraph3D() {
                 />
               </div>
 
-              <div className="flex items-center justify-between">
-                <Label htmlFor="min-two-connections">2+ Connections</Label>
-                <Switch
-                  id="min-two-connections"
-                  checked={minTwoConnections}
-                  onCheckedChange={setMinTwoConnections}
-                  data-testid="switch-min-two-connections"
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>Minimum Connections</Label>
+                  <span className="text-sm font-medium" data-testid="text-min-connections-value">{minConnections}</span>
+                </div>
+                <Slider
+                  value={[minConnections]}
+                  min={0}
+                  max={6}
+                  step={1}
+                  onValueChange={(values) => setMinConnections(values[0])}
+                  data-testid="slider-min-connections"
                 />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>0</span>
+                  <span>1</span>
+                  <span>2</span>
+                  <span>3</span>
+                  <span>4</span>
+                  <span>5</span>
+                  <span>6</span>
+                </div>
               </div>
 
               <div className="flex items-center justify-between">
-                <Label htmlFor="limit-extras" className={minTwoConnections ? "text-muted-foreground" : ""}>
+                <Label htmlFor="limit-extras" className={minConnections >= 2 ? "text-muted-foreground" : ""}>
                   Limit Extras
                 </Label>
                 <Switch
                   id="limit-extras"
                   checked={limitExtras}
                   onCheckedChange={setLimitExtras}
-                  disabled={minTwoConnections}
+                  disabled={minConnections >= 2}
                   data-testid="switch-limit-extras"
                 />
               </div>
 
-              {limitExtras && !minTwoConnections && (
+              {limitExtras && minConnections < 2 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label className="text-sm text-muted-foreground">Max Extras</Label>

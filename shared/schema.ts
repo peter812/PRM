@@ -443,7 +443,7 @@ export type FlowResponse = {
 
 export type SocialGraphSettings = {
   hideOrphans: boolean;
-  minTwoConnections: boolean;
+  minConnections: number;
   limitExtras: boolean;
   maxExtras: number;
   highlightedAccountId: string | null;

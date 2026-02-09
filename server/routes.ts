@@ -2684,7 +2684,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const settings = req.body as {
         hideOrphans?: boolean;
-        minTwoConnections?: boolean;
+        minConnections?: number;
         limitExtras?: boolean;
         maxExtras?: number;
         highlightedAccountId?: string | null;
@@ -2694,7 +2694,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const graphData = await storage.getSocialGraph({
         hideOrphans: settings.hideOrphans ?? true,
-        minTwoConnections: settings.minTwoConnections ?? false,
+        minConnections: settings.minConnections ?? 0,
         limitExtras: settings.limitExtras ?? true,
         maxExtras: settings.maxExtras ?? 20,
         highlightedAccountId: settings.highlightedAccountId ?? null,

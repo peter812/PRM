@@ -1146,11 +1146,11 @@ export class DatabaseStorage implements IStorage {
       filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) > 0);
     }
 
-    if (settings.minTwoConnections) {
-      filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) >= 2);
+    if (settings.minConnections > 0) {
+      filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) >= settings.minConnections);
     }
 
-    if (settings.limitExtras && !settings.minTwoConnections) {
+    if (settings.limitExtras && settings.minConnections < 2) {
       const safeIds = new Set<string>();
       const extraIds = new Set<string>();
       filtered.forEach(a => {
