@@ -333,13 +333,7 @@ export default function SocialGraph3D() {
     if (!fgRef.current || !graphData || !graphData.nodes.length) return;
     const colorMap = computeColorMap();
     nodeColorMapRef.current = colorMap;
-    const currentData = fgRef.current.graphData();
-    if (currentData && currentData.nodes) {
-      currentData.nodes.forEach((node: any) => {
-        node.color = colorMap.get(node.id) || node.color;
-      });
-      fgRef.current.nodeColor(fgRef.current.nodeColor());
-    }
+    fgRef.current.nodeColor((node: any) => nodeColorMapRef.current.get(node.id) || '#10b981');
   }, [colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, computeColorMap, graphData]);
 
   const handleResetCamera = () => {
