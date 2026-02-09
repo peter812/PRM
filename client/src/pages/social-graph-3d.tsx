@@ -55,6 +55,7 @@ export default function SocialGraph3D() {
   const [colorScheme, setColorScheme] = useState<'type' | 'distance' | 'connections'>('type');
   const [colorSchemeAccountId, setColorSchemeAccountId] = useState<string | null>(null);
   const [distanceSearchOpen, setDistanceSearchOpen] = useState(false);
+  const [distanceSearchQuery, setDistanceSearchQuery] = useState('');
   const [connectionsColorMax, setConnectionsColorMax] = useState('#ef4444');
   const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
@@ -512,7 +513,7 @@ export default function SocialGraph3D() {
                 {colorScheme === 'distance' && (
                   <div className="space-y-2 pt-1">
                     <Label className="text-sm text-muted-foreground">Distance From Account</Label>
-                    <Popover open={distanceSearchOpen} onOpenChange={setDistanceSearchOpen}>
+                    <Popover open={distanceSearchOpen} onOpenChange={(open) => { setDistanceSearchOpen(open); if (!open) setDistanceSearchQuery(''); }}>
                       <PopoverTrigger asChild>
                         <Button
                           variant="outline"
@@ -528,28 +529,47 @@ export default function SocialGraph3D() {
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent className="w-80 p-0" align="start">
-                        <Command>
-                          <CommandInput placeholder="Search accounts..." />
+                        <Command shouldFilter={false}>
+                          <CommandInput
+                            placeholder="Type 3+ characters to search..."
+                            value={distanceSearchQuery}
+                            onValueChange={setDistanceSearchQuery}
+                          />
                           <CommandList>
-                            <CommandEmpty>No account found.</CommandEmpty>
-                            <CommandGroup>
-                              {allSocialAccounts.map((account) => (
-                                <CommandItem
-                                  key={account.id}
-                                  value={`${account.username} ${account.nickname || ''}`}
-                                  onSelect={() => {
-                                    setColorSchemeAccountId(account.id);
-                                    setDistanceSearchOpen(false);
-                                  }}
-                                  data-testid={`option-distance-account-${account.id}`}
-                                >
-                                  {account.nickname || account.username}
-                                  {account.nickname && (
-                                    <span className="ml-1 text-muted-foreground">@{account.username}</span>
-                                  )}
-                                </CommandItem>
-                              ))}
-                            </CommandGroup>
+                            {distanceSearchQuery.length > 0 && distanceSearchQuery.length < 3 && (
+                              <div className="p-3 text-sm text-muted-foreground text-center">
+                                Type {3 - distanceSearchQuery.length} more character{3 - distanceSearchQuery.length > 1 ? 's' : ''} to search...
+                              </div>
+                            )}
+                            {distanceSearchQuery.length >= 3 && (() => {
+                              const query = distanceSearchQuery.toLowerCase();
+                              const filtered = allSocialAccounts.filter(a =>
+                                a.username.toLowerCase().includes(query) ||
+                                (a.nickname && a.nickname.toLowerCase().includes(query))
+                              ).slice(0, 50);
+                              if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
+                              return (
+                                <CommandGroup>
+                                  {filtered.map((account) => (
+                                    <CommandItem
+                                      key={account.id}
+                                      value={account.id}
+                                      onSelect={() => {
+                                        setColorSchemeAccountId(account.id);
+                                        setDistanceSearchOpen(false);
+                                        setDistanceSearchQuery('');
+                                      }}
+                                      data-testid={`option-distance-account-${account.id}`}
+                                    >
+                                      {account.nickname || account.username}
+                                      {account.nickname && (
+                                        <span className="ml-1 text-muted-foreground">@{account.username}</span>
+                                      )}
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              );
+                            })()}
                           </CommandList>
                         </Command>
                       </PopoverContent>
