@@ -66,7 +66,7 @@ export default function SocialGraph3D() {
   const extrasSteps = [5, 10, 20, 50, 100];
   const mergeMultiplierSteps = [0, 0.15, 0.3, 0.5, 0.75, 1];
 
-  const graphSettings = useMemo(() => ({
+  const [appliedSettings, setAppliedSettings] = useState({
     hideOrphans,
     minTwoConnections,
     limitExtras,
@@ -76,21 +76,35 @@ export default function SocialGraph3D() {
     colorSchemeAccountId,
     mode: graphMode,
     blobMergeMultiplier,
-  }), [hideOrphans, minTwoConnections, limitExtras, maxExtras, highlightedAccountId, colorScheme, colorSchemeAccountId, graphMode, blobMergeMultiplier]);
+  });
 
   const { data: graphData, isLoading: isGraphLoading } = useQuery<SocialGraphData>({
-    queryKey: ["/api/social-graph", graphSettings],
+    queryKey: ["/api/social-graph", appliedSettings],
     queryFn: async () => {
       const res = await fetch("/api/social-graph", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(graphSettings),
+        body: JSON.stringify(appliedSettings),
         credentials: "include",
       });
       if (!res.ok) throw new Error("Failed to fetch graph data");
       return res.json();
     },
   });
+
+  const handleUpdateGraph = () => {
+    setAppliedSettings({
+      hideOrphans,
+      minTwoConnections,
+      limitExtras,
+      maxExtras,
+      highlightedAccountId,
+      colorScheme,
+      colorSchemeAccountId,
+      mode: graphMode,
+      blobMergeMultiplier,
+    });
+  };
 
   const { data: socialAccounts } = useQuery<SocialAccount[]>({
     queryKey: ["/api/social-accounts"],
@@ -608,6 +622,14 @@ export default function SocialGraph3D() {
               )}
 
               <div className="pt-4 border-t space-y-2">
+                <Button
+                  className="w-full"
+                  onClick={handleUpdateGraph}
+                  disabled={isGraphLoading}
+                  data-testid="button-update-graph"
+                >
+                  {isGraphLoading ? "Updating..." : "Update Graph"}
+                </Button>
                 <Button
                   variant="outline"
                   className="w-full"
