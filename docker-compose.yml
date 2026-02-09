@@ -1,6 +1,22 @@
-version: '3.8'
+version: "3.9"
 
 services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: people
+      POSTGRES_PASSWORD: people812
+      POSTGRES_DB: people
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      people_net:
+        ipv4_address: 10.5.0.10
+
   people-manager:
     build:
       context: .
@@ -11,7 +27,6 @@ services:
     env_file:
       - .env
     volumes:
-      # Mount source code for hot reload in development
       - .:/app
       - /app/node_modules
     restart: unless-stopped
@@ -21,7 +36,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    # Resource limits (adjust based on your needs)
     deploy:
       resources:
         limits:
@@ -30,3 +44,18 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+    networks:
+      people_net:
+        ipv4_address: 10.5.0.11
+
+volumes:
+  postgres_data:
+
+networks:
+  people_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.5.0.0/24
+          gateway: 10.5.0.1
