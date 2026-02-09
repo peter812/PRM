@@ -55,7 +55,7 @@ function loadPreferences(): SearchPreferences {
       const parsed = JSON.parse(stored) as SearchPreferences;
       const mergedOrder = [...parsed.order];
       const mergedEnabled = { ...parsed.enabled };
-      
+
       DEFAULT_PREFERENCES.order.forEach(category => {
         if (!mergedOrder.includes(category)) {
           mergedOrder.push(category);
@@ -64,7 +64,7 @@ function loadPreferences(): SearchPreferences {
           mergedEnabled[category] = DEFAULT_PREFERENCES.enabled[category];
         }
       });
-      
+
       return { order: mergedOrder, enabled: mergedEnabled };
     }
   } catch (e) {
@@ -81,12 +81,12 @@ function savePreferences(prefs: SearchPreferences): void {
   }
 }
 
-function DraggableList({ 
-  items, 
-  enabled, 
-  onReorder, 
-  onToggle 
-}: { 
+function DraggableList({
+  items,
+  enabled,
+  onReorder,
+  onToggle
+}: {
   items: SearchCategory[];
   enabled: Record<SearchCategory, boolean>;
   onReorder: (items: SearchCategory[]) => void;
@@ -132,7 +132,7 @@ function DraggableList({
         const Icon = CATEGORY_ICONS[category];
         const isDragging = draggedIndex === index;
         const isDragOver = dragOverIndex === index;
-        
+
         return (
           <div
             key={category}
@@ -140,9 +140,8 @@ function DraggableList({
             onDragStart={(e) => handleDragStart(e, index)}
             onDragOver={(e) => handleDragOver(e, index)}
             onDragEnd={handleDragEnd}
-            className={`flex items-center gap-3 p-3 rounded-md border cursor-move transition-colors ${
-              isDragging ? 'opacity-50 bg-muted' : ''
-            } ${isDragOver ? 'border-primary bg-accent' : 'border-border'}`}
+            className={`flex items-center gap-3 p-3 rounded-md border cursor-move transition-colors ${isDragging ? 'opacity-50 bg-muted' : ''
+              } ${isDragOver ? 'border-primary bg-accent' : 'border-border'}`}
             data-testid={`search-category-${category}`}
           >
             <div className="flex flex-col gap-0.5">
@@ -193,10 +192,10 @@ export function GlobalSearch() {
   queryParams.set('q', searchQuery);
   Object.entries(preferences.enabled).forEach(([key, value]) => {
     const paramName = key === 'people' ? 'includePeople' :
-                      key === 'groups' ? 'includeGroups' :
-                      key === 'interactions' ? 'includeInteractions' :
-                      key === 'notes' ? 'includeNotes' :
-                      key === 'messages' ? 'includeMessages' : 'includeSocialProfiles';
+      key === 'groups' ? 'includeGroups' :
+        key === 'interactions' ? 'includeInteractions' :
+          key === 'notes' ? 'includeNotes' :
+            key === 'messages' ? 'includeMessages' : 'includeSocialProfiles';
     queryParams.set(paramName, value.toString());
   });
 
@@ -250,20 +249,20 @@ export function GlobalSearch() {
     return name.slice(0, 2).toUpperCase();
   };
 
-  const totalResults = 
-    (results?.people?.length || 0) + 
-    (results?.groups?.length || 0) + 
-    (results?.interactions?.length || 0) + 
-    (results?.notes?.length || 0) + 
+  const totalResults =
+    (results?.people?.length || 0) +
+    (results?.groups?.length || 0) +
+    (results?.interactions?.length || 0) +
+    (results?.notes?.length || 0) +
     (results?.socialProfiles?.length || 0) +
     (results?.messages?.length || 0);
 
   const renderCategory = (category: SearchCategory) => {
     if (!preferences.enabled[category]) return null;
-    
+
     const Icon = CATEGORY_ICONS[category];
     const label = CATEGORY_LABELS[category];
-    
+
     switch (category) {
       case 'people': {
         const items = results?.people?.slice(0, 4) || [];
@@ -329,7 +328,7 @@ export function GlobalSearch() {
                     {group.imageUrl && (
                       <AvatarImage src={group.imageUrl} alt={group.name} />
                     )}
-                    <AvatarFallback 
+                    <AvatarFallback
                       className="text-xs"
                       style={{ backgroundColor: group.color }}
                     >
@@ -440,9 +439,7 @@ export function GlobalSearch() {
               <button
                 key={account.id}
                 onClick={() => {
-                  if (account.accountUrl) {
-                    window.open(account.accountUrl, '_blank');
-                  }
+                  handleNavigate(`/social-accounts/${account.id}`);
                 }}
                 className="w-full px-3 py-2 hover-elevate active-elevate-2 text-left"
                 data-testid={`result-social-${account.id}`}
