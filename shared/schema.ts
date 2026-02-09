@@ -447,8 +447,6 @@ export type SocialGraphSettings = {
   limitExtras: boolean;
   maxExtras: number;
   highlightedAccountId: string | null;
-  colorScheme: 'type' | 'distance' | 'connections';
-  colorSchemeAccountId: string | null;
   mode: 'default' | 'blob';
   blobMergeMultiplier: number;
 };
@@ -456,24 +454,22 @@ export type SocialGraphSettings = {
 export type SocialGraphNode = {
   id: string;
   name: string;
-  color: string;
+  typeColor: string;
+  connectionCount: number;
   val: number;
   size: number;
-  connectionValue?: number;
   mergedNames?: string[];
 };
 
 export type SocialGraphLink = {
   source: string;
   target: string;
-  color: string;
   mutual: boolean;
 };
 
 export type SocialGraphData = {
   nodes: SocialGraphNode[];
   links: SocialGraphLink[];
-  defaultColorSchemeAccountId?: string | null;
 };
 
 export type MegaSearchResult = {

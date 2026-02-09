@@ -1203,75 +1203,13 @@ export class DatabaseStorage implements IStorage {
 
     const accountIds = new Set(filtered.map(a => a.id));
 
-    let nodeColorMap: Map<string, string> | null = null;
-
-    if (settings.colorScheme === 'distance' && settings.colorSchemeAccountId) {
-      const filteredIds = new Set(filtered.map(a => a.id));
-
-      if (filteredIds.has(settings.colorSchemeAccountId)) {
-        const distanceColors = new Map<number, string>();
-        distanceColors.set(0, '#ef4444');
-        distanceColors.set(1, '#22c55e');
-        distanceColors.set(2, '#3b82f6');
-        const defaultDistanceColor = '#9ca3af';
-
-        const distances = new Map<string, number>();
-        distances.set(settings.colorSchemeAccountId, 0);
-        const queue: string[] = [settings.colorSchemeAccountId];
-        let head = 0;
-
-        while (head < queue.length) {
-          const current = queue[head++];
-          const currentDist = distances.get(current)!;
-          const peers = directConnectionsMap.get(current) || new Set<string>();
-          const peersArray = Array.from(peers);
-          for (const peer of peersArray) {
-            if (filteredIds.has(peer) && !distances.has(peer)) {
-              distances.set(peer, currentDist + 1);
-              queue.push(peer);
-            }
-          }
-        }
-
-        nodeColorMap = new Map<string, string>();
-        for (const a of filtered) {
-          const dist = distances.get(a.id);
-          if (dist !== undefined) {
-            nodeColorMap.set(a.id, distanceColors.get(dist) || defaultDistanceColor);
-          } else {
-            nodeColorMap.set(a.id, defaultDistanceColor);
-          }
-        }
-      }
-    }
-
-    let connectionValues: Map<string, number> | null = null;
-
-    if (settings.colorScheme === 'connections') {
-      const connectionCounts = new Map<string, number>();
-      for (const a of filtered) {
-        connectionCounts.set(a.id, uniqueConnectionCounts.get(a.id) || 0);
-      }
-
-      const counts = Array.from(connectionCounts.values());
-      const maxCount = Math.max(...counts, 1);
-      const minCount = Math.min(...counts, 0);
-      const range = maxCount - minCount || 1;
-
-      connectionValues = new Map<string, number>();
-      const entries = Array.from(connectionCounts.entries());
-      for (const entry of entries) {
-        connectionValues.set(entry[0], Math.round(((entry[1] - minCount) / range) * 100));
-      }
-    }
-
     let nodes: SocialGraphNode[] = filtered.map(a => ({
       id: a.id,
       name: a.nickname || a.username,
-      color: nodeColorMap ? (nodeColorMap.get(a.id) || '#9ca3af') : ((a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981'),
+      typeColor: (a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981',
+      connectionCount: uniqueConnectionCounts.get(a.id) || 0,
       val: 10,
       size: 50,
-      ...(connectionValues ? { connectionValue: connectionValues.get(a.id) ?? 0 } : {}),
     }));
 
     let links: SocialGraphLink[] = [];
@@ -1289,9 +1227,9 @@ export class DatabaseStorage implements IStorage {
             const pairKey = [account.id, followedId].sort().join('-');
             if (mutualPairs.has(pairKey)) return;
             mutualPairs.add(pairKey);
-            links.push({ source: account.id, target: followedId, color: '#6366f1', mutual: true });
+            links.push({ source: account.id, target: followedId, mutual: true });
           } else {
-            links.push({ source: account.id, target: followedId, color: '#6b7280', mutual: false });
+            links.push({ source: account.id, target: followedId, mutual: false });
           }
         });
       }

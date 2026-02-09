@@ -72,8 +72,6 @@ export default function SocialGraph3D() {
     limitExtras,
     maxExtras,
     highlightedAccountId,
-    colorScheme,
-    colorSchemeAccountId,
     mode: graphMode,
     blobMergeMultiplier,
   });
@@ -99,8 +97,6 @@ export default function SocialGraph3D() {
       limitExtras,
       maxExtras,
       highlightedAccountId,
-      colorScheme,
-      colorSchemeAccountId,
       mode: graphMode,
       blobMergeMultiplier,
     });
@@ -129,11 +125,55 @@ export default function SocialGraph3D() {
     if (!graphRef.current) return;
     if (!graphData || !graphData.nodes.length) return;
 
-    const nodes: GraphNode[] = graphData.nodes.map(n => {
-      let color = n.color;
-      if (colorScheme === 'connections' && n.connectionValue !== undefined) {
-        color = interpolateColor(connectionsColorMin, connectionsColorMax, n.connectionValue / 100);
+    const computeNodeColor = (n: SocialGraphData['nodes'][0]): string => {
+      if (colorScheme === 'type') {
+        return n.typeColor;
       }
+      if (colorScheme === 'connections') {
+        const counts = graphData.nodes.map(node => node.connectionCount);
+        const maxCount = Math.max(...counts, 1);
+        const minCount = Math.min(...counts, 0);
+        const range = maxCount - minCount || 1;
+        const normalized = (n.connectionCount - minCount) / range;
+        return interpolateColor(connectionsColorMin, connectionsColorMax, normalized);
+      }
+      if (colorScheme === 'distance') {
+        const targetId = colorSchemeAccountId;
+        if (!targetId || !graphData.nodes.find(node => node.id === targetId)) {
+          return n.typeColor;
+        }
+        const adjacency = new Map<string, Set<string>>();
+        graphData.nodes.forEach(node => adjacency.set(node.id, new Set()));
+        graphData.links.forEach(l => {
+          const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+          const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+          adjacency.get(src)?.add(tgt);
+          adjacency.get(tgt)?.add(src);
+        });
+        const distances = new Map<string, number>();
+        distances.set(targetId, 0);
+        const queue = [targetId];
+        let head = 0;
+        while (head < queue.length) {
+          const current = queue[head++];
+          const currentDist = distances.get(current)!;
+          const peers = adjacency.get(current) || new Set<string>();
+          for (const peer of Array.from(peers)) {
+            if (!distances.has(peer)) {
+              distances.set(peer, currentDist + 1);
+              queue.push(peer);
+            }
+          }
+        }
+        const dist = distances.get(n.id);
+        const distanceColors: Record<number, string> = { 0: '#ef4444', 1: '#22c55e', 2: '#3b82f6' };
+        if (dist !== undefined && dist in distanceColors) return distanceColors[dist];
+        return '#9ca3af';
+      }
+      return n.typeColor;
+    };
+
+    const nodes: GraphNode[] = graphData.nodes.map(n => {
       let label = n.name;
       if (n.mergedNames && n.mergedNames.length > 0) {
         label = `${n.name} (+${n.mergedNames.length} merged)`;
@@ -142,16 +182,19 @@ export default function SocialGraph3D() {
         id: n.id,
         name: label,
         type: 'social-account' as const,
-        color,
+        color: computeNodeColor(n),
         val: graphMode === 'blob' ? (n.size - 50 + 1) * n.val : n.val,
       };
     });
 
+    const linkMutualColor = '#6366f1';
+    const linkDefaultColor = '#6b7280';
+
     const links: GraphLink[] = graphData.links.map(l => ({
-      source: l.source,
-      target: l.target,
+      source: typeof l.source === 'string' ? l.source : (l.source as any).id,
+      target: typeof l.target === 'string' ? l.target : (l.target as any).id,
       type: 'follows' as const,
-      color: l.color,
+      color: l.mutual ? linkMutualColor : linkDefaultColor,
       mutual: l.mutual,
     }));
 
@@ -257,7 +300,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, colorScheme, connectionsColorMin, connectionsColorMax, interpolateColor, graphMode, blobForceMultiplier]);
+  }, [graphData, navigate, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, graphMode, blobForceMultiplier]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -476,10 +519,9 @@ export default function SocialGraph3D() {
                           className="w-full justify-start text-left font-normal"
                           data-testid="button-distance-account-search"
                         >
-                          {(colorSchemeAccountId || graphData?.defaultColorSchemeAccountId)
+                          {colorSchemeAccountId
                             ? (() => {
-                                const accountId = colorSchemeAccountId || graphData?.defaultColorSchemeAccountId;
-                                const account = allSocialAccounts.find(a => a.id === accountId);
+                                const account = allSocialAccounts.find(a => a.id === colorSchemeAccountId);
                                 return account ? (account.nickname || account.username) : 'Select account...';
                               })()
                             : 'Select account...'}
