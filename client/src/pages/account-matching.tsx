@@ -22,9 +22,16 @@ type MatchingResponse = {
 export default function AccountMatching() {
   const { toast } = useToast();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [skippedIds, setSkippedIds] = useState<string[]>([]);
 
-  const { data, isLoading, refetch } = useQuery<MatchingResponse>({
-    queryKey: ["/api/account-matching/next"],
+  const skipParam = skippedIds.length > 0 ? `?skip=${skippedIds.join(",")}` : "";
+  const { data, isLoading } = useQuery<MatchingResponse>({
+    queryKey: ["/api/account-matching/next", skippedIds],
+    queryFn: async () => {
+      const res = await fetch(`/api/account-matching/next${skipParam}`);
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
   });
 
   const connectMutation = useMutation({
@@ -43,6 +50,7 @@ export default function AccountMatching() {
     onSuccess: () => {
       toast({ title: "Connected", description: "Accounts linked successfully" });
       setSelectedIds(new Set());
+      setSkippedIds([]);
       queryClient.invalidateQueries({ queryKey: ["/api/account-matching/next"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
@@ -59,6 +67,7 @@ export default function AccountMatching() {
     onSuccess: () => {
       toast({ title: "Ignored", description: "Person marked as no social media" });
       setSelectedIds(new Set());
+      setSkippedIds([]);
       queryClient.invalidateQueries({ queryKey: ["/api/account-matching/next"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
     },
@@ -68,8 +77,10 @@ export default function AccountMatching() {
   });
 
   const handleSkip = () => {
+    if (data?.person) {
+      setSkippedIds((prev) => [...prev, data.person!.id]);
+    }
     setSelectedIds(new Set());
-    refetch();
   };
 
   const toggleAccount = (id: string) => {

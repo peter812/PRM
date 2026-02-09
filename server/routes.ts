@@ -3234,11 +3234,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/account-matching/next", async (req, res) => {
     try {
+      const skipParam = req.query.skip as string | undefined;
+      const skipIds = skipParam ? skipParam.split(",").filter(Boolean) : [];
+
       const allPeople = await storage.getAllPeople();
       const unmatchedPerson = allPeople.find(
         (p) =>
           (!p.socialAccountUuids || p.socialAccountUuids.length === 0) &&
-          p.noSocialMedia === 0
+          p.noSocialMedia === 0 &&
+          !skipIds.includes(p.id)
       );
 
       if (!unmatchedPerson) {
