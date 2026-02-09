@@ -19,10 +19,27 @@ type MatchingResponse = {
   candidates: CandidateAccount[];
 };
 
+const SKIP_STORAGE_KEY = "account-matching-skipped";
+
+function getStoredSkippedIds(): string[] {
+  try {
+    const stored = sessionStorage.getItem(SKIP_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function storeSkippedIds(ids: string[]) {
+  try {
+    sessionStorage.setItem(SKIP_STORAGE_KEY, JSON.stringify(ids));
+  } catch {}
+}
+
 export default function AccountMatching() {
   const { toast } = useToast();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [skippedIds, setSkippedIds] = useState<string[]>([]);
+  const [skippedIds, setSkippedIds] = useState<string[]>(getStoredSkippedIds);
 
   const skipParam = skippedIds.length > 0 ? `?skip=${skippedIds.join(",")}` : "";
   const { data, isLoading } = useQuery<MatchingResponse>({
@@ -50,7 +67,6 @@ export default function AccountMatching() {
     onSuccess: () => {
       toast({ title: "Connected", description: "Accounts linked successfully" });
       setSelectedIds(new Set());
-      setSkippedIds([]);
       queryClient.invalidateQueries({ queryKey: ["/api/account-matching/next"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
@@ -67,7 +83,6 @@ export default function AccountMatching() {
     onSuccess: () => {
       toast({ title: "Ignored", description: "Person marked as no social media" });
       setSelectedIds(new Set());
-      setSkippedIds([]);
       queryClient.invalidateQueries({ queryKey: ["/api/account-matching/next"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
     },
@@ -78,7 +93,11 @@ export default function AccountMatching() {
 
   const handleSkip = () => {
     if (data?.person) {
-      setSkippedIds((prev) => [...prev, data.person!.id]);
+      setSkippedIds((prev) => {
+        const next = [...prev, data.person!.id];
+        storeSkippedIds(next);
+        return next;
+      });
     }
     setSelectedIds(new Set());
   };
