@@ -302,7 +302,7 @@ export default function SocialGraph3D() {
             return -30 * scale;
           });
         }
-      } catch (_) {}
+      } catch (_) { }
 
       fgRef.current = fg;
     } else {
@@ -316,7 +316,7 @@ export default function SocialGraph3D() {
             return -30 * scale;
           });
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     return () => {
@@ -382,7 +382,7 @@ export default function SocialGraph3D() {
         <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
         {isOptionsOpen && (
-          <div className="absolute top-4 right-4 w-80 bg-background border rounded-lg shadow-lg p-4 space-y-4 z-50">
+          <div className="absolute top-4 right-4 w-80 bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg p-4 space-y-4 z-50">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold">Graph Options</h3>
               <Button
@@ -574,9 +574,9 @@ export default function SocialGraph3D() {
                         >
                           {colorSchemeAccountId
                             ? (() => {
-                                const account = allSocialAccounts.find(a => a.id === colorSchemeAccountId);
-                                return account ? (account.nickname || account.username) : 'Select account...';
-                              })()
+                              const account = allSocialAccounts.find(a => a.id === colorSchemeAccountId);
+                              return account ? (account.nickname || account.username) : 'Select account...';
+                            })()
                             : 'Select account...'}
                         </Button>
                       </PopoverTrigger>
