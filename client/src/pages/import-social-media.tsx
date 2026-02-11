@@ -12,6 +12,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Upload, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
 import { SiInstagram } from "react-icons/si";
 import { useState, useEffect } from "react";
@@ -22,6 +23,7 @@ import type { SocialAccount } from "@shared/schema";
 export default function ImportSocialMediaPage() {
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
+  const [forceUpdateImages, setForceUpdateImages] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [selectedAccountLabel, setSelectedAccountLabel] = useState<string>("");
   const [accountSearchOpen, setAccountSearchOpen] = useState(false);
@@ -60,11 +62,12 @@ export default function ImportSocialMediaPage() {
   }, [accountSearchQuery]);
 
   const importInstagramMutation = useMutation({
-    mutationFn: async ({ file, accountId, importType }: { file: File; accountId: string; importType: "followers" | "following" }) => {
+    mutationFn: async ({ file, accountId, importType, forceImages }: { file: File; accountId: string; importType: "followers" | "following"; forceImages: boolean }) => {
       const formData = new FormData();
       formData.append("csv", file);
       formData.append("accountId", accountId);
       formData.append("importType", importType);
+      if (forceImages) formData.append("forceUpdateImages", "true");
 
       const response = await fetch("/api/import-instagram", {
         method: "POST",
@@ -126,6 +129,7 @@ export default function ImportSocialMediaPage() {
         file: selectedInstagramFile,
         accountId: selectedAccountId,
         importType: instagramImportType,
+        forceImages: forceUpdateImages,
       });
     }
   };
@@ -254,6 +258,23 @@ export default function ImportSocialMediaPage() {
                   <span data-testid="text-selected-instagram-filename">{selectedInstagramFile.name}</span>
                 </div>
               )}
+            </div>
+
+            <div className="flex items-center gap-3 rounded-md border p-4">
+              <Checkbox
+                id="force-update-images"
+                checked={forceUpdateImages}
+                onCheckedChange={(checked) => setForceUpdateImages(checked === true)}
+                data-testid="checkbox-force-update-images"
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor="force-update-images" className="text-base font-medium cursor-pointer">
+                  Force Update Images
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  Re-download profile images for all accounts, even if they already have one
+                </p>
+              </div>
             </div>
 
             <div className="rounded-md bg-muted p-4 space-y-2">

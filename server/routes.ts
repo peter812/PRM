@@ -1210,6 +1210,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const accountId = req.body.accountId as string;
       const importType = req.body.importType as "followers" | "following";
+      const forceUpdateImages = req.body.forceUpdateImages === "true";
 
       if (!accountId) {
         return res.status(400).json({ error: "Account ID is required" });
@@ -1280,7 +1281,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             updatedCount++;
           }
 
-          if (profilePicUrl && !existingAccount.imageUrl) {
+          if (profilePicUrl && (!existingAccount.imageUrl || forceUpdateImages)) {
             await storage.createTask({
               type: "get_img",
               status: "pending",
