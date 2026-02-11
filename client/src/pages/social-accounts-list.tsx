@@ -169,19 +169,22 @@ export default function SocialAccountsList() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-4">
-        <div className="flex items-center justify-between gap-4 mb-4">
-          <h1 className="text-3xl font-semibold" data-testid="text-page-title">
+      <div className="border-b px-4 md:px-6 py-3 md:py-4">
+        <div className="flex items-center justify-between gap-2 md:gap-4 mb-2 md:mb-4">
+          <h1 className="text-xl md:text-3xl font-semibold truncate" data-testid="text-page-title">
             Social Accounts
           </h1>
-          <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-account">
+          <Button onClick={() => setIsAddDialogOpen(true)} size="icon" className="md:hidden shrink-0" data-testid="button-add-account-mobile">
+            <Plus className="h-4 w-4" />
+          </Button>
+          <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex" data-testid="button-add-account">
             <Plus className="h-4 w-4" />
             Add Account
           </Button>
         </div>
         
-        <div className="flex items-center gap-4 flex-wrap">
-          <div className="flex-1 min-w-[200px]">
+        <div className="flex items-center gap-2 md:gap-4 flex-wrap">
+          <div className="hidden md:block flex-1 min-w-[200px]">
             <Input
               placeholder="Search accounts..."
               value={searchQuery}
@@ -191,7 +194,7 @@ export default function SocialAccountsList() {
             />
           </div>
           <Select value={selectedTypeId || "all"} onValueChange={handleTypeChange}>
-            <SelectTrigger className="w-[180px]" data-testid="select-type-filter">
+            <SelectTrigger className="w-[140px] md:w-[180px]" data-testid="select-type-filter">
               <SelectValue placeholder="All Types" />
             </SelectTrigger>
             <SelectContent>
