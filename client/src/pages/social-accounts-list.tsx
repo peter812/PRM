@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2, ExternalLink } from "lucide-react";
+import { Plus, X, Users2, Edit2, ExternalLink, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -31,6 +31,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
+import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
 
 function isValidHexColor(color: string): boolean {
   return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
@@ -44,6 +45,7 @@ export default function SocialAccountsList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<SocialAccount | null>(null);
   const [accountToEdit, setAccountToEdit] = useState<SocialAccount | null>(null);
+  const [accountToExport, setAccountToExport] = useState<SocialAccount | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [showFollowsYou, setShowFollowsYou] = useState(false);
@@ -343,6 +345,18 @@ export default function SocialAccountsList() {
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
+                            setAccountToExport(account);
+                          }}
+                          data-testid={`button-export-${account.id}`}
+                        >
+                          <Download className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
                             setAccountToEdit(account);
                           }}
                           data-testid={`button-edit-${account.id}`}
@@ -417,6 +431,14 @@ export default function SocialAccountsList() {
           open={!!accountToEdit}
           onOpenChange={(open) => !open && setAccountToEdit(null)}
           account={accountToEdit}
+        />
+      )}
+
+      {accountToExport && (
+        <ExportSocialAccountDialog
+          open={!!accountToExport}
+          onOpenChange={(open) => !open && setAccountToExport(null)}
+          account={accountToExport}
         />
       )}
 

@@ -2762,6 +2762,215 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/social-accounts/export-xml", async (req, res) => {
+    try {
+      const ids = req.query.ids as string | undefined;
+      if (!ids) {
+        return res.status(400).json({ error: "No account IDs provided" });
+      }
+
+      const accountIds = ids.split(",").map(id => id.trim()).filter(Boolean);
+      if (accountIds.length === 0) {
+        return res.status(400).json({ error: "No valid account IDs provided" });
+      }
+
+      const allSocialAccountTypes = await storage.getAllSocialAccountTypes();
+
+      const escapeXml = (str: any): string => {
+        if (str === null || str === undefined) return "";
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&apos;");
+      };
+
+      const arrayToXml = (arr: any[], itemName: string): string => {
+        if (!arr || arr.length === 0) return "";
+        return arr.map(item => `<${itemName}>${escapeXml(item)}</${itemName}>`).join("");
+      };
+
+      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+      xml += '<social_accounts_export>\n';
+
+      const typeIdsUsed = new Set<string>();
+      const accounts: SocialAccount[] = [];
+
+      for (const id of accountIds) {
+        const account = await storage.getSocialAccountById(id);
+        if (account) {
+          accounts.push(account);
+          if (account.typeId) typeIdsUsed.add(account.typeId);
+        }
+      }
+
+      xml += '  <social_account_types>\n';
+      for (const type of allSocialAccountTypes) {
+        if (typeIdsUsed.has(type.id)) {
+          xml += '    <social_account_type>\n';
+          xml += `      <id>${escapeXml(type.id)}</id>\n`;
+          xml += `      <name>${escapeXml(type.name)}</name>\n`;
+          xml += `      <color>${escapeXml(type.color)}</color>\n`;
+          xml += `      <created_at>${escapeXml(type.createdAt)}</created_at>\n`;
+          xml += '    </social_account_type>\n';
+        }
+      }
+      xml += '  </social_account_types>\n';
+
+      xml += '  <social_accounts>\n';
+      for (const account of accounts) {
+        xml += '    <social_account>\n';
+        xml += `      <id>${escapeXml(account.id)}</id>\n`;
+        xml += `      <username>${escapeXml(account.username)}</username>\n`;
+        xml += `      <nickname>${escapeXml(account.nickname || "")}</nickname>\n`;
+        xml += `      <account_url>${escapeXml(account.accountUrl)}</account_url>\n`;
+        xml += `      <owner_uuid>${escapeXml(account.ownerUuid || "")}</owner_uuid>\n`;
+        xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
+        xml += `      <image_url>${escapeXml(account.imageUrl || "")}</image_url>\n`;
+        xml += `      <notes>${escapeXml(account.notes || "")}</notes>\n`;
+        xml += `      <following>${arrayToXml(account.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(account.followers || [], "account_id")}</followers>\n`;
+        xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
+        xml += '    </social_account>\n';
+      }
+      xml += '  </social_accounts>\n';
+      xml += '</social_accounts_export>\n';
+
+      res.setHeader("Content-Type", "application/xml");
+      res.setHeader("Content-Disposition", `attachment; filename="social_accounts_export.xml"`);
+      res.send(xml);
+    } catch (error) {
+      console.error("Error exporting social accounts XML:", error);
+      res.status(500).json({ error: "Failed to export social accounts" });
+    }
+  });
+
+  app.post("/api/social-accounts/import-xml", upload.single("xml"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No XML file provided" });
+      }
+
+      const xmlText = req.file.buffer.toString("utf-8");
+
+      const parseXmlTag = (tagName: string, text: string): string => {
+        const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, "s");
+        const match = text.match(regex);
+        return match ? match[1] : "";
+      };
+
+      const parseAllTags = (tagName: string, text: string): string[] => {
+        const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, "gs");
+        const matches: string[] = [];
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          matches.push(match[1]);
+        }
+        return matches;
+      };
+
+      const parseXmlArray = (parentTag: string, childTag: string, text: string): string[] => {
+        const parentContent = parseXmlTag(parentTag, text);
+        if (!parentContent) return [];
+        return parseAllTags(childTag, parentContent);
+      };
+
+      const unescapeXml = (str: string): string => {
+        return str
+          .replace(/&apos;/g, "'")
+          .replace(/&quot;/g, '"')
+          .replace(/&gt;/g, ">")
+          .replace(/&lt;/g, "<")
+          .replace(/&amp;/g, "&");
+      };
+
+      const importedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
+      const skippedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
+      const failedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
+
+      const socialAccountTypeBlocks = parseAllTags("social_account_type", xmlText);
+      for (const block of socialAccountTypeBlocks) {
+        try {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const name = unescapeXml(parseXmlTag("name", block));
+          const color = unescapeXml(parseXmlTag("color", block));
+
+          if (!id || !name || !color) {
+            failedCounts.socialAccountTypes++;
+            continue;
+          }
+
+          const existing = await storage.getSocialAccountTypeById(id);
+          if (existing) {
+            skippedCounts.socialAccountTypes++;
+            continue;
+          }
+
+          await storage.createSocialAccountTypeWithId({ id, name, color });
+          importedCounts.socialAccountTypes++;
+        } catch (error) {
+          console.error("Error importing social account type:", error);
+          failedCounts.socialAccountTypes++;
+        }
+      }
+
+      const socialAccountBlocks = parseAllTags("social_account", xmlText);
+      for (const block of socialAccountBlocks) {
+        try {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const username = unescapeXml(parseXmlTag("username", block));
+          const accountUrl = unescapeXml(parseXmlTag("account_url", block));
+
+          if (!id || !username || !accountUrl) {
+            failedCounts.socialAccounts++;
+            continue;
+          }
+
+          const nickname = unescapeXml(parseXmlTag("nickname", block));
+          const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
+          const typeId = unescapeXml(parseXmlTag("type_id", block));
+          const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+          const notes = unescapeXml(parseXmlTag("notes", block));
+          const following = parseXmlArray("following", "account_id", block);
+          const followers = parseXmlArray("followers", "account_id", block);
+
+          const existing = await storage.getSocialAccountById(id);
+          if (existing) {
+            skippedCounts.socialAccounts++;
+            continue;
+          }
+
+          await storage.createSocialAccountWithId({
+            id,
+            username,
+            nickname: nickname || null,
+            accountUrl,
+            ownerUuid: ownerUuid || null,
+            typeId: typeId || null,
+            imageUrl: imageUrl || null,
+            notes: notes || null,
+            following: following.map(f => unescapeXml(f)),
+            followers: followers.map(f => unescapeXml(f)),
+          });
+          importedCounts.socialAccounts++;
+        } catch (error) {
+          console.error("Error importing social account:", error);
+          failedCounts.socialAccounts++;
+        }
+      }
+
+      res.json({
+        imported: importedCounts,
+        skipped: skippedCounts,
+        failed: failedCounts,
+      });
+    } catch (error) {
+      console.error("Error importing social accounts XML:", error);
+      res.status(500).json({ error: "Failed to import social accounts" });
+    }
+  });
+
   app.get("/api/social-accounts/:id", async (req, res) => {
     try {
       const account = await storage.getSocialAccountById(req.params.id);
