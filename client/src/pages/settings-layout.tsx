@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -33,6 +33,7 @@ import ImportContactsPage from "@/pages/import-contacts";
 import ImportMessagesPage from "@/pages/import-messages";
 import ImportSocialMediaPage from "@/pages/import-social-media";
 import ImportExportApplicationPage from "@/pages/import-export-application";
+import ImagePassInPage from "@/pages/image-pass-in";
 import InstagramSettingsPage from "@/pages/instagram-settings";
 import NotFound from "@/pages/not-found";
 
@@ -88,6 +89,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Messages", url: "/import-export/messages", icon: MessageSquare },
       { title: "Social Media", url: "/import-export/social-media", icon: Share2 },
       { title: "Application Data", url: "/import-export/application", icon: Database },
+      { title: "Image Pass In", url: "/import-export/image-pass-in", icon: ImageIcon },
     ],
   },
   {
@@ -209,6 +211,7 @@ export default function SettingsLayout() {
               <Route path="/import-export/messages" component={ImportMessagesPage} />
               <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
               <Route path="/import-export/application" component={ImportExportApplicationPage} />
+              <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
               <Route path="/import-export" component={ImportExportHome} />
               <Route path="/api-settings" component={ApiSettingsPage} />
               <Route path="/api" component={ApiDocs} />

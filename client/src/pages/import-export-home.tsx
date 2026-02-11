@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, MessageSquare, Share2, Database, ChevronRight } from "lucide-react";
+import { Users, MessageSquare, Share2, Database, ChevronRight, ImageIcon } from "lucide-react";
 
 const importExportSections = [
   {
@@ -26,6 +26,12 @@ const importExportSections = [
     description: "Export all your CRM data to an XML backup file, or restore from a previous backup. Includes people, relationships, groups, interactions, notes, social accounts, messages, and more.",
     icon: Database,
     url: "/import-export/application",
+  },
+  {
+    title: "Image Pass In",
+    description: "Automatically fill in missing profile images by pulling them from linked social accounts. People without a profile picture will inherit an image from their first social account that has one.",
+    icon: ImageIcon,
+    url: "/import-export/image-pass-in",
   },
 ];
 

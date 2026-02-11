@@ -3571,6 +3571,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/image-pass-in", async (req, res) => {
+    try {
+      const allPeople = await storage.getAllPeople();
+      const peopleWithoutImages = allPeople.filter(p => !p.imageUrl);
+
+      let updated = 0;
+      let skipped = 0;
+      let noSocialAccount = 0;
+      const updates: { personId: string; personName: string; imageUrl: string }[] = [];
+
+      for (const person of peopleWithoutImages) {
+        const socialUuids = person.socialAccountUuids || [];
+        if (socialUuids.length === 0) {
+          noSocialAccount++;
+          continue;
+        }
+
+        let foundImage: string | null = null;
+        for (const uuid of socialUuids) {
+          const account = await storage.getSocialAccountById(uuid);
+          if (account?.imageUrl) {
+            foundImage = account.imageUrl;
+            break;
+          }
+        }
+
+        if (foundImage) {
+          await storage.updatePerson(person.id, { imageUrl: foundImage });
+          updates.push({
+            personId: person.id,
+            personName: `${person.firstName} ${person.lastName}`.trim(),
+            imageUrl: foundImage,
+          });
+          updated++;
+        } else {
+          skipped++;
+        }
+      }
+
+      res.json({
+        totalPeopleWithoutImages: peopleWithoutImages.length,
+        updated,
+        skipped,
+        noSocialAccount,
+        updates,
+      });
+    } catch (error) {
+      console.error("Error in image pass-in:", error);
+      res.status(500).json({ error: "Failed to process image pass-in" });
+    }
+  });
+
   app.post("/api/account-matching/ignore", async (req, res) => {
     try {
       const ignoreSchema = z.object({ personId: z.string().min(1) });
