@@ -285,23 +285,35 @@ export default function SocialAccountsList() {
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-bold truncate" data-testid={`text-username-${account.id}`}>
+                          <h3 className="font-bold md:truncate break-words" data-testid={`text-username-${account.id}`}>
                             {account.username}
                           </h3>
                           {accountType && (
-                            <Badge 
-                              variant="outline" 
-                              className="text-xs cursor-pointer"
-                              style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                              data-testid={`badge-type-${account.id}`}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                navigate(`/social-accounts?type=${accountType.id}`);
-                              }}
-                            >
-                              {accountType.name}
-                            </Badge>
+                            <>
+                              <span
+                                className="md:hidden w-2.5 h-2.5 rounded-full shrink-0 cursor-pointer"
+                                style={isValidHexColor(accountType.color) ? { backgroundColor: accountType.color } : undefined}
+                                data-testid={`dot-type-${account.id}`}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  navigate(`/social-accounts?type=${accountType.id}`);
+                                }}
+                              />
+                              <Badge 
+                                variant="outline" 
+                                className="text-xs cursor-pointer hidden md:inline-flex"
+                                style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                                data-testid={`badge-type-${account.id}`}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  navigate(`/social-accounts?type=${accountType.id}`);
+                                }}
+                              >
+                                {accountType.name}
+                              </Badge>
+                            </>
                           )}
                           {isFollowingYou && (
                             <Badge variant="secondary" className="text-xs">
@@ -310,7 +322,7 @@ export default function SocialAccountsList() {
                           )}
                         </div>
                         {account.nickname && (
-                          <p className="text-sm text-muted-foreground truncate" data-testid={`text-nickname-${account.id}`}>
+                          <p className="text-sm text-muted-foreground md:truncate break-words" data-testid={`text-nickname-${account.id}`}>
                             {account.nickname}
                           </p>
                         )}
@@ -342,6 +354,7 @@ export default function SocialAccountsList() {
                         <Button
                           variant="ghost"
                           size="icon"
+                          className="hidden md:inline-flex"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -354,6 +367,7 @@ export default function SocialAccountsList() {
                         <Button
                           variant="ghost"
                           size="icon"
+                          className="hidden md:inline-flex"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -366,7 +380,7 @@ export default function SocialAccountsList() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                          className="hidden md:inline-flex text-destructive hover:text-destructive hover:bg-destructive/10"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
