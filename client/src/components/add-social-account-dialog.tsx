@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType } from "@shared/schema";
@@ -344,7 +345,7 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
           <TabsContent value="import">
             <div className="space-y-4">
               <div className="space-y-2">
-                <FormLabel>Select XML File</FormLabel>
+                <Label>Select XML File</Label>
                 <div className="flex items-center gap-3">
                   <Input
                     id="xml-import-file-input"
