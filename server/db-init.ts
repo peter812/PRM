@@ -262,6 +262,25 @@ async function validateAndSyncSchema(): Promise<void> {
       }
     }
 
+    // Ensure tasks table exists
+    const tasksExists = await tableExists("tasks");
+    if (!tasksExists) {
+      log("Creating tasks table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS tasks (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          type TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          payload TEXT NOT NULL,
+          result TEXT,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          started_at TIMESTAMP,
+          completed_at TIMESTAMP
+        )
+      `);
+      log("Tasks table created successfully");
+    }
+
     log("Schema validation completed");
   } catch (error) {
     log(`Schema validation error: ${error}`);

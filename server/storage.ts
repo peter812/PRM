@@ -43,8 +43,11 @@ import {
   type InsertSocialAccount,
   type SocialAccountType,
   type InsertSocialAccountType,
+  tasks,
   type Message,
   type InsertMessage,
+  type Task,
+  type InsertTask,
   type FlowItem,
   type FlowResponse,
   type MegaSearchResult,
@@ -235,6 +238,12 @@ export interface IStorage {
     includeMessages?: boolean;
   }): Promise<MegaSearchResult>;
   
+  // Task operations
+  createTask(task: InsertTask): Promise<Task>;
+  getNextPendingTask(): Promise<Task | undefined>;
+  updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined>;
+  getTasksByStatus(status: string): Promise<Task[]>;
+
   // Session store
   sessionStore: session.Store;
 }
@@ -1990,6 +1999,49 @@ export class DatabaseStorage implements IStorage {
     await Promise.all(searchPromises);
 
     return results;
+  }
+
+  // Task operations
+  async createTask(insertTask: InsertTask): Promise<Task> {
+    const [task] = await db.insert(tasks).values(insertTask).returning();
+    return task;
+  }
+
+  async getNextPendingTask(): Promise<Task | undefined> {
+    const [task] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.status, "pending"))
+      .orderBy(tasks.createdAt)
+      .limit(1);
+    return task || undefined;
+  }
+
+  async updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined> {
+    const updates: any = { status };
+    if (status === "in_progress") {
+      updates.startedAt = new Date();
+    }
+    if (status === "completed" || status === "failed") {
+      updates.completedAt = new Date();
+    }
+    if (result !== undefined) {
+      updates.result = result;
+    }
+    const [task] = await db
+      .update(tasks)
+      .set(updates)
+      .where(eq(tasks.id, id))
+      .returning();
+    return task || undefined;
+  }
+
+  async getTasksByStatus(status: string): Promise<Task[]> {
+    return await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.status, status))
+      .orderBy(tasks.createdAt);
   }
 }
 

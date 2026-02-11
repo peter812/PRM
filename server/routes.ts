@@ -23,6 +23,7 @@ import {
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { hashPassword } from "./auth";
+import { triggerTaskWorker } from "./task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import Papa from "papaparse";
@@ -1268,14 +1269,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         let existingAccount = accountsByUsername.get(username.toLowerCase());
 
         if (existingAccount) {
-          // Update existing account if nickname or profile pic differs
-          const updates: { nickname?: string | null; imageUrl?: string | null } = {};
+          const updates: { nickname?: string | null } = {};
           
           if (fullName && existingAccount.nickname !== fullName) {
             updates.nickname = fullName;
-          }
-          if (profilePicUrl && existingAccount.imageUrl !== profilePicUrl) {
-            updates.imageUrl = profilePicUrl;
           }
 
           if (Object.keys(updates).length > 0) {
@@ -1283,15 +1280,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
             updatedCount++;
           }
 
+          if (profilePicUrl && !existingAccount.imageUrl) {
+            await storage.createTask({
+              type: "get_img",
+              status: "pending",
+              payload: JSON.stringify({
+                socialAccountId: existingAccount.id,
+                imageUrl: profilePicUrl,
+              }),
+            });
+          }
+
           processedAccountIds.push(existingAccount.id);
         } else {
-          // Create new account with Instagram type
           const newAccount = await storage.createSocialAccount({
             username,
             nickname: fullName || null,
             accountUrl: `https://instagram.com/${username}`,
             ownerUuid: null,
-            imageUrl: profilePicUrl || null,
+            imageUrl: null,
             notes: instagramId ? `Instagram ID: ${instagramId}` : null,
             following: [],
             followers: [],
@@ -1299,6 +1306,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             internalAccountCreationType: `${targetAccount.username} import`,
           });
           
+          if (profilePicUrl) {
+            await storage.createTask({
+              type: "get_img",
+              status: "pending",
+              payload: JSON.stringify({
+                socialAccountId: newAccount.id,
+                imageUrl: profilePicUrl,
+              }),
+            });
+          }
+
           accountsByUsername.set(username.toLowerCase(), newAccount);
           processedAccountIds.push(newAccount.id);
           importedCount++;
@@ -1376,6 +1394,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const skippedRows = parseResult.errors.length;
+
+      triggerTaskWorker();
+
       res.json({
         success: true,
         imported: importedCount,

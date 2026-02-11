@@ -162,6 +162,18 @@ export const socialAccounts = pgTable("social_accounts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Background tasks table - for long-running operations like image downloads
+export const tasks = pgTable("tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: text("type").notNull(), // e.g. 'get_img'
+  status: text("status").notNull().default("pending"), // 'pending', 'in_progress', 'completed', 'failed'
+  payload: text("payload").notNull(), // JSON string with task-specific data
+  result: text("result"), // JSON string with task result or error message
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+});
+
 // Messages table - tracks messages between contacts
 export const messages = pgTable("messages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -352,6 +364,13 @@ export const insertMessageSchema = createInsertSchema(messages)
     isOrphan: z.boolean().optional(),
   });
 
+export const insertTaskSchema = createInsertSchema(tasks).omit({
+  id: true,
+  createdAt: true,
+  startedAt: true,
+  completedAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -391,6 +410,9 @@ export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSche
 
 export type Message = typeof messages.$inferSelect;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
+
+export type Task = typeof tasks.$inferSelect;
+export type InsertTask = z.infer<typeof insertTaskSchema>;
 
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {
