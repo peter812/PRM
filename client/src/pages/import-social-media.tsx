@@ -3,17 +3,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { Upload, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
 import { SiInstagram } from "react-icons/si";
-import { useState } from "react";
-import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { useState, useEffect } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import type { SocialAccount } from "@shared/schema";
 
@@ -21,12 +23,41 @@ export default function ImportSocialMediaPage() {
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [selectedAccountLabel, setSelectedAccountLabel] = useState<string>("");
+  const [accountSearchOpen, setAccountSearchOpen] = useState(false);
+  const [accountSearchQuery, setAccountSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SocialAccount[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: socialAccounts } = useQuery<SocialAccount[]>({
-    queryKey: ["/api/social-accounts"],
-  });
+  useEffect(() => {
+    if (accountSearchQuery.length < 3) {
+      setSearchResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const params = new URLSearchParams();
+        params.set("offset", "0");
+        params.set("limit", "20");
+        params.set("search", accountSearchQuery);
+        const response = await fetch(`/api/social-accounts/paginated?${params.toString()}`, { credentials: "include" });
+        if (response.ok) {
+          const data = await response.json();
+          setSearchResults(data);
+        }
+      } catch {
+        // silently fail
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [accountSearchQuery]);
 
   const importInstagramMutation = useMutation({
     mutationFn: async ({ file, accountId, importType }: { file: File; accountId: string; importType: "followers" | "following" }) => {
@@ -48,7 +79,8 @@ export default function ImportSocialMediaPage() {
       return response.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
 
       toast({
         title: "Instagram Import Successful",
@@ -57,6 +89,7 @@ export default function ImportSocialMediaPage() {
 
       setSelectedInstagramFile(null);
       setSelectedAccountId("");
+      setSelectedAccountLabel("");
 
       const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
       if (fileInput) {
@@ -136,19 +169,67 @@ export default function ImportSocialMediaPage() {
 
             <div className="space-y-2">
               <Label>Select Your Account</Label>
-              <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
-                <SelectTrigger data-testid="select-instagram-account">
-                  <SelectValue placeholder="Select a social account" />
-                </SelectTrigger>
-                <SelectContent>
-                  {socialAccounts?.map((account) => (
-                    <SelectItem key={account.id} value={account.id}>
-                      {account.username}
-                      {account.nickname && <span className="text-muted-foreground ml-1">({account.nickname})</span>}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover open={accountSearchOpen} onOpenChange={(open) => { setAccountSearchOpen(open); if (!open) setAccountSearchQuery(''); }}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start text-left font-normal"
+                    data-testid="select-instagram-account"
+                  >
+                    {selectedAccountLabel || "Search for an account..."}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-80 p-0" align="start">
+                  <Command shouldFilter={false}>
+                    <CommandInput
+                      placeholder="Type 3+ characters to search..."
+                      value={accountSearchQuery}
+                      onValueChange={setAccountSearchQuery}
+                      data-testid="input-account-search"
+                    />
+                    <CommandList>
+                      {accountSearchQuery.length > 0 && accountSearchQuery.length < 3 && (
+                        <div className="p-3 text-sm text-muted-foreground text-center">
+                          Type {3 - accountSearchQuery.length} more character{3 - accountSearchQuery.length > 1 ? 's' : ''} to search...
+                        </div>
+                      )}
+                      {accountSearchQuery.length >= 3 && isSearching && (
+                        <div className="p-3 text-sm text-muted-foreground text-center">
+                          Searching...
+                        </div>
+                      )}
+                      {accountSearchQuery.length >= 3 && !isSearching && searchResults.length === 0 && (
+                        <CommandEmpty>No account found.</CommandEmpty>
+                      )}
+                      {accountSearchQuery.length >= 3 && !isSearching && searchResults.length > 0 && (
+                        <CommandGroup>
+                          {searchResults.map((account) => (
+                            <CommandItem
+                              key={account.id}
+                              value={account.id}
+                              onSelect={() => {
+                                setSelectedAccountId(account.id);
+                                const label = account.nickname
+                                  ? `${account.nickname} (@${account.username})`
+                                  : account.username;
+                                setSelectedAccountLabel(label);
+                                setAccountSearchOpen(false);
+                                setAccountSearchQuery('');
+                              }}
+                              data-testid={`option-account-${account.id}`}
+                            >
+                              {account.username}
+                              {account.nickname && (
+                                <span className="ml-1 text-muted-foreground">({account.nickname})</span>
+                              )}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      )}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
               <p className="text-xs text-muted-foreground">
                 Select the account that the import data belongs to (your account)
               </p>
