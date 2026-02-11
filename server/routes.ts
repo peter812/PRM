@@ -2251,6 +2251,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Person not found" });
       }
 
+      if (!person.imageUrl && validatedData.socialAccountUuids) {
+        const uuids = validatedData.socialAccountUuids;
+        for (const uuid of uuids) {
+          const account = await storage.getSocialAccountById(uuid);
+          if (account?.imageUrl) {
+            const updated = await storage.updatePerson(id, { imageUrl: account.imageUrl });
+            if (updated) {
+              return res.json(updated);
+            }
+            break;
+          }
+        }
+      }
+
       res.json(person);
     } catch (error) {
       console.error("Error updating person:", error);
@@ -3562,6 +3576,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       for (const accountId of socialAccountIds) {
         await storage.updateSocialAccount(accountId, { ownerUuid: personId });
+      }
+
+      if (!person.imageUrl) {
+        for (const accountId of socialAccountIds) {
+          const account = await storage.getSocialAccountById(accountId);
+          if (account?.imageUrl) {
+            await storage.updatePerson(personId, { imageUrl: account.imageUrl });
+            break;
+          }
+        }
       }
 
       res.json({ success: true });
