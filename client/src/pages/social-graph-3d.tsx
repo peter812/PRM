@@ -62,6 +62,10 @@ export default function SocialGraph3D() {
   const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
   const [linkMutualColor, setLinkMutualColor] = useState('#6366f1');
   const [linkDefaultColor, setLinkDefaultColor] = useState('#6b7280');
+  const [distanceColorSelf, setDistanceColorSelf] = useState('#ef4444');
+  const [distanceColorDirect, setDistanceColorDirect] = useState('#22c55e');
+  const [distanceColor2nd, setDistanceColor2nd] = useState('#3b82f6');
+  const [distanceColorOther, setDistanceColorOther] = useState('#9ca3af');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>('default');
   const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(null);
@@ -203,12 +207,12 @@ export default function SocialGraph3D() {
         colorMap.set(n.id, interpolateColor(connectionsColorMin, connectionsColorMax, normalized));
       });
     } else if (colorScheme === 'distance') {
-      const distanceColors: Record<number, string> = { 0: '#ef4444', 1: '#22c55e', 2: '#3b82f6' };
+      const distanceColors: Record<number, string> = { 0: distanceColorSelf, 1: distanceColorDirect, 2: distanceColor2nd };
       if (colorSchemeAccountId && graphData.nodes.find(n => n.id === colorSchemeAccountId)) {
         const distancesMap = computeDistances(colorSchemeAccountId, graphData.nodes, graphData.links);
         graphData.nodes.forEach(n => {
           const dist = distancesMap.get(n.id);
-          colorMap.set(n.id, (dist !== undefined && dist in distanceColors) ? distanceColors[dist] : '#9ca3af');
+          colorMap.set(n.id, (dist !== undefined && dist in distanceColors) ? distanceColors[dist] : distanceColorOther);
         });
       } else {
         graphData.nodes.forEach(n => colorMap.set(n.id, n.typeColor));
@@ -218,7 +222,7 @@ export default function SocialGraph3D() {
     }
 
     return colorMap;
-  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances]);
+  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther]);
 
   useEffect(() => {
     if (!graphRef.current || !graphData || !graphData.nodes.length) return;
@@ -960,11 +964,23 @@ export default function SocialGraph3D() {
                           </Command>
                         </PopoverContent>
                       </Popover>
-                      <div className="text-xs text-muted-foreground space-y-1 pt-1">
-                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#ef4444' }} />Selected account</div>
-                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} />Directly linked</div>
-                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#3b82f6' }} />2nd degree</div>
-                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#9ca3af' }} />Other</div>
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm text-muted-foreground">Selected account</Label>
+                          <input type="color" value={distanceColorSelf} onChange={(e) => setDistanceColorSelf(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-distance-color-self" />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm text-muted-foreground">Directly linked</Label>
+                          <input type="color" value={distanceColorDirect} onChange={(e) => setDistanceColorDirect(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-distance-color-direct" />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm text-muted-foreground">2nd degree</Label>
+                          <input type="color" value={distanceColor2nd} onChange={(e) => setDistanceColor2nd(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-distance-color-2nd" />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm text-muted-foreground">Other</Label>
+                          <input type="color" value={distanceColorOther} onChange={(e) => setDistanceColorOther(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-distance-color-other" />
+                        </div>
                       </div>
                     </div>
                   )}
