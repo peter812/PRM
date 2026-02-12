@@ -1568,13 +1568,20 @@ export class DatabaseStorage implements IStorage {
 
     const startQuery = searchQuery ? `${searchQuery}%` : null;
 
+    const selectFields = {
+      account: socialAccounts,
+      profile: socialProfileVersions,
+      stateId: socialNetworkState.id,
+      stateSocialAccountId: socialNetworkState.socialAccountId,
+      followerCount: socialNetworkState.followerCount,
+      followingCount: socialNetworkState.followingCount,
+      stateUpdatedAt: socialNetworkState.updatedAt,
+    };
+
     let rows;
     if (whereClause) {
       rows = await db
-        .select({
-          account: socialAccounts,
-          profile: socialProfileVersions,
-        })
+        .select(selectFields)
         .from(socialAccounts)
         .leftJoin(
           socialProfileVersions,
@@ -1582,6 +1589,10 @@ export class DatabaseStorage implements IStorage {
             eq(socialProfileVersions.socialAccountId, socialAccounts.id),
             eq(socialProfileVersions.isCurrent, true)
           )
+        )
+        .leftJoin(
+          socialNetworkState,
+          eq(socialNetworkState.socialAccountId, socialAccounts.id)
         )
         .where(whereClause)
         .orderBy(
@@ -1594,10 +1605,7 @@ export class DatabaseStorage implements IStorage {
         .limit(limit);
     } else {
       rows = await db
-        .select({
-          account: socialAccounts,
-          profile: socialProfileVersions,
-        })
+        .select(selectFields)
         .from(socialAccounts)
         .leftJoin(
           socialProfileVersions,
@@ -1606,12 +1614,27 @@ export class DatabaseStorage implements IStorage {
             eq(socialProfileVersions.isCurrent, true)
           )
         )
+        .leftJoin(
+          socialNetworkState,
+          eq(socialNetworkState.socialAccountId, socialAccounts.id)
+        )
         .orderBy(socialAccounts.username)
         .offset(offset)
         .limit(limit);
     }
 
-    return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
+    return rows.map(row => {
+      const state = row.stateId ? {
+        id: row.stateId,
+        socialAccountId: row.stateSocialAccountId,
+        followerCount: row.followerCount,
+        followingCount: row.followingCount,
+        followers: null,
+        following: null,
+        updatedAt: row.stateUpdatedAt,
+      } as unknown as SocialNetworkState : null;
+      return this.buildSocialAccountWithProfile(row.account, row.profile, state);
+    });
   }
 
   async getSocialAccountById(id: string): Promise<SocialAccountWithCurrentProfile | undefined> {
