@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap, X } from "lucide-react";
+import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap, X, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Task } from "@shared/schema";
@@ -57,6 +57,13 @@ function TaskStatusBadge({ status }: { status: string }) {
         <Badge variant="destructive" data-testid={`badge-status-${status}`}>
           <XCircle className="h-3 w-3 mr-1" />
           Failed
+        </Badge>
+      );
+    case "cancelled":
+      return (
+        <Badge variant="outline" className="text-muted-foreground" data-testid={`badge-status-${status}`}>
+          <XCircle className="h-3 w-3 mr-1" />
+          Cancelled
         </Badge>
       );
     default:
@@ -147,6 +154,20 @@ export default function TasksSettingsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to start refresh", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const cancelTaskMutation = useMutation({
+    mutationFn: async (taskId: string) => {
+      const res = await apiRequest("DELETE", `/api/tasks/${taskId}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      toast({ title: "Task cancelled", description: "The task has been terminated." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to cancel task", description: error.message, variant: "destructive" });
     },
   });
 
@@ -353,6 +374,18 @@ export default function TasksSettingsPage() {
                         {task.createdAt ? new Date(task.createdAt).toLocaleString() : ""}
                       </span>
                     </div>
+                    {(task.status === "pending" || task.status === "in_progress") && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="text-destructive"
+                        onClick={() => cancelTaskMutation.mutate(task.id)}
+                        disabled={cancelTaskMutation.isPending}
+                        data-testid={`button-cancel-task-${task.id}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 ))}
               </div>

@@ -3834,6 +3834,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/tasks/social-accounts-brief", async (req, res) => {
+    try {
+      const accounts = await storage.getAllSocialAccounts();
+      const brief = accounts.map(a => ({
+        id: a.id,
+        username: a.username,
+        nickname: a.currentProfile?.nickname || null,
+      }));
+      res.json(brief);
+    } catch (error) {
+      console.error("Error fetching brief accounts:", error);
+      res.status(500).json({ error: "Failed to fetch accounts" });
+    }
+  });
+
   app.get("/api/tasks/:id", async (req, res) => {
     try {
       const task = await storage.getTaskById(req.params.id);
@@ -3847,18 +3862,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/tasks/social-accounts-brief", async (req, res) => {
+  app.delete("/api/tasks/:id", async (req, res) => {
     try {
-      const accounts = await storage.getAllSocialAccounts();
-      const brief = accounts.map(a => ({
-        id: a.id,
-        username: a.username,
-        nickname: a.currentProfile?.nickname || null,
-      }));
-      res.json(brief);
+      const task = await storage.getTaskById(req.params.id);
+      if (!task) {
+        return res.status(404).json({ error: "Task not found" });
+      }
+      if (task.status !== "pending" && task.status !== "in_progress") {
+        return res.status(400).json({ error: "Can only cancel pending or running tasks" });
+      }
+      const updated = await storage.updateTaskStatus(req.params.id, "cancelled", "Cancelled by user");
+      res.json(updated);
     } catch (error) {
-      console.error("Error fetching brief accounts:", error);
-      res.status(500).json({ error: "Failed to fetch accounts" });
+      console.error("Error cancelling task:", error);
+      res.status(500).json({ error: "Failed to cancel task" });
     }
   });
 

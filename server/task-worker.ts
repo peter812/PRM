@@ -92,11 +92,19 @@ async function processRefreshFollowerCount(payload: {
   return JSON.stringify({ socialAccountId, followerCount, followingCount });
 }
 
-async function processMassRefreshFollowerCount(): Promise<string> {
+async function isTaskCancelled(taskId: string): Promise<boolean> {
+  const task = await storage.getTaskById(taskId);
+  return !task || task.status === "cancelled" || task.status === "failed";
+}
+
+async function processMassRefreshFollowerCount(taskId: string): Promise<string> {
   const allAccounts = await storage.getAllSocialAccounts();
   let refreshed = 0;
   let skipped = 0;
   for (const account of allAccounts) {
+    if (await isTaskCancelled(taskId)) {
+      return JSON.stringify({ refreshed, skipped, total: allAccounts.length, cancelled: true });
+    }
     const state = await storage.getNetworkState(account.id);
     if (!state) {
       skipped++;
@@ -135,13 +143,17 @@ async function processNextTask(): Promise<boolean> {
         break;
       }
       case "mass_refresh_follower_count": {
-        result = await processMassRefreshFollowerCount();
+        result = await processMassRefreshFollowerCount(task.id);
         break;
       }
       default:
         throw new Error(`Unknown task type: ${task.type}`);
     }
 
+    if (await isTaskCancelled(task.id)) {
+      log(`[TaskWorker] Task ${task.id} was cancelled during processing`);
+      return true;
+    }
     await storage.updateTaskStatus(task.id, "completed", result);
     log(`[TaskWorker] Task ${task.id} completed`);
     return true;
