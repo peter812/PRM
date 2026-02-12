@@ -1762,14 +1762,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async upsertNetworkState(state: InsertSocialNetworkState): Promise<SocialNetworkState> {
+    const followerCount = state.followers?.length || 0;
+    const followingCount = state.following?.length || 0;
+    const values = { ...state, followerCount, followingCount };
     const [upserted] = await db
       .insert(socialNetworkState)
-      .values(state)
+      .values(values)
       .onConflictDoUpdate({
         target: socialNetworkState.socialAccountId,
         set: {
-          followerCount: state.followerCount,
-          followingCount: state.followingCount,
+          followerCount,
+          followingCount,
           followers: state.followers,
           following: state.following,
           updatedAt: new Date(),
