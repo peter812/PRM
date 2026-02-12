@@ -10,6 +10,7 @@ const INSTAGRAM_USER_AGENT =
 
 const POLL_INTERVAL_MS = 60_000;
 const IMAGE_DOWNLOAD_DELAY_MS = 1_000;
+const REFRESH_DELAY_MS = 200;
 
 let isProcessing = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -73,6 +74,45 @@ async function processGetImgTask(payload: {
   }
 }
 
+async function processRefreshFollowerCount(payload: {
+  socialAccountId: string;
+}): Promise<string> {
+  const { socialAccountId } = payload;
+  const state = await storage.getNetworkState(socialAccountId);
+  if (!state) {
+    return JSON.stringify({ socialAccountId, message: "No network state found", followerCount: 0, followingCount: 0 });
+  }
+  const followerCount = state.followers?.length || 0;
+  const followingCount = state.following?.length || 0;
+  await storage.upsertNetworkState({
+    socialAccountId,
+    followers: state.followers || [],
+    following: state.following || [],
+  });
+  return JSON.stringify({ socialAccountId, followerCount, followingCount });
+}
+
+async function processMassRefreshFollowerCount(): Promise<string> {
+  const allAccounts = await storage.getAllSocialAccounts();
+  let refreshed = 0;
+  let skipped = 0;
+  for (const account of allAccounts) {
+    const state = await storage.getNetworkState(account.id);
+    if (!state) {
+      skipped++;
+      continue;
+    }
+    await storage.upsertNetworkState({
+      socialAccountId: account.id,
+      followers: state.followers || [],
+      following: state.following || [],
+    });
+    refreshed++;
+    await new Promise(resolve => setTimeout(resolve, REFRESH_DELAY_MS));
+  }
+  return JSON.stringify({ refreshed, skipped, total: allAccounts.length });
+}
+
 async function processNextTask(): Promise<boolean> {
   const task = await storage.getNextPendingTask();
   if (!task) return false;
@@ -87,6 +127,15 @@ async function processNextTask(): Promise<boolean> {
       case "get_img": {
         const payload = JSON.parse(task.payload);
         result = await processGetImgTask(payload);
+        break;
+      }
+      case "refresh_follower_count": {
+        const payload = JSON.parse(task.payload);
+        result = await processRefreshFollowerCount(payload);
+        break;
+      }
+      case "mass_refresh_follower_count": {
+        result = await processMassRefreshFollowerCount();
         break;
       }
       default:

@@ -266,6 +266,8 @@ export interface IStorage {
   getNextPendingTask(): Promise<Task | undefined>;
   updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined>;
   getTasksByStatus(status: string): Promise<Task[]>;
+  getAllTasks(limit?: number): Promise<Task[]>;
+  getTaskById(id: string): Promise<Task | undefined>;
 
   // Session store
   sessionStore: session.Store;
@@ -2360,6 +2362,22 @@ export class DatabaseStorage implements IStorage {
       .from(tasks)
       .where(eq(tasks.status, status))
       .orderBy(tasks.createdAt);
+  }
+
+  async getAllTasks(limit: number = 100): Promise<Task[]> {
+    return await db
+      .select()
+      .from(tasks)
+      .orderBy(desc(tasks.createdAt))
+      .limit(limit);
+  }
+
+  async getTaskById(id: string): Promise<Task | undefined> {
+    const [task] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, id));
+    return task || undefined;
   }
 }
 

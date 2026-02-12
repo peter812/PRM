@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -35,6 +35,7 @@ import ImportSocialMediaPage from "@/pages/import-social-media";
 import ImportExportApplicationPage from "@/pages/import-export-application";
 import ImagePassInPage from "@/pages/image-pass-in";
 import InstagramSettingsPage from "@/pages/instagram-settings";
+import TasksSettingsPage from "@/pages/tasks-settings";
 import NotFound from "@/pages/not-found";
 
 interface MenuItem {
@@ -79,6 +80,11 @@ const settingsMenuItems: MenuItem[] = [
     title: "Instagram Settings",
     url: "/instagram",
     icon: Camera,
+  },
+  {
+    title: "Tasks",
+    url: "/tasks",
+    icon: ListTodo,
   },
   {
     title: "Import & Export",
@@ -207,6 +213,7 @@ export default function SettingsLayout() {
               <Route path="/interaction-types" component={InteractionTypesList} />
               <Route path="/social-account-types" component={SocialAccountTypesList} />
               <Route path="/instagram" component={InstagramSettingsPage} />
+              <Route path="/tasks" component={TasksSettingsPage} />
               <Route path="/import-export/contacts" component={ImportContactsPage} />
               <Route path="/import-export/messages" component={ImportMessagesPage} />
               <Route path="/import-export/social-media" component={ImportSocialMediaPage} />

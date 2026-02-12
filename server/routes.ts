@@ -3816,6 +3816,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Task management routes
+  app.get("/api/tasks", async (req, res) => {
+    try {
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
+      const status = req.query.status as string | undefined;
+      let taskList;
+      if (status) {
+        taskList = await storage.getTasksByStatus(status);
+      } else {
+        taskList = await storage.getAllTasks(limit);
+      }
+      res.json(taskList);
+    } catch (error) {
+      console.error("Error fetching tasks:", error);
+      res.status(500).json({ error: "Failed to fetch tasks" });
+    }
+  });
+
+  app.get("/api/tasks/:id", async (req, res) => {
+    try {
+      const task = await storage.getTaskById(req.params.id);
+      if (!task) {
+        return res.status(404).json({ error: "Task not found" });
+      }
+      res.json(task);
+    } catch (error) {
+      console.error("Error fetching task:", error);
+      res.status(500).json({ error: "Failed to fetch task" });
+    }
+  });
+
+  app.post("/api/tasks/refresh-follower-count/:socialAccountId", async (req, res) => {
+    try {
+      const { socialAccountId } = req.params;
+      const account = await storage.getSocialAccount(socialAccountId);
+      if (!account) {
+        return res.status(404).json({ error: "Social account not found" });
+      }
+      const task = await storage.createTask({
+        type: "refresh_follower_count",
+        status: "pending",
+        payload: JSON.stringify({ socialAccountId }),
+      });
+      triggerTaskWorker();
+      res.json(task);
+    } catch (error) {
+      console.error("Error creating refresh task:", error);
+      res.status(500).json({ error: "Failed to create refresh task" });
+    }
+  });
+
+  app.post("/api/tasks/mass-refresh-follower-count", async (req, res) => {
+    try {
+      const task = await storage.createTask({
+        type: "mass_refresh_follower_count",
+        status: "pending",
+        payload: JSON.stringify({}),
+      });
+      triggerTaskWorker();
+      res.json(task);
+    } catch (error) {
+      console.error("Error creating mass refresh task:", error);
+      res.status(500).json({ error: "Failed to create mass refresh task" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
