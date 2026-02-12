@@ -201,25 +201,25 @@ export default function SocialGraph3D() {
     if (graphMode === 'single-highlight' && singleHighlightAccountId && singleNodeColorScheme === 'follow-status') {
       graphData.nodes.forEach(n => {
         if (n.id === singleHighlightAccountId) {
-          colorMap.set(n.id, n.typeColor);
+          colorMap.set(n.id, '#ef4444');
           return;
         }
-        const linkToTarget = graphData.links.find(l => {
+        let highlightFollowsNode = false;
+        let nodeFollowsHighlight = false;
+        graphData.links.forEach(l => {
           const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
           const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-          return (src === singleHighlightAccountId && tgt === n.id) || (src === n.id && tgt === singleHighlightAccountId);
+          if (src === singleHighlightAccountId && tgt === n.id) highlightFollowsNode = true;
+          if (src === n.id && tgt === singleHighlightAccountId) nodeFollowsHighlight = true;
         });
-        if (!linkToTarget) {
-          colorMap.set(n.id, '#9ca3af');
-          return;
-        }
-        const src = typeof linkToTarget.source === 'string' ? linkToTarget.source : (linkToTarget.source as any).id;
-        if (linkToTarget.mutual) {
+        if (highlightFollowsNode && nodeFollowsHighlight) {
           colorMap.set(n.id, singleLinkMutualColor);
-        } else if (src === singleHighlightAccountId) {
+        } else if (nodeFollowsHighlight) {
+          colorMap.set(n.id, singleLinkFollowsYouColor);
+        } else if (highlightFollowsNode) {
           colorMap.set(n.id, singleLinkYouFollowColor);
         } else {
-          colorMap.set(n.id, singleLinkFollowsYouColor);
+          colorMap.set(n.id, '#9ca3af');
         }
       });
       return colorMap;
@@ -287,8 +287,10 @@ export default function SocialGraph3D() {
           color = singleLinkMutualColor;
         } else if (src === targetId) {
           color = singleLinkYouFollowColor;
-        } else {
+        } else if (tgt === targetId) {
           color = singleLinkFollowsYouColor;
+        } else {
+          color = linkDefaultColor;
         }
       } else {
         color = l.mutual ? linkMutualColor : linkDefaultColor;
