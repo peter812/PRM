@@ -3,11 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
-import { Settings, X } from "lucide-react";
+import { Settings, X, Filter, Palette } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -382,7 +383,7 @@ export default function SocialGraph3D() {
         <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
         {isOptionsOpen && (
-          <div className="absolute top-4 right-4 w-80 bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg p-4 space-y-4 z-50">
+          <div className="absolute top-4 right-4 w-80 bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg p-4 space-y-3 z-50">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold">Graph Options</h3>
               <Button
@@ -395,188 +396,118 @@ export default function SocialGraph3D() {
               </Button>
             </div>
 
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Graph Mode</Label>
-                <div className="flex items-center gap-1" data-testid="mode-selector">
-                  <Button
-                    variant={graphMode === 'default' ? 'default' : 'outline'}
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => setGraphMode('default')}
-                    data-testid="button-mode-default"
-                  >
-                    Default
-                  </Button>
-                  <Button
-                    variant={graphMode === 'blob' ? 'default' : 'outline'}
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => setGraphMode('blob')}
-                    data-testid="button-mode-blob"
-                  >
-                    Blob
-                  </Button>
-                </div>
-              </div>
+            <Tabs defaultValue="filter" data-testid="options-tabs">
+              <TabsList className="w-full">
+                <TabsTrigger value="filter" className="flex-1 gap-1" data-testid="tab-filter">
+                  <Filter className="h-3.5 w-3.5" />
+                  Filter
+                </TabsTrigger>
+                <TabsTrigger value="color" className="flex-1 gap-1" data-testid="tab-color">
+                  <Palette className="h-3.5 w-3.5" />
+                  Color
+                </TabsTrigger>
+              </TabsList>
 
-              {graphMode === 'blob' && (
-                <>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-sm text-muted-foreground">Blob Size Multiplier</Label>
-                      <span className="text-sm font-medium" data-testid="text-blob-merge-value">{blobMergeMultiplier.toFixed(2)}x</span>
-                    </div>
-                    <Slider
-                      value={[Math.max(0, mergeMultiplierSteps.indexOf(blobMergeMultiplier))]}
-                      min={0}
-                      max={mergeMultiplierSteps.length - 1}
-                      step={1}
-                      onValueChange={(values) => setBlobMergeMultiplier(mergeMultiplierSteps[values[0]])}
-                      data-testid="slider-blob-merge"
-                    />
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      {mergeMultiplierSteps.map(step => (
-                        <span key={step}>{step}</span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-sm text-muted-foreground">Blob Size Force</Label>
-                      <span className="text-sm font-medium" data-testid="text-blob-force-value">{blobForceMultiplier.toFixed(1)}x</span>
-                    </div>
-                    <Slider
-                      value={[blobForceMultiplier * 10]}
-                      min={20}
-                      max={60}
-                      step={1}
-                      onValueChange={(values) => setBlobForceMultiplier(values[0] / 10)}
-                      data-testid="slider-blob-force"
-                    />
-                    <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>2x</span>
-                      <span>3x</span>
-                      <span>4x</span>
-                      <span>5x</span>
-                      <span>6x</span>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              <div className="space-y-2">
-                <Label>Highlight Account</Label>
-                <div className="relative">
-                  {highlightedAccountId && (
+              <TabsContent value="filter" className="space-y-4" data-testid="tab-content-filter">
+                <div className="space-y-2">
+                  <Label>Graph Mode</Label>
+                  <div className="flex items-center gap-1" data-testid="mode-selector">
                     <Button
-                      variant="ghost"
-                      size="icon"
-                      className="absolute left-0 top-0 h-full z-10 hover:bg-transparent"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setHighlightedAccountId(null);
-                      }}
-                      data-testid="button-clear-account-highlight"
+                      variant={graphMode === 'default' ? 'default' : 'outline'}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setGraphMode('default')}
+                      data-testid="button-mode-default"
                     >
-                      <X className="h-4 w-4" />
+                      Default
                     </Button>
-                  )}
-                  <Popover open={searchOpen} onOpenChange={(open) => { setSearchOpen(open); if (!open) setHighlightSearchQuery(''); }}>
-                    <PopoverTrigger asChild>
-                      <Button
-                        variant="outline"
-                        className="w-full justify-start text-left font-normal"
-                        style={{ paddingLeft: highlightedAccountId ? '2.5rem' : undefined }}
-                        data-testid="button-account-search"
-                      >
-                        {highlightedAccountId
-                          ? allSocialAccounts.find(a => a.id === highlightedAccountId)
-                            ? (allSocialAccounts.find(a => a.id === highlightedAccountId)!.nickname || allSocialAccounts.find(a => a.id === highlightedAccountId)!.username)
-                            : 'Select account...'
-                          : 'Select account...'}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-80 p-0" align="start">
-                      <Command shouldFilter={false}>
-                        <CommandInput
-                          placeholder="Type 3+ characters to search..."
-                          value={highlightSearchQuery}
-                          onValueChange={setHighlightSearchQuery}
-                        />
-                        <CommandList>
-                          {highlightSearchQuery.length > 0 && highlightSearchQuery.length < 3 && (
-                            <div className="p-3 text-sm text-muted-foreground text-center">
-                              Type {3 - highlightSearchQuery.length} more character{3 - highlightSearchQuery.length > 1 ? 's' : ''} to search...
-                            </div>
-                          )}
-                          {highlightSearchQuery.length >= 3 && (() => {
-                            const query = highlightSearchQuery.toLowerCase();
-                            const filtered = allSocialAccounts.filter(a =>
-                              a.username.toLowerCase().includes(query) ||
-                              (a.nickname && a.nickname.toLowerCase().includes(query))
-                            ).slice(0, 50);
-                            if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
-                            return (
-                              <CommandGroup>
-                                {filtered.map((account) => (
-                                  <CommandItem
-                                    key={account.id}
-                                    value={account.id}
-                                    onSelect={() => {
-                                      setHighlightedAccountId(account.id);
-                                      setSearchOpen(false);
-                                      setHighlightSearchQuery('');
-                                    }}
-                                    data-testid={`option-account-${account.id}`}
-                                  >
-                                    {account.nickname || account.username}
-                                    {account.nickname && (
-                                      <span className="ml-1 text-muted-foreground">@{account.username}</span>
-                                    )}
-                                  </CommandItem>
-                                ))}
-                              </CommandGroup>
-                            );
-                          })()}
-                        </CommandList>
-                      </Command>
-                    </PopoverContent>
-                  </Popover>
+                    <Button
+                      variant={graphMode === 'blob' ? 'default' : 'outline'}
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => setGraphMode('blob')}
+                      data-testid="button-mode-blob"
+                    >
+                      Blob
+                    </Button>
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-2">
-                <Label>Color Scheme</Label>
-                <Select
-                  value={colorScheme}
-                  onValueChange={(value: 'type' | 'distance' | 'connections') => setColorScheme(value)}
-                >
-                  <SelectTrigger data-testid="select-color-scheme">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="type" data-testid="option-color-type">Account Type</SelectItem>
-                    <SelectItem value="distance" data-testid="option-color-distance">Distance From</SelectItem>
-                    <SelectItem value="connections" data-testid="option-color-connections">Number of Connections</SelectItem>
-                  </SelectContent>
-                </Select>
-                {colorScheme === 'distance' && (
-                  <div className="space-y-2 pt-1">
-                    <Label className="text-sm text-muted-foreground">Distance From Account</Label>
-                    <Popover open={distanceSearchOpen} onOpenChange={(open) => { setDistanceSearchOpen(open); if (!open) setDistanceSearchQuery(''); }}>
+                {graphMode === 'blob' && (
+                  <>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm text-muted-foreground">Blob Size Multiplier</Label>
+                        <span className="text-sm font-medium" data-testid="text-blob-merge-value">{blobMergeMultiplier.toFixed(2)}x</span>
+                      </div>
+                      <Slider
+                        value={[Math.max(0, mergeMultiplierSteps.indexOf(blobMergeMultiplier))]}
+                        min={0}
+                        max={mergeMultiplierSteps.length - 1}
+                        step={1}
+                        onValueChange={(values) => setBlobMergeMultiplier(mergeMultiplierSteps[values[0]])}
+                        data-testid="slider-blob-merge"
+                      />
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        {mergeMultiplierSteps.map(step => (
+                          <span key={step}>{step}</span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm text-muted-foreground">Blob Size Force</Label>
+                        <span className="text-sm font-medium" data-testid="text-blob-force-value">{blobForceMultiplier.toFixed(1)}x</span>
+                      </div>
+                      <Slider
+                        value={[blobForceMultiplier * 10]}
+                        min={20}
+                        max={60}
+                        step={1}
+                        onValueChange={(values) => setBlobForceMultiplier(values[0] / 10)}
+                        data-testid="slider-blob-force"
+                      />
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>2x</span>
+                        <span>3x</span>
+                        <span>4x</span>
+                        <span>5x</span>
+                        <span>6x</span>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <div className="space-y-2">
+                  <Label>Highlight Account</Label>
+                  <div className="relative">
+                    {highlightedAccountId && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute left-0 top-0 h-full z-10 hover:bg-transparent"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setHighlightedAccountId(null);
+                        }}
+                        data-testid="button-clear-account-highlight"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    )}
+                    <Popover open={searchOpen} onOpenChange={(open) => { setSearchOpen(open); if (!open) setHighlightSearchQuery(''); }}>
                       <PopoverTrigger asChild>
                         <Button
                           variant="outline"
                           className="w-full justify-start text-left font-normal"
-                          data-testid="button-distance-account-search"
+                          style={{ paddingLeft: highlightedAccountId ? '2.5rem' : undefined }}
+                          data-testid="button-account-search"
                         >
-                          {colorSchemeAccountId
-                            ? (() => {
-                              const account = allSocialAccounts.find(a => a.id === colorSchemeAccountId);
-                              return account ? (account.nickname || account.username) : 'Select account...';
-                            })()
+                          {highlightedAccountId
+                            ? allSocialAccounts.find(a => a.id === highlightedAccountId)
+                              ? (allSocialAccounts.find(a => a.id === highlightedAccountId)!.nickname || allSocialAccounts.find(a => a.id === highlightedAccountId)!.username)
+                              : 'Select account...'
                             : 'Select account...'}
                         </Button>
                       </PopoverTrigger>
@@ -584,17 +515,17 @@ export default function SocialGraph3D() {
                         <Command shouldFilter={false}>
                           <CommandInput
                             placeholder="Type 3+ characters to search..."
-                            value={distanceSearchQuery}
-                            onValueChange={setDistanceSearchQuery}
+                            value={highlightSearchQuery}
+                            onValueChange={setHighlightSearchQuery}
                           />
                           <CommandList>
-                            {distanceSearchQuery.length > 0 && distanceSearchQuery.length < 3 && (
+                            {highlightSearchQuery.length > 0 && highlightSearchQuery.length < 3 && (
                               <div className="p-3 text-sm text-muted-foreground text-center">
-                                Type {3 - distanceSearchQuery.length} more character{3 - distanceSearchQuery.length > 1 ? 's' : ''} to search...
+                                Type {3 - highlightSearchQuery.length} more character{3 - highlightSearchQuery.length > 1 ? 's' : ''} to search...
                               </div>
                             )}
-                            {distanceSearchQuery.length >= 3 && (() => {
-                              const query = distanceSearchQuery.toLowerCase();
+                            {highlightSearchQuery.length >= 3 && (() => {
+                              const query = highlightSearchQuery.toLowerCase();
                               const filtered = allSocialAccounts.filter(a =>
                                 a.username.toLowerCase().includes(query) ||
                                 (a.nickname && a.nickname.toLowerCase().includes(query))
@@ -607,11 +538,11 @@ export default function SocialGraph3D() {
                                       key={account.id}
                                       value={account.id}
                                       onSelect={() => {
-                                        setColorSchemeAccountId(account.id);
-                                        setDistanceSearchOpen(false);
-                                        setDistanceSearchQuery('');
+                                        setHighlightedAccountId(account.id);
+                                        setSearchOpen(false);
+                                        setHighlightSearchQuery('');
                                       }}
-                                      data-testid={`option-distance-account-${account.id}`}
+                                      data-testid={`option-account-${account.id}`}
                                     >
                                       {account.nickname || account.username}
                                       {account.nickname && (
@@ -626,155 +557,240 @@ export default function SocialGraph3D() {
                         </Command>
                       </PopoverContent>
                     </Popover>
-                    <div className="text-xs text-muted-foreground space-y-1 pt-1">
-                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#ef4444' }} />Selected account</div>
-                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} />Directly linked</div>
-                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#3b82f6' }} />2nd degree</div>
-                      <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#9ca3af' }} />Other</div>
-                    </div>
                   </div>
-                )}
-                {colorScheme === 'connections' && (
-                  <div className="space-y-3 pt-1">
-                    <div className="space-y-2">
-                      <Label className="text-sm text-muted-foreground">Most Connections</Label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="color"
-                          value={connectionsColorMax}
-                          onChange={(e) => setConnectionsColorMax(e.target.value)}
-                          className="w-9 h-9 rounded-md border cursor-pointer"
-                          data-testid="input-color-max"
-                        />
-                        <span className="text-xs text-muted-foreground font-mono">{connectionsColorMax}</span>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-sm text-muted-foreground">Least Connections</Label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="color"
-                          value={connectionsColorMin}
-                          onChange={(e) => setConnectionsColorMin(e.target.value)}
-                          className="w-9 h-9 rounded-md border cursor-pointer"
-                          data-testid="input-color-min"
-                        />
-                        <span className="text-xs text-muted-foreground font-mono">{connectionsColorMin}</span>
-                      </div>
-                    </div>
-                    <div className="space-y-1 pt-1">
-                      <Label className="text-xs text-muted-foreground">Preview</Label>
-                      <div
-                        className="h-3 rounded-full"
-                        style={{
-                          background: `linear-gradient(to right, ${connectionsColorMin}, ${connectionsColorMax})`,
-                        }}
-                        data-testid="gradient-preview"
-                      />
-                      <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Few</span>
-                        <span>Many</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+                </div>
 
-              <div className="flex items-center justify-between">
-                <Label htmlFor="hide-orphans">Hide Orphans</Label>
-                <Switch
-                  id="hide-orphans"
-                  checked={hideOrphans}
-                  onCheckedChange={setHideOrphans}
-                  data-testid="switch-hide-orphans"
-                />
-              </div>
-
-              <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label>Minimum Connections</Label>
-                  <span className="text-sm font-medium" data-testid="text-min-connections-value">{minConnections}</span>
+                  <Label htmlFor="hide-orphans">Hide Orphans</Label>
+                  <Switch
+                    id="hide-orphans"
+                    checked={hideOrphans}
+                    onCheckedChange={setHideOrphans}
+                    data-testid="switch-hide-orphans"
+                  />
                 </div>
-                <Slider
-                  value={[minConnections]}
-                  min={0}
-                  max={6}
-                  step={1}
-                  onValueChange={(values) => setMinConnections(values[0])}
-                  data-testid="slider-min-connections"
-                />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>0</span>
-                  <span>1</span>
-                  <span>2</span>
-                  <span>3</span>
-                  <span>4</span>
-                  <span>5</span>
-                  <span>6</span>
-                </div>
-              </div>
 
-              <div className="flex items-center justify-between">
-                <Label htmlFor="limit-extras" className={minConnections >= 2 ? "text-muted-foreground" : ""}>
-                  Limit Extras
-                </Label>
-                <Switch
-                  id="limit-extras"
-                  checked={limitExtras}
-                  onCheckedChange={setLimitExtras}
-                  disabled={minConnections >= 2}
-                  data-testid="switch-limit-extras"
-                />
-              </div>
-
-              {limitExtras && minConnections < 2 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label className="text-sm text-muted-foreground">Max Extras</Label>
-                    <span className="text-sm font-medium" data-testid="text-max-extras-value">{maxExtras}</span>
+                    <Label>Minimum Connections</Label>
+                    <span className="text-sm font-medium" data-testid="text-min-connections-value">{minConnections}</span>
                   </div>
                   <Slider
-                    value={[Math.max(0, extrasSteps.indexOf(maxExtras))]}
+                    value={[minConnections]}
                     min={0}
-                    max={extrasSteps.length - 1}
+                    max={6}
                     step={1}
-                    onValueChange={(values) => setMaxExtras(extrasSteps[values[0]])}
-                    data-testid="slider-max-extras"
+                    onValueChange={(values) => setMinConnections(values[0])}
+                    data-testid="slider-min-connections"
                   />
                   <div className="flex justify-between text-xs text-muted-foreground">
-                    {extrasSteps.map(step => (
-                      <span key={step}>{step}</span>
-                    ))}
+                    <span>0</span>
+                    <span>1</span>
+                    <span>2</span>
+                    <span>3</span>
+                    <span>4</span>
+                    <span>5</span>
+                    <span>6</span>
                   </div>
                 </div>
-              )}
 
-              <div className="pt-4 border-t space-y-2">
-                <Button
-                  className="w-full"
-                  onClick={handleUpdateGraph}
-                  disabled={isGraphLoading}
-                  data-testid="button-update-graph"
-                >
-                  {isGraphLoading ? "Updating..." : "Update Graph"}
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={handleResetCamera}
-                  data-testid="button-reset-camera"
-                >
-                  Reset Camera
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={handleZoomToFit}
-                  data-testid="button-zoom-fit"
-                >
-                  Zoom to Fit
-                </Button>
-              </div>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="limit-extras" className={minConnections >= 2 ? "text-muted-foreground" : ""}>
+                    Limit Extras
+                  </Label>
+                  <Switch
+                    id="limit-extras"
+                    checked={limitExtras}
+                    onCheckedChange={setLimitExtras}
+                    disabled={minConnections >= 2}
+                    data-testid="switch-limit-extras"
+                  />
+                </div>
+
+                {limitExtras && minConnections < 2 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Max Extras</Label>
+                      <span className="text-sm font-medium" data-testid="text-max-extras-value">{maxExtras}</span>
+                    </div>
+                    <Slider
+                      value={[Math.max(0, extrasSteps.indexOf(maxExtras))]}
+                      min={0}
+                      max={extrasSteps.length - 1}
+                      step={1}
+                      onValueChange={(values) => setMaxExtras(extrasSteps[values[0]])}
+                      data-testid="slider-max-extras"
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      {extrasSteps.map(step => (
+                        <span key={step}>{step}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </TabsContent>
+
+              <TabsContent value="color" className="space-y-4" data-testid="tab-content-color">
+                <div className="space-y-2">
+                  <Label>Color Scheme</Label>
+                  <Select
+                    value={colorScheme}
+                    onValueChange={(value: 'type' | 'distance' | 'connections') => setColorScheme(value)}
+                  >
+                    <SelectTrigger data-testid="select-color-scheme">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="type" data-testid="option-color-type">Account Type</SelectItem>
+                      <SelectItem value="distance" data-testid="option-color-distance">Distance From</SelectItem>
+                      <SelectItem value="connections" data-testid="option-color-connections">Number of Connections</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {colorScheme === 'distance' && (
+                    <div className="space-y-2 pt-1">
+                      <Label className="text-sm text-muted-foreground">Distance From Account</Label>
+                      <Popover open={distanceSearchOpen} onOpenChange={(open) => { setDistanceSearchOpen(open); if (!open) setDistanceSearchQuery(''); }}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            className="w-full justify-start text-left font-normal"
+                            data-testid="button-distance-account-search"
+                          >
+                            {colorSchemeAccountId
+                              ? (() => {
+                                const account = allSocialAccounts.find(a => a.id === colorSchemeAccountId);
+                                return account ? (account.nickname || account.username) : 'Select account...';
+                              })()
+                              : 'Select account...'}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-80 p-0" align="start">
+                          <Command shouldFilter={false}>
+                            <CommandInput
+                              placeholder="Type 3+ characters to search..."
+                              value={distanceSearchQuery}
+                              onValueChange={setDistanceSearchQuery}
+                            />
+                            <CommandList>
+                              {distanceSearchQuery.length > 0 && distanceSearchQuery.length < 3 && (
+                                <div className="p-3 text-sm text-muted-foreground text-center">
+                                  Type {3 - distanceSearchQuery.length} more character{3 - distanceSearchQuery.length > 1 ? 's' : ''} to search...
+                                </div>
+                              )}
+                              {distanceSearchQuery.length >= 3 && (() => {
+                                const query = distanceSearchQuery.toLowerCase();
+                                const filtered = allSocialAccounts.filter(a =>
+                                  a.username.toLowerCase().includes(query) ||
+                                  (a.nickname && a.nickname.toLowerCase().includes(query))
+                                ).slice(0, 50);
+                                if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
+                                return (
+                                  <CommandGroup>
+                                    {filtered.map((account) => (
+                                      <CommandItem
+                                        key={account.id}
+                                        value={account.id}
+                                        onSelect={() => {
+                                          setColorSchemeAccountId(account.id);
+                                          setDistanceSearchOpen(false);
+                                          setDistanceSearchQuery('');
+                                        }}
+                                        data-testid={`option-distance-account-${account.id}`}
+                                      >
+                                        {account.nickname || account.username}
+                                        {account.nickname && (
+                                          <span className="ml-1 text-muted-foreground">@{account.username}</span>
+                                        )}
+                                      </CommandItem>
+                                    ))}
+                                  </CommandGroup>
+                                );
+                              })()}
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+                      <div className="text-xs text-muted-foreground space-y-1 pt-1">
+                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#ef4444' }} />Selected account</div>
+                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#22c55e' }} />Directly linked</div>
+                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#3b82f6' }} />2nd degree</div>
+                        <div className="flex items-center gap-2"><span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: '#9ca3af' }} />Other</div>
+                      </div>
+                    </div>
+                  )}
+                  {colorScheme === 'connections' && (
+                    <div className="space-y-3 pt-1">
+                      <div className="space-y-2">
+                        <Label className="text-sm text-muted-foreground">Most Connections</Label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={connectionsColorMax}
+                            onChange={(e) => setConnectionsColorMax(e.target.value)}
+                            className="w-9 h-9 rounded-md border cursor-pointer"
+                            data-testid="input-color-max"
+                          />
+                          <span className="text-xs text-muted-foreground font-mono">{connectionsColorMax}</span>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-sm text-muted-foreground">Least Connections</Label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={connectionsColorMin}
+                            onChange={(e) => setConnectionsColorMin(e.target.value)}
+                            className="w-9 h-9 rounded-md border cursor-pointer"
+                            data-testid="input-color-min"
+                          />
+                          <span className="text-xs text-muted-foreground font-mono">{connectionsColorMin}</span>
+                        </div>
+                      </div>
+                      <div className="space-y-1 pt-1">
+                        <Label className="text-xs text-muted-foreground">Preview</Label>
+                        <div
+                          className="h-3 rounded-full"
+                          style={{
+                            background: `linear-gradient(to right, ${connectionsColorMin}, ${connectionsColorMax})`,
+                          }}
+                          data-testid="gradient-preview"
+                        />
+                        <div className="flex justify-between text-xs text-muted-foreground">
+                          <span>Few</span>
+                          <span>Many</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+            </Tabs>
+
+            <div className="pt-2 border-t space-y-2">
+              <Button
+                className="w-full"
+                onClick={handleUpdateGraph}
+                disabled={isGraphLoading}
+                data-testid="button-update-graph"
+              >
+                {isGraphLoading ? "Updating..." : "Update Graph"}
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={handleResetCamera}
+                data-testid="button-reset-camera"
+              >
+                Reset Camera
+              </Button>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={handleZoomToFit}
+                data-testid="button-zoom-fit"
+              >
+                Zoom to Fit
+              </Button>
             </div>
           </div>
         )}
