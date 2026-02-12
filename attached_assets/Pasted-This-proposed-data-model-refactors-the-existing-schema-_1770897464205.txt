@@ -1,0 +1,126 @@
+This proposed data model refactors the existing schema to support **historical tracking**. Instead of overwriting data when a user changes their profile image, bio, or name, the system will now store distinct versions of these attributes over time.
+
+This moves the architecture from a "Current State" model to a "Event/History" model.
+
+---
+
+# Social Accounts Data Model (v2: Historical)
+
+This document outlines the refactored database schema designed to track changes in social media presence over time.
+
+## Core Premise: Registry vs. History
+
+The data model is split into two distinct concepts:
+
+1. **The Registry (`social_accounts`)**: Represents the persistent identity of the account. This record creates the stable ID that links to a generic "Person" and never changes, even if the user rebrands.
+2. **The History (New Tables)**: Stores time-stamped snapshots of volatile data (images, names, bios, and follower lists).
+
+---
+
+## Database Tables
+
+### 1. `social_accounts` (The Registry)
+
+*Refactored to be lightweight. Volatile fields (`nickname`, `image_url`, `notes`, arrays) have been removed.*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | VARCHAR (PK) | UUID, auto-generated. The stable anchor. |
+| `username` | TEXT | The unique handle (e.g., `@johndoe`). *See Note 1 below.* |
+| `type_id` | VARCHAR (FK) | References `social_account_types.id` (e.g., Instagram). |
+| `owner_uuid` | VARCHAR (FK) | References `people.id`. |
+| `created_at` | TIMESTAMP | When the account was first tracked by the system. |
+| `last_scraped_at` | TIMESTAMP | Helper field to quickly sort by recency of updates. |
+
+> **Note 1:** While usernames *can* change, they are typically the primary key for lookup during imports. If a username change is detected, it is treated as a new "Registry" entry or handled via a separate alias table, depending on implementation complexity. For this premise, `username` remains the primary lookup anchor.
+
+---
+
+### 2. `social_profile_versions` (Visual Identity)
+
+*Stores the history of how the profile looks (Names, Bios, Images).*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | VARCHAR (PK) | UUID, auto-generated. |
+| `social_account_id` | VARCHAR (FK) | References `social_accounts.id`. |
+| `nickname` | TEXT | The display name (e.g., "John D. |
+| `bio` | TEXT | **New Field.** The account biography text. |
+| `account_url` | TEXT | The specific link to the profile at that time. |
+| `image_url` | TEXT | CDN URL of the processed profile image. |
+| `external_image_url` | TEXT | Original URL from the platform (useful for hash comparison). |
+| `detected_at` | TIMESTAMP | When this specific version was found. |
+| `is_current` | BOOLEAN | Fast lookup flag for the UI to show the active profile. |
+
+**Logic:**
+During an import, the system compares the incoming data (Bio, Name, Image URL) against the row where `social_account_id = X AND is_current = true`.
+
+* **No Change:** Update `detected_at` to now.
+* **Change Detected:** Set old row `is_current = false`. Insert new row with `is_current = true` and the new data.
+
+---
+
+### 3. `social_network_snapshots` (Connections)
+
+*Stores the history of the social graph (Followers/Following) at specific points in time.*
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | VARCHAR (PK) | UUID, auto-generated. |
+| `social_account_id` | VARCHAR (FK) | References `social_accounts.id`. |
+| `follower_count` | INTEGER | Numeric count at time of snapshot. |
+| `following_count` | INTEGER | Numeric count at time of snapshot. |
+| `followers` | TEXT[] | Array of social account UUIDs following this account. |
+| `following` | TEXT[] | Array of social account UUIDs this account follows. |
+| `captured_at` | TIMESTAMP | When this snapshot was taken. |
+
+**Why a snapshot table instead of a graph table?**
+Because the source of truth is typically a CSV import (a point-in-time list), storing the full list as a snapshot array preserves the exact state of the import. This allows the application to calculate diffs (e.g., "Who unfollowed me since last month?") by comparing two snapshot rows.
+
+---
+
+## Application Workflow Changes
+
+### 1. Import Logic (The "Diff" Engine)
+
+The import endpoint (`/api/import-instagram`) updates its logic:
+
+1. **Find/Create Account:** Look up `social_accounts` by username. Create if missing.
+2. **Profile Check:** Compare incoming CSV fields (Name, Bio, Image) with the latest `social_profile_versions`. If different, create a new version.
+3. **Image Processing:**
+* *Old:* Image task overwrites the column.
+* *New:* Image task processes the image, updates the **newly created** `social_profile_version` row.
+
+
+4. **Network Snapshot:** Always insert a new row into `social_network_snapshots` with the incoming list of followers/following and the current timestamp.
+
+### 2. React UI Implications
+
+The frontend now has two modes of displaying data:
+
+* **Current View (Standard Profile):**
+Queries `social_profile_versions` where `is_current = true` and the latest `social_network_snapshots` (sorted by `captured_at` desc).
+* **Timeline View (New Feature):**
+A new component that iterates through `social_profile_versions`.
+* *Visuals:* "On Jan 12, 2024, they changed their bio from 'Student' to 'Graduate'."
+* *Images:* A gallery showing the evolution of their profile picture.
+* *Growth:* A line chart using `follower_count` from `social_network_snapshots`.
+
+
+
+### 3. Task Worker Updates
+
+The `tasks` table remains largely the same, but the payload must now include context about *which version* needs the image.
+
+* **Payload:** `{ "socialAccountId": "...", "profileVersionId": "...", "imageUrl": "..." }`
+* **Worker Action:** Upon success, updates `social_profile_versions` (specifically the row matching `profileVersionId`), setting the `image_url` field.
+
+---
+
+## Migration Plan (SQL)
+
+If migrating from the old schema, the following steps would be taken:
+
+1. **Extract Data:** Copy `nickname`, `image_url`, `account_url` from `social_accounts` into a new `social_profile_versions` table, setting `is_current = true` and `detected_at = NOW()`.
+2. **Extract Network:** Copy `followers` and `following` arrays into the first entry of `social_network_snapshots`.
+3. **Clean Up:** Drop the now-redundant columns from `social_accounts`.
