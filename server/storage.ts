@@ -976,6 +976,7 @@ export class DatabaseStorage implements IStorage {
       interactions: personInteractions,
       groups: personGroups,
       relationships: allRelationships,
+      messages: [],
     };
   }
 
