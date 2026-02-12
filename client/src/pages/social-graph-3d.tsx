@@ -196,7 +196,8 @@ export default function SocialGraph3D() {
       const minCount = Math.min(...counts, 0);
       const range = (maxCount - minCount) || 1;
       graphData.nodes.forEach(n => {
-        const normalized = (n.connectionCount - minCount) / range;
+        const linear = (n.connectionCount - minCount) / range;
+        const normalized = Math.sqrt(linear);
         colorMap.set(n.id, interpolateColor(connectionsColorMin, connectionsColorMax, normalized));
       });
     } else if (colorScheme === 'distance') {
