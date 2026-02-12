@@ -3882,7 +3882,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/tasks/refresh-follower-count/:socialAccountId", async (req, res) => {
     try {
       const { socialAccountId } = req.params;
-      const account = await storage.getSocialAccount(socialAccountId);
+      const account = await storage.getSocialAccountById(socialAccountId);
       if (!account) {
         return res.status(404).json({ error: "Social account not found" });
       }
