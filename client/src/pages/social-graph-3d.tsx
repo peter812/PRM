@@ -66,6 +66,10 @@ export default function SocialGraph3D() {
   const [distanceColorDirect, setDistanceColorDirect] = useState('#22c55e');
   const [distanceColor2nd, setDistanceColor2nd] = useState('#3b82f6');
   const [distanceColorOther, setDistanceColorOther] = useState('#9ca3af');
+  const [singleLinkMutualColor, setSingleLinkMutualColor] = useState('#22c55e');
+  const [singleLinkFollowsYouColor, setSingleLinkFollowsYouColor] = useState('#3b82f6');
+  const [singleLinkYouFollowColor, setSingleLinkYouFollowColor] = useState('#ef4444');
+  const [singleNodeColorScheme, setSingleNodeColorScheme] = useState<'follow-status' | 'type'>('follow-status');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>('default');
   const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(null);
@@ -194,6 +198,33 @@ export default function SocialGraph3D() {
 
     const colorMap = new Map<string, string>();
 
+    if (graphMode === 'single-highlight' && singleHighlightAccountId && singleNodeColorScheme === 'follow-status') {
+      graphData.nodes.forEach(n => {
+        if (n.id === singleHighlightAccountId) {
+          colorMap.set(n.id, n.typeColor);
+          return;
+        }
+        const linkToTarget = graphData.links.find(l => {
+          const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+          const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+          return (src === singleHighlightAccountId && tgt === n.id) || (src === n.id && tgt === singleHighlightAccountId);
+        });
+        if (!linkToTarget) {
+          colorMap.set(n.id, '#9ca3af');
+          return;
+        }
+        const src = typeof linkToTarget.source === 'string' ? linkToTarget.source : (linkToTarget.source as any).id;
+        if (linkToTarget.mutual) {
+          colorMap.set(n.id, singleLinkMutualColor);
+        } else if (src === singleHighlightAccountId) {
+          colorMap.set(n.id, singleLinkYouFollowColor);
+        } else {
+          colorMap.set(n.id, singleLinkFollowsYouColor);
+        }
+      });
+      return colorMap;
+    }
+
     if (colorScheme === 'type') {
       graphData.nodes.forEach(n => colorMap.set(n.id, n.typeColor));
     } else if (colorScheme === 'connections') {
@@ -222,7 +253,7 @@ export default function SocialGraph3D() {
     }
 
     return colorMap;
-  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther]);
+  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor]);
 
   useEffect(() => {
     if (!graphRef.current || !graphData || !graphData.nodes.length) return;
@@ -244,17 +275,29 @@ export default function SocialGraph3D() {
       };
     });
 
-    const links: GraphLink[] = graphData.links.map(l => ({
-      source: typeof l.source === 'string' ? l.source : (l.source as any).id,
-      target: typeof l.target === 'string' ? l.target : (l.target as any).id,
-      type: 'follows' as const,
-      color: l.mutual ? linkMutualColor : linkDefaultColor,
-      mutual: l.mutual,
-    }));
+    const targetId = appliedSettings.singleHighlightAccountId;
+    const isSingleMode = appliedSettings.mode === 'single-highlight' && targetId;
+
+    const links: GraphLink[] = graphData.links.map(l => {
+      const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+      const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+      let color: string;
+      if (isSingleMode && (src === targetId || tgt === targetId)) {
+        if (l.mutual) {
+          color = singleLinkMutualColor;
+        } else if (src === targetId) {
+          color = singleLinkYouFollowColor;
+        } else {
+          color = singleLinkFollowsYouColor;
+        }
+      } else {
+        color = l.mutual ? linkMutualColor : linkDefaultColor;
+      }
+      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual };
+    });
 
     let filteredLinks = links;
-    if (appliedSettings.mode === 'single-highlight' && !appliedSettings.singleShowFriendLinks && appliedSettings.singleHighlightAccountId) {
-      const targetId = appliedSettings.singleHighlightAccountId;
+    if (isSingleMode && !appliedSettings.singleShowFriendLinks) {
       filteredLinks = links.filter(l => l.source === targetId || l.target === targetId);
     }
 
@@ -364,7 +407,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor]);
+  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor]);
 
   useEffect(() => {
     if (!fgRef.current || !graphData || !graphData.nodes.length) return;
@@ -875,9 +918,38 @@ export default function SocialGraph3D() {
 
               <TabsContent value="color" className="space-y-4" data-testid="tab-content-color">
                 {graphMode === 'single-highlight' && (
-                  <p className="text-sm text-muted-foreground" data-testid="text-single-highlight-color-info">
-                    Highlighted account and its connections are colored by account type. The highlighted account is shown in red.
-                  </p>
+                  <div className="space-y-3" data-testid="single-highlight-color-options">
+                    <div className="space-y-2">
+                      <Label>Node Colors</Label>
+                      <Select
+                        value={singleNodeColorScheme}
+                        onValueChange={(value: 'follow-status' | 'type') => setSingleNodeColorScheme(value)}
+                      >
+                        <SelectTrigger data-testid="select-single-node-scheme">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="follow-status" data-testid="option-single-follow-status">Follow Status</SelectItem>
+                          <SelectItem value="type" data-testid="option-single-type">Account Type</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Line Colors</Label>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm text-muted-foreground">Mutual</Label>
+                        <input type="color" value={singleLinkMutualColor} onChange={(e) => setSingleLinkMutualColor(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-single-link-mutual" />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm text-muted-foreground">Follows you</Label>
+                        <input type="color" value={singleLinkFollowsYouColor} onChange={(e) => setSingleLinkFollowsYouColor(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-single-link-follows-you" />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm text-muted-foreground">You follow (one-way)</Label>
+                        <input type="color" value={singleLinkYouFollowColor} onChange={(e) => setSingleLinkYouFollowColor(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-single-link-you-follow" />
+                      </div>
+                    </div>
+                  </div>
                 )}
                 {graphMode === 'multi-highlight' && (
                   <p className="text-sm text-muted-foreground" data-testid="text-multi-highlight-color-info">
