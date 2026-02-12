@@ -204,15 +204,22 @@ export default function SocialGraph3D() {
           colorMap.set(n.id, '#ef4444');
           return;
         }
+        let isMutual = false;
         let highlightFollowsNode = false;
         let nodeFollowsHighlight = false;
         graphData.links.forEach(l => {
           const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
           const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+          const involvesHighlight = (src === singleHighlightAccountId && tgt === n.id) || (src === n.id && tgt === singleHighlightAccountId);
+          if (!involvesHighlight) return;
+          if (l.mutual) {
+            isMutual = true;
+            return;
+          }
           if (src === singleHighlightAccountId && tgt === n.id) highlightFollowsNode = true;
           if (src === n.id && tgt === singleHighlightAccountId) nodeFollowsHighlight = true;
         });
-        if (highlightFollowsNode && nodeFollowsHighlight) {
+        if (isMutual || (highlightFollowsNode && nodeFollowsHighlight)) {
           colorMap.set(n.id, singleLinkMutualColor);
         } else if (nodeFollowsHighlight) {
           colorMap.set(n.id, singleLinkFollowsYouColor);
