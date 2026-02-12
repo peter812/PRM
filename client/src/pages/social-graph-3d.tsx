@@ -417,9 +417,9 @@ export default function SocialGraph3D() {
         </div>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 relative overflow-hidden">
         {selectedAccount && (
-          <div className="w-72 border-r flex flex-col overflow-y-auto shrink-0" data-testid="sidebar-account-info">
+          <div className="absolute top-4 left-4 w-72 max-h-[calc(100%-2rem)] overflow-y-auto bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg z-50" data-testid="sidebar-account-info">
             <div className="p-4 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold text-sm">Account Info</h3>
@@ -499,7 +499,6 @@ export default function SocialGraph3D() {
             </div>
           </div>
         )}
-        <div className="flex-1 relative">
           <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
         {isOptionsOpen && (
@@ -1137,7 +1136,6 @@ export default function SocialGraph3D() {
             </div>
           );
         })()}
-      </div>
       </div>
     </div>
   );
