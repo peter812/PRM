@@ -196,9 +196,9 @@ export default function AccountMatching() {
                       <p className="font-medium truncate" data-testid={`text-username-${account.id}`}>
                         {account.username}
                       </p>
-                      {account.nickname && (
+                      {account.currentProfile?.nickname && (
                         <p className="text-sm text-muted-foreground truncate" data-testid={`text-nickname-${account.id}`}>
-                          {account.nickname}
+                          {account.currentProfile?.nickname}
                         </p>
                       )}
                       {account.typeName && (

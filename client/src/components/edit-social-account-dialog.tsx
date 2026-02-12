@@ -21,7 +21,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Loader2 } from "lucide-react";
-import type { SocialAccount, SocialAccountType } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, SocialAccountType } from "@shared/schema";
 
 function isValidHexColor(color: string): boolean {
   return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
@@ -30,7 +30,7 @@ function isValidHexColor(color: string): boolean {
 interface EditSocialAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  account: SocialAccount;
+  account: SocialAccountWithCurrentProfile;
 }
 
 const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [
@@ -47,9 +47,9 @@ export function EditSocialAccountDialog({
 }: EditSocialAccountDialogProps) {
   const { toast } = useToast();
   const [username, setUsername] = useState(account.username);
-  const [nickname, setNickname] = useState(account.nickname || "");
-  const [accountUrl, setAccountUrl] = useState(account.accountUrl);
-  const [imageUrl, setImageUrl] = useState(account.imageUrl || "");
+  const [nickname, setNickname] = useState(account.currentProfile?.nickname || "");
+  const [accountUrl, setAccountUrl] = useState(account.currentProfile?.accountUrl || "");
+  const [imageUrl, setImageUrl] = useState(account.currentProfile?.imageUrl || "");
   const [typeId, setTypeId] = useState(account.typeId || "");
   const [isTypeAutoSelected, setIsTypeAutoSelected] = useState(false);
 
@@ -126,9 +126,9 @@ export function EditSocialAccountDialog({
   const handleOpenChange = (newOpen: boolean) => {
     if (newOpen) {
       setUsername(account.username);
-      setNickname(account.nickname || "");
-      setAccountUrl(account.accountUrl);
-      setImageUrl(account.imageUrl || "");
+      setNickname(account.currentProfile?.nickname || "");
+      setAccountUrl(account.currentProfile?.accountUrl || "");
+      setImageUrl(account.currentProfile?.imageUrl || "");
       setTypeId(account.typeId || "");
       setIsTypeAutoSelected(false);
     }

@@ -143,23 +143,40 @@ export const socialAccountTypes = pgTable("social_account_types", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-// Social accounts table
+// Social accounts table (Registry - lightweight stable identity)
 export const socialAccounts = pgTable("social_accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull(),
-  nickname: text("nickname"), // Display name / full name
-  accountUrl: text("account_url").notNull(),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
   typeId: varchar("type_id").references(() => socialAccountTypes.id, { onDelete: "set null" }),
-  imageUrl: text("image_url"),
-  notes: text("notes"),
-  following: text("following").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts this account follows
-  followers: text("followers").array().default(sql`ARRAY[]::text[]`), // UUIDs of accounts that follow this account
   internalAccountCreationDate: timestamp("internal_account_creation_date").notNull().defaultNow(),
   internalAccountCreationType: text("internal_account_creation_type").notNull().default("User"),
-  latestImportFollowers: timestamp("latest_import_followers"),
-  latestImportFollowing: timestamp("latest_import_following"),
+  lastScrapedAt: timestamp("last_scraped_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Social profile versions table (Visual Identity History)
+export const socialProfileVersions = pgTable("social_profile_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  nickname: text("nickname"),
+  bio: text("bio"),
+  accountUrl: text("account_url"),
+  imageUrl: text("image_url"),
+  externalImageUrl: text("external_image_url"),
+  detectedAt: timestamp("detected_at").notNull().defaultNow(),
+  isCurrent: boolean("is_current").notNull().default(true),
+});
+
+// Social network snapshots table (Connections History)
+export const socialNetworkSnapshots = pgTable("social_network_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  followerCount: integer("follower_count").notNull().default(0),
+  followingCount: integer("following_count").notNull().default(0),
+  followers: text("followers").array().default(sql`ARRAY[]::text[]`),
+  following: text("following").array().default(sql`ARRAY[]::text[]`),
+  capturedAt: timestamp("captured_at").notNull().defaultNow(),
 });
 
 // Background tasks table - for long-running operations like image downloads
@@ -259,10 +276,26 @@ export const socialAccountTypesRelations = relations(socialAccountTypes, ({ many
   socialAccounts: many(socialAccounts),
 }));
 
-export const socialAccountsRelations = relations(socialAccounts, ({ one }) => ({
+export const socialAccountsRelations = relations(socialAccounts, ({ one, many }) => ({
   type: one(socialAccountTypes, {
     fields: [socialAccounts.typeId],
     references: [socialAccountTypes.id],
+  }),
+  profileVersions: many(socialProfileVersions),
+  networkSnapshots: many(socialNetworkSnapshots),
+}));
+
+export const socialProfileVersionsRelations = relations(socialProfileVersions, ({ one }) => ({
+  socialAccount: one(socialAccounts, {
+    fields: [socialProfileVersions.socialAccountId],
+    references: [socialAccounts.id],
+  }),
+}));
+
+export const socialNetworkSnapshotsRelations = relations(socialNetworkSnapshots, ({ one }) => ({
+  socialAccount: one(socialAccounts, {
+    fields: [socialNetworkSnapshots.socialAccountId],
+    references: [socialAccounts.id],
   }),
 }));
 
@@ -351,6 +384,16 @@ export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTyp
   createdAt: true,
 });
 
+export const insertSocialProfileVersionSchema = createInsertSchema(socialProfileVersions).omit({
+  id: true,
+  detectedAt: true,
+});
+
+export const insertSocialNetworkSnapshotSchema = createInsertSchema(socialNetworkSnapshots).omit({
+  id: true,
+  capturedAt: true,
+});
+
 export const insertMessageSchema = createInsertSchema(messages)
   .omit({
     id: true,
@@ -407,6 +450,17 @@ export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
 
 export type SocialAccountType = typeof socialAccountTypes.$inferSelect;
 export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSchema>;
+
+export type SocialProfileVersion = typeof socialProfileVersions.$inferSelect;
+export type InsertSocialProfileVersion = z.infer<typeof insertSocialProfileVersionSchema>;
+
+export type SocialNetworkSnapshot = typeof socialNetworkSnapshots.$inferSelect;
+export type InsertSocialNetworkSnapshot = z.infer<typeof insertSocialNetworkSnapshotSchema>;
+
+export type SocialAccountWithCurrentProfile = SocialAccount & {
+  currentProfile: SocialProfileVersion | null;
+  latestSnapshot: SocialNetworkSnapshot | null;
+};
 
 export type Message = typeof messages.$inferSelect;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
@@ -504,6 +558,6 @@ export type MegaSearchResult = {
   groups: Group[];
   interactions: Interaction[];
   notes: Note[];
-  socialProfiles: SocialAccount[];
+  socialProfiles: SocialAccountWithCurrentProfile[];
   messages: Message[];
 };

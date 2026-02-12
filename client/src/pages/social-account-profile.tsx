@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, X, ExternalLink, Upload, FileText, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, Person, SocialAccountType } from "@shared/schema";
 import { Link } from "wouter";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
@@ -42,7 +42,7 @@ export default function SocialAccountProfile() {
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
 
-  const { data: account, isLoading, isError, error } = useQuery<SocialAccount>({
+  const { data: account, isLoading, isError, error } = useQuery<SocialAccountWithCurrentProfile>({
     queryKey: ["/api/social-accounts", uuid],
     enabled: !!uuid,
   });
@@ -61,7 +61,7 @@ export default function SocialAccountProfile() {
     enabled: !!user?.personId,
   });
 
-  const { data: allSocialAccounts } = useQuery<SocialAccount[]>({
+  const { data: allSocialAccounts } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts"],
   });
 
@@ -70,34 +70,9 @@ export default function SocialAccountProfile() {
   });
 
   // Query followers (accounts that have this account in their following list)
-  const { data: followers } = useQuery<SocialAccount[]>({
+  const { data: followers } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts", uuid, "followers"],
     enabled: !!uuid,
-  });
-
-  const removeFollowingMutation = useMutation({
-    mutationFn: async (accountIdToRemove: string) => {
-      const currentFollowing = account?.following || [];
-      const newFollowing = currentFollowing.filter(id => id !== accountIdToRemove);
-      return await apiRequest("PATCH", `/api/social-accounts/${uuid}`, {
-        following: newFollowing,
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
-      toast({
-        title: "Success",
-        description: "Account removed from following",
-      });
-    },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to remove account",
-        variant: "destructive",
-      });
-    },
   });
 
   const updateNotesMutation = useMutation({
@@ -264,7 +239,7 @@ export default function SocialAccountProfile() {
   }
 
   const isFollowingYou = mePerson?.socialAccountUuids?.some((meId) =>
-    account.followers?.includes(meId)
+    account.latestSnapshot?.followers?.includes(meId)
   );
 
   const accountType = account.typeId 
@@ -295,8 +270,8 @@ export default function SocialAccountProfile() {
 
         <div className="flex items-start gap-6">
           <Avatar className="w-24 h-24">
-            {account.imageUrl && (
-              <AvatarImage src={account.imageUrl} alt={account.username} />
+            {account.currentProfile?.imageUrl && (
+              <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
             )}
             <AvatarFallback className="text-2xl">
               {getInitials(account.username)}
@@ -331,7 +306,7 @@ export default function SocialAccountProfile() {
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={() => window.open(account.accountUrl, "_blank")}
+                  onClick={() => window.open(account.currentProfile?.accountUrl, "_blank")}
                   data-testid="button-goto-profile"
                 >
                   <ExternalLink className="h-4 w-4" />
@@ -371,9 +346,9 @@ export default function SocialAccountProfile() {
               </div>
             </div>
 
-            {account.nickname && (
+            {account.currentProfile?.nickname && (
               <p className="text-lg text-muted-foreground mb-1" data-testid="text-account-nickname">
-                {account.nickname}
+                {account.currentProfile?.nickname}
               </p>
             )}
 
@@ -465,7 +440,7 @@ export default function SocialAccountProfile() {
               variant="outline"
               size="sm"
               onClick={() => {
-                setNotes(account.notes || "");
+                setNotes(account.currentProfile?.bio || "");
                 setIsEditingNotes(true);
               }}
               data-testid="button-edit-notes"
@@ -508,9 +483,9 @@ export default function SocialAccountProfile() {
           </div>
         ) : (
           <div className="text-sm text-muted-foreground">
-            {account.notes ? (
+            {account.currentProfile?.bio ? (
               <p data-testid="text-notes-content" className="whitespace-pre-wrap">
-                {account.notes}
+                {account.currentProfile?.bio}
               </p>
             ) : (
               <p className="italic">No notes added yet</p>
@@ -536,8 +511,8 @@ export default function SocialAccountProfile() {
                     data-testid={`card-follower-${followerAccount.id}`}
                   >
                     <Avatar className="w-8 h-8">
-                      {followerAccount.imageUrl && (
-                        <AvatarImage src={followerAccount.imageUrl} alt={followerAccount.username} />
+                      {followerAccount.currentProfile?.imageUrl && (
+                        <AvatarImage src={followerAccount.currentProfile?.imageUrl} alt={followerAccount.username} />
                       )}
                       <AvatarFallback className="text-xs">
                         {getInitials(followerAccount.username)}
@@ -562,7 +537,7 @@ export default function SocialAccountProfile() {
           <Card className="p-4">
             <div className="flex items-center justify-between gap-2 mb-4">
               <h3 className="text-lg font-semibold" data-testid="text-following-header">
-                Following ({account.following?.length || 0})
+                Following ({account.latestSnapshot?.following?.length || 0})
               </h3>
               <Button
                 variant="outline"
@@ -573,9 +548,9 @@ export default function SocialAccountProfile() {
                 <Plus className="h-4 w-4" />
               </Button>
             </div>
-            {account.following && account.following.length > 0 ? (
+            {account.latestSnapshot?.following && account.latestSnapshot?.following.length > 0 ? (
               <div className="space-y-2">
-                {account.following.map((followingId) => {
+                {account.latestSnapshot?.following.map((followingId) => {
                   const followingAccount = allSocialAccounts?.find(a => a.id === followingId);
                   return (
                     <div 
@@ -585,8 +560,8 @@ export default function SocialAccountProfile() {
                     >
                       <div className="flex items-center gap-3">
                         <Avatar className="w-8 h-8">
-                          {followingAccount?.imageUrl && (
-                            <AvatarImage src={followingAccount.imageUrl} alt={followingAccount.username} />
+                          {followingAccount?.currentProfile?.imageUrl && (
+                            <AvatarImage src={followingAccount.currentProfile?.imageUrl} alt={followingAccount.username} />
                           )}
                           <AvatarFallback className="text-xs">
                             {followingAccount ? getInitials(followingAccount.username) : "?"}
@@ -604,16 +579,6 @@ export default function SocialAccountProfile() {
                           <span className="text-sm text-muted-foreground">{followingId}</span>
                         )}
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => removeFollowingMutation.mutate(followingId)}
-                        disabled={removeFollowingMutation.isPending}
-                        data-testid={`button-remove-following-${followingId}`}
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
                     </div>
                   );
                 })}
@@ -635,7 +600,7 @@ export default function SocialAccountProfile() {
         open={isLinkFollowingOpen}
         onOpenChange={setIsLinkFollowingOpen}
         accountUuid={uuid!}
-        linkedAccountIds={account.following || []}
+        linkedAccountIds={account.latestSnapshot?.following || []}
       />
 
       <Dialog open={isImportDialogOpen} onOpenChange={(open) => {

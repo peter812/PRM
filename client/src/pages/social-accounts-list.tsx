@@ -260,7 +260,7 @@ export default function SocialAccountsList() {
           <div className="flex flex-col gap-[5px]">
             {accounts.map((account) => {
               const isFollowingYou = meAccountIds.some((meId) =>
-                account.followers?.includes(meId)
+                account.latestSnapshot?.followers?.includes(meId)
               );
               const accountType = account.typeId 
                 ? socialAccountTypes?.find(t => t.id === account.typeId) 
@@ -278,8 +278,8 @@ export default function SocialAccountsList() {
                   >
                     <div className="flex items-center gap-4">
                       <Avatar className="w-12 h-12">
-                        {account.imageUrl && (
-                          <AvatarImage src={account.imageUrl} alt={account.username} />
+                        {account.currentProfile?.imageUrl && (
+                          <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
                         )}
                         <AvatarFallback>
                           {getInitials(account.username)}
@@ -324,19 +324,19 @@ export default function SocialAccountsList() {
                             </Badge>
                           )}
                         </div>
-                        {account.nickname && (
+                        {account.currentProfile?.nickname && (
                           <p className="text-sm text-muted-foreground md:truncate break-words" data-testid={`text-nickname-${account.id}`}>
-                            {account.nickname}
+                            {account.currentProfile?.nickname}
                           </p>
                         )}
                         
                         <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                           <span data-testid={`text-followers-${account.id}`}>
-                            {account.followers?.length || 0} followers
+                            {account.latestSnapshot?.followers?.length || 0} followers
                           </span>
                           <span>•</span>
                           <span data-testid={`text-following-${account.id}`}>
-                            {account.following?.length || 0} following
+                            {account.latestSnapshot?.following?.length || 0} following
                           </span>
                         </div>
                       </div>
@@ -348,7 +348,7 @@ export default function SocialAccountsList() {
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            window.open(account.accountUrl, "_blank");
+                            window.open(account.currentProfile?.accountUrl, "_blank");
                           }}
                           data-testid={`button-goto-profile-${account.id}`}
                         >

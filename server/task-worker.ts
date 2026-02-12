@@ -17,8 +17,9 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 async function processGetImgTask(payload: {
   socialAccountId: string;
   imageUrl: string;
+  profileVersionId?: string | null;
 }): Promise<string> {
-  const { socialAccountId, imageUrl } = payload;
+  const { socialAccountId, imageUrl, profileVersionId } = payload;
 
   const tmpDir = os.tmpdir();
   const tmpFile = path.join(tmpDir, `task_img_${Date.now()}_${Math.random().toString(36).slice(2)}`);
@@ -50,7 +51,14 @@ async function processGetImgTask(payload: {
     } catch {
     }
 
-    await storage.updateSocialAccount(socialAccountId, { imageUrl: cdnUrl });
+    if (profileVersionId) {
+      await storage.updateProfileVersion(profileVersionId, { imageUrl: cdnUrl });
+    } else {
+      const currentProfile = await storage.getCurrentProfileVersion(socialAccountId);
+      if (currentProfile) {
+        await storage.updateProfileVersion(currentProfile.id, { imageUrl: cdnUrl });
+      }
+    }
 
     return JSON.stringify({ cdnUrl, socialAccountId });
   } catch (error) {

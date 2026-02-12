@@ -490,17 +490,17 @@ export default function SocialGraph3D() {
               </div>
               <div className="flex flex-col items-center gap-3">
                 <Avatar className="h-20 w-20">
-                  {selectedAccount.imageUrl ? (
-                    <AvatarImage src={selectedAccount.imageUrl} alt={selectedAccount.username} />
+                  {selectedAccount.currentProfile?.imageUrl ? (
+                    <AvatarImage src={selectedAccount.currentProfile?.imageUrl} alt={selectedAccount.username} />
                   ) : null}
                   <AvatarFallback className="text-lg">
-                    {(selectedAccount.nickname || selectedAccount.username).slice(0, 2).toUpperCase()}
+                    {(selectedAccount.currentProfile?.nickname || selectedAccount.username).slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
                 <div className="text-center space-y-0.5">
                   <p className="font-medium" data-testid="text-sidebar-username">@{selectedAccount.username}</p>
-                  {selectedAccount.nickname && (
-                    <p className="text-sm text-muted-foreground" data-testid="text-sidebar-displayname">{selectedAccount.nickname}</p>
+                  {selectedAccount.currentProfile?.nickname && (
+                    <p className="text-sm text-muted-foreground" data-testid="text-sidebar-displayname">{selectedAccount.currentProfile?.nickname}</p>
                   )}
                 </div>
               </div>
@@ -513,32 +513,32 @@ export default function SocialGraph3D() {
                     </Badge>
                   </div>
                 )}
-                {selectedAccount.accountUrl && (
+                {selectedAccount.currentProfile?.accountUrl && (
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-muted-foreground">URL</span>
                     <a
-                      href={selectedAccount.accountUrl}
+                      href={selectedAccount.currentProfile?.accountUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs truncate max-w-[140px] underline"
                       data-testid="link-sidebar-url"
                     >
-                      {selectedAccount.accountUrl.replace(/^https?:\/\//, '')}
+                      {selectedAccount.currentProfile?.accountUrl.replace(/^https?:\/\//, '')}
                     </a>
                   </div>
                 )}
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Followers</span>
-                  <span data-testid="text-sidebar-followers">{selectedAccount.followers?.length || 0}</span>
+                  <span data-testid="text-sidebar-followers">{selectedAccount.latestSnapshot?.followers?.length || 0}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Following</span>
-                  <span data-testid="text-sidebar-following">{selectedAccount.following?.length || 0}</span>
+                  <span data-testid="text-sidebar-following">{selectedAccount.latestSnapshot?.following?.length || 0}</span>
                 </div>
-                {selectedAccount.notes && (
+                {selectedAccount.currentProfile?.bio && (
                   <div className="pt-2 border-t">
                     <span className="text-muted-foreground">Notes</span>
-                    <p className="mt-1 text-xs" data-testid="text-sidebar-notes">{selectedAccount.notes}</p>
+                    <p className="mt-1 text-xs" data-testid="text-sidebar-notes">{selectedAccount.currentProfile?.bio}</p>
                   </div>
                 )}
               </div>
@@ -698,7 +698,7 @@ export default function SocialGraph3D() {
                               {singleHighlightAccountId
                                 ? (() => {
                                   const account = allSocialAccounts.find(a => a.id === singleHighlightAccountId);
-                                  return account ? (account.nickname || account.username) : 'Select account...';
+                                  return account ? (account.currentProfile?.nickname || account.username) : 'Select account...';
                                 })()
                                 : 'Select account...'}
                             </Button>
@@ -720,7 +720,7 @@ export default function SocialGraph3D() {
                                   const query = singleHighlightSearchQuery.toLowerCase();
                                   const filtered = allSocialAccounts.filter(a =>
                                     a.username.toLowerCase().includes(query) ||
-                                    (a.nickname && a.nickname.toLowerCase().includes(query))
+                                    (a.currentProfile?.nickname && a.currentProfile?.nickname.toLowerCase().includes(query))
                                   ).slice(0, 50);
                                   if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
                                   return (
@@ -736,8 +736,8 @@ export default function SocialGraph3D() {
                                           }}
                                           data-testid={`option-single-highlight-${account.id}`}
                                         >
-                                          {account.nickname || account.username}
-                                          {account.nickname && (
+                                          {account.currentProfile?.nickname || account.username}
+                                          {account.currentProfile?.nickname && (
                                             <span className="ml-1 text-muted-foreground">@{account.username}</span>
                                           )}
                                         </CommandItem>
@@ -803,7 +803,7 @@ export default function SocialGraph3D() {
                               const filtered = allSocialAccounts.filter(a =>
                                 !multiHighlightAccountIds.includes(a.id) &&
                                 (a.username.toLowerCase().includes(query) ||
-                                (a.nickname && a.nickname.toLowerCase().includes(query)))
+                                (a.currentProfile?.nickname && a.currentProfile?.nickname.toLowerCase().includes(query)))
                               ).slice(0, 50);
                               if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
                               return (
@@ -818,8 +818,8 @@ export default function SocialGraph3D() {
                                       }}
                                       data-testid={`option-multi-highlight-${account.id}`}
                                     >
-                                      {account.nickname || account.username}
-                                      {account.nickname && (
+                                      {account.currentProfile?.nickname || account.username}
+                                      {account.currentProfile?.nickname && (
                                         <span className="ml-1 text-muted-foreground">@{account.username}</span>
                                       )}
                                     </CommandItem>
@@ -839,7 +839,7 @@ export default function SocialGraph3D() {
                           const account = allSocialAccounts.find(a => a.id === id);
                           return (
                             <Badge key={id} variant="secondary" className="gap-1" data-testid={`badge-multi-highlight-${id}`}>
-                              {account ? (account.nickname || account.username) : id}
+                              {account ? (account.currentProfile?.nickname || account.username) : id}
                               <button
                                 onClick={() => setMultiHighlightAccountIds(prev => prev.filter(aid => aid !== id))}
                                 className="ml-0.5"
@@ -994,7 +994,7 @@ export default function SocialGraph3D() {
                             {colorSchemeAccountId
                               ? (() => {
                                 const account = allSocialAccounts.find(a => a.id === colorSchemeAccountId);
-                                return account ? (account.nickname || account.username) : 'Select account...';
+                                return account ? (account.currentProfile?.nickname || account.username) : 'Select account...';
                               })()
                               : 'Select account...'}
                           </Button>
@@ -1016,7 +1016,7 @@ export default function SocialGraph3D() {
                                 const query = distanceSearchQuery.toLowerCase();
                                 const filtered = allSocialAccounts.filter(a =>
                                   a.username.toLowerCase().includes(query) ||
-                                  (a.nickname && a.nickname.toLowerCase().includes(query))
+                                  (a.currentProfile?.nickname && a.currentProfile?.nickname.toLowerCase().includes(query))
                                 ).slice(0, 50);
                                 if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
                                 return (
@@ -1032,8 +1032,8 @@ export default function SocialGraph3D() {
                                         }}
                                         data-testid={`option-distance-account-${account.id}`}
                                       >
-                                        {account.nickname || account.username}
-                                        {account.nickname && (
+                                        {account.currentProfile?.nickname || account.username}
+                                        {account.currentProfile?.nickname && (
                                           <span className="ml-1 text-muted-foreground">@{account.username}</span>
                                         )}
                                       </CommandItem>
@@ -1171,7 +1171,7 @@ export default function SocialGraph3D() {
 
         {contextMenu && (() => {
           const ctxAccount = allSocialAccounts.find(a => a.id === contextMenu.accountId);
-          const ctxName = ctxAccount ? (ctxAccount.nickname || ctxAccount.username) : 'Unknown';
+          const ctxName = ctxAccount ? (ctxAccount.currentProfile?.nickname || ctxAccount.username) : 'Unknown';
           const isInSingleHighlight = graphMode === 'single-highlight' && singleHighlightAccountId === contextMenu.accountId;
           const isInMultiHighlight = graphMode === 'multi-highlight' && multiHighlightAccountIds.includes(contextMenu.accountId);
           const isHighlighted = isInSingleHighlight || isInMultiHighlight;

@@ -5,7 +5,7 @@ import { useLocation } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { SocialAccount } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile } from "@shared/schema";
 import { LinkSocialAccountDialog } from "./link-social-account-dialog";
 
 interface PersonSocialAccountsChipsProps {
@@ -23,7 +23,7 @@ export function PersonSocialAccountsChips({
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
-  const { data: accounts = [] } = useQuery<SocialAccount[]>({
+  const { data: accounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts"],
   });
 

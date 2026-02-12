@@ -14,7 +14,7 @@ import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { SocialAccount } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile } from "@shared/schema";
 
 interface LinkFollowingAccountsDialogProps {
   open: boolean;
@@ -33,7 +33,7 @@ export function LinkFollowingAccountsDialog({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(linkedAccountIds);
 
-  const { data: allAccounts = [] } = useQuery<SocialAccount[]>({
+  const { data: allAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts"],
   });
 
@@ -43,18 +43,22 @@ export function LinkFollowingAccountsDialog({
     return allAccounts.filter(
       (acc) =>
         acc.username.toLowerCase().includes(query) ||
-        acc.accountUrl.toLowerCase().includes(query)
+        (acc.currentProfile?.accountUrl || '').toLowerCase().includes(query)
     );
   }, [allAccounts, searchQuery]);
 
   const linkMutation = useMutation({
     mutationFn: async (followingIds: string[]) => {
-      return await apiRequest("PATCH", `/api/social-accounts/${accountUuid}`, {
+      return await apiRequest("POST", `/api/social-accounts/${accountUuid}/network-snapshots`, {
         following: followingIds,
+        followers: [],
+        followerCount: 0,
+        followingCount: followingIds.length,
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", accountUuid] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       toast({
         title: "Success",
         description: "Following accounts updated successfully",
@@ -133,8 +137,8 @@ export function LinkFollowingAccountsDialog({
                   >
                     <div className="flex items-center gap-1.5 md:gap-3">
                       <Avatar className="h-6 w-6 md:h-8 md:w-8 flex-shrink-0">
-                        {account.imageUrl && (
-                          <AvatarImage src={account.imageUrl} alt={account.username} />
+                        {account.currentProfile?.imageUrl && (
+                          <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
                         )}
                         <AvatarFallback className="text-[0.5rem] md:text-xs">
                           {getInitials(account.username)}
@@ -145,7 +149,7 @@ export function LinkFollowingAccountsDialog({
                           @{account.username}
                         </p>
                         <p className="text-[0.6rem] md:text-xs text-muted-foreground truncate" data-testid={`text-url-following-${account.id}`}>
-                          {account.accountUrl}
+                          {account.currentProfile?.accountUrl}
                         </p>
                       </div>
                       <div

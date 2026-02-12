@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useLocation } from "wouter";
-import type { Person, Group, Interaction, Note, SocialAccount, Message, MegaSearchResult } from "@shared/schema";
+import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, Message, MegaSearchResult } from "@shared/schema";
 
 type SearchCategory = 'people' | 'groups' | 'interactions' | 'notes' | 'socialProfiles' | 'messages';
 
@@ -452,9 +452,9 @@ export function GlobalSearch() {
                     <div className="font-medium text-sm truncate">
                       @{account.username}
                     </div>
-                    {account.accountUrl && (
+                    {account.currentProfile?.accountUrl && (
                       <div className="text-xs text-muted-foreground truncate">
-                        {account.accountUrl}
+                        {account.currentProfile?.accountUrl}
                       </div>
                     )}
                   </div>

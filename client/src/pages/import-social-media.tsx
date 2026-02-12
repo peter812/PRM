@@ -213,8 +213,8 @@ export default function ImportSocialMediaPage() {
                               value={account.id}
                               onSelect={() => {
                                 setSelectedAccountId(account.id);
-                                const label = account.nickname
-                                  ? `${account.nickname} (@${account.username})`
+                                const label = account.currentProfile?.nickname
+                                  ? `${account.currentProfile?.nickname} (@${account.username})`
                                   : account.username;
                                 setSelectedAccountLabel(label);
                                 setAccountSearchOpen(false);
@@ -223,8 +223,8 @@ export default function ImportSocialMediaPage() {
                               data-testid={`option-account-${account.id}`}
                             >
                               {account.username}
-                              {account.nickname && (
-                                <span className="ml-1 text-muted-foreground">({account.nickname})</span>
+                              {account.currentProfile?.nickname && (
+                                <span className="ml-1 text-muted-foreground">({account.currentProfile?.nickname})</span>
                               )}
                             </CommandItem>
                           ))}

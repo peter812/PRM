@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, type SocialAccount } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, type SocialAccountWithCurrentProfile } from "@shared/schema";
 import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
 import {
@@ -278,6 +278,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         allGroupNotes,
         allSocialAccounts,
         allSocialAccountTypes,
+        allProfileVersions,
+        allNetworkSnapshots,
         allMessages,
         mePersonResult,
       ] = await Promise.all([
@@ -292,6 +294,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         storage.getAllGroupNotes(),
         storage.getAllSocialAccounts(),
         storage.getAllSocialAccountTypes(),
+        storage.getAllProfileVersions(),
+        storage.getAllNetworkSnapshots(),
         storage.getAllMessages(),
         db.select().from(people).where(isNotNull(people.userId)).limit(1),
       ]);
@@ -472,14 +476,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    <social_account>\n';
         xml += `      <id>${escapeXml(account.id)}</id>\n`;
         xml += `      <username>${escapeXml(account.username)}</username>\n`;
-        xml += `      <nickname>${escapeXml(account.nickname || "")}</nickname>\n`;
-        xml += `      <account_url>${escapeXml(account.accountUrl)}</account_url>\n`;
+        xml += `      <nickname>${escapeXml(account.currentProfile?.nickname || "")}</nickname>\n`;
+        xml += `      <account_url>${escapeXml(account.currentProfile?.accountUrl || "")}</account_url>\n`;
         xml += `      <owner_uuid>${escapeXml(ownerUuid || "")}</owner_uuid>\n`;
         xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
-        xml += `      <image_url>${escapeXml(account.imageUrl || "")}</image_url>\n`;
-        xml += `      <notes>${escapeXml(account.notes || "")}</notes>\n`;
-        xml += `      <following>${arrayToXml(account.following || [], "account_id")}</following>\n`;
-        xml += `      <followers>${arrayToXml(account.followers || [], "account_id")}</followers>\n`;
+        xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
+        xml += `      <notes></notes>\n`;
+        xml += `      <following>${arrayToXml(account.latestSnapshot?.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(account.latestSnapshot?.followers || [], "account_id")}</followers>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }
@@ -496,6 +500,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    </social_account_type>\n';
       }
       xml += '  </social_account_types>\n';
+
+      // Export social profile versions
+      xml += '  <social_profile_versions>\n';
+      for (const version of allProfileVersions) {
+        xml += '    <social_profile_version>\n';
+        xml += `      <id>${escapeXml(version.id)}</id>\n`;
+        xml += `      <social_account_id>${escapeXml(version.socialAccountId)}</social_account_id>\n`;
+        xml += `      <nickname>${escapeXml(version.nickname || "")}</nickname>\n`;
+        xml += `      <bio>${escapeXml(version.bio || "")}</bio>\n`;
+        xml += `      <account_url>${escapeXml(version.accountUrl || "")}</account_url>\n`;
+        xml += `      <image_url>${escapeXml(version.imageUrl || "")}</image_url>\n`;
+        xml += `      <external_image_url>${escapeXml(version.externalImageUrl || "")}</external_image_url>\n`;
+        xml += `      <is_current>${escapeXml(version.isCurrent)}</is_current>\n`;
+        xml += `      <detected_at>${escapeXml(version.detectedAt)}</detected_at>\n`;
+        xml += '    </social_profile_version>\n';
+      }
+      xml += '  </social_profile_versions>\n';
+
+      // Export social network snapshots
+      xml += '  <social_network_snapshots>\n';
+      for (const snapshot of allNetworkSnapshots) {
+        xml += '    <social_network_snapshot>\n';
+        xml += `      <id>${escapeXml(snapshot.id)}</id>\n`;
+        xml += `      <social_account_id>${escapeXml(snapshot.socialAccountId)}</social_account_id>\n`;
+        xml += `      <follower_count>${escapeXml(snapshot.followerCount)}</follower_count>\n`;
+        xml += `      <following_count>${escapeXml(snapshot.followingCount)}</following_count>\n`;
+        xml += `      <followers>${arrayToXml(snapshot.followers || [], "account_id")}</followers>\n`;
+        xml += `      <following>${arrayToXml(snapshot.following || [], "account_id")}</following>\n`;
+        xml += `      <captured_at>${escapeXml(snapshot.capturedAt)}</captured_at>\n`;
+        xml += '    </social_network_snapshot>\n';
+      }
+      xml += '  </social_network_snapshots>\n';
 
       // Export messages
       xml += '  <messages>\n';
@@ -878,36 +914,101 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
         const typeId = unescapeXml(parseXmlTag("type_id", block));
         const imageUrl = unescapeXml(parseXmlTag("image_url", block));
-        const notes = unescapeXml(parseXmlTag("notes", block));
         const following = parseXmlArray("following", "account_id", block);
         const followers = parseXmlArray("followers", "account_id", block);
 
-        // Check for duplicate by UUID
         if (existingSocialAccountUuids.has(id)) {
           skippedCounts.socialAccounts++;
-          continue; // Skip this duplicate
+          continue;
         }
 
-        // Replace zero UUID with ME user UUID in ownerUuid
         const processedOwnerUuid = replaceZeroUUID(ownerUuid);
 
         try {
-          await storage.createSocialAccountWithId({
+          const created = await storage.createSocialAccountWithId({
             id,
             username,
-            nickname: nickname || null,
-            accountUrl,
             ownerUuid: processedOwnerUuid || null,
             typeId: typeId || null,
-            imageUrl: imageUrl || null,
-            notes: notes || null,
-            following: following.length > 0 ? following : [],
-            followers: followers.length > 0 ? followers : [],
           });
+
+          if (nickname || accountUrl || imageUrl) {
+            if (created.currentProfile) {
+              await storage.updateProfileVersion(created.currentProfile.id, {
+                nickname: nickname || null,
+                accountUrl: accountUrl || null,
+                imageUrl: imageUrl || null,
+              });
+            }
+          }
+
+          if ((followers && followers.length > 0) || (following && following.length > 0)) {
+            await storage.createNetworkSnapshot({
+              socialAccountId: id,
+              followerCount: followers.length,
+              followingCount: following.length,
+              followers: followers,
+              following: following,
+            });
+          }
+
           importedCounts.socialAccounts++;
           existingSocialAccountUuids.add(id);
         } catch (error) {
           console.error(`Error importing social account ${id}:`, error);
+        }
+      }
+
+      // Parse and import social profile versions (from new format exports)
+      const profileVersionBlocks = parseAllTags("social_profile_version", xmlText);
+      for (const block of profileVersionBlocks) {
+        try {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+          const pvNickname = unescapeXml(parseXmlTag("nickname", block));
+          const pvBio = unescapeXml(parseXmlTag("bio", block));
+          const pvAccountUrl = unescapeXml(parseXmlTag("account_url", block));
+          const pvImageUrl = unescapeXml(parseXmlTag("image_url", block));
+          const pvExternalImageUrl = unescapeXml(parseXmlTag("external_image_url", block));
+          const pvIsCurrent = parseXmlTag("is_current", block) === "true";
+
+          if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
+
+          await storage.createProfileVersion({
+            socialAccountId,
+            nickname: pvNickname || null,
+            bio: pvBio || null,
+            accountUrl: pvAccountUrl || null,
+            imageUrl: pvImageUrl || null,
+            externalImageUrl: pvExternalImageUrl || null,
+            isCurrent: pvIsCurrent,
+          });
+        } catch (error) {
+          console.error(`Error importing profile version:`, error);
+        }
+      }
+
+      // Parse and import social network snapshots (from new format exports)
+      const snapshotBlocks = parseAllTags("social_network_snapshot", xmlText);
+      for (const block of snapshotBlocks) {
+        try {
+          const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+          const followerCount = parseInt(parseXmlTag("follower_count", block)) || 0;
+          const followingCount = parseInt(parseXmlTag("following_count", block)) || 0;
+          const snFollowers = parseXmlArray("followers", "account_id", block);
+          const snFollowing = parseXmlArray("following", "account_id", block);
+
+          if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
+
+          await storage.createNetworkSnapshot({
+            socialAccountId,
+            followerCount,
+            followingCount,
+            followers: snFollowers,
+            following: snFollowing,
+          });
+        } catch (error) {
+          console.error(`Error importing network snapshot:`, error);
         }
       }
 
@@ -1257,6 +1358,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const allAccounts = await storage.getAllSocialAccounts();
       const accountsByUsername = new Map(allAccounts.map(a => [a.username.toLowerCase(), a]));
 
+      const mutualFollowIds: string[] = [];
+
       for (const row of rows) {
         const username = (row.username || row["username"] || "").toString().trim().replace(/"/g, "");
         const fullName = (row.full_name || row["full_name"] || "").toString().trim().replace(/"/g, "");
@@ -1266,27 +1369,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         if (!username) continue;
 
-        // Check if username already exists
         let existingAccount = accountsByUsername.get(username.toLowerCase());
 
         if (existingAccount) {
-          const updates: { nickname?: string | null } = {};
-          
-          if (fullName && existingAccount.nickname !== fullName) {
-            updates.nickname = fullName;
-          }
-
-          if (Object.keys(updates).length > 0) {
-            await storage.updateSocialAccount(existingAccount.id, updates);
+          if (fullName && existingAccount.currentProfile?.nickname !== fullName) {
+            await storage.createProfileVersion({
+              socialAccountId: existingAccount.id,
+              nickname: fullName,
+              accountUrl: existingAccount.currentProfile?.accountUrl || null,
+              imageUrl: existingAccount.currentProfile?.imageUrl || null,
+              isCurrent: true,
+            });
             updatedCount++;
           }
 
-          if (profilePicUrl && (!existingAccount.imageUrl || forceUpdateImages)) {
+          if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
+            const currentProfile = await storage.getCurrentProfileVersion(existingAccount.id);
             await storage.createTask({
               type: "get_img",
               status: "pending",
               payload: JSON.stringify({
                 socialAccountId: existingAccount.id,
+                profileVersionId: currentProfile?.id || null,
                 imageUrl: profilePicUrl,
               }),
             });
@@ -1296,16 +1400,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         } else {
           const newAccount = await storage.createSocialAccount({
             username,
-            nickname: fullName || null,
-            accountUrl: `https://instagram.com/${username}`,
             ownerUuid: null,
-            imageUrl: null,
-            notes: instagramId ? `Instagram ID: ${instagramId}` : null,
-            following: [],
-            followers: [],
             typeId: instagramTypeId,
             internalAccountCreationType: `${targetAccount.username} import`,
           });
+
+          const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
+          if (currentProfile) {
+            await storage.updateProfileVersion(currentProfile.id, {
+              nickname: fullName || null,
+              accountUrl: `https://instagram.com/${username}`,
+            });
+          }
           
           if (profilePicUrl) {
             await storage.createTask({
@@ -1313,6 +1419,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               status: "pending",
               payload: JSON.stringify({
                 socialAccountId: newAccount.id,
+                profileVersionId: currentProfile?.id || null,
                 imageUrl: profilePicUrl,
               }),
             });
@@ -1323,76 +1430,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
           importedCount++;
         }
 
-        // Handle mutual follows based on followed_by_viewer flag
         if (followedByViewer) {
           const importedAccountId = accountsByUsername.get(username.toLowerCase())?.id;
           if (importedAccountId) {
-            if (importType === "followers") {
-              // Importing followers: followed_by_viewer means we follow them back (mutual)
-              // Add the imported account to our following list
-              const currentFollowing = targetAccount.following || [];
-              if (!currentFollowing.includes(importedAccountId)) {
-                await storage.updateSocialAccount(accountId, {
-                  following: [...currentFollowing, importedAccountId],
-                });
-                targetAccount.following = [...currentFollowing, importedAccountId];
-              }
-            } else {
-              // Importing following: followed_by_viewer means they follow us back (mutual)
-              // Add the imported account to our followers list
-              const currentFollowers = targetAccount.followers || [];
-              if (!currentFollowers.includes(importedAccountId)) {
-                await storage.updateSocialAccount(accountId, {
-                  followers: [...currentFollowers, importedAccountId],
-                });
-                targetAccount.followers = [...currentFollowers, importedAccountId];
-              }
-            }
+            mutualFollowIds.push(importedAccountId);
           }
         }
       }
 
-      // Build a lookup by ID from the username map for quick access
-      const accountsById = new Map<string, SocialAccount>();
-      for (const acct of accountsByUsername.values()) {
-        accountsById.set(acct.id, acct);
-      }
+      // Build network snapshot for the target account
+      const existingSnapshot = await storage.getLatestNetworkSnapshot(accountId);
+      const existingFollowers = existingSnapshot?.followers || [];
+      const existingFollowing = existingSnapshot?.following || [];
+
+      let newFollowers: string[];
+      let newFollowing: string[];
 
       if (importType === "followers") {
-        // These accounts follow the target, so add the target's ID to each imported account's following array
-        for (const importedId of processedAccountIds) {
-          const importedAccount = accountsById.get(importedId);
-          if (importedAccount) {
-            const currentFollowing = importedAccount.following || [];
-            if (!currentFollowing.includes(accountId)) {
-              await storage.updateSocialAccount(importedId, {
-                following: [...currentFollowing, accountId],
-              });
-            }
-          }
-        }
-        // Also update the target account's followers array for completeness
-        const currentFollowers = targetAccount.followers || [];
-        const newFollowers = Array.from(new Set([...currentFollowers, ...processedAccountIds]));
-        await storage.updateSocialAccount(accountId, { followers: newFollowers });
+        newFollowers = Array.from(new Set([...existingFollowers, ...processedAccountIds]));
+        newFollowing = Array.from(new Set([...existingFollowing, ...mutualFollowIds]));
       } else {
-        // Target follows these accounts, so add each to target's following array
-        const currentFollowing = targetAccount.following || [];
-        const newFollowing = Array.from(new Set([...currentFollowing, ...processedAccountIds]));
-        await storage.updateSocialAccount(accountId, { following: newFollowing });
-        // Also update each imported account's followers array for completeness
-        for (const importedId of processedAccountIds) {
-          const importedAccount = accountsById.get(importedId);
-          if (importedAccount) {
-            const currentFollowers = importedAccount.followers || [];
-            if (!currentFollowers.includes(accountId)) {
-              await storage.updateSocialAccount(importedId, {
-                followers: [...currentFollowers, accountId],
-              });
-            }
-          }
-        }
+        newFollowing = Array.from(new Set([...existingFollowing, ...processedAccountIds]));
+        newFollowers = Array.from(new Set([...existingFollowers, ...mutualFollowIds]));
       }
+
+      await storage.createNetworkSnapshot({
+        socialAccountId: accountId,
+        followerCount: newFollowers.length,
+        followingCount: newFollowing.length,
+        followers: newFollowers,
+        following: newFollowing,
+      });
 
       const skippedRows = parseResult.errors.length;
 
@@ -2255,8 +2323,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const uuids = validatedData.socialAccountUuids;
         for (const uuid of uuids) {
           const account = await storage.getSocialAccountById(uuid);
-          if (account?.imageUrl) {
-            const updated = await storage.updatePerson(id, { imageUrl: account.imageUrl });
+          if (account?.currentProfile?.imageUrl) {
+            const updated = await storage.updatePerson(id, { imageUrl: account.currentProfile.imageUrl });
             if (updated) {
               return res.json(updated);
             }
@@ -2839,7 +2907,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       xml += '<social_accounts_export>\n';
 
       const typeIdsUsed = new Set<string>();
-      const accounts: SocialAccount[] = [];
+      const accounts: SocialAccountWithCurrentProfile[] = [];
 
       for (const id of accountIds) {
         const account = await storage.getSocialAccountById(id);
@@ -2867,14 +2935,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    <social_account>\n';
         xml += `      <id>${escapeXml(account.id)}</id>\n`;
         xml += `      <username>${escapeXml(account.username)}</username>\n`;
-        xml += `      <nickname>${escapeXml(account.nickname || "")}</nickname>\n`;
-        xml += `      <account_url>${escapeXml(account.accountUrl)}</account_url>\n`;
+        xml += `      <nickname>${escapeXml(account.currentProfile?.nickname || "")}</nickname>\n`;
+        xml += `      <account_url>${escapeXml(account.currentProfile?.accountUrl || "")}</account_url>\n`;
         xml += `      <owner_uuid>${escapeXml(account.ownerUuid || "")}</owner_uuid>\n`;
         xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
-        xml += `      <image_url>${escapeXml(account.imageUrl || "")}</image_url>\n`;
-        xml += `      <notes>${escapeXml(account.notes || "")}</notes>\n`;
-        xml += `      <following>${arrayToXml(account.following || [], "account_id")}</following>\n`;
-        xml += `      <followers>${arrayToXml(account.followers || [], "account_id")}</followers>\n`;
+        xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
+        xml += `      <notes></notes>\n`;
+        xml += `      <following>${arrayToXml(account.latestSnapshot?.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(account.latestSnapshot?.followers || [], "account_id")}</followers>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }
@@ -2964,18 +3032,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           const id = unescapeXml(parseXmlTag("id", block));
           const username = unescapeXml(parseXmlTag("username", block));
-          const accountUrl = unescapeXml(parseXmlTag("account_url", block));
 
-          if (!id || !username || !accountUrl) {
+          if (!id || !username) {
             failedCounts.socialAccounts++;
             continue;
           }
 
           const nickname = unescapeXml(parseXmlTag("nickname", block));
+          const accountUrl = unescapeXml(parseXmlTag("account_url", block));
           const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
           const typeId = unescapeXml(parseXmlTag("type_id", block));
           const imageUrl = unescapeXml(parseXmlTag("image_url", block));
-          const notes = unescapeXml(parseXmlTag("notes", block));
           const following = parseXmlArray("following", "account_id", block);
           const followers = parseXmlArray("followers", "account_id", block);
 
@@ -2985,18 +3052,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
 
-          await storage.createSocialAccountWithId({
+          const created = await storage.createSocialAccountWithId({
             id,
             username,
-            nickname: nickname || null,
-            accountUrl,
             ownerUuid: ownerUuid || null,
             typeId: typeId || null,
-            imageUrl: imageUrl || null,
-            notes: notes || null,
-            following: following.map(f => unescapeXml(f)),
-            followers: followers.map(f => unescapeXml(f)),
           });
+
+          if (nickname || accountUrl || imageUrl) {
+            if (created.currentProfile) {
+              await storage.updateProfileVersion(created.currentProfile.id, {
+                nickname: nickname || null,
+                accountUrl: accountUrl || null,
+                imageUrl: imageUrl || null,
+              });
+            }
+          }
+
+          if ((followers && followers.length > 0) || (following && following.length > 0)) {
+            await storage.createNetworkSnapshot({
+              socialAccountId: id,
+              followerCount: followers.length,
+              followingCount: following.length,
+              followers: followers.map(f => unescapeXml(f)),
+              following: following.map(f => unescapeXml(f)),
+            });
+          }
+
           importedCounts.socialAccounts++;
         } catch (error) {
           console.error("Error importing social account:", error);
@@ -3042,9 +3124,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/social-accounts/:id", async (req, res) => {
     try {
       const id = req.params.id;
-      const validatedData = insertSocialAccountSchema.partial().parse(req.body);
-      const account = await storage.updateSocialAccount(id, validatedData);
+      const body = req.body;
 
+      const registryFields: Record<string, any> = {};
+      if (body.username !== undefined) registryFields.username = body.username;
+      if (body.ownerUuid !== undefined) registryFields.ownerUuid = body.ownerUuid;
+      if (body.typeId !== undefined) registryFields.typeId = body.typeId;
+      if (body.internalAccountCreationType !== undefined) registryFields.internalAccountCreationType = body.internalAccountCreationType;
+      if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;
+
+      if (Object.keys(registryFields).length > 0) {
+        await storage.updateSocialAccount(id, registryFields);
+      }
+
+      const profileFields: Record<string, any> = {};
+      if (body.nickname !== undefined) profileFields.nickname = body.nickname;
+      if (body.accountUrl !== undefined) profileFields.accountUrl = body.accountUrl;
+      if (body.imageUrl !== undefined) profileFields.imageUrl = body.imageUrl;
+      if (body.bio !== undefined) profileFields.bio = body.bio;
+
+      if (Object.keys(profileFields).length > 0) {
+        const currentProfile = await storage.getCurrentProfileVersion(id);
+        if (currentProfile) {
+          await storage.updateProfileVersion(currentProfile.id, profileFields);
+        } else {
+          await storage.createProfileVersion({
+            socialAccountId: id,
+            isCurrent: true,
+            ...profileFields,
+          });
+        }
+      }
+
+      const account = await storage.getSocialAccountById(id);
       if (!account) {
         return res.status(404).json({ error: "Social account not found" });
       }
@@ -3077,84 +3189,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get accounts that follow a specific account (query based on following arrays)
+  // Get accounts that follow a specific account (from network snapshots)
   app.get("/api/social-accounts/:id/followers", async (req, res) => {
     try {
       const { id } = req.params;
-      const allAccounts = await storage.getAllSocialAccounts();
+      const snapshot = await storage.getLatestNetworkSnapshot(id);
       
-      // Find accounts where this account's id is in their following array
-      const followers = allAccounts.filter(account => 
-        account.following && account.following.includes(id)
-      );
+      if (!snapshot || !snapshot.followers || snapshot.followers.length === 0) {
+        return res.json([]);
+      }
+
+      const followerAccounts = [];
+      for (const followerId of snapshot.followers) {
+        const account = await storage.getSocialAccountById(followerId);
+        if (account) {
+          followerAccounts.push(account);
+        }
+      }
       
-      res.json(followers);
+      res.json(followerAccounts);
     } catch (error) {
       console.error("Error fetching followers:", error);
       res.status(500).json({ error: "Failed to fetch followers" });
     }
   });
 
-  // Social account follower/following management
-  app.post("/api/social-accounts/:id/followers", async (req, res) => {
+  // Profile versions and network snapshots endpoints
+  app.get("/api/social-accounts/:id/profile-versions", async (req, res) => {
     try {
       const { id } = req.params;
-      const { followerId } = req.body;
-      
-      if (!followerId) {
-        return res.status(400).json({ error: "followerId is required" });
-      }
-
-      await Promise.all([
-        storage.addFollower(id, followerId),
-        storage.updateSocialAccount(id, { latestImportFollowers: new Date() })
-      ]);
-      res.json({ success: true });
+      const versions = await storage.getProfileVersions(id);
+      res.json(versions);
     } catch (error) {
-      console.error("Error adding follower:", error);
-      res.status(500).json({ error: "Failed to add follower" });
+      console.error("Error fetching profile versions:", error);
+      res.status(500).json({ error: "Failed to fetch profile versions" });
     }
   });
 
-  app.delete("/api/social-accounts/:id/followers/:followerId", async (req, res) => {
-    try {
-      const { id, followerId } = req.params;
-      await storage.removeFollower(id, followerId);
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error removing follower:", error);
-      res.status(500).json({ error: "Failed to remove follower" });
-    }
-  });
-
-  app.post("/api/social-accounts/:id/following", async (req, res) => {
+  app.get("/api/social-accounts/:id/network-snapshots", async (req, res) => {
     try {
       const { id } = req.params;
-      const { followingId } = req.body;
-      
-      if (!followingId) {
-        return res.status(400).json({ error: "followingId is required" });
-      }
-
-      await Promise.all([
-        storage.addFollowing(id, followingId),
-        storage.updateSocialAccount(id, { latestImportFollowing: new Date() })
-      ]);
-      res.json({ success: true });
+      const snapshots = await storage.getNetworkSnapshots(id);
+      res.json(snapshots);
     } catch (error) {
-      console.error("Error adding following:", error);
-      res.status(500).json({ error: "Failed to add following" });
+      console.error("Error fetching network snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch network snapshots" });
     }
   });
 
-  app.delete("/api/social-accounts/:id/following/:followingId", async (req, res) => {
+  app.post("/api/social-accounts/:id/network-snapshots", async (req, res) => {
     try {
-      const { id, followingId } = req.params;
-      await storage.removeFollowing(id, followingId);
-      res.json({ success: true });
+      const { id } = req.params;
+      const account = await storage.getSocialAccountById(id);
+      if (!account) {
+        return res.status(404).json({ error: "Social account not found" });
+      }
+      const snapshot = await storage.createNetworkSnapshot({
+        socialAccountId: id,
+        followerCount: req.body.followerCount || 0,
+        followingCount: req.body.followingCount || 0,
+        followers: req.body.followers || [],
+        following: req.body.following || [],
+      });
+      res.status(201).json(snapshot);
     } catch (error) {
-      console.error("Error removing following:", error);
-      res.status(500).json({ error: "Failed to remove following" });
+      console.error("Error creating network snapshot:", error);
+      res.status(500).json({ error: "Failed to create network snapshot" });
     }
   });
 
@@ -3512,7 +3612,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const scored = unownedAccounts.map((account) => {
         let score = 0;
         const username = (account.username || "").toLowerCase();
-        const nickname = (account.nickname || "").toLowerCase();
+        const nickname = (account.currentProfile?.nickname || "").toLowerCase();
 
         if (nickname === fullName || username === fullName.replace(/\s+/g, "")) {
           score += 100;
@@ -3589,8 +3689,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!person.imageUrl) {
         for (const accountId of socialAccountIds) {
           const account = await storage.getSocialAccountById(accountId);
-          if (account?.imageUrl) {
-            await storage.updatePerson(personId, { imageUrl: account.imageUrl });
+          if (account?.currentProfile?.imageUrl) {
+            await storage.updatePerson(personId, { imageUrl: account.currentProfile.imageUrl });
             break;
           }
         }
@@ -3623,8 +3723,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         let foundImage: string | null = null;
         for (const uuid of socialUuids) {
           const account = await storage.getSocialAccountById(uuid);
-          if (account?.imageUrl) {
-            foundImage = account.imageUrl;
+          if (account?.currentProfile?.imageUrl) {
+            foundImage = account.currentProfile.imageUrl;
             break;
           }
         }

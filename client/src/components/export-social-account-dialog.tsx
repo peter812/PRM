@@ -9,12 +9,12 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import type { SocialAccount } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile } from "@shared/schema";
 
 interface ExportSocialAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  account: SocialAccount;
+  account: SocialAccountWithCurrentProfile;
 }
 
 export function ExportSocialAccountDialog({
@@ -78,17 +78,17 @@ export function ExportSocialAccountDialog({
             <p className="text-sm font-medium" data-testid="text-export-username">
               {account.username}
             </p>
-            {account.nickname && (
+            {account.currentProfile?.nickname && (
               <p className="text-sm text-muted-foreground" data-testid="text-export-nickname">
-                {account.nickname}
+                {account.currentProfile?.nickname}
               </p>
             )}
             <div className="flex gap-4 text-xs text-muted-foreground">
               <span data-testid="text-export-followers">
-                {account.followers?.length || 0} followers
+                {account.latestSnapshot?.followers?.length || 0} followers
               </span>
               <span data-testid="text-export-following">
-                {account.following?.length || 0} following
+                {account.latestSnapshot?.following?.length || 0} following
               </span>
             </div>
           </div>
