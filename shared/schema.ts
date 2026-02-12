@@ -470,8 +470,12 @@ export type SocialGraphSettings = {
   limitExtras: boolean;
   maxExtras: number;
   highlightedAccountId: string | null;
-  mode: 'default' | 'blob';
+  mode: 'default' | 'blob' | 'single-highlight' | 'multi-highlight';
   blobMergeMultiplier: number;
+  singleHighlightAccountId?: string | null;
+  singleShowFriendLinks?: boolean;
+  singleRemoveExtras?: boolean;
+  multiHighlightAccountIds?: string[];
 };
 
 export type SocialGraphNode = {
