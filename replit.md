@@ -57,13 +57,13 @@ The "Reset Database" feature performs a complete wipe of all data including the 
 -   **Unified Flow Tab:** Person profiles feature a Flow tab that displays notes, interactions, and communications in a single chronological timeline with infinite scroll. Uses cursor-based pagination, date separators between different days, and different layouts for each item type (chat bubbles for communications, centered cards for notes/interactions).
 -   **Account Matching:** Page at `/account-matching` for linking people profiles with unlinked social accounts. Backend finds people without social accounts (and `noSocialMedia=false`), scores unlinked social accounts by name similarity, and presents 5-8 candidates. Users can select accounts (toggle green), connect them, skip, or mark the person as having no social media (`noSocialMedia` flag). The `people` table includes a `noSocialMedia` integer column (0/1). Available as a sub-menu item under "Social Accounts" in the sidebar.
 -   **Background Task Worker:** A `tasks` table stores long-running background tasks (e.g., image downloads). The task worker (`server/task-worker.ts`) processes tasks sequentially with a 1-second delay between image downloads. After all tasks are completed, it polls every 60 seconds for new work. When a new batch of tasks is created (e.g., during Instagram import), the worker is immediately triggered via `triggerTaskWorker()`. The first task type is `get_img`: downloads an image from a URL (using mobile Safari User-Agent for Instagram), uploads to S3/CDN, deletes the local copy, and updates the profile version's `imageUrl` with the CDN URL. Task payloads can include `profileVersionId` to target the correct profile version row.
--   **Historical Social Account Tracking (Feb 2026):** Social accounts now use a three-table model:
+-   **Historical Social Account Tracking (Feb 2026):** Social accounts now use a four-table model:
     - `social_accounts` - Identity registry (username, ownerUuid, typeId, lastScrapedAt). Slim table, no profile data.
     - `social_profile_versions` - Versioned profile data (nickname, bio, accountUrl, imageUrl, externalImageUrl, detectedAt, isCurrent). Only one version per account has `isCurrent=true`. When profile changes are detected during import, a new version is created and the old one is marked `isCurrent=false`.
-    - `social_network_snapshots` - Point-in-time network state (followerCount, followingCount, followers[], following[], capturedAt). One snapshot is created per import.
-    - The composite type `SocialAccountWithCurrentProfile` bundles the account with its `currentProfile` and `latestSnapshot` for API responses.
-    - Old follower/following management endpoints (POST/DELETE) were removed; network data is now snapshot-based.
-    - API endpoints: GET `/api/social-accounts/:id/profile-versions` and GET `/api/social-accounts/:id/network-snapshots` return historical data.
+    - `social_network_state` - Current network state per account (followerCount, followingCount, followers[], following[], updatedAt). Uses upsert pattern - one row per account, updated in place.
+    - `social_network_changes` - Git-like changelog of follow/unfollow events (changeType, direction, targetAccountId, detectedAt, batchId). When network state is updated via POST, diffs are computed against old state and individual changes are recorded.
+    - The composite type `SocialAccountWithCurrentProfile` bundles the account with its `currentProfile` and `latestState` for API responses.
+    - API endpoints: GET `/api/social-accounts/:id/profile-versions`, GET `/api/social-accounts/:id/network-state`, GET `/api/social-accounts/:id/network-changes`, POST `/api/social-accounts/:id/network-state`.
 
 ### Interactions System
 

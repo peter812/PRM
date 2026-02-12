@@ -14,7 +14,8 @@ import {
   socialAccounts,
   socialAccountTypes,
   socialProfileVersions,
-  socialNetworkSnapshots,
+  socialNetworkState,
+  socialNetworkChanges,
   messages,
   type Person,
   type InsertPerson,
@@ -47,8 +48,10 @@ import {
   type InsertSocialAccountType,
   type SocialProfileVersion,
   type InsertSocialProfileVersion,
-  type SocialNetworkSnapshot,
-  type InsertSocialNetworkSnapshot,
+  type SocialNetworkState,
+  type InsertSocialNetworkState,
+  type SocialNetworkChange,
+  type InsertSocialNetworkChange,
   type SocialAccountWithCurrentProfile,
   tasks,
   type Message,
@@ -213,11 +216,15 @@ export interface IStorage {
   updateProfileVersion(id: string, data: Partial<InsertSocialProfileVersion>): Promise<SocialProfileVersion | undefined>;
   getAllProfileVersions(): Promise<SocialProfileVersion[]>;
 
-  // Social network snapshot operations
-  getLatestNetworkSnapshot(socialAccountId: string): Promise<SocialNetworkSnapshot | null>;
-  getNetworkSnapshots(socialAccountId: string): Promise<SocialNetworkSnapshot[]>;
-  createNetworkSnapshot(snapshot: InsertSocialNetworkSnapshot): Promise<SocialNetworkSnapshot>;
-  getAllNetworkSnapshots(): Promise<SocialNetworkSnapshot[]>;
+  // Social network state operations
+  getNetworkState(socialAccountId: string): Promise<SocialNetworkState | null>;
+  upsertNetworkState(state: InsertSocialNetworkState): Promise<SocialNetworkState>;
+  getAllNetworkStates(): Promise<SocialNetworkState[]>;
+
+  // Social network change operations
+  recordNetworkChanges(changes: InsertSocialNetworkChange[]): Promise<SocialNetworkChange[]>;
+  getNetworkChanges(socialAccountId: string, limit?: number): Promise<SocialNetworkChange[]>;
+  getAllNetworkChanges(): Promise<SocialNetworkChange[]>;
 
   // Social account type operations
   getAllSocialAccountTypes(): Promise<SocialAccountType[]>;
@@ -1137,10 +1144,10 @@ export class DatabaseStorage implements IStorage {
 
   // Social graph operations
   async getSocialGraph(settings: SocialGraphSettings): Promise<SocialGraphData> {
-    const [allAccounts, allTypes, allSnapshots, allCurrentProfiles] = await Promise.all([
+    const [allAccounts, allTypes, allStates, allCurrentProfiles] = await Promise.all([
       db.select().from(socialAccounts),
       db.select().from(socialAccountTypes),
-      db.select().from(socialNetworkSnapshots),
+      db.select().from(socialNetworkState),
       db.select().from(socialProfileVersions).where(eq(socialProfileVersions.isCurrent, true)),
     ]);
 
@@ -1152,12 +1159,9 @@ export class DatabaseStorage implements IStorage {
     const profileMap = new Map<string, SocialProfileVersion>();
     allCurrentProfiles.forEach(p => profileMap.set(p.socialAccountId, p));
 
-    const latestSnapshotMap = new Map<string, SocialNetworkSnapshot>();
-    allSnapshots.forEach(snap => {
-      const existing = latestSnapshotMap.get(snap.socialAccountId);
-      if (!existing || snap.capturedAt > existing.capturedAt) {
-        latestSnapshotMap.set(snap.socialAccountId, snap);
-      }
+    const stateMap = new Map<string, SocialNetworkState>();
+    allStates.forEach(state => {
+      stateMap.set(state.socialAccountId, state);
     });
 
     const allAccountIds = new Set(allAccounts.map(a => a.id));
@@ -1165,7 +1169,7 @@ export class DatabaseStorage implements IStorage {
     type AccountWithFollowing = SocialAccount & { following: string[] | null };
     const accountsWithFollowing: AccountWithFollowing[] = allAccounts.map(a => ({
       ...a,
-      following: latestSnapshotMap.get(a.id)?.following || null,
+      following: stateMap.get(a.id)?.following || null,
     }));
 
     const directConnectionsMap = new Map<string, Set<string>>();
@@ -1443,12 +1447,12 @@ export class DatabaseStorage implements IStorage {
   private buildSocialAccountWithProfile(
     account: SocialAccount,
     profile: SocialProfileVersion | null,
-    snapshot: SocialNetworkSnapshot | null
+    state: SocialNetworkState | null
   ): SocialAccountWithCurrentProfile {
     return {
       ...account,
       currentProfile: profile || null,
-      latestSnapshot: snapshot || null,
+      latestState: state || null,
     };
   }
 
@@ -1544,12 +1548,8 @@ export class DatabaseStorage implements IStorage {
     if (followsAccountIds && followsAccountIds.length > 0) {
       conditions.push(
         sql`EXISTS (
-          SELECT 1 FROM ${socialNetworkSnapshots} sns
+          SELECT 1 FROM ${socialNetworkState} sns
           WHERE sns.social_account_id = ${socialAccounts.id}
-          AND sns.captured_at = (
-            SELECT MAX(sns2.captured_at) FROM ${socialNetworkSnapshots} sns2
-            WHERE sns2.social_account_id = ${socialAccounts.id}
-          )
           AND (${sql.join(
             followsAccountIds.map(id => sql`${id} = ANY(sns.following)`),
             sql` OR `
@@ -1630,14 +1630,12 @@ export class DatabaseStorage implements IStorage {
 
     if (!row) return undefined;
 
-    const [latestSnapshot] = await db
+    const [currentState] = await db
       .select()
-      .from(socialNetworkSnapshots)
-      .where(eq(socialNetworkSnapshots.socialAccountId, id))
-      .orderBy(desc(socialNetworkSnapshots.capturedAt))
-      .limit(1);
+      .from(socialNetworkState)
+      .where(eq(socialNetworkState.socialAccountId, id));
 
-    return this.buildSocialAccountWithProfile(row.account, row.profile, latestSnapshot || null);
+    return this.buildSocialAccountWithProfile(row.account, row.profile, currentState || null);
   }
 
   async createSocialAccount(insertAccount: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile> {
@@ -1754,32 +1752,58 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(socialProfileVersions).orderBy(socialProfileVersions.detectedAt);
   }
 
-  // Social network snapshot operations
-  async getLatestNetworkSnapshot(socialAccountId: string): Promise<SocialNetworkSnapshot | null> {
-    const [snapshot] = await db
+  // Social network state operations
+  async getNetworkState(socialAccountId: string): Promise<SocialNetworkState | null> {
+    const [state] = await db
       .select()
-      .from(socialNetworkSnapshots)
-      .where(eq(socialNetworkSnapshots.socialAccountId, socialAccountId))
-      .orderBy(desc(socialNetworkSnapshots.capturedAt))
-      .limit(1);
-    return snapshot || null;
+      .from(socialNetworkState)
+      .where(eq(socialNetworkState.socialAccountId, socialAccountId));
+    return state || null;
   }
 
-  async getNetworkSnapshots(socialAccountId: string): Promise<SocialNetworkSnapshot[]> {
-    return await db
-      .select()
-      .from(socialNetworkSnapshots)
-      .where(eq(socialNetworkSnapshots.socialAccountId, socialAccountId))
-      .orderBy(desc(socialNetworkSnapshots.capturedAt));
+  async upsertNetworkState(state: InsertSocialNetworkState): Promise<SocialNetworkState> {
+    const [upserted] = await db
+      .insert(socialNetworkState)
+      .values(state)
+      .onConflictDoUpdate({
+        target: socialNetworkState.socialAccountId,
+        set: {
+          followerCount: state.followerCount,
+          followingCount: state.followingCount,
+          followers: state.followers,
+          following: state.following,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return upserted;
   }
 
-  async createNetworkSnapshot(snapshot: InsertSocialNetworkSnapshot): Promise<SocialNetworkSnapshot> {
-    const [created] = await db.insert(socialNetworkSnapshots).values(snapshot).returning();
+  async getAllNetworkStates(): Promise<SocialNetworkState[]> {
+    return await db.select().from(socialNetworkState);
+  }
+
+  // Social network change operations
+  async recordNetworkChanges(changes: InsertSocialNetworkChange[]): Promise<SocialNetworkChange[]> {
+    if (changes.length === 0) return [];
+    const created = await db.insert(socialNetworkChanges).values(changes).returning();
     return created;
   }
 
-  async getAllNetworkSnapshots(): Promise<SocialNetworkSnapshot[]> {
-    return await db.select().from(socialNetworkSnapshots).orderBy(socialNetworkSnapshots.capturedAt);
+  async getNetworkChanges(socialAccountId: string, limit?: number): Promise<SocialNetworkChange[]> {
+    let query = db
+      .select()
+      .from(socialNetworkChanges)
+      .where(eq(socialNetworkChanges.socialAccountId, socialAccountId))
+      .orderBy(desc(socialNetworkChanges.detectedAt));
+    if (limit) {
+      return await query.limit(limit);
+    }
+    return await query;
+  }
+
+  async getAllNetworkChanges(): Promise<SocialNetworkChange[]> {
+    return await db.select().from(socialNetworkChanges).orderBy(socialNetworkChanges.detectedAt);
   }
 
   // Social account type operations
@@ -2271,7 +2295,7 @@ export class DatabaseStorage implements IStorage {
             results.socialProfiles = rows.map(row => ({
               ...row.account,
               currentProfile: row.profile || null,
-              latestSnapshot: null,
+              latestState: null,
             }));
           })
       );

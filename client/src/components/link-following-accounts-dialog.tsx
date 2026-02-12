@@ -49,7 +49,7 @@ export function LinkFollowingAccountsDialog({
 
   const linkMutation = useMutation({
     mutationFn: async (followingIds: string[]) => {
-      return await apiRequest("POST", `/api/social-accounts/${accountUuid}/network-snapshots`, {
+      return await apiRequest("POST", `/api/social-accounts/${accountUuid}/network-state`, {
         following: followingIds,
         followers: [],
         followerCount: 0,

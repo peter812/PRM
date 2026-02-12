@@ -239,7 +239,7 @@ export default function SocialAccountProfile() {
   }
 
   const isFollowingYou = mePerson?.socialAccountUuids?.some((meId) =>
-    account.latestSnapshot?.followers?.includes(meId)
+    account.latestState?.followers?.includes(meId)
   );
 
   const accountType = account.typeId 
@@ -537,7 +537,7 @@ export default function SocialAccountProfile() {
           <Card className="p-4">
             <div className="flex items-center justify-between gap-2 mb-4">
               <h3 className="text-lg font-semibold" data-testid="text-following-header">
-                Following ({account.latestSnapshot?.following?.length || 0})
+                Following ({account.latestState?.following?.length || 0})
               </h3>
               <Button
                 variant="outline"
@@ -548,9 +548,9 @@ export default function SocialAccountProfile() {
                 <Plus className="h-4 w-4" />
               </Button>
             </div>
-            {account.latestSnapshot?.following && account.latestSnapshot?.following.length > 0 ? (
+            {account.latestState?.following && account.latestState?.following.length > 0 ? (
               <div className="space-y-2">
-                {account.latestSnapshot?.following.map((followingId) => {
+                {account.latestState?.following.map((followingId) => {
                   const followingAccount = allSocialAccounts?.find(a => a.id === followingId);
                   return (
                     <div 
@@ -600,7 +600,7 @@ export default function SocialAccountProfile() {
         open={isLinkFollowingOpen}
         onOpenChange={setIsLinkFollowingOpen}
         accountUuid={uuid!}
-        linkedAccountIds={account.latestSnapshot?.following || []}
+        linkedAccountIds={account.latestState?.following || []}
       />
 
       <Dialog open={isImportDialogOpen} onOpenChange={(open) => {

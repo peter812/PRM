@@ -168,15 +168,26 @@ export const socialProfileVersions = pgTable("social_profile_versions", {
   isCurrent: boolean("is_current").notNull().default(true),
 });
 
-// Social network snapshots table (Connections History)
-export const socialNetworkSnapshots = pgTable("social_network_snapshots", {
+// Social network state table (Current snapshot - one row per account)
+export const socialNetworkState = pgTable("social_network_state", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  socialAccountId: varchar("social_account_id").notNull().unique().references(() => socialAccounts.id, { onDelete: "cascade" }),
   followerCount: integer("follower_count").notNull().default(0),
   followingCount: integer("following_count").notNull().default(0),
   followers: text("followers").array().default(sql`ARRAY[]::text[]`),
   following: text("following").array().default(sql`ARRAY[]::text[]`),
-  capturedAt: timestamp("captured_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Social network changes table (Git-like change log)
+export const socialNetworkChanges = pgTable("social_network_changes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  changeType: text("change_type").notNull(), // 'follow' or 'unfollow'
+  direction: text("direction").notNull(), // 'follower' (they follow you) or 'following' (you follow them)
+  targetAccountId: text("target_account_id").notNull(), // the account that followed/unfollowed
+  detectedAt: timestamp("detected_at").notNull().defaultNow(),
+  batchId: varchar("batch_id"), // groups changes detected at the same time
 });
 
 // Background tasks table - for long-running operations like image downloads
@@ -282,7 +293,8 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one, many })
     references: [socialAccountTypes.id],
   }),
   profileVersions: many(socialProfileVersions),
-  networkSnapshots: many(socialNetworkSnapshots),
+  networkState: many(socialNetworkState),
+  networkChanges: many(socialNetworkChanges),
 }));
 
 export const socialProfileVersionsRelations = relations(socialProfileVersions, ({ one }) => ({
@@ -292,9 +304,16 @@ export const socialProfileVersionsRelations = relations(socialProfileVersions, (
   }),
 }));
 
-export const socialNetworkSnapshotsRelations = relations(socialNetworkSnapshots, ({ one }) => ({
+export const socialNetworkStateRelations = relations(socialNetworkState, ({ one }) => ({
   socialAccount: one(socialAccounts, {
-    fields: [socialNetworkSnapshots.socialAccountId],
+    fields: [socialNetworkState.socialAccountId],
+    references: [socialAccounts.id],
+  }),
+}));
+
+export const socialNetworkChangesRelations = relations(socialNetworkChanges, ({ one }) => ({
+  socialAccount: one(socialAccounts, {
+    fields: [socialNetworkChanges.socialAccountId],
     references: [socialAccounts.id],
   }),
 }));
@@ -389,9 +408,14 @@ export const insertSocialProfileVersionSchema = createInsertSchema(socialProfile
   detectedAt: true,
 });
 
-export const insertSocialNetworkSnapshotSchema = createInsertSchema(socialNetworkSnapshots).omit({
+export const insertSocialNetworkStateSchema = createInsertSchema(socialNetworkState).omit({
   id: true,
-  capturedAt: true,
+  updatedAt: true,
+});
+
+export const insertSocialNetworkChangeSchema = createInsertSchema(socialNetworkChanges).omit({
+  id: true,
+  detectedAt: true,
 });
 
 export const insertMessageSchema = createInsertSchema(messages)
@@ -454,12 +478,15 @@ export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSche
 export type SocialProfileVersion = typeof socialProfileVersions.$inferSelect;
 export type InsertSocialProfileVersion = z.infer<typeof insertSocialProfileVersionSchema>;
 
-export type SocialNetworkSnapshot = typeof socialNetworkSnapshots.$inferSelect;
-export type InsertSocialNetworkSnapshot = z.infer<typeof insertSocialNetworkSnapshotSchema>;
+export type SocialNetworkState = typeof socialNetworkState.$inferSelect;
+export type InsertSocialNetworkState = z.infer<typeof insertSocialNetworkStateSchema>;
+
+export type SocialNetworkChange = typeof socialNetworkChanges.$inferSelect;
+export type InsertSocialNetworkChange = z.infer<typeof insertSocialNetworkChangeSchema>;
 
 export type SocialAccountWithCurrentProfile = SocialAccount & {
   currentProfile: SocialProfileVersion | null;
-  latestSnapshot: SocialNetworkSnapshot | null;
+  latestState: SocialNetworkState | null;
 };
 
 export type Message = typeof messages.$inferSelect;

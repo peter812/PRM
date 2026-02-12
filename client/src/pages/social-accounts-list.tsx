@@ -260,7 +260,7 @@ export default function SocialAccountsList() {
           <div className="flex flex-col gap-[5px]">
             {accounts.map((account) => {
               const isFollowingYou = meAccountIds.some((meId) =>
-                account.latestSnapshot?.followers?.includes(meId)
+                account.latestState?.followers?.includes(meId)
               );
               const accountType = account.typeId 
                 ? socialAccountTypes?.find(t => t.id === account.typeId) 
@@ -332,11 +332,11 @@ export default function SocialAccountsList() {
                         
                         <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
                           <span data-testid={`text-followers-${account.id}`}>
-                            {account.latestSnapshot?.followers?.length || 0} followers
+                            {account.latestState?.followers?.length || 0} followers
                           </span>
                           <span>•</span>
                           <span data-testid={`text-following-${account.id}`}>
-                            {account.latestSnapshot?.following?.length || 0} following
+                            {account.latestState?.following?.length || 0} following
                           </span>
                         </div>
                       </div>

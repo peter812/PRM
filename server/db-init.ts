@@ -230,20 +230,20 @@ async function addColumnIfNotExists(
 
 /**
  * Migrates social_accounts from flat model to historical model.
- * Creates social_profile_versions and social_network_snapshots tables,
+ * Creates social_profile_versions and social_network_state/social_network_changes tables,
  * copies existing data, then drops old columns.
  */
 async function migrateSocialAccountsToHistorical(): Promise<void> {
   const profileVersionsExists = await tableExists("social_profile_versions");
-  const networkSnapshotsExists = await tableExists("social_network_snapshots");
+  const networkStateExists = await tableExists("social_network_state");
+  const networkChangesExists = await tableExists("social_network_changes");
 
-  if (profileVersionsExists && networkSnapshotsExists) {
-    // Already migrated - just add last_scraped_at if missing
+  if (profileVersionsExists && networkStateExists && networkChangesExists) {
     await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
     return;
   }
 
-  log("Migrating social_accounts to historical model (v2)...");
+  log("Migrating social_accounts to historical model...");
 
   // 1. Create social_profile_versions table
   if (!profileVersionsExists) {
@@ -263,23 +263,58 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
     log("Created social_profile_versions table");
   }
 
-  // 2. Create social_network_snapshots table
-  if (!networkSnapshotsExists) {
+  // 2. Create social_network_state table
+  if (!networkStateExists) {
     await pool.query(`
-      CREATE TABLE social_network_snapshots (
+      CREATE TABLE social_network_state (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        social_account_id VARCHAR NOT NULL UNIQUE REFERENCES social_accounts(id) ON DELETE CASCADE,
         follower_count INTEGER NOT NULL DEFAULT 0,
         following_count INTEGER NOT NULL DEFAULT 0,
         followers TEXT[] DEFAULT ARRAY[]::text[],
         following TEXT[] DEFAULT ARRAY[]::text[],
-        captured_at TIMESTAMP NOT NULL DEFAULT NOW()
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
-    log("Created social_network_snapshots table");
+    log("Created social_network_state table");
   }
 
-  // 3. Check if old columns exist (migration needed)
+  // 3. Create social_network_changes table
+  if (!networkChangesExists) {
+    await pool.query(`
+      CREATE TABLE social_network_changes (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        change_type VARCHAR NOT NULL,
+        direction VARCHAR NOT NULL,
+        target_account_id VARCHAR NOT NULL,
+        detected_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        batch_id VARCHAR
+      )
+    `);
+    log("Created social_network_changes table");
+  }
+
+  // 4. Migrate data from old social_network_snapshots table if it exists
+  const snapshotsExists = await tableExists("social_network_snapshots");
+  if (snapshotsExists && !networkStateExists) {
+    log("Migrating social_network_snapshots to social_network_state...");
+    await pool.query(`
+      INSERT INTO social_network_state (social_account_id, follower_count, following_count, followers, following, updated_at)
+      SELECT DISTINCT ON (social_account_id) social_account_id, follower_count, following_count,
+        COALESCE(followers, ARRAY[]::text[]),
+        COALESCE(following, ARRAY[]::text[]),
+        captured_at
+      FROM social_network_snapshots
+      ORDER BY social_account_id, captured_at DESC
+    `);
+    log("Migrated latest snapshots to social_network_state");
+
+    await pool.query(`DROP TABLE social_network_snapshots`);
+    log("Dropped old social_network_snapshots table");
+  }
+
+  // 5. Check if old columns exist on social_accounts (original flat model migration)
   const hasNickname = await columnExists("social_accounts", "nickname");
   const hasAccountUrl = await columnExists("social_accounts", "account_url");
   const hasFollowers = await columnExists("social_accounts", "followers");
@@ -287,7 +322,6 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
   if (hasNickname || hasAccountUrl || hasFollowers) {
     log("Copying existing data to new tables...");
 
-    // Copy profile data into social_profile_versions
     if (hasNickname) {
       await pool.query(`
         INSERT INTO social_profile_versions (social_account_id, nickname, account_url, image_url, detected_at, is_current)
@@ -297,10 +331,9 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
       log("Copied profile data to social_profile_versions");
     }
 
-    // Copy network data into social_network_snapshots
     if (hasFollowers) {
       await pool.query(`
-        INSERT INTO social_network_snapshots (social_account_id, follower_count, following_count, followers, following, captured_at)
+        INSERT INTO social_network_state (social_account_id, follower_count, following_count, followers, following, updated_at)
         SELECT id,
           COALESCE(array_length(followers, 1), 0),
           COALESCE(array_length(following, 1), 0),
@@ -309,10 +342,10 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
           COALESCE(created_at, NOW())
         FROM social_accounts
       `);
-      log("Copied network data to social_network_snapshots");
+      log("Copied network data to social_network_state");
     }
 
-    // 4. Drop old columns
+    // 6. Drop old columns
     const columnsToDrop = ['nickname', 'account_url', 'image_url', 'notes', 'following', 'followers', 'latest_import_followers', 'latest_import_following'];
     for (const col of columnsToDrop) {
       const exists = await columnExists("social_accounts", col);
@@ -322,7 +355,7 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
       }
     }
 
-    // 5. Add last_scraped_at column
+    // 7. Add last_scraped_at column
     await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
 
     log("Social accounts migration to historical model complete!");

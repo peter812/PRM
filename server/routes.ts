@@ -2,7 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, type SocialAccountWithCurrentProfile } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, type SocialAccountWithCurrentProfile, type InsertSocialNetworkChange } from "@shared/schema";
+import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
 import {
@@ -279,7 +280,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         allSocialAccounts,
         allSocialAccountTypes,
         allProfileVersions,
-        allNetworkSnapshots,
+        allNetworkStates,
         allMessages,
         mePersonResult,
       ] = await Promise.all([
@@ -295,7 +296,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         storage.getAllSocialAccounts(),
         storage.getAllSocialAccountTypes(),
         storage.getAllProfileVersions(),
-        storage.getAllNetworkSnapshots(),
+        storage.getAllNetworkStates(),
         storage.getAllMessages(),
         db.select().from(people).where(isNotNull(people.userId)).limit(1),
       ]);
@@ -482,8 +483,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
         xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
         xml += `      <notes></notes>\n`;
-        xml += `      <following>${arrayToXml(account.latestSnapshot?.following || [], "account_id")}</following>\n`;
-        xml += `      <followers>${arrayToXml(account.latestSnapshot?.followers || [], "account_id")}</followers>\n`;
+        xml += `      <following>${arrayToXml(account.latestState?.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(account.latestState?.followers || [], "account_id")}</followers>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }
@@ -518,17 +519,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       xml += '  </social_profile_versions>\n';
 
-      // Export social network snapshots
+      // Export social network states (current snapshots)
       xml += '  <social_network_snapshots>\n';
-      for (const snapshot of allNetworkSnapshots) {
+      for (const state of allNetworkStates) {
         xml += '    <social_network_snapshot>\n';
-        xml += `      <id>${escapeXml(snapshot.id)}</id>\n`;
-        xml += `      <social_account_id>${escapeXml(snapshot.socialAccountId)}</social_account_id>\n`;
-        xml += `      <follower_count>${escapeXml(snapshot.followerCount)}</follower_count>\n`;
-        xml += `      <following_count>${escapeXml(snapshot.followingCount)}</following_count>\n`;
-        xml += `      <followers>${arrayToXml(snapshot.followers || [], "account_id")}</followers>\n`;
-        xml += `      <following>${arrayToXml(snapshot.following || [], "account_id")}</following>\n`;
-        xml += `      <captured_at>${escapeXml(snapshot.capturedAt)}</captured_at>\n`;
+        xml += `      <id>${escapeXml(state.id)}</id>\n`;
+        xml += `      <social_account_id>${escapeXml(state.socialAccountId)}</social_account_id>\n`;
+        xml += `      <follower_count>${escapeXml(state.followerCount)}</follower_count>\n`;
+        xml += `      <following_count>${escapeXml(state.followingCount)}</following_count>\n`;
+        xml += `      <followers>${arrayToXml(state.followers || [], "account_id")}</followers>\n`;
+        xml += `      <following>${arrayToXml(state.following || [], "account_id")}</following>\n`;
+        xml += `      <captured_at>${escapeXml(state.updatedAt)}</captured_at>\n`;
         xml += '    </social_network_snapshot>\n';
       }
       xml += '  </social_network_snapshots>\n';
@@ -943,7 +944,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           if ((followers && followers.length > 0) || (following && following.length > 0)) {
-            await storage.createNetworkSnapshot({
+            await storage.upsertNetworkState({
               socialAccountId: id,
               followerCount: followers.length,
               followingCount: following.length,
@@ -988,7 +989,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Parse and import social network snapshots (from new format exports)
+      // Parse and import social network snapshots (from new format exports - treated as current state)
       const snapshotBlocks = parseAllTags("social_network_snapshot", xmlText);
       for (const block of snapshotBlocks) {
         try {
@@ -1000,7 +1001,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
 
-          await storage.createNetworkSnapshot({
+          await storage.upsertNetworkState({
             socialAccountId,
             followerCount,
             followingCount,
@@ -1438,10 +1439,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Build network snapshot for the target account
-      const existingSnapshot = await storage.getLatestNetworkSnapshot(accountId);
-      const existingFollowers = existingSnapshot?.followers || [];
-      const existingFollowing = existingSnapshot?.following || [];
+      // Build network state for the target account
+      const existingState = await storage.getNetworkState(accountId);
+      const existingFollowers = existingState?.followers || [];
+      const existingFollowing = existingState?.following || [];
 
       let newFollowers: string[];
       let newFollowing: string[];
@@ -1454,7 +1455,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         newFollowers = Array.from(new Set([...existingFollowers, ...mutualFollowIds]));
       }
 
-      await storage.createNetworkSnapshot({
+      await storage.upsertNetworkState({
         socialAccountId: accountId,
         followerCount: newFollowers.length,
         followingCount: newFollowing.length,
@@ -2941,8 +2942,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
         xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
         xml += `      <notes></notes>\n`;
-        xml += `      <following>${arrayToXml(account.latestSnapshot?.following || [], "account_id")}</following>\n`;
-        xml += `      <followers>${arrayToXml(account.latestSnapshot?.followers || [], "account_id")}</followers>\n`;
+        xml += `      <following>${arrayToXml(account.latestState?.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(account.latestState?.followers || [], "account_id")}</followers>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }
@@ -3070,12 +3071,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           if ((followers && followers.length > 0) || (following && following.length > 0)) {
-            await storage.createNetworkSnapshot({
+            await storage.upsertNetworkState({
               socialAccountId: id,
               followerCount: followers.length,
               followingCount: following.length,
-              followers: followers.map(f => unescapeXml(f)),
-              following: following.map(f => unescapeXml(f)),
+              followers: followers.map((f: string) => unescapeXml(f)),
+              following: following.map((f: string) => unescapeXml(f)),
             });
           }
 
@@ -3189,18 +3190,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get accounts that follow a specific account (from network snapshots)
+  // Get accounts that follow a specific account (from network state)
   app.get("/api/social-accounts/:id/followers", async (req, res) => {
     try {
       const { id } = req.params;
-      const snapshot = await storage.getLatestNetworkSnapshot(id);
+      const state = await storage.getNetworkState(id);
       
-      if (!snapshot || !snapshot.followers || snapshot.followers.length === 0) {
+      if (!state || !state.followers || state.followers.length === 0) {
         return res.json([]);
       }
 
       const followerAccounts = [];
-      for (const followerId of snapshot.followers) {
+      for (const followerId of state.followers) {
         const account = await storage.getSocialAccountById(followerId);
         if (account) {
           followerAccounts.push(account);
@@ -3226,35 +3227,82 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.get("/api/social-accounts/:id/network-snapshots", async (req, res) => {
+  app.get("/api/social-accounts/:id/network-changes", async (req, res) => {
     try {
       const { id } = req.params;
-      const snapshots = await storage.getNetworkSnapshots(id);
-      res.json(snapshots);
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
+      const changes = await storage.getNetworkChanges(id, limit);
+      res.json(changes);
     } catch (error) {
-      console.error("Error fetching network snapshots:", error);
-      res.status(500).json({ error: "Failed to fetch network snapshots" });
+      console.error("Error fetching network changes:", error);
+      res.status(500).json({ error: "Failed to fetch network changes" });
     }
   });
 
-  app.post("/api/social-accounts/:id/network-snapshots", async (req, res) => {
+  app.get("/api/social-accounts/:id/network-state", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const state = await storage.getNetworkState(id);
+      res.json(state);
+    } catch (error) {
+      console.error("Error fetching network state:", error);
+      res.status(500).json({ error: "Failed to fetch network state" });
+    }
+  });
+
+  app.post("/api/social-accounts/:id/network-state", async (req, res) => {
     try {
       const { id } = req.params;
       const account = await storage.getSocialAccountById(id);
       if (!account) {
         return res.status(404).json({ error: "Social account not found" });
       }
-      const snapshot = await storage.createNetworkSnapshot({
+
+      const oldState = await storage.getNetworkState(id);
+      const oldFollowers = new Set(oldState?.followers || []);
+      const oldFollowing = new Set(oldState?.following || []);
+      const newFollowers = new Set<string>(req.body.followers || []);
+      const newFollowing = new Set<string>(req.body.following || []);
+
+      const batchId = crypto.randomUUID();
+      const changes: InsertSocialNetworkChange[] = [];
+
+      for (const f of Array.from(newFollowers)) {
+        if (!oldFollowers.has(f)) {
+          changes.push({ socialAccountId: id, changeType: 'follow', direction: 'follower', targetAccountId: f, batchId });
+        }
+      }
+      for (const f of Array.from(oldFollowers)) {
+        if (!newFollowers.has(f)) {
+          changes.push({ socialAccountId: id, changeType: 'unfollow', direction: 'follower', targetAccountId: f, batchId });
+        }
+      }
+      for (const f of Array.from(newFollowing)) {
+        if (!oldFollowing.has(f)) {
+          changes.push({ socialAccountId: id, changeType: 'follow', direction: 'following', targetAccountId: f, batchId });
+        }
+      }
+      for (const f of Array.from(oldFollowing)) {
+        if (!newFollowing.has(f)) {
+          changes.push({ socialAccountId: id, changeType: 'unfollow', direction: 'following', targetAccountId: f, batchId });
+        }
+      }
+
+      if (changes.length > 0) {
+        await storage.recordNetworkChanges(changes);
+      }
+
+      const state = await storage.upsertNetworkState({
         socialAccountId: id,
-        followerCount: req.body.followerCount || 0,
-        followingCount: req.body.followingCount || 0,
-        followers: req.body.followers || [],
-        following: req.body.following || [],
+        followerCount: newFollowers.size,
+        followingCount: newFollowing.size,
+        followers: Array.from(newFollowers),
+        following: Array.from(newFollowing),
       });
-      res.status(201).json(snapshot);
+      res.status(201).json(state);
     } catch (error) {
-      console.error("Error creating network snapshot:", error);
-      res.status(500).json({ error: "Failed to create network snapshot" });
+      console.error("Error updating network state:", error);
+      res.status(500).json({ error: "Failed to update network state" });
     }
   });
 

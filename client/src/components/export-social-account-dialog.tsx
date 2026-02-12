@@ -85,10 +85,10 @@ export function ExportSocialAccountDialog({
             )}
             <div className="flex gap-4 text-xs text-muted-foreground">
               <span data-testid="text-export-followers">
-                {account.latestSnapshot?.followers?.length || 0} followers
+                {account.latestState?.followers?.length || 0} followers
               </span>
               <span data-testid="text-export-following">
-                {account.latestSnapshot?.following?.length || 0} following
+                {account.latestState?.following?.length || 0} following
               </span>
             </div>
           </div>
