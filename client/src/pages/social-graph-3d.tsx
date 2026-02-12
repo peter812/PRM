@@ -529,11 +529,11 @@ export default function SocialGraph3D() {
                 )}
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Followers</span>
-                  <span data-testid="text-sidebar-followers">{selectedAccount.latestState?.followers?.length || 0}</span>
+                  <span data-testid="text-sidebar-followers">{selectedAccount.latestState?.followerCount || 0}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">Following</span>
-                  <span data-testid="text-sidebar-following">{selectedAccount.latestState?.following?.length || 0}</span>
+                  <span data-testid="text-sidebar-following">{selectedAccount.latestState?.followingCount || 0}</span>
                 </div>
                 {selectedAccount.currentProfile?.bio && (
                   <div className="pt-2 border-t">

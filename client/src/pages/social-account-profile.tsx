@@ -500,7 +500,7 @@ export default function SocialAccountProfile() {
           {/* Followers Column */}
           <Card className="p-4">
             <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
-              Followers ({followers?.length || 0})
+              Followers ({account.latestState?.followerCount || 0})
             </h3>
             {followers && followers.length > 0 ? (
               <div className="space-y-2">
@@ -537,7 +537,7 @@ export default function SocialAccountProfile() {
           <Card className="p-4">
             <div className="flex items-center justify-between gap-2 mb-4">
               <h3 className="text-lg font-semibold" data-testid="text-following-header">
-                Following ({account.latestState?.following?.length || 0})
+                Following ({account.latestState?.followingCount || 0})
               </h3>
               <Button
                 variant="outline"
