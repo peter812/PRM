@@ -3847,6 +3847,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/tasks/social-accounts-brief", async (req, res) => {
+    try {
+      const accounts = await storage.getAllSocialAccounts();
+      const brief = accounts.map(a => ({
+        id: a.id,
+        username: a.username,
+        nickname: a.currentProfile?.nickname || null,
+      }));
+      res.json(brief);
+    } catch (error) {
+      console.error("Error fetching brief accounts:", error);
+      res.status(500).json({ error: "Failed to fetch accounts" });
+    }
+  });
+
   app.post("/api/tasks/refresh-follower-count/:socialAccountId", async (req, res) => {
     try {
       const { socialAccountId } = req.params;
