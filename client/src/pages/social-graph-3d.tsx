@@ -60,6 +60,8 @@ export default function SocialGraph3D() {
   const [distanceSearchQuery, setDistanceSearchQuery] = useState('');
   const [connectionsColorMax, setConnectionsColorMax] = useState('#ef4444');
   const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
+  const [linkMutualColor, setLinkMutualColor] = useState('#6366f1');
+  const [linkDefaultColor, setLinkDefaultColor] = useState('#6b7280');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>('default');
   const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(null);
@@ -238,9 +240,6 @@ export default function SocialGraph3D() {
       };
     });
 
-    const linkMutualColor = '#6366f1';
-    const linkDefaultColor = '#6b7280';
-
     const links: GraphLink[] = graphData.links.map(l => ({
       source: typeof l.source === 'string' ? l.source : (l.source as any).id,
       target: typeof l.target === 'string' ? l.target : (l.target as any).id,
@@ -361,7 +360,7 @@ export default function SocialGraph3D() {
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, graphMode, blobForceMultiplier]);
+  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor]);
 
   useEffect(() => {
     if (!fgRef.current || !graphData || !graphData.nodes.length) return;
@@ -1015,6 +1014,32 @@ export default function SocialGraph3D() {
                   )}
                 </div>
                 )}
+
+                <div className="space-y-3 pt-2 border-t">
+                  <Label>Line Colors</Label>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Mutual</Label>
+                      <input
+                        type="color"
+                        value={linkMutualColor}
+                        onChange={(e) => setLinkMutualColor(e.target.value)}
+                        className="h-7 w-10 rounded cursor-pointer border"
+                        data-testid="input-link-mutual-color"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">One-way</Label>
+                      <input
+                        type="color"
+                        value={linkDefaultColor}
+                        onChange={(e) => setLinkDefaultColor(e.target.value)}
+                        className="h-7 w-10 rounded cursor-pointer border"
+                        data-testid="input-link-default-color"
+                      />
+                    </div>
+                  </div>
+                </div>
               </TabsContent>
             </Tabs>
 
