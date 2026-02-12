@@ -3,11 +3,18 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap, X } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { Task, SocialAccountWithCurrentProfile } from "@shared/schema";
+import type { Task } from "@shared/schema";
+
+type BriefAccount = {
+  id: string;
+  username: string;
+  nickname: string | null;
+};
 
 function getTaskLabel(type: string): string {
   switch (type) {
@@ -91,17 +98,29 @@ function TaskResultDisplay({ task }: { task: Task }) {
 export default function TasksSettingsPage() {
   const { toast } = useToast();
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const { data: tasks = [], isLoading: tasksLoading } = useQuery<Task[]>({
     queryKey: ["/api/tasks"],
-    refetchInterval: 3000,
+    refetchInterval: (query) => {
+      const data = query.state.data as Task[] | undefined;
+      if (data?.some(t => t.status === "pending" || t.status === "in_progress")) {
+        return 3000;
+      }
+      return false;
+    },
   });
 
-  const { data: socialAccounts = [], isLoading: accountsLoading } = useQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts"],
+  const { data: briefAccounts = [] } = useQuery<BriefAccount[]>({
+    queryKey: ["/api/tasks", "social-accounts-brief"],
   });
 
   const hasActiveTasks = tasks.some(t => t.status === "pending" || t.status === "in_progress");
+
+  const selectedAccount = selectedAccountId
+    ? briefAccounts.find(a => a.id === selectedAccountId)
+    : null;
 
   const massRefreshMutation = useMutation({
     mutationFn: async () => {
@@ -176,19 +195,79 @@ export default function TasksSettingsPage() {
                   Recalculate the follower and following count for a specific social account.
                 </p>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
-                    <SelectTrigger className="w-[280px]" data-testid="select-social-account">
-                      <SelectValue placeholder={accountsLoading ? "Loading accounts..." : "Select a social account"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {socialAccounts.map((account) => (
-                        <SelectItem key={account.id} value={account.id} data-testid={`select-item-account-${account.id}`}>
-                          {account.currentProfile?.nickname || account.username}
-                          {" "}(@{account.username})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="relative">
+                    {selectedAccountId && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute left-0 top-0 z-10"
+                        onClick={() => setSelectedAccountId("")}
+                        data-testid="button-clear-account"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    )}
+                    <Popover open={searchOpen} onOpenChange={(open) => { setSearchOpen(open); if (!open) setSearchQuery(""); }}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className="w-[280px] justify-start text-left font-normal"
+                          style={{ paddingLeft: selectedAccountId ? "2.5rem" : undefined }}
+                          data-testid="button-account-search"
+                        >
+                          {selectedAccount
+                            ? (selectedAccount.nickname || selectedAccount.username)
+                            : "Select account..."}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-80 p-0" align="start">
+                        <Command shouldFilter={false}>
+                          <CommandInput
+                            placeholder="Type 3+ characters to search..."
+                            value={searchQuery}
+                            onValueChange={setSearchQuery}
+                            data-testid="input-account-search"
+                          />
+                          <CommandList>
+                            {searchQuery.length > 0 && searchQuery.length < 3 && (
+                              <div className="p-3 text-sm text-muted-foreground text-center">
+                                Type {3 - searchQuery.length} more character{3 - searchQuery.length > 1 ? "s" : ""} to search...
+                              </div>
+                            )}
+                            {searchQuery.length >= 3 && (() => {
+                              const query = searchQuery.toLowerCase();
+                              const filtered = briefAccounts.filter(a =>
+                                a.username.toLowerCase().includes(query) ||
+                                (a.nickname && a.nickname.toLowerCase().includes(query))
+                              ).slice(0, 50);
+                              if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
+                              return (
+                                <CommandGroup>
+                                  {filtered.map((account) => (
+                                    <CommandItem
+                                      key={account.id}
+                                      value={account.id}
+                                      onSelect={() => {
+                                        setSelectedAccountId(account.id);
+                                        setSearchOpen(false);
+                                        setSearchQuery("");
+                                      }}
+                                      data-testid={`option-account-${account.id}`}
+                                    >
+                                      {account.nickname || account.username}
+                                      {account.nickname && (
+                                        <span className="ml-1 text-muted-foreground">@{account.username}</span>
+                                      )}
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              );
+                            })()}
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
                   <Button
                     onClick={handleSingleRefresh}
                     disabled={!selectedAccountId || singleRefreshMutation.isPending}
