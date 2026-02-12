@@ -26,7 +26,8 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
-import type { SocialAccount, SocialGraphData } from "@shared/schema";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import type { SocialAccount, SocialAccountType, SocialGraphData } from "@shared/schema";
 
 interface GraphNode {
   id: string;
@@ -71,6 +72,8 @@ export default function SocialGraph3D() {
   const [multiHighlightSearchQuery, setMultiHighlightSearchQuery] = useState('');
   const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(0.5);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
 
   const extrasSteps = [5, 10, 20, 50, 100];
   const mergeMultiplierSteps = [0, 0.15, 0.3, 0.5, 0.75, 1];
@@ -121,7 +124,13 @@ export default function SocialGraph3D() {
     queryKey: ["/api/social-accounts"],
   });
 
+  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
+    queryKey: ["/api/social-account-types"],
+  });
+
   const allSocialAccounts = socialAccounts || [];
+  const selectedAccount = selectedAccountId ? allSocialAccounts.find(a => a.id === selectedAccountId) : null;
+  const selectedAccountType = selectedAccount?.typeId && socialAccountTypes ? socialAccountTypes.find(t => t.id === selectedAccount.typeId) : null;
 
   const interpolateColor = useCallback((hex1: string, hex2: string, t: number) => {
     const parse = (hex: string) => {
@@ -302,10 +311,15 @@ export default function SocialGraph3D() {
         .linkDirectionalArrowColor((link: any) => link.color || '#6b7280')
         .linkCurvature(0)
         .onNodeClick((node: any) => {
-          navigate(`/social-accounts/${node.id}?from=social-graph-3d`);
+          setSelectedAccountId(node.id);
+          setContextMenu(null);
         })
         .onNodeHover((node: any) => {
           graphRef.current!.style.cursor = node ? 'pointer' : 'default';
+        })
+        .onNodeRightClick((node: any, event: MouseEvent) => {
+          event.preventDefault();
+          setContextMenu({ x: event.clientX, y: event.clientY, accountId: node.id });
         })
         .d3AlphaDecay(0.01)
         .d3VelocityDecay(0.3)
@@ -355,6 +369,12 @@ export default function SocialGraph3D() {
     fgRef.current.nodeColor((node: any) => nodeColorMapRef.current.get(node.id) || '#10b981');
   }, [colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, computeColorMap, graphData]);
 
+  useEffect(() => {
+    const handleClickOutside = () => setContextMenu(null);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
+
   const handleResetCamera = () => {
     if (fgRef.current) {
       fgRef.current.cameraPosition(
@@ -397,8 +417,90 @@ export default function SocialGraph3D() {
         </div>
       </div>
 
-      <div className="flex-1 relative">
-        <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
+      <div className="flex-1 flex overflow-hidden">
+        {selectedAccount && (
+          <div className="w-72 border-r flex flex-col overflow-y-auto shrink-0" data-testid="sidebar-account-info">
+            <div className="p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm">Account Info</h3>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setSelectedAccountId(null)}
+                  data-testid="button-close-sidebar"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex flex-col items-center gap-3">
+                <Avatar className="h-20 w-20">
+                  {selectedAccount.imageUrl ? (
+                    <AvatarImage src={selectedAccount.imageUrl} alt={selectedAccount.username} />
+                  ) : null}
+                  <AvatarFallback className="text-lg">
+                    {(selectedAccount.nickname || selectedAccount.username).slice(0, 2).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="text-center space-y-0.5">
+                  <p className="font-medium" data-testid="text-sidebar-username">@{selectedAccount.username}</p>
+                  {selectedAccount.nickname && (
+                    <p className="text-sm text-muted-foreground" data-testid="text-sidebar-displayname">{selectedAccount.nickname}</p>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-2 text-sm">
+                {selectedAccountType && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Type</span>
+                    <Badge variant="secondary" style={{ borderColor: selectedAccountType.color, borderWidth: 2 }} data-testid="badge-sidebar-type">
+                      {selectedAccountType.name}
+                    </Badge>
+                  </div>
+                )}
+                {selectedAccount.accountUrl && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">URL</span>
+                    <a
+                      href={selectedAccount.accountUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs truncate max-w-[140px] underline"
+                      data-testid="link-sidebar-url"
+                    >
+                      {selectedAccount.accountUrl.replace(/^https?:\/\//, '')}
+                    </a>
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Followers</span>
+                  <span data-testid="text-sidebar-followers">{selectedAccount.followers?.length || 0}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Following</span>
+                  <span data-testid="text-sidebar-following">{selectedAccount.following?.length || 0}</span>
+                </div>
+                {selectedAccount.notes && (
+                  <div className="pt-2 border-t">
+                    <span className="text-muted-foreground">Notes</span>
+                    <p className="mt-1 text-xs" data-testid="text-sidebar-notes">{selectedAccount.notes}</p>
+                  </div>
+                )}
+              </div>
+              <div className="pt-2 border-t">
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => navigate(`/social-accounts/${selectedAccount.id}?from=social-graph-3d`)}
+                  data-testid="button-sidebar-view-profile"
+                >
+                  View Full Profile
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="flex-1 relative">
+          <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
         {isOptionsOpen && (
           <div className="absolute top-4 right-4 w-80 bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg p-4 space-y-3 z-50">
@@ -944,6 +1046,98 @@ export default function SocialGraph3D() {
             </div>
           </div>
         )}
+
+        {contextMenu && (() => {
+          const ctxAccount = allSocialAccounts.find(a => a.id === contextMenu.accountId);
+          const ctxName = ctxAccount ? (ctxAccount.nickname || ctxAccount.username) : 'Unknown';
+          const isInSingleHighlight = graphMode === 'single-highlight' && singleHighlightAccountId === contextMenu.accountId;
+          const isInMultiHighlight = graphMode === 'multi-highlight' && multiHighlightAccountIds.includes(contextMenu.accountId);
+          const isHighlighted = isInSingleHighlight || isInMultiHighlight;
+          return (
+            <div
+              className="fixed bg-popover border rounded-md shadow-lg py-1 z-[100] min-w-[180px]"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+              data-testid="context-menu"
+            >
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm font-medium hover-elevate"
+                onClick={() => {
+                  setSelectedAccountId(contextMenu.accountId);
+                  setContextMenu(null);
+                }}
+                data-testid="context-menu-name"
+              >
+                {ctxName}
+              </button>
+              <div className="border-t my-1" />
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover-elevate"
+                onClick={() => {
+                  if (graphMode === 'multi-highlight') {
+                    if (!multiHighlightAccountIds.includes(contextMenu.accountId)) {
+                      setMultiHighlightAccountIds(prev => [...prev, contextMenu.accountId]);
+                    }
+                  } else if (graphMode === 'single-highlight' && singleHighlightAccountId) {
+                    setGraphMode('multi-highlight');
+                    setMultiHighlightAccountIds([singleHighlightAccountId, contextMenu.accountId]);
+                    setSingleHighlightAccountId(null);
+                  } else {
+                    setGraphMode('single-highlight');
+                    setSingleHighlightAccountId(contextMenu.accountId);
+                  }
+                  setContextMenu(null);
+                }}
+                data-testid="context-menu-highlight"
+              >
+                {graphMode === 'multi-highlight' || (graphMode === 'single-highlight' && singleHighlightAccountId) ? 'Add to Highlight' : 'Highlight'}
+              </button>
+              {isHighlighted && (
+                <button
+                  className="w-full text-left px-3 py-1.5 text-sm hover-elevate"
+                  onClick={() => {
+                    if (graphMode === 'single-highlight') {
+                      setSingleHighlightAccountId(null);
+                      setGraphMode('blob');
+                      setMinConnections(3);
+                    } else if (graphMode === 'multi-highlight') {
+                      const remaining = multiHighlightAccountIds.filter(id => id !== contextMenu.accountId);
+                      if (remaining.length === 0) {
+                        setMultiHighlightAccountIds([]);
+                        setGraphMode('blob');
+                        setMinConnections(3);
+                      } else if (remaining.length === 1) {
+                        setMultiHighlightAccountIds([]);
+                        setGraphMode('single-highlight');
+                        setSingleHighlightAccountId(remaining[0]);
+                      } else {
+                        setMultiHighlightAccountIds(remaining);
+                      }
+                    }
+                    setContextMenu(null);
+                  }}
+                  data-testid="context-menu-remove-highlight"
+                >
+                  Remove from Highlight
+                </button>
+              )}
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover-elevate"
+                onClick={() => {
+                  setGraphMode('blob');
+                  setMinConnections(3);
+                  setColorScheme('distance');
+                  setColorSchemeAccountId(contextMenu.accountId);
+                  setContextMenu(null);
+                }}
+                data-testid="context-menu-distance-from"
+              >
+                Distance From
+              </button>
+            </div>
+          );
+        })()}
+      </div>
       </div>
     </div>
   );
