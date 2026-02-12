@@ -25,6 +25,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Badge } from "@/components/ui/badge";
 import type { SocialAccount, SocialGraphData } from "@shared/schema";
 
 interface GraphNode {
@@ -52,7 +53,6 @@ export default function SocialGraph3D() {
   const [minConnections, setMinConnections] = useState(0);
   const [limitExtras, setLimitExtras] = useState(true);
   const [maxExtras, setMaxExtras] = useState(20);
-  const [highlightedAccountId, setHighlightedAccountId] = useState<string | null>(null);
   const [colorScheme, setColorScheme] = useState<'type' | 'distance' | 'connections'>('type');
   const [colorSchemeAccountId, setColorSchemeAccountId] = useState<string | null>(null);
   const [distanceSearchOpen, setDistanceSearchOpen] = useState(false);
@@ -60,9 +60,15 @@ export default function SocialGraph3D() {
   const [connectionsColorMax, setConnectionsColorMax] = useState('#ef4444');
   const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [highlightSearchQuery, setHighlightSearchQuery] = useState('');
-  const [graphMode, setGraphMode] = useState<'default' | 'blob'>('default');
+  const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>('default');
+  const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(null);
+  const [singleHighlightSearchOpen, setSingleHighlightSearchOpen] = useState(false);
+  const [singleHighlightSearchQuery, setSingleHighlightSearchQuery] = useState('');
+  const [singleShowFriendLinks, setSingleShowFriendLinks] = useState(true);
+  const [singleRemoveExtras, setSingleRemoveExtras] = useState(false);
+  const [multiHighlightAccountIds, setMultiHighlightAccountIds] = useState<string[]>([]);
+  const [multiHighlightSearchOpen, setMultiHighlightSearchOpen] = useState(false);
+  const [multiHighlightSearchQuery, setMultiHighlightSearchQuery] = useState('');
   const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(0.5);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
 
@@ -74,7 +80,10 @@ export default function SocialGraph3D() {
     minConnections,
     limitExtras,
     maxExtras,
-    highlightedAccountId,
+    singleHighlightAccountId,
+    singleShowFriendLinks,
+    singleRemoveExtras,
+    multiHighlightAccountIds,
     mode: graphMode,
     blobMergeMultiplier,
   });
@@ -99,7 +108,10 @@ export default function SocialGraph3D() {
       minConnections,
       limitExtras,
       maxExtras,
-      highlightedAccountId,
+      singleHighlightAccountId,
+      singleShowFriendLinks,
+      singleRemoveExtras,
+      multiHighlightAccountIds,
       mode: graphMode,
       blobMergeMultiplier,
     });
@@ -227,7 +239,13 @@ export default function SocialGraph3D() {
       mutual: l.mutual,
     }));
 
-    const gData = { nodes, links };
+    let filteredLinks = links;
+    if (appliedSettings.mode === 'single-highlight' && !appliedSettings.singleShowFriendLinks && appliedSettings.singleHighlightAccountId) {
+      const targetId = appliedSettings.singleHighlightAccountId;
+      filteredLinks = links.filter(l => l.source === targetId || l.target === targetId);
+    }
+
+    const gData = { nodes, links: filteredLinks };
 
     const styles = getComputedStyle(document.documentElement);
     const backgroundHSL = styles.getPropertyValue('--background').trim();
@@ -411,11 +429,10 @@ export default function SocialGraph3D() {
               <TabsContent value="filter" className="space-y-4" data-testid="tab-content-filter">
                 <div className="space-y-2">
                   <Label>Graph Mode</Label>
-                  <div className="flex items-center gap-1" data-testid="mode-selector">
+                  <div className="grid grid-cols-2 gap-1" data-testid="mode-selector">
                     <Button
                       variant={graphMode === 'default' ? 'default' : 'outline'}
                       size="sm"
-                      className="flex-1"
                       onClick={() => setGraphMode('default')}
                       data-testid="button-mode-default"
                     >
@@ -424,11 +441,26 @@ export default function SocialGraph3D() {
                     <Button
                       variant={graphMode === 'blob' ? 'default' : 'outline'}
                       size="sm"
-                      className="flex-1"
                       onClick={() => setGraphMode('blob')}
                       data-testid="button-mode-blob"
                     >
                       Blob
+                    </Button>
+                    <Button
+                      variant={graphMode === 'single-highlight' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setGraphMode('single-highlight')}
+                      data-testid="button-mode-single"
+                    >
+                      Single
+                    </Button>
+                    <Button
+                      variant={graphMode === 'multi-highlight' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setGraphMode('multi-highlight')}
+                      data-testid="button-mode-multi"
+                    >
+                      Multi
                     </Button>
                   </div>
                 </div>
@@ -479,56 +511,142 @@ export default function SocialGraph3D() {
                   </>
                 )}
 
-                <div className="space-y-2">
-                  <Label>Highlight Account</Label>
-                  <div className="relative">
-                    {highlightedAccountId && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="absolute left-0 top-0 h-full z-10 hover:bg-transparent"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setHighlightedAccountId(null);
-                        }}
-                        data-testid="button-clear-account-highlight"
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    )}
-                    <Popover open={searchOpen} onOpenChange={(open) => { setSearchOpen(open); if (!open) setHighlightSearchQuery(''); }}>
+                {graphMode === 'single-highlight' && (
+                  <>
+                    <div className="space-y-2">
+                      <Label>Highlight Account</Label>
+                      <div className="relative">
+                        {singleHighlightAccountId && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="absolute left-0 top-0 h-full z-10 hover:bg-transparent"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSingleHighlightAccountId(null);
+                            }}
+                            data-testid="button-clear-single-highlight"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )}
+                        <Popover open={singleHighlightSearchOpen} onOpenChange={(open) => { setSingleHighlightSearchOpen(open); if (!open) setSingleHighlightSearchQuery(''); }}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="w-full justify-start text-left font-normal"
+                              style={{ paddingLeft: singleHighlightAccountId ? '2.5rem' : undefined }}
+                              data-testid="button-single-highlight-search"
+                            >
+                              {singleHighlightAccountId
+                                ? (() => {
+                                  const account = allSocialAccounts.find(a => a.id === singleHighlightAccountId);
+                                  return account ? (account.nickname || account.username) : 'Select account...';
+                                })()
+                                : 'Select account...'}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-80 p-0" align="start">
+                            <Command shouldFilter={false}>
+                              <CommandInput
+                                placeholder="Type 3+ characters to search..."
+                                value={singleHighlightSearchQuery}
+                                onValueChange={setSingleHighlightSearchQuery}
+                              />
+                              <CommandList>
+                                {singleHighlightSearchQuery.length > 0 && singleHighlightSearchQuery.length < 3 && (
+                                  <div className="p-3 text-sm text-muted-foreground text-center">
+                                    Type {3 - singleHighlightSearchQuery.length} more character{3 - singleHighlightSearchQuery.length > 1 ? 's' : ''} to search...
+                                  </div>
+                                )}
+                                {singleHighlightSearchQuery.length >= 3 && (() => {
+                                  const query = singleHighlightSearchQuery.toLowerCase();
+                                  const filtered = allSocialAccounts.filter(a =>
+                                    a.username.toLowerCase().includes(query) ||
+                                    (a.nickname && a.nickname.toLowerCase().includes(query))
+                                  ).slice(0, 50);
+                                  if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
+                                  return (
+                                    <CommandGroup>
+                                      {filtered.map((account) => (
+                                        <CommandItem
+                                          key={account.id}
+                                          value={account.id}
+                                          onSelect={() => {
+                                            setSingleHighlightAccountId(account.id);
+                                            setSingleHighlightSearchOpen(false);
+                                            setSingleHighlightSearchQuery('');
+                                          }}
+                                          data-testid={`option-single-highlight-${account.id}`}
+                                        >
+                                          {account.nickname || account.username}
+                                          {account.nickname && (
+                                            <span className="ml-1 text-muted-foreground">@{account.username}</span>
+                                          )}
+                                        </CommandItem>
+                                      ))}
+                                    </CommandGroup>
+                                  );
+                                })()}
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="single-show-friend-links">Show Friend Links</Label>
+                      <Switch
+                        id="single-show-friend-links"
+                        checked={singleShowFriendLinks}
+                        onCheckedChange={setSingleShowFriendLinks}
+                        data-testid="switch-single-show-friend-links"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="single-remove-extras">Remove Extras</Label>
+                      <Switch
+                        id="single-remove-extras"
+                        checked={singleRemoveExtras}
+                        onCheckedChange={setSingleRemoveExtras}
+                        data-testid="switch-single-remove-extras"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {graphMode === 'multi-highlight' && (
+                  <div className="space-y-2">
+                    <Label>Highlight Accounts</Label>
+                    <Popover open={multiHighlightSearchOpen} onOpenChange={(open) => { setMultiHighlightSearchOpen(open); if (!open) setMultiHighlightSearchQuery(''); }}>
                       <PopoverTrigger asChild>
                         <Button
                           variant="outline"
                           className="w-full justify-start text-left font-normal"
-                          style={{ paddingLeft: highlightedAccountId ? '2.5rem' : undefined }}
-                          data-testid="button-account-search"
+                          data-testid="button-multi-highlight-search"
                         >
-                          {highlightedAccountId
-                            ? allSocialAccounts.find(a => a.id === highlightedAccountId)
-                              ? (allSocialAccounts.find(a => a.id === highlightedAccountId)!.nickname || allSocialAccounts.find(a => a.id === highlightedAccountId)!.username)
-                              : 'Select account...'
-                            : 'Select account...'}
+                          Search accounts...
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent className="w-80 p-0" align="start">
                         <Command shouldFilter={false}>
                           <CommandInput
                             placeholder="Type 3+ characters to search..."
-                            value={highlightSearchQuery}
-                            onValueChange={setHighlightSearchQuery}
+                            value={multiHighlightSearchQuery}
+                            onValueChange={setMultiHighlightSearchQuery}
                           />
                           <CommandList>
-                            {highlightSearchQuery.length > 0 && highlightSearchQuery.length < 3 && (
+                            {multiHighlightSearchQuery.length > 0 && multiHighlightSearchQuery.length < 3 && (
                               <div className="p-3 text-sm text-muted-foreground text-center">
-                                Type {3 - highlightSearchQuery.length} more character{3 - highlightSearchQuery.length > 1 ? 's' : ''} to search...
+                                Type {3 - multiHighlightSearchQuery.length} more character{3 - multiHighlightSearchQuery.length > 1 ? 's' : ''} to search...
                               </div>
                             )}
-                            {highlightSearchQuery.length >= 3 && (() => {
-                              const query = highlightSearchQuery.toLowerCase();
+                            {multiHighlightSearchQuery.length >= 3 && (() => {
+                              const query = multiHighlightSearchQuery.toLowerCase();
                               const filtered = allSocialAccounts.filter(a =>
-                                a.username.toLowerCase().includes(query) ||
-                                (a.nickname && a.nickname.toLowerCase().includes(query))
+                                !multiHighlightAccountIds.includes(a.id) &&
+                                (a.username.toLowerCase().includes(query) ||
+                                (a.nickname && a.nickname.toLowerCase().includes(query)))
                               ).slice(0, 50);
                               if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
                               return (
@@ -538,11 +656,10 @@ export default function SocialGraph3D() {
                                       key={account.id}
                                       value={account.id}
                                       onSelect={() => {
-                                        setHighlightedAccountId(account.id);
-                                        setSearchOpen(false);
-                                        setHighlightSearchQuery('');
+                                        setMultiHighlightAccountIds(prev => [...prev, account.id]);
+                                        setMultiHighlightSearchQuery('');
                                       }}
-                                      data-testid={`option-account-${account.id}`}
+                                      data-testid={`option-multi-highlight-${account.id}`}
                                     >
                                       {account.nickname || account.username}
                                       {account.nickname && (
@@ -557,8 +674,29 @@ export default function SocialGraph3D() {
                         </Command>
                       </PopoverContent>
                     </Popover>
+                    {multiHighlightAccountIds.length === 0 ? (
+                      <p className="text-xs text-muted-foreground" data-testid="text-multi-highlight-empty">Select 2 or more accounts</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1" data-testid="multi-highlight-chips">
+                        {multiHighlightAccountIds.map((id) => {
+                          const account = allSocialAccounts.find(a => a.id === id);
+                          return (
+                            <Badge key={id} variant="secondary" className="gap-1" data-testid={`badge-multi-highlight-${id}`}>
+                              {account ? (account.nickname || account.username) : id}
+                              <button
+                                onClick={() => setMultiHighlightAccountIds(prev => prev.filter(aid => aid !== id))}
+                                className="ml-0.5"
+                                data-testid={`button-remove-multi-highlight-${id}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </Badge>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
 
                 <div className="flex items-center justify-between">
                   <Label htmlFor="hide-orphans">Hide Orphans</Label>
@@ -631,6 +769,17 @@ export default function SocialGraph3D() {
               </TabsContent>
 
               <TabsContent value="color" className="space-y-4" data-testid="tab-content-color">
+                {graphMode === 'single-highlight' && (
+                  <p className="text-sm text-muted-foreground" data-testid="text-single-highlight-color-info">
+                    Highlighted account and its connections are colored by account type. The highlighted account is shown in red.
+                  </p>
+                )}
+                {graphMode === 'multi-highlight' && (
+                  <p className="text-sm text-muted-foreground" data-testid="text-multi-highlight-color-info">
+                    Selected accounts are highlighted in distinct colors. Shared connections are shown in a neutral color.
+                  </p>
+                )}
+                {(graphMode === 'default' || graphMode === 'blob') && (
                 <div className="space-y-2">
                   <Label>Color Scheme</Label>
                   <Select
@@ -763,6 +912,7 @@ export default function SocialGraph3D() {
                     </div>
                   )}
                 </div>
+                )}
               </TabsContent>
             </Tabs>
 

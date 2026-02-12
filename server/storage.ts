@@ -1190,7 +1190,7 @@ export class DatabaseStorage implements IStorage {
       filtered = filtered.filter(a => safeIds.has(a.id) || claimedExtras.has(a.id));
     }
 
-    if (settings.highlightedAccountId) {
+    if (settings.highlightedAccountId && settings.mode !== 'single-highlight' && settings.mode !== 'multi-highlight') {
       const connectedIds = new Set<string>([settings.highlightedAccountId]);
       const highlightedAccount = filtered.find(a => a.id === settings.highlightedAccountId);
 
@@ -1208,6 +1208,99 @@ export class DatabaseStorage implements IStorage {
       }
 
       filtered = filtered.filter(a => connectedIds.has(a.id));
+    }
+
+    if (settings.mode === 'single-highlight' && settings.singleHighlightAccountId) {
+      const targetId = settings.singleHighlightAccountId;
+      const connectedIds = new Set<string>([targetId]);
+      const filteredIds = new Set(filtered.map(a => a.id));
+
+      const targetAccount = filtered.find(a => a.id === targetId);
+      if (targetAccount?.following) {
+        targetAccount.following.forEach(id => {
+          if (filteredIds.has(id)) connectedIds.add(id);
+        });
+      }
+      filtered.forEach(a => {
+        if (a.following?.includes(targetId)) {
+          connectedIds.add(a.id);
+        }
+      });
+
+      filtered = filtered.filter(a => connectedIds.has(a.id));
+
+      if (settings.singleRemoveExtras) {
+        const neighborIds = new Set(connectedIds);
+        neighborIds.delete(targetId);
+        const neighborLinkCount = new Map<string, number>();
+        neighborIds.forEach(id => neighborLinkCount.set(id, 0));
+
+        filtered.forEach(account => {
+          if (account.id === targetId) return;
+          if (account.following) {
+            account.following.forEach(followedId => {
+              if (neighborIds.has(account.id) && connectedIds.has(followedId) && followedId !== targetId) {
+                neighborLinkCount.set(account.id, (neighborLinkCount.get(account.id) || 0) + 1);
+              }
+              if (neighborIds.has(followedId) && connectedIds.has(account.id) && account.id !== targetId) {
+                neighborLinkCount.set(followedId, (neighborLinkCount.get(followedId) || 0) + 1);
+              }
+            });
+          }
+        });
+
+        filtered = filtered.filter(a => {
+          if (a.id === targetId) return true;
+          return (neighborLinkCount.get(a.id) || 0) > 0;
+        });
+      }
+    }
+
+    if (settings.mode === 'multi-highlight' && settings.multiHighlightAccountIds && settings.multiHighlightAccountIds.length >= 2) {
+      const selectedIds = new Set(settings.multiHighlightAccountIds);
+      const filteredIds = new Set(filtered.map(a => a.id));
+      const relevantIds = new Set<string>(selectedIds);
+
+      selectedIds.forEach(selectedId => {
+        const account = filtered.find(a => a.id === selectedId);
+        if (account?.following) {
+          account.following.forEach(followedId => {
+            if (filteredIds.has(followedId)) {
+              const followedAccount = filtered.find(a => a.id === followedId);
+              if (followedAccount?.following) {
+                for (const otherId of Array.from(selectedIds)) {
+                  if (otherId !== selectedId && followedAccount.following.includes(otherId)) {
+                    relevantIds.add(followedId);
+                    break;
+                  }
+                }
+              }
+              if (selectedIds.has(followedId)) {
+                relevantIds.add(followedId);
+              }
+            }
+          });
+        }
+        filtered.forEach(a => {
+          if (a.following?.includes(selectedId) && selectedIds.has(a.id)) {
+            relevantIds.add(a.id);
+          }
+        });
+      });
+
+      selectedIds.forEach(selectedId => {
+        const account = filtered.find(a => a.id === selectedId);
+        if (account?.following) {
+          account.following.forEach(followedId => {
+            if (filteredIds.has(followedId)) relevantIds.add(followedId);
+          });
+        }
+        filtered.forEach(a => {
+          if (a.following?.includes(selectedId)) relevantIds.add(a.id);
+        });
+      });
+
+      filtered = filtered.filter(a => relevantIds.has(a.id));
     }
 
     const accountIds = new Set(filtered.map(a => a.id));

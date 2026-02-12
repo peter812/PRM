@@ -2724,8 +2724,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         limitExtras?: boolean;
         maxExtras?: number;
         highlightedAccountId?: string | null;
-        mode?: 'default' | 'blob';
+        mode?: 'default' | 'blob' | 'single-highlight' | 'multi-highlight';
         blobMergeMultiplier?: number;
+        singleHighlightAccountId?: string | null;
+        singleShowFriendLinks?: boolean;
+        singleRemoveExtras?: boolean;
+        multiHighlightAccountIds?: string[];
       };
 
       const graphData = await storage.getSocialGraph({
@@ -2736,6 +2740,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         highlightedAccountId: settings.highlightedAccountId ?? null,
         mode: settings.mode ?? 'default',
         blobMergeMultiplier: settings.blobMergeMultiplier ?? 0.5,
+        singleHighlightAccountId: settings.singleHighlightAccountId ?? null,
+        singleShowFriendLinks: settings.singleShowFriendLinks ?? true,
+        singleRemoveExtras: settings.singleRemoveExtras ?? false,
+        multiHighlightAccountIds: settings.multiHighlightAccountIds ?? [],
       });
 
       res.json(graphData);
