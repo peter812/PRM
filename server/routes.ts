@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, type SocialAccountWithCurrentProfile, type InsertSocialNetworkChange } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, type SocialAccountWithCurrentProfile } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
@@ -266,6 +266,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
+      const includeHistory = req.query.includeHistory === "true";
+
       // Fetch all data from database in parallel for better performance
       const [
         allUsers,
@@ -502,37 +504,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       xml += '  </social_account_types>\n';
 
-      // Export social profile versions
-      xml += '  <social_profile_versions>\n';
-      for (const version of allProfileVersions) {
-        xml += '    <social_profile_version>\n';
-        xml += `      <id>${escapeXml(version.id)}</id>\n`;
-        xml += `      <social_account_id>${escapeXml(version.socialAccountId)}</social_account_id>\n`;
-        xml += `      <nickname>${escapeXml(version.nickname || "")}</nickname>\n`;
-        xml += `      <bio>${escapeXml(version.bio || "")}</bio>\n`;
-        xml += `      <account_url>${escapeXml(version.accountUrl || "")}</account_url>\n`;
-        xml += `      <image_url>${escapeXml(version.imageUrl || "")}</image_url>\n`;
-        xml += `      <external_image_url>${escapeXml(version.externalImageUrl || "")}</external_image_url>\n`;
-        xml += `      <is_current>${escapeXml(version.isCurrent)}</is_current>\n`;
-        xml += `      <detected_at>${escapeXml(version.detectedAt)}</detected_at>\n`;
-        xml += '    </social_profile_version>\n';
-      }
-      xml += '  </social_profile_versions>\n';
+      if (includeHistory) {
+        // Export social profile versions
+        xml += '  <social_profile_versions>\n';
+        for (const version of allProfileVersions) {
+          xml += '    <social_profile_version>\n';
+          xml += `      <id>${escapeXml(version.id)}</id>\n`;
+          xml += `      <social_account_id>${escapeXml(version.socialAccountId)}</social_account_id>\n`;
+          xml += `      <nickname>${escapeXml(version.nickname || "")}</nickname>\n`;
+          xml += `      <bio>${escapeXml(version.bio || "")}</bio>\n`;
+          xml += `      <account_url>${escapeXml(version.accountUrl || "")}</account_url>\n`;
+          xml += `      <image_url>${escapeXml(version.imageUrl || "")}</image_url>\n`;
+          xml += `      <external_image_url>${escapeXml(version.externalImageUrl || "")}</external_image_url>\n`;
+          xml += `      <is_current>${escapeXml(version.isCurrent)}</is_current>\n`;
+          xml += `      <detected_at>${escapeXml(version.detectedAt)}</detected_at>\n`;
+          xml += '    </social_profile_version>\n';
+        }
+        xml += '  </social_profile_versions>\n';
 
-      // Export social network states (current snapshots)
-      xml += '  <social_network_snapshots>\n';
-      for (const state of allNetworkStates) {
-        xml += '    <social_network_snapshot>\n';
-        xml += `      <id>${escapeXml(state.id)}</id>\n`;
-        xml += `      <social_account_id>${escapeXml(state.socialAccountId)}</social_account_id>\n`;
-        xml += `      <follower_count>${escapeXml(state.followerCount)}</follower_count>\n`;
-        xml += `      <following_count>${escapeXml(state.followingCount)}</following_count>\n`;
-        xml += `      <followers>${arrayToXml(state.followers || [], "account_id")}</followers>\n`;
-        xml += `      <following>${arrayToXml(state.following || [], "account_id")}</following>\n`;
-        xml += `      <captured_at>${escapeXml(state.updatedAt)}</captured_at>\n`;
-        xml += '    </social_network_snapshot>\n';
+        // Export social network states (current snapshots)
+        xml += '  <social_network_snapshots>\n';
+        for (const state of allNetworkStates) {
+          xml += '    <social_network_snapshot>\n';
+          xml += `      <id>${escapeXml(state.id)}</id>\n`;
+          xml += `      <social_account_id>${escapeXml(state.socialAccountId)}</social_account_id>\n`;
+          xml += `      <follower_count>${escapeXml(state.followerCount)}</follower_count>\n`;
+          xml += `      <following_count>${escapeXml(state.followingCount)}</following_count>\n`;
+          xml += `      <followers>${arrayToXml(state.followers || [], "account_id")}</followers>\n`;
+          xml += `      <following>${arrayToXml(state.following || [], "account_id")}</following>\n`;
+          xml += `      <captured_at>${escapeXml(state.updatedAt)}</captured_at>\n`;
+          xml += '    </social_network_snapshot>\n';
+        }
+        xml += '  </social_network_snapshots>\n';
+
+        // Export social network changes
+        const allNetworkChanges = await storage.getAllNetworkChanges();
+        xml += '  <social_network_changes>\n';
+        for (const change of allNetworkChanges) {
+          xml += '    <social_network_change>\n';
+          xml += `      <id>${escapeXml(change.id)}</id>\n`;
+          xml += `      <social_account_id>${escapeXml(change.socialAccountId)}</social_account_id>\n`;
+          xml += `      <change_type>${escapeXml(change.changeType)}</change_type>\n`;
+          xml += `      <direction>${escapeXml(change.direction)}</direction>\n`;
+          xml += `      <target_account_id>${escapeXml(change.targetAccountId)}</target_account_id>\n`;
+          xml += `      <detected_at>${escapeXml(change.detectedAt)}</detected_at>\n`;
+          xml += `      <batch_id>${escapeXml(change.batchId || "")}</batch_id>\n`;
+          xml += '    </social_network_change>\n';
+        }
+        xml += '  </social_network_changes>\n';
       }
-      xml += '  </social_network_snapshots>\n';
 
       // Export messages
       xml += '  <messages>\n';
@@ -629,6 +649,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         socialAccounts: 0,
         socialAccountTypes: 0,
         messages: 0,
+        networkChanges: 0,
       };
       
       let skippedCounts: Record<string, number> = {
@@ -1010,6 +1031,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         } catch (error) {
           console.error(`Error importing network snapshot:`, error);
+        }
+      }
+
+      // Parse and import social network changes (from history-enabled exports)
+      const networkChangeBlocksApp = parseAllTags("social_network_change", xmlText);
+      for (const block of networkChangeBlocksApp) {
+        try {
+          const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+          const changeType = unescapeXml(parseXmlTag("change_type", block));
+          const direction = unescapeXml(parseXmlTag("direction", block));
+          const targetAccountId = unescapeXml(parseXmlTag("target_account_id", block));
+          const detectedAtStr = unescapeXml(parseXmlTag("detected_at", block));
+          const batchId = unescapeXml(parseXmlTag("batch_id", block));
+
+          if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
+          if (!changeType || !direction || !targetAccountId) continue;
+
+          await db.insert(socialNetworkChanges).values({
+            socialAccountId,
+            changeType,
+            direction,
+            targetAccountId,
+            detectedAt: detectedAtStr ? new Date(detectedAtStr) : new Date(),
+            batchId: batchId || null,
+          });
+          importedCounts.networkChanges = (importedCounts.networkChanges || 0) + 1;
+        } catch (error) {
+          console.error("Error importing network change:", error);
         }
       }
 
@@ -2878,14 +2927,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/social-accounts/export-xml", async (req, res) => {
     try {
       const ids = req.query.ids as string | undefined;
-      if (!ids) {
-        return res.status(400).json({ error: "No account IDs provided" });
-      }
-
-      const accountIds = ids.split(",").map(id => id.trim()).filter(Boolean);
-      if (accountIds.length === 0) {
-        return res.status(400).json({ error: "No valid account IDs provided" });
-      }
+      const includeHistory = req.query.includeHistory === "true";
 
       const allSocialAccountTypes = await storage.getAllSocialAccountTypes();
 
@@ -2910,9 +2952,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const typeIdsUsed = new Set<string>();
       const accounts: SocialAccountWithCurrentProfile[] = [];
 
-      for (const id of accountIds) {
-        const account = await storage.getSocialAccountById(id);
-        if (account) {
+      if (ids) {
+        const accountIds = ids.split(",").map(id => id.trim()).filter(Boolean);
+        for (const id of accountIds) {
+          const account = await storage.getSocialAccountById(id);
+          if (account) {
+            accounts.push(account);
+            if (account.typeId) typeIdsUsed.add(account.typeId);
+          }
+        }
+      } else {
+        const allAccounts = await storage.getAllSocialAccounts();
+        for (const account of allAccounts) {
           accounts.push(account);
           if (account.typeId) typeIdsUsed.add(account.typeId);
         }
@@ -2948,10 +2999,69 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    </social_account>\n';
       }
       xml += '  </social_accounts>\n';
+
+      if (includeHistory) {
+        xml += '  <social_profile_versions>\n';
+        for (const account of accounts) {
+          const versions = await storage.getProfileVersions(account.id);
+          for (const version of versions) {
+            xml += '    <social_profile_version>\n';
+            xml += `      <id>${escapeXml(version.id)}</id>\n`;
+            xml += `      <social_account_id>${escapeXml(version.socialAccountId)}</social_account_id>\n`;
+            xml += `      <nickname>${escapeXml(version.nickname || "")}</nickname>\n`;
+            xml += `      <bio>${escapeXml(version.bio || "")}</bio>\n`;
+            xml += `      <account_url>${escapeXml(version.accountUrl || "")}</account_url>\n`;
+            xml += `      <image_url>${escapeXml(version.imageUrl || "")}</image_url>\n`;
+            xml += `      <external_image_url>${escapeXml(version.externalImageUrl || "")}</external_image_url>\n`;
+            xml += `      <is_current>${escapeXml(version.isCurrent)}</is_current>\n`;
+            xml += `      <detected_at>${escapeXml(version.detectedAt)}</detected_at>\n`;
+            xml += '    </social_profile_version>\n';
+          }
+        }
+        xml += '  </social_profile_versions>\n';
+
+        xml += '  <social_network_snapshots>\n';
+        for (const account of accounts) {
+          const state = await storage.getNetworkState(account.id);
+          if (state) {
+            xml += '    <social_network_snapshot>\n';
+            xml += `      <id>${escapeXml(state.id)}</id>\n`;
+            xml += `      <social_account_id>${escapeXml(state.socialAccountId)}</social_account_id>\n`;
+            xml += `      <follower_count>${escapeXml(state.followerCount)}</follower_count>\n`;
+            xml += `      <following_count>${escapeXml(state.followingCount)}</following_count>\n`;
+            xml += `      <followers>${arrayToXml(state.followers || [], "account_id")}</followers>\n`;
+            xml += `      <following>${arrayToXml(state.following || [], "account_id")}</following>\n`;
+            xml += `      <captured_at>${escapeXml(state.updatedAt)}</captured_at>\n`;
+            xml += '    </social_network_snapshot>\n';
+          }
+        }
+        xml += '  </social_network_snapshots>\n';
+
+        xml += '  <social_network_changes>\n';
+        for (const account of accounts) {
+          const changes = await storage.getNetworkChanges(account.id);
+          for (const change of changes) {
+            xml += '    <social_network_change>\n';
+            xml += `      <id>${escapeXml(change.id)}</id>\n`;
+            xml += `      <social_account_id>${escapeXml(change.socialAccountId)}</social_account_id>\n`;
+            xml += `      <change_type>${escapeXml(change.changeType)}</change_type>\n`;
+            xml += `      <direction>${escapeXml(change.direction)}</direction>\n`;
+            xml += `      <target_account_id>${escapeXml(change.targetAccountId)}</target_account_id>\n`;
+            xml += `      <detected_at>${escapeXml(change.detectedAt)}</detected_at>\n`;
+            xml += `      <batch_id>${escapeXml(change.batchId || "")}</batch_id>\n`;
+            xml += '    </social_network_change>\n';
+          }
+        }
+        xml += '  </social_network_changes>\n';
+      }
+
       xml += '</social_accounts_export>\n';
 
+      const filename = ids
+        ? `social_accounts_export.xml`
+        : `social_accounts_export_all.xml`;
       res.setHeader("Content-Type", "application/xml");
-      res.setHeader("Content-Disposition", `attachment; filename="social_accounts_export.xml"`);
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.send(xml);
     } catch (error) {
       console.error("Error exporting social accounts XML:", error);
@@ -2998,9 +3108,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .replace(/&amp;/g, "&");
       };
 
-      const importedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
+      const importedCounts = { socialAccountTypes: 0, socialAccounts: 0, profileVersions: 0, networkChanges: 0 };
       const skippedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
       const failedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
+      const importedAccountIds = new Set<string>();
 
       const socialAccountTypeBlocks = parseAllTags("social_account_type", xmlText);
       for (const block of socialAccountTypeBlocks) {
@@ -3050,6 +3161,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const existing = await storage.getSocialAccountById(id);
           if (existing) {
             skippedCounts.socialAccounts++;
+            importedAccountIds.add(id);
             continue;
           }
 
@@ -3081,9 +3193,88 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
 
           importedCounts.socialAccounts++;
+          importedAccountIds.add(id);
         } catch (error) {
           console.error("Error importing social account:", error);
           failedCounts.socialAccounts++;
+        }
+      }
+
+      const profileVersionBlocks = parseAllTags("social_profile_version", xmlText);
+      for (const block of profileVersionBlocks) {
+        try {
+          const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+          const pvNickname = unescapeXml(parseXmlTag("nickname", block));
+          const pvBio = unescapeXml(parseXmlTag("bio", block));
+          const pvAccountUrl = unescapeXml(parseXmlTag("account_url", block));
+          const pvImageUrl = unescapeXml(parseXmlTag("image_url", block));
+          const pvExternalImageUrl = unescapeXml(parseXmlTag("external_image_url", block));
+          const pvIsCurrent = parseXmlTag("is_current", block) === "true";
+
+          if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
+
+          await storage.createProfileVersion({
+            socialAccountId,
+            nickname: pvNickname || null,
+            bio: pvBio || null,
+            accountUrl: pvAccountUrl || null,
+            imageUrl: pvImageUrl || null,
+            externalImageUrl: pvExternalImageUrl || null,
+            isCurrent: pvIsCurrent,
+          });
+          importedCounts.profileVersions++;
+        } catch (error) {
+          console.error("Error importing profile version:", error);
+        }
+      }
+
+      const snapshotBlocks = parseAllTags("social_network_snapshot", xmlText);
+      for (const block of snapshotBlocks) {
+        try {
+          const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+          const followerCount = parseInt(parseXmlTag("follower_count", block)) || 0;
+          const followingCount = parseInt(parseXmlTag("following_count", block)) || 0;
+          const snFollowers = parseXmlArray("followers", "account_id", block);
+          const snFollowing = parseXmlArray("following", "account_id", block);
+
+          if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
+
+          await storage.upsertNetworkState({
+            socialAccountId,
+            followerCount,
+            followingCount,
+            followers: snFollowers,
+            following: snFollowing,
+          });
+        } catch (error) {
+          console.error("Error importing network snapshot:", error);
+        }
+      }
+
+      const networkChangeBlocks = parseAllTags("social_network_change", xmlText);
+      for (const block of networkChangeBlocks) {
+        try {
+          const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+          const changeType = unescapeXml(parseXmlTag("change_type", block));
+          const direction = unescapeXml(parseXmlTag("direction", block));
+          const targetAccountId = unescapeXml(parseXmlTag("target_account_id", block));
+          const detectedAtStr = unescapeXml(parseXmlTag("detected_at", block));
+          const batchId = unescapeXml(parseXmlTag("batch_id", block));
+
+          if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
+          if (!changeType || !direction || !targetAccountId) continue;
+
+          await db.insert(socialNetworkChanges).values({
+            socialAccountId,
+            changeType,
+            direction,
+            targetAccountId,
+            detectedAt: detectedAtStr ? new Date(detectedAtStr) : new Date(),
+            batchId: batchId || null,
+          });
+          importedCounts.networkChanges++;
+        } catch (error) {
+          console.error("Error importing network change:", error);
         }
       }
 

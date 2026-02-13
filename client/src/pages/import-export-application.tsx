@@ -2,6 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Upload, FileText, AlertCircle, CheckCircle2, Download, Database } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -9,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 
 export default function ImportExportApplicationPage() {
   const [selectedXmlFile, setSelectedXmlFile] = useState<File | null>(null);
+  const [includeHistory, setIncludeHistory] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -96,7 +98,12 @@ export default function ImportExportApplicationPage() {
 
   const handleExportXml = async () => {
     try {
-      const response = await fetch("/api/export-xml", {
+      const params = new URLSearchParams();
+      if (includeHistory) {
+        params.set("includeHistory", "true");
+      }
+      const exportUrl = `/api/export-xml${params.toString() ? `?${params.toString()}` : ""}`;
+      const response = await fetch(exportUrl, {
         method: "GET",
       });
 
@@ -145,6 +152,24 @@ export default function ImportExportApplicationPage() {
                 Export all people, relationships, groups, interactions, notes, social accounts, social account types, and messages to an XML file (images excluded)
               </p>
             </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="app-include-history-toggle" className="text-sm font-medium">
+                  Include Social Account History
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Include profile version history and network change data for social accounts
+                </p>
+              </div>
+              <Switch
+                id="app-include-history-toggle"
+                checked={includeHistory}
+                onCheckedChange={setIncludeHistory}
+                data-testid="switch-app-include-history"
+              />
+            </div>
+
             <Button
               onClick={handleExportXml}
               data-testid="button-export-xml"

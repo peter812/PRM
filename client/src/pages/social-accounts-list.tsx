@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2, ExternalLink, Download } from "lucide-react";
+import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -46,6 +46,7 @@ export default function SocialAccountsList() {
   const [accountToDelete, setAccountToDelete] = useState<SocialAccount | null>(null);
   const [accountToEdit, setAccountToEdit] = useState<SocialAccount | null>(null);
   const [accountToExport, setAccountToExport] = useState<SocialAccount | null>(null);
+  const [showMassExportDialog, setShowMassExportDialog] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [showFollowsYou, setShowFollowsYou] = useState(false);
@@ -174,13 +175,24 @@ export default function SocialAccountsList() {
           <h1 className="text-xl md:text-3xl font-semibold truncate" data-testid="text-page-title">
             Social Accounts
           </h1>
-          <Button onClick={() => setIsAddDialogOpen(true)} size="icon" className="md:hidden shrink-0" data-testid="button-add-account-mobile">
-            <Plus className="h-4 w-4" />
-          </Button>
-          <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex" data-testid="button-add-account">
-            <Plus className="h-4 w-4" />
-            Add Account
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              className="hidden md:inline-flex"
+              onClick={() => setShowMassExportDialog(true)}
+              data-testid="button-mass-export"
+            >
+              <Download className="h-4 w-4" />
+            </Button>
+            <Button onClick={() => setIsAddDialogOpen(true)} size="icon" className="md:hidden shrink-0" data-testid="button-add-account-mobile">
+              <Plus className="h-4 w-4" />
+            </Button>
+            <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex" data-testid="button-add-account">
+              <Plus className="h-4 w-4" />
+              Add Account
+            </Button>
+          </div>
         </div>
         
         <div className="flex items-center gap-2 md:gap-4 flex-wrap">
@@ -458,6 +470,12 @@ export default function SocialAccountsList() {
           account={accountToExport}
         />
       )}
+
+      <ExportSocialAccountDialog
+        open={showMassExportDialog}
+        onOpenChange={setShowMassExportDialog}
+        massExport
+      />
 
       <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && setAccountToDelete(null)}>
         <AlertDialogContent>
