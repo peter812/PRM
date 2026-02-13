@@ -683,10 +683,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       xml += '  </group_notes>\n';
 
-      // Export social accounts (encode ME user UUID as all zeros in ownerUuid)
+      const networkStateMap = new Map(allNetworkStates.map(s => [s.socialAccountId, s]));
+
       xml += '  <social_accounts>\n';
       for (const account of allSocialAccounts) {
         const ownerUuid = account.ownerUuid === mePersonId ? ZERO_UUID : account.ownerUuid;
+        const accountState = networkStateMap.get(account.id);
         
         xml += '    <social_account>\n';
         xml += `      <id>${escapeXml(account.id)}</id>\n`;
@@ -697,8 +699,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
         xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
         xml += `      <notes></notes>\n`;
-        xml += `      <following>${arrayToXml(account.latestState?.following || [], "account_id")}</following>\n`;
-        xml += `      <followers>${arrayToXml(account.latestState?.followers || [], "account_id")}</followers>\n`;
+        xml += `      <following>${arrayToXml(accountState?.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }
@@ -3195,6 +3197,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      const allNetworkStates = await storage.getAllNetworkStates();
+      const networkStateMap = new Map(allNetworkStates.map(s => [s.socialAccountId, s]));
+
       xml += '  <social_account_types>\n';
       for (const type of allSocialAccountTypes) {
         if (typeIdsUsed.has(type.id)) {
@@ -3210,6 +3215,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       xml += '  <social_accounts>\n';
       for (const account of accounts) {
+        const accountState = account.latestState || networkStateMap.get(account.id);
         xml += '    <social_account>\n';
         xml += `      <id>${escapeXml(account.id)}</id>\n`;
         xml += `      <username>${escapeXml(account.username)}</username>\n`;
@@ -3219,8 +3225,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
         xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
         xml += `      <notes></notes>\n`;
-        xml += `      <following>${arrayToXml(account.latestState?.following || [], "account_id")}</following>\n`;
-        xml += `      <followers>${arrayToXml(account.latestState?.followers || [], "account_id")}</followers>\n`;
+        xml += `      <following>${arrayToXml(accountState?.following || [], "account_id")}</following>\n`;
+        xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }
