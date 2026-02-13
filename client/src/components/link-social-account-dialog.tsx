@@ -1,6 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Search, X } from "lucide-react";
+import { Search, X, Check } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -33,19 +33,34 @@ export function LinkSocialAccountDialog({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(linkedAccountIds);
 
-  const { data: allAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts"],
+  useEffect(() => {
+    if (open) {
+      setSelectedIds(linkedAccountIds);
+    }
+  }, [open, linkedAccountIds]);
+
+  const { data: searchResults = [], isFetching: isSearching } = useQuery<SocialAccountWithCurrentProfile[]>({
+    queryKey: ["/api/social-accounts", { search: searchQuery }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      params.set("search", searchQuery);
+      const res = await fetch(`/api/social-accounts?${params.toString()}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to search accounts");
+      return res.json();
+    },
+    enabled: open && searchQuery.trim().length >= 2,
   });
 
-  const filteredAccounts = useMemo(() => {
-    if (!searchQuery.trim()) return allAccounts;
-    const query = searchQuery.toLowerCase();
-    return allAccounts.filter(
-      (acc) =>
-        acc.username.toLowerCase().includes(query) ||
-        (acc.currentProfile?.accountUrl || '').toLowerCase().includes(query)
-    );
-  }, [allAccounts, searchQuery]);
+  const { data: linkedAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
+    queryKey: ["/api/social-accounts/by-ids", linkedAccountIds],
+    queryFn: async () => {
+      const res = await apiRequest("POST", "/api/social-accounts/by-ids", { ids: linkedAccountIds });
+      return res.json();
+    },
+    enabled: open && linkedAccountIds.length > 0,
+  });
+
+  const displayAccounts = searchQuery.trim().length >= 2 ? searchResults : linkedAccounts;
 
   const linkMutation = useMutation({
     mutationFn: async (accountIds: string[]) => {
@@ -56,6 +71,7 @@ export function LinkSocialAccountDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/by-ids"] });
       toast({
         title: "Success",
         description: "Social accounts linked successfully",
@@ -105,7 +121,7 @@ export function LinkSocialAccountDialog({
         <DialogHeader className="pb-2 md:pb-4">
           <DialogTitle className="text-base md:text-xl">Link Accounts</DialogTitle>
           <DialogDescription className="text-xs md:text-sm">
-            Select social accounts to link
+            Search for social accounts to link
           </DialogDescription>
         </DialogHeader>
 
@@ -113,7 +129,7 @@ export function LinkSocialAccountDialog({
           <div className="relative flex-shrink-0">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
             <Input
-              placeholder="Search..."
+              placeholder="Type 2+ characters to search..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 text-xs md:text-sm h-8 md:h-auto"
@@ -122,8 +138,23 @@ export function LinkSocialAccountDialog({
           </div>
 
           <div className="flex-1 overflow-auto space-y-1 md:space-y-2 min-h-0">
-            {filteredAccounts.length > 0 ? (
-              filteredAccounts.map((account) => {
+            {searchQuery.trim().length > 0 && searchQuery.trim().length < 2 && (
+              <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
+                Type {2 - searchQuery.trim().length} more character{2 - searchQuery.trim().length > 1 ? "s" : ""} to search...
+              </div>
+            )}
+            {searchQuery.trim().length === 0 && linkedAccounts.length === 0 && (
+              <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
+                Type to search for accounts
+              </div>
+            )}
+            {isSearching && (
+              <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
+                Searching...
+              </div>
+            )}
+            {!isSearching && displayAccounts.length > 0 ? (
+              displayAccounts.map((account) => {
                 const isSelected = selectedIds.includes(account.id);
                 return (
                   <Card
@@ -158,7 +189,7 @@ export function LinkSocialAccountDialog({
                         data-testid={`checkbox-${account.id}`}
                       >
                         {isSelected && (
-                          <X className="h-2.5 w-2.5 md:h-3 md:w-3 text-primary-foreground" />
+                          <Check className="h-2.5 w-2.5 md:h-3 md:w-3 text-primary-foreground" />
                         )}
                       </div>
                     </div>
@@ -166,9 +197,11 @@ export function LinkSocialAccountDialog({
                 );
               })
             ) : (
-              <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
-                No accounts found
-              </div>
+              !isSearching && searchQuery.trim().length >= 2 && (
+                <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
+                  No accounts found
+                </div>
+              )
             )}
           </div>
 
@@ -181,7 +214,7 @@ export function LinkSocialAccountDialog({
                 onOpenChange(false);
               }}
               data-testid="button-cancel"
-              className="w-full md:w-auto text-xs md:text-sm h-7 md:h-auto px-2 md:px-4"
+              className="w-full md:w-auto text-xs md:text-sm"
             >
               Cancel
             </Button>
@@ -189,7 +222,7 @@ export function LinkSocialAccountDialog({
               onClick={handleSave}
               disabled={linkMutation.isPending}
               data-testid="button-save-links"
-              className="w-full md:w-auto text-xs md:text-sm h-7 md:h-auto px-2 md:px-4"
+              className="w-full md:w-auto text-xs md:text-sm"
             >
               {linkMutation.isPending ? "Saving..." : "Save"}
             </Button>

@@ -204,6 +204,7 @@ export interface IStorage {
     followsAccountIds?: string[];
   }): Promise<SocialAccountWithCurrentProfile[]>;
   getSocialAccountById(id: string): Promise<SocialAccountWithCurrentProfile | undefined>;
+  getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]>;
   createSocialAccount(account: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile>;
   updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
   deleteSocialAccount(id: string): Promise<void>;
@@ -1661,6 +1662,27 @@ export class DatabaseStorage implements IStorage {
       .where(eq(socialNetworkState.socialAccountId, id));
 
     return this.buildSocialAccountWithProfile(row.account, row.profile, currentState || null);
+  }
+
+  async getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]> {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select({
+        account: socialAccounts,
+        profile: socialProfileVersions,
+      })
+      .from(socialAccounts)
+      .leftJoin(
+        socialProfileVersions,
+        and(
+          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+          eq(socialProfileVersions.isCurrent, true)
+        )
+      )
+      .where(inArray(socialAccounts.id, ids));
+
+    return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
   }
 
   async createSocialAccount(insertAccount: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile> {

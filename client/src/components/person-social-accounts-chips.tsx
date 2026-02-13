@@ -23,13 +23,15 @@ export function PersonSocialAccountsChips({
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
-  const { data: accounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts"],
+  const { data: linkedAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
+    queryKey: ["/api/social-accounts/by-ids", socialAccountUuids],
+    queryFn: async () => {
+      if (socialAccountUuids.length === 0) return [];
+      const res = await apiRequest("POST", "/api/social-accounts/by-ids", { ids: socialAccountUuids });
+      return res.json();
+    },
+    enabled: socialAccountUuids.length > 0,
   });
-
-  const linkedAccounts = accounts.filter((acc) =>
-    socialAccountUuids.includes(acc.id)
-  );
 
   const removeMutation = useMutation({
     mutationFn: async (accountIdToRemove: string) => {
@@ -43,6 +45,7 @@ export function PersonSocialAccountsChips({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/by-ids"] });
       if (onUpdate) {
         onUpdate();
       }
@@ -75,7 +78,7 @@ export function PersonSocialAccountsChips({
   return (
     <>
       <div className="flex flex-wrap gap-2 mt-2">
-        {linkedAccounts.length === 0 ? (
+        {linkedAccounts.length === 0 && socialAccountUuids.length === 0 ? (
           <Badge
             variant="outline"
             className="cursor-pointer hover-elevate"

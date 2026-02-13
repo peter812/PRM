@@ -3096,6 +3096,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/social-accounts/by-ids", async (req, res) => {
+    try {
+      const { ids } = req.body;
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({ error: "ids must be an array" });
+      }
+      const accounts = await storage.getSocialAccountsByIds(ids);
+      res.json(accounts);
+    } catch (error) {
+      console.error("Error fetching social accounts by ids:", error);
+      res.status(500).json({ error: "Failed to fetch social accounts" });
+    }
+  });
+
   app.get("/api/social-accounts/paginated", async (req, res) => {
     try {
       const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
