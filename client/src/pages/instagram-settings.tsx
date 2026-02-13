@@ -112,9 +112,8 @@ export default function InstagramSettingsPage() {
 
     setIsExportingAll(true);
     try {
-      const ids = allAccounts.map((a) => a.id).join(",");
       const response = await fetch(
-        `/api/social-accounts/export-xml?ids=${encodeURIComponent(ids)}`,
+        `/api/social-accounts/export-xml`,
         { credentials: "include" }
       );
 

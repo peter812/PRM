@@ -3456,7 +3456,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const newFollowing = new Set<string>(req.body.following || []);
 
       const batchId = crypto.randomUUID();
-      const changes: InsertSocialNetworkChange[] = [];
+      const changes: { socialAccountId: string; changeType: string; direction: string; targetAccountId: string; batchId: string }[] = [];
 
       for (const f of Array.from(newFollowers)) {
         if (!oldFollowers.has(f)) {
