@@ -1,0 +1,18 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iOS 14.6//EN
+N:Brooks;Alicia;;;
+FN:Alicia Brooks
+item1.TEL;type=pref:+15099956333
+REV:2021-06-17T01:22:12Z
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iOS 14.4.2//EN
+N:Cunningham;Sara;;;
+FN:Sara Cunningham
+TEL;type=CELL;type=VOICE;type=pref:(509) 385-5318
+REV:2021-04-23T02:13:00Z
+X-ACTIVITY-ALERT:type=text\,snd=texttone:Complete
+X-ACTIVITY-ALERT:type=call\,snd=system:Apex
+END:VCARD
