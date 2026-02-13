@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -62,19 +62,14 @@ const settingsMenuItems: MenuItem[] = [
     icon: Settings,
   },
   {
-    title: "Relationship Types",
-    url: "/relationship-types",
-    icon: Heart,
-  },
-  {
-    title: "Interaction Types",
-    url: "/interaction-types",
-    icon: MessageSquare,
-  },
-  {
-    title: "Social Account Types",
-    url: "/social-account-types",
-    icon: AtSign,
+    title: "Data Types",
+    url: "/data-types",
+    icon: Layers,
+    subItems: [
+      { title: "Relationship Types", url: "/data-types/relationship-types", icon: Heart },
+      { title: "Interaction Types", url: "/data-types/interaction-types", icon: MessageSquare },
+      { title: "Social Account Types", url: "/data-types/social-account-types", icon: AtSign },
+    ],
   },
   {
     title: "Instagram Settings",
@@ -118,6 +113,7 @@ const settingsMenuItems: MenuItem[] = [
 function SettingsSidebar() {
   const [location] = useLocation();
 
+  const isDataTypesActive = location.startsWith("/data-types");
   const isImportExportActive = location.startsWith("/import-export");
 
   return (
@@ -129,11 +125,12 @@ function SettingsSidebar() {
             <SidebarMenu>
               {settingsMenuItems.map((item) => {
                 if (item.subItems) {
+                  const isActive = item.url === "/data-types" ? isDataTypesActive : isImportExportActive;
                   return (
                     <Collapsible
                       key={item.title}
                       asChild
-                      defaultOpen={isImportExportActive}
+                      defaultOpen={isActive}
                       className="group/collapsible"
                     >
                       <SidebarMenuItem>
@@ -209,9 +206,9 @@ export default function SettingsLayout() {
               <Route path="/" component={() => <Redirect to="/user" />} />
               <Route path="/user" component={UserOptionsPage} />
               <Route path="/app" component={AppOptionsPage} />
-              <Route path="/relationship-types" component={RelationshipTypesList} />
-              <Route path="/interaction-types" component={InteractionTypesList} />
-              <Route path="/social-account-types" component={SocialAccountTypesList} />
+              <Route path="/data-types/relationship-types" component={RelationshipTypesList} />
+              <Route path="/data-types/interaction-types" component={InteractionTypesList} />
+              <Route path="/data-types/social-account-types" component={SocialAccountTypesList} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
               <Route path="/import-export/contacts" component={ImportContactsPage} />
