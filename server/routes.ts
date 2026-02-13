@@ -259,6 +259,218 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // VCF (vCard) import endpoint
+  app.post("/api/import-vcf", upload.single("vcf"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No VCF file provided" });
+      }
+
+      const vcfText = req.file.buffer.toString("utf-8");
+
+      // Unfold continued lines per vCard spec (lines starting with space/tab are continuations)
+      const unfoldedText = vcfText.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
+
+      // Split into individual vCards
+      const vCardBlocks = unfoldedText.split(/(?=BEGIN:VCARD)/i).filter(block =>
+        block.trim().toUpperCase().startsWith("BEGIN:VCARD")
+      );
+
+      if (vCardBlocks.length === 0) {
+        return res.status(400).json({ error: "No valid vCard entries found in file" });
+      }
+
+      const createdPeople = [];
+      const errors: { index: number; name: string; error: string }[] = [];
+
+      for (let i = 0; i < vCardBlocks.length; i++) {
+        try {
+          const block = vCardBlocks[i];
+          const lines = block.split(/\r?\n/).filter(l => l.trim() !== "");
+
+          let firstName = "";
+          let lastName = "";
+          let fullName = "";
+          let email: string | null = null;
+          let phone: string | null = null;
+          let company: string | null = null;
+          let title: string | null = null;
+          const noteParts: string[] = [];
+          const extraEmails: string[] = [];
+          const extraPhones: string[] = [];
+
+          for (const line of lines) {
+            if (line.toUpperCase().startsWith("BEGIN:") || line.toUpperCase().startsWith("END:") || line.toUpperCase().startsWith("VERSION:")) {
+              continue;
+            }
+
+            // Parse property name and value - handle item1.PROP style prefixes
+            const colonIdx = line.indexOf(":");
+            if (colonIdx === -1) continue;
+
+            let propPart = line.substring(0, colonIdx);
+            const value = line.substring(colonIdx + 1).trim();
+
+            // Strip itemN. prefix (Apple format)
+            propPart = propPart.replace(/^item\d+\./i, "");
+
+            // Extract the base property name (before any ;params)
+            const semiIdx = propPart.indexOf(";");
+            const propName = (semiIdx === -1 ? propPart : propPart.substring(0, semiIdx)).toUpperCase();
+            const params = semiIdx === -1 ? "" : propPart.substring(semiIdx + 1).toUpperCase();
+
+            switch (propName) {
+              case "N": {
+                const parts = value.split(";");
+                lastName = (parts[0] || "").trim();
+                firstName = (parts[1] || "").trim();
+                const middleName = (parts[2] || "").trim();
+                const prefix = (parts[3] || "").trim();
+                const suffix = (parts[4] || "").trim();
+                if (middleName) noteParts.push(`Middle Name: ${middleName}`);
+                if (prefix) noteParts.push(`Name Prefix: ${prefix}`);
+                if (suffix) noteParts.push(`Name Suffix: ${suffix}`);
+                break;
+              }
+              case "FN":
+                fullName = value;
+                break;
+              case "TEL":
+                if (!phone) {
+                  phone = value;
+                } else {
+                  const telType = params.includes("CELL") ? "Cell" : params.includes("HOME") ? "Home Phone" : params.includes("WORK") ? "Work Phone" : "Phone";
+                  extraPhones.push(`${telType}: ${value}`);
+                }
+                break;
+              case "EMAIL":
+                if (!email) {
+                  email = value;
+                } else {
+                  const emailType = params.includes("HOME") ? "Home Email" : params.includes("WORK") ? "Work Email" : "Email";
+                  extraEmails.push(`${emailType}: ${value}`);
+                }
+                break;
+              case "ORG":
+                company = value.split(";")[0]?.trim() || null;
+                break;
+              case "TITLE":
+                title = value || null;
+                break;
+              case "BDAY": {
+                const bdayVal = value.replace(/^VALUE=date:/i, "");
+                noteParts.push(`Birthday: ${bdayVal}`);
+                break;
+              }
+              case "ADR": {
+                const addrParts = value.split(";").map(p => p.trim()).filter(Boolean);
+                if (addrParts.length > 0) {
+                  const addrType = params.includes("HOME") ? "Home Address" : params.includes("WORK") ? "Work Address" : "Address";
+                  noteParts.push(`${addrType}: ${addrParts.join(", ")}`);
+                }
+                break;
+              }
+              case "URL":
+                noteParts.push(`Website: ${value}`);
+                break;
+              case "NOTE":
+                noteParts.push(`Notes: ${value}`);
+                break;
+              case "NICKNAME":
+                noteParts.push(`Nickname: ${value}`);
+                break;
+              case "ROLE":
+                noteParts.push(`Role: ${value}`);
+                break;
+              case "CATEGORIES":
+                noteParts.push(`Categories: ${value}`);
+                break;
+              case "X-SOCIALPROFILE":
+              case "X-SOCIAL-PROFILE":
+                noteParts.push(`Social Profile: ${value}`);
+                break;
+              case "X-ACTIVITY-ALERT":
+                noteParts.push(`Activity Alert: ${value}`);
+                break;
+              case "PHOTO":
+                break;
+              case "PRODID":
+              case "REV":
+              case "UID":
+              case "X-ABADR":
+              case "X-ABLABEL":
+              case "X-ABUID":
+                break;
+              default:
+                if (value && !propName.startsWith("X-AB")) {
+                  noteParts.push(`${propName}: ${value}`);
+                }
+                break;
+            }
+          }
+
+          // Fallback: if N field didn't give us names, parse FN
+          if (!firstName && !lastName && fullName) {
+            const fnParts = fullName.trim().split(/\s+/);
+            if (fnParts.length >= 2) {
+              firstName = fnParts[0];
+              lastName = fnParts.slice(1).join(" ");
+            } else {
+              firstName = fullName;
+            }
+          }
+
+          if (!firstName && !lastName) {
+            errors.push({ index: i, name: "(empty)", error: "No name found in vCard entry" });
+            continue;
+          }
+
+          // Append extra emails and phones to notes
+          extraEmails.forEach(e => noteParts.push(e));
+          extraPhones.forEach(p => noteParts.push(p));
+
+          const personData = {
+            firstName: firstName || "Unknown",
+            lastName: lastName || "Unknown",
+            email: email || null,
+            phone: phone || null,
+            company: company || null,
+            title: title || null,
+            tags: [],
+          };
+
+          const person = await storage.createPerson(personData);
+
+          if (noteParts.length > 0) {
+            await storage.createNote({
+              personId: person.id,
+              content: noteParts.join("\n"),
+            });
+          }
+
+          createdPeople.push(person);
+        } catch (error) {
+          console.error(`Error processing vCard ${i + 1}:`, error);
+          errors.push({
+            index: i,
+            name: `vCard ${i + 1}`,
+            error: error instanceof Error ? error.message : "Unknown error",
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        imported: createdPeople.length,
+        errors: errors.length,
+        errorDetails: errors.length > 0 ? errors : undefined,
+      });
+    } catch (error) {
+      console.error("Error importing VCF:", error);
+      res.status(500).json({ error: "Failed to import VCF file" });
+    }
+  });
+
   // XML Export endpoint
   app.get("/api/export-xml", async (req, res) => {
     try {
