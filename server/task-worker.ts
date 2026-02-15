@@ -124,7 +124,7 @@ async function processMassRefreshFollowerCount(taskId: string): Promise<string> 
 
 async function processTransferImagesToLocal(taskId: string): Promise<string> {
   const allUrls = await storage.getAllImageUrls();
-  const s3Urls = allUrls.filter(u => !isLocalImageUrl(u.url));
+  const s3Urls = allUrls.filter(u => !isLocalImageUrl(u.url) && !u.url.includes("instagram.com"));
   let transferred = 0;
   let failed = 0;
   const errors: string[] = [];
@@ -169,7 +169,7 @@ async function processTransferImagesToLocal(taskId: string): Promise<string> {
 
 async function processTransferImagesToS3(taskId: string): Promise<string> {
   const allUrls = await storage.getAllImageUrls();
-  const localUrls = allUrls.filter(u => isLocalImageUrl(u.url));
+  const localUrls = allUrls.filter(u => isLocalImageUrl(u.url) && !u.url.includes("instagram.com"));
   let transferred = 0;
   let failed = 0;
   const errors: string[] = [];
