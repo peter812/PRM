@@ -1,5 +1,6 @@
 import { storage } from "./storage";
-import { uploadImageToS3 } from "./s3";
+import { uploadImageToS3, deleteImageFromS3 } from "./s3";
+import { uploadImageLocally, deleteImageLocally, isLocalImageUrl } from "./local-storage";
 import { log } from "./vite";
 import fs from "fs";
 import path from "path";
@@ -121,6 +122,101 @@ async function processMassRefreshFollowerCount(taskId: string): Promise<string> 
   return JSON.stringify({ refreshed, skipped, total: allAccounts.length });
 }
 
+async function processTransferImagesToLocal(taskId: string): Promise<string> {
+  const allUrls = await storage.getAllImageUrls();
+  const s3Urls = allUrls.filter(u => !isLocalImageUrl(u.url));
+  let transferred = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const entry of s3Urls) {
+    if (await isTaskCancelled(taskId)) {
+      return JSON.stringify({ transferred, failed, total: s3Urls.length, cancelled: true, errors });
+    }
+
+    try {
+      const response = await fetch(entry.url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const contentType = response.headers.get("content-type") || "image/jpeg";
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+
+      const localUrl = await uploadImageLocally(buffer, `transferred.${ext}`, contentType);
+      await storage.updateImageUrl(entry.table, entry.id, entry.column, entry.url, localUrl);
+
+      try {
+        await deleteImageFromS3(entry.url);
+      } catch (delErr) {
+        log(`[TaskWorker] Warning: could not delete S3 image after transfer: ${entry.url}`);
+      }
+
+      transferred++;
+    } catch (err) {
+      failed++;
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`${entry.table}/${entry.id}: ${msg}`);
+      log(`[TaskWorker] Failed to transfer image to local: ${entry.url} - ${msg}`);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
+  return JSON.stringify({ transferred, failed, total: s3Urls.length, errors });
+}
+
+async function processTransferImagesToS3(taskId: string): Promise<string> {
+  const allUrls = await storage.getAllImageUrls();
+  const localUrls = allUrls.filter(u => isLocalImageUrl(u.url));
+  let transferred = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+
+  for (const entry of localUrls) {
+    if (await isTaskCancelled(taskId)) {
+      return JSON.stringify({ transferred, failed, total: localUrls.length, cancelled: true, errors });
+    }
+
+    try {
+      const fileName = entry.url.split("/api/images/").pop();
+      if (!fileName) throw new Error("Invalid local URL");
+
+      const filePath = path.join(UPLOADS_DIR, path.basename(fileName));
+      if (!fs.existsSync(filePath)) {
+        throw new Error("Local file not found");
+      }
+
+      const buffer = fs.readFileSync(filePath);
+      const ext = path.extname(filePath).replace(".", "") || "jpg";
+      const mimeType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+
+      const s3Url = await uploadImageToS3(buffer, `transferred.${ext}`, mimeType);
+      await storage.updateImageUrl(entry.table, entry.id, entry.column, entry.url, s3Url);
+
+      try {
+        await deleteImageLocally(entry.url);
+      } catch (delErr) {
+        log(`[TaskWorker] Warning: could not delete local image after transfer: ${entry.url}`);
+      }
+
+      transferred++;
+    } catch (err) {
+      failed++;
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`${entry.table}/${entry.id}: ${msg}`);
+      log(`[TaskWorker] Failed to transfer image to S3: ${entry.url} - ${msg}`);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
+  return JSON.stringify({ transferred, failed, total: localUrls.length, errors });
+}
+
 async function processNextTask(): Promise<boolean> {
   const task = await storage.getNextPendingTask();
   if (!task) return false;
@@ -144,6 +240,14 @@ async function processNextTask(): Promise<boolean> {
       }
       case "mass_refresh_follower_count": {
         result = await processMassRefreshFollowerCount(task.id);
+        break;
+      }
+      case "transfer_images_to_local": {
+        result = await processTransferImagesToLocal(task.id);
+        break;
+      }
+      case "transfer_images_to_s3": {
+        result = await processTransferImagesToS3(task.id);
         break;
       }
       default:

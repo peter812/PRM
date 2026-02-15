@@ -165,6 +165,10 @@ export interface IStorage {
   getUserCount(): Promise<number>;
   updateUserPerson(userId: number, person: Partial<InsertPerson>): Promise<void>;
   getMePerson(userId: number): Promise<PersonWithRelations | undefined>;
+  getImageStorageMode(userId: number): Promise<string>;
+  setImageStorageMode(userId: number, mode: string): Promise<void>;
+  getAllImageUrls(): Promise<Array<{ table: string; id: string; column: string; url: string }>>;
+  updateImageUrl(table: string, id: string, column: string, oldUrl: string, newUrl: string): Promise<void>;
 
   // API Key operations
   getAllApiKeys(userId: number): Promise<ApiKey[]>;
@@ -988,6 +992,83 @@ export class DatabaseStorage implements IStorage {
       relationships: allRelationships,
       messages: [],
     };
+  }
+
+  async getImageStorageMode(userId: number): Promise<string> {
+    const [user] = await db.select({ imageStorageMode: users.imageStorageMode }).from(users).where(eq(users.id, userId));
+    return user?.imageStorageMode || "s3";
+  }
+
+  async setImageStorageMode(userId: number, mode: string): Promise<void> {
+    await db.update(users).set({ imageStorageMode: mode }).where(eq(users.id, userId));
+  }
+
+  async getAllImageUrls(): Promise<Array<{ table: string; id: string; column: string; url: string }>> {
+    const results: Array<{ table: string; id: string; column: string; url: string }> = [];
+
+    const peopleRows = await db.select({ id: people.id, imageUrl: people.imageUrl }).from(people);
+    for (const row of peopleRows) {
+      if (row.imageUrl) results.push({ table: "people", id: row.id, column: "imageUrl", url: row.imageUrl });
+    }
+
+    const noteRows = await db.select({ id: notes.id, imageUrl: notes.imageUrl }).from(notes);
+    for (const row of noteRows) {
+      if (row.imageUrl) results.push({ table: "notes", id: row.id, column: "imageUrl", url: row.imageUrl });
+    }
+
+    const interactionRows = await db.select({ id: interactions.id, imageUrl: interactions.imageUrl }).from(interactions);
+    for (const row of interactionRows) {
+      if (row.imageUrl) results.push({ table: "interactions", id: row.id, column: "imageUrl", url: row.imageUrl });
+    }
+
+    const groupRows = await db.select({ id: groups.id, imageUrl: groups.imageUrl }).from(groups);
+    for (const row of groupRows) {
+      if (row.imageUrl) results.push({ table: "groups", id: row.id, column: "imageUrl", url: row.imageUrl });
+    }
+
+    const socialProfileRows = await db.select({ id: socialProfileVersions.id, imageUrl: socialProfileVersions.imageUrl }).from(socialProfileVersions);
+    for (const row of socialProfileRows) {
+      if (row.imageUrl) results.push({ table: "social_profile_versions", id: row.id, column: "imageUrl", url: row.imageUrl });
+    }
+
+    const messageRows = await db.select({ id: messages.id, imageUrls: messages.imageUrls }).from(messages);
+    for (const row of messageRows) {
+      if (row.imageUrls && row.imageUrls.length > 0) {
+        for (const url of row.imageUrls) {
+          results.push({ table: "messages", id: row.id, column: "imageUrls", url });
+        }
+      }
+    }
+
+    return results;
+  }
+
+  async updateImageUrl(table: string, id: string, column: string, oldUrl: string, newUrl: string): Promise<void> {
+    switch (table) {
+      case "people":
+        await db.update(people).set({ imageUrl: newUrl }).where(eq(people.id, id));
+        break;
+      case "notes":
+        await db.update(notes).set({ imageUrl: newUrl }).where(eq(notes.id, id));
+        break;
+      case "interactions":
+        await db.update(interactions).set({ imageUrl: newUrl }).where(eq(interactions.id, id));
+        break;
+      case "groups":
+        await db.update(groups).set({ imageUrl: newUrl }).where(eq(groups.id, id));
+        break;
+      case "social_profile_versions":
+        await db.update(socialProfileVersions).set({ imageUrl: newUrl }).where(eq(socialProfileVersions.id, id));
+        break;
+      case "messages": {
+        const [msg] = await db.select({ imageUrls: messages.imageUrls }).from(messages).where(eq(messages.id, id));
+        if (msg?.imageUrls) {
+          const updatedUrls = msg.imageUrls.map((u: string) => u === oldUrl ? newUrl : u);
+          await db.update(messages).set({ imageUrls: updatedUrls }).where(eq(messages.id, id));
+        }
+        break;
+      }
+    }
   }
 
   // API Key operations

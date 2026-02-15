@@ -24,6 +24,10 @@ function getTaskLabel(type: string): string {
       return "Mass Follower Count Refresh";
     case "get_img":
       return "Image Download";
+    case "transfer_images_to_local":
+      return "Transfer Images to Local";
+    case "transfer_images_to_s3":
+      return "Transfer Images to S3";
     default:
       return type;
   }
@@ -86,6 +90,14 @@ function TaskResultDisplay({ task }: { task: Task }) {
       return (
         <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
           Refreshed: {result.refreshed}, Skipped: {result.skipped}, Total: {result.total}
+        </span>
+      );
+    }
+    if (task.type === "transfer_images_to_local" || task.type === "transfer_images_to_s3") {
+      return (
+        <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
+          Transferred: {result.transferred}, Failed: {result.failed}, Total: {result.total}
+          {result.cancelled && " (cancelled)"}
         </span>
       );
     }

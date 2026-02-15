@@ -23,6 +23,7 @@ import {
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
+import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "./local-storage";
 import { hashPassword } from "./auth";
 import { triggerTaskWorker } from "./task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -37,6 +38,20 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 let isUserCreationAllowed = false;
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Serve local images (authenticated)
+  app.get("/api/images/:filename", (req, res) => {
+    if (!req.isAuthenticated()) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    const filePath = getLocalImagePath(req.params.filename);
+    if (!filePath) {
+      return res.status(404).json({ error: "Image not found" });
+    }
+
+    res.sendFile(filePath);
+  });
+
   // Image upload endpoint
   app.post("/api/upload-image", upload.single("image"), async (req, res) => {
     try {
@@ -44,11 +59,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "No image file provided" });
       }
 
-      const imageUrl = await uploadImageToS3(
-        req.file.buffer,
-        req.file.originalname,
-        req.file.mimetype
-      );
+      let storageMode = "s3";
+      if (req.isAuthenticated() && req.user) {
+        storageMode = await storage.getImageStorageMode(req.user.id);
+      }
+
+      let imageUrl: string;
+      if (storageMode === "local") {
+        imageUrl = await uploadImageLocally(
+          req.file.buffer,
+          req.file.originalname,
+          req.file.mimetype
+        );
+      } else {
+        imageUrl = await uploadImageToS3(
+          req.file.buffer,
+          req.file.originalname,
+          req.file.mimetype
+        );
+      }
 
       res.json({ imageUrl });
     } catch (error) {
@@ -65,7 +94,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "No image URL provided" });
       }
 
-      await deleteImageFromS3(imageUrl);
+      if (isLocalImageUrl(imageUrl)) {
+        await deleteImageLocally(imageUrl);
+      } else {
+        await deleteImageFromS3(imageUrl);
+      }
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting image:", error);
@@ -4334,6 +4367,89 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error creating mass refresh task:", error);
       res.status(500).json({ error: "Failed to create mass refresh task" });
+    }
+  });
+
+  // Image storage settings
+  app.get("/api/image-storage/mode", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const mode = await storage.getImageStorageMode(req.user.id);
+      const hasS3Creds = !!(process.env.S3_ENDPOINT && process.env.S3_ACCESS_KEY && process.env.S3_SECRET_KEY && process.env.S3_BUCKET);
+      res.json({ mode, hasS3Creds });
+    } catch (error) {
+      console.error("Error getting image storage mode:", error);
+      res.status(500).json({ error: "Failed to get image storage mode" });
+    }
+  });
+
+  app.put("/api/image-storage/mode", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const { mode } = req.body;
+      if (mode !== "s3" && mode !== "local") {
+        return res.status(400).json({ error: "Invalid storage mode. Must be 's3' or 'local'" });
+      }
+      await storage.setImageStorageMode(req.user.id, mode);
+      res.json({ success: true, mode });
+    } catch (error) {
+      console.error("Error setting image storage mode:", error);
+      res.status(500).json({ error: "Failed to set image storage mode" });
+    }
+  });
+
+  app.post("/api/image-storage/transfer-to-local", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const task = await storage.createTask({
+        type: "transfer_images_to_local",
+        status: "pending",
+        payload: JSON.stringify({ userId: req.user.id }),
+      });
+      triggerTaskWorker();
+      res.json(task);
+    } catch (error) {
+      console.error("Error creating transfer to local task:", error);
+      res.status(500).json({ error: "Failed to create transfer task" });
+    }
+  });
+
+  app.post("/api/image-storage/transfer-to-s3", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const task = await storage.createTask({
+        type: "transfer_images_to_s3",
+        status: "pending",
+        payload: JSON.stringify({ userId: req.user.id }),
+      });
+      triggerTaskWorker();
+      res.json(task);
+    } catch (error) {
+      console.error("Error creating transfer to S3 task:", error);
+      res.status(500).json({ error: "Failed to create transfer task" });
+    }
+  });
+
+  app.get("/api/image-storage/stats", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const allUrls = await storage.getAllImageUrls();
+      const localCount = allUrls.filter(u => isLocalImageUrl(u.url)).length;
+      const s3Count = allUrls.filter(u => !isLocalImageUrl(u.url)).length;
+      res.json({ total: allUrls.length, local: localCount, s3: s3Count });
+    } catch (error) {
+      console.error("Error getting image stats:", error);
+      res.status(500).json({ error: "Failed to get image stats" });
     }
   });
 

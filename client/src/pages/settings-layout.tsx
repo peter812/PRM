@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -36,6 +36,7 @@ import ImportExportApplicationPage from "@/pages/import-export-application";
 import ImagePassInPage from "@/pages/image-pass-in";
 import InstagramSettingsPage from "@/pages/instagram-settings";
 import TasksSettingsPage from "@/pages/tasks-settings";
+import ImageStorageSettingsPage from "@/pages/image-storage-settings";
 import NotFound from "@/pages/not-found";
 
 interface MenuItem {
@@ -70,6 +71,11 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Interaction Types", url: "/data-types/interaction-types", icon: MessageSquare },
       { title: "Social Account Types", url: "/data-types/social-account-types", icon: AtSign },
     ],
+  },
+  {
+    title: "Image Storage",
+    url: "/image-storage",
+    icon: HardDrive,
   },
   {
     title: "Instagram Settings",
@@ -209,6 +215,7 @@ export default function SettingsLayout() {
               <Route path="/data-types/relationship-types" component={RelationshipTypesList} />
               <Route path="/data-types/interaction-types" component={InteractionTypesList} />
               <Route path="/data-types/social-account-types" component={SocialAccountTypesList} />
+              <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
               <Route path="/import-export/contacts" component={ImportContactsPage} />

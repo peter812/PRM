@@ -11,7 +11,8 @@ export const users = pgTable("users", {
   nickname: text("nickname"),
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
-  ssoEmail: text("sso_email"), // Optional SSO email for OAuth2 login matching
+  ssoEmail: text("sso_email"),
+  imageStorageMode: text("image_storage_mode").notNull().default("s3"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

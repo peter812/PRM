@@ -376,6 +376,7 @@ async function validateAndSyncSchema(): Promise<void> {
     const schemaDefinitions: Record<string, Record<string, string>> = {
       users: {
         sso_email: "TEXT",
+        image_storage_mode: "TEXT NOT NULL DEFAULT 's3'",
       },
       people: {
         social_account_uuids: "TEXT[]",
