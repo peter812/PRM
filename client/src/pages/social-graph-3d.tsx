@@ -51,7 +51,7 @@ export default function SocialGraph3D() {
   const materialCacheRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
   const [, navigate] = useLocation();
   const [hideOrphans, setHideOrphans] = useState(true);
-  const [minConnections, setMinConnections] = useState(0);
+  const [minConnections, setMinConnections] = useState(3);
   const [limitExtras, setLimitExtras] = useState(true);
   const [maxExtras, setMaxExtras] = useState(20);
   const [colorScheme, setColorScheme] = useState<'type' | 'distance' | 'connections'>('type');
@@ -90,7 +90,7 @@ export default function SocialGraph3D() {
 
   const [appliedSettings, setAppliedSettings] = useState({
     hideOrphans,
-    minConnections,
+    minConnections: 3,
     limitExtras,
     maxExtras,
     singleHighlightAccountId,
