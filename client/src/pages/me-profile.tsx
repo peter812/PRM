@@ -226,10 +226,8 @@ export default function MeProfile() {
               personId={person.id}
               onAddNote={() => setIsAddNoteOpen(true)}
               onAddInteraction={() => setIsAddInteractionOpen(true)}
-              onAddMessage={() => navigate("/messages")}
               onSelectNote={() => {}}
               onSelectInteraction={() => {}}
-              onSelectMessage={() => navigate("/messages")}
             />
           </TabsContent>
 

@@ -16,7 +16,6 @@ import {
   socialProfileVersions,
   socialNetworkState,
   socialNetworkChanges,
-  messages,
   type Person,
   type InsertPerson,
   type Note,
@@ -54,8 +53,6 @@ import {
   type InsertSocialNetworkChange,
   type SocialAccountWithCurrentProfile,
   tasks,
-  type Message,
-  type InsertMessage,
   type Task,
   type InsertTask,
   type FlowItem,
@@ -240,19 +237,6 @@ export interface IStorage {
   updateSocialAccountType(id: string, type: Partial<InsertSocialAccountType>): Promise<SocialAccountType | undefined>;
   deleteSocialAccountType(id: string): Promise<void>;
 
-  // Message operations
-  getAllMessages(): Promise<Message[]>;
-  getMessageById(id: string): Promise<Message | undefined>;
-  getMessagesBySenderOrReceiver(identifier: string): Promise<Message[]>;
-  getOrphanMessages(): Promise<Message[]>;
-  createMessage(message: InsertMessage): Promise<Message>;
-  createMessageWithId(message: InsertMessage & { id: string }): Promise<Message>;
-  updateMessage(id: string, message: Partial<InsertMessage>): Promise<Message | undefined>;
-  deleteMessage(id: string): Promise<void>;
-  deleteMultipleMessages(ids: string[]): Promise<void>;
-  deleteAllMessages(messageType?: string): Promise<number>;
-  updateMessageOrphanStatus(id: string, isOrphan: boolean): Promise<Message | undefined>;
-  
   // Flow operations (unified timeline)
   getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse>;
   
@@ -263,7 +247,6 @@ export interface IStorage {
     includeInteractions?: boolean;
     includeNotes?: boolean;
     includeSocialProfiles?: boolean;
-    includeMessages?: boolean;
   }): Promise<MegaSearchResult>;
   
   // Task operations
@@ -527,23 +510,10 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Run all independent queries in parallel
-    const [personNotes, personInteractions, personGroups, personMessages, relationshipsFrom, relationshipsTo] = await Promise.all([
+    const [personNotes, personInteractions, personGroups, relationshipsFrom, relationshipsTo] = await Promise.all([
       db.select().from(notes).where(eq(notes.personId, id)),
       db.select().from(interactions).where(sql`${id} = ANY(${interactions.peopleIds})`),
       db.select().from(groups).where(arrayContains(groups.members, [id])),
-      // Get messages where person's identifiers appear in sender or receivers
-      identifiers.length > 0
-        ? db
-            .select()
-            .from(messages)
-            .where(
-              or(
-                inArray(messages.sender, identifiers),
-                sql`${messages.receivers} && ${sql`ARRAY[${sql.join(identifiers.map(i => sql`${i}`), sql`, `)}]::text[]`}`
-              )
-            )
-            .orderBy(messages.sentTimestamp)
-        : Promise.resolve([]),
       db
         .select({
           id: relationships.id,
@@ -594,7 +564,6 @@ export class DatabaseStorage implements IStorage {
       interactions: personInteractions,
       groups: personGroups,
       relationships: allRelationships,
-      messages: personMessages,
     };
   }
 
@@ -990,7 +959,6 @@ export class DatabaseStorage implements IStorage {
       interactions: personInteractions,
       groups: personGroups,
       relationships: allRelationships,
-      messages: [],
     };
   }
 
@@ -2067,117 +2035,11 @@ export class DatabaseStorage implements IStorage {
     return this.buildSocialAccountWithProfile(newAccount, profileVersion, null);
   }
 
-  // Message operations
-  async getAllMessages(): Promise<Message[]> {
-    return await db.select().from(messages).orderBy(messages.sentTimestamp);
-  }
-
-  async getMessageById(id: string): Promise<Message | undefined> {
-    const [result] = await db.select().from(messages).where(eq(messages.id, id));
-    return result || undefined;
-  }
-
-  async getMessagesBySenderOrReceiver(identifier: string): Promise<Message[]> {
-    return await db
-      .select()
-      .from(messages)
-      .where(
-        or(
-          eq(messages.sender, identifier),
-          sql`${identifier} = ANY(${messages.receivers})`
-        )
-      )
-      .orderBy(messages.sentTimestamp);
-  }
-
-  async getOrphanMessages(): Promise<Message[]> {
-    return await db
-      .select()
-      .from(messages)
-      .where(eq(messages.isOrphan, true))
-      .orderBy(messages.sentTimestamp);
-  }
-
-  async createMessage(message: InsertMessage): Promise<Message> {
-    const [created] = await db
-      .insert(messages)
-      .values(message)
-      .returning();
-    return created;
-  }
-
-  async createMessageWithId(message: InsertMessage & { id: string; uploadTimestamp?: Date }): Promise<Message> {
-    const [newMessage] = await db.insert(messages).values(message).returning();
-    return newMessage;
-  }
-
-  async updateMessage(
-    id: string,
-    message: Partial<InsertMessage>
-  ): Promise<Message | undefined> {
-    const [updated] = await db
-      .update(messages)
-      .set(message)
-      .where(eq(messages.id, id))
-      .returning();
-    return updated || undefined;
-  }
-
-  async deleteMessage(id: string): Promise<void> {
-    await db.delete(messages).where(eq(messages.id, id));
-  }
-
-  async deleteMultipleMessages(ids: string[]): Promise<void> {
-    if (ids.length === 0) return;
-    await db.delete(messages).where(inArray(messages.id, ids));
-  }
-
-  async deleteAllMessages(messageType?: string): Promise<number> {
-    if (messageType && messageType !== "all") {
-      const matchingMessages = await db
-        .select()
-        .from(messages)
-        .where(eq(messages.type, messageType));
-      const count = matchingMessages.length;
-      if (count > 0) {
-        await db.delete(messages).where(eq(messages.type, messageType));
-      }
-      return count;
-    } else {
-      const allMessages = await db.select().from(messages);
-      const count = allMessages.length;
-      await db.delete(messages);
-      return count;
-    }
-  }
-
-  async updateMessageOrphanStatus(id: string, isOrphan: boolean): Promise<Message | undefined> {
-    const [updated] = await db
-      .update(messages)
-      .set({ isOrphan })
-      .where(eq(messages.id, id))
-      .returning();
-    return updated || undefined;
-  }
-
   async getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse> {
     const cursorDate = cursor ? new Date(cursor) : new Date();
     
-    // Get person to find their identifiers
-    const [person] = await db.select().from(people).where(eq(people.id, personId));
-    
-    // Build list of identifiers for this person
-    const identifiers: string[] = [];
-    if (person) {
-      if (person.email) identifiers.push(person.email);
-      if (person.phone) identifiers.push(person.phone);
-      if (person.socialAccountUuids && person.socialAccountUuids.length > 0) {
-        identifiers.push(...person.socialAccountUuids);
-      }
-    }
-    
-    // Fetch all three data types in parallel
-    const [personNotes, personInteractions, personMessages] = await Promise.all([
+    // Fetch notes and interactions in parallel
+    const [personNotes, personInteractions] = await Promise.all([
       db
         .select()
         .from(notes)
@@ -2208,21 +2070,6 @@ export class DatabaseStorage implements IStorage {
         ))
         .orderBy(sql`${interactions.date} DESC`)
         .limit(limit + 1),
-      // Get messages where person's identifiers appear in sender or receivers
-      identifiers.length > 0
-        ? db
-            .select()
-            .from(messages)
-            .where(and(
-              or(
-                inArray(messages.sender, identifiers),
-                sql`${messages.receivers} && ${sql`ARRAY[${sql.join(identifiers.map(i => sql`${i}`), sql`, `)}]::text[]`}`
-              ),
-              sql`${messages.sentTimestamp} < ${cursorDate}`
-            ))
-            .orderBy(sql`${messages.sentTimestamp} DESC`)
-            .limit(limit + 1)
-        : Promise.resolve([]),
     ]);
 
     // Transform each type into FlowItem format
@@ -2247,20 +2094,8 @@ export class DatabaseStorage implements IStorage {
       imageUrl: interaction.imageUrl,
     }));
 
-    const messageItems: FlowItem[] = personMessages.map(msg => ({
-      id: msg.id,
-      type: 'message' as const,
-      date: msg.sentTimestamp,
-      content: msg.content || '',
-      messageType: msg.type as 'email' | 'phone' | 'social',
-      sender: msg.sender,
-      receivers: msg.receivers || [],
-      imageUrls: msg.imageUrls,
-      isOrphan: msg.isOrphan,
-    }));
-
     // Merge and sort all items by date descending
-    const allItems = [...noteItems, ...interactionItems, ...messageItems]
+    const allItems = [...noteItems, ...interactionItems]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     // Check if there are more items
@@ -2272,50 +2107,10 @@ export class DatabaseStorage implements IStorage {
       ? items[items.length - 1].date.toISOString()
       : null;
 
-    // Build identifier to name mapping for all unique senders/receivers in messages
-    const allMessageIdentifiers = new Set<string>();
-    for (const msg of personMessages) {
-      if (msg.sender) allMessageIdentifiers.add(msg.sender);
-      if (msg.receivers) {
-        for (const r of msg.receivers) {
-          allMessageIdentifiers.add(r);
-        }
-      }
-    }
-
-    // Look up names for identifiers by matching against people's phone/email
-    const identifierToName: Record<string, string> = {};
-    if (allMessageIdentifiers.size > 0) {
-      const identifierArray = Array.from(allMessageIdentifiers);
-      const matchingPeople = await db.select({
-        firstName: people.firstName,
-        lastName: people.lastName,
-        phone: people.phone,
-        email: people.email,
-      }).from(people).where(
-        or(
-          inArray(people.phone, identifierArray),
-          inArray(people.email, identifierArray)
-        )
-      );
-
-      for (const p of matchingPeople) {
-        const name = [p.firstName, p.lastName].filter(Boolean).join(' ');
-        if (p.phone && identifierArray.includes(p.phone)) {
-          identifierToName[p.phone] = name;
-        }
-        if (p.email && identifierArray.includes(p.email)) {
-          identifierToName[p.email] = name;
-        }
-      }
-    }
-
     return {
       items,
       nextCursor,
       hasMore,
-      personIdentifiers: identifiers,
-      identifierToName,
     };
   }
 
@@ -2325,7 +2120,6 @@ export class DatabaseStorage implements IStorage {
     includeInteractions?: boolean;
     includeNotes?: boolean;
     includeSocialProfiles?: boolean;
-    includeMessages?: boolean;
   }): Promise<MegaSearchResult> {
     const searchPattern = `%${query}%`;
     const startPattern = `${query}%`;
@@ -2336,7 +2130,6 @@ export class DatabaseStorage implements IStorage {
       interactions: [],
       notes: [],
       socialProfiles: [],
-      messages: [],
     };
 
     const searchPromises: Promise<void>[] = [];
@@ -2429,16 +2222,6 @@ export class DatabaseStorage implements IStorage {
               latestState: null,
             }));
           })
-      );
-    }
-
-    if (options.includeMessages !== false) {
-      searchPromises.push(
-        db.select().from(messages)
-          .where(ilike(messages.content, searchPattern))
-          .orderBy(messages.sentTimestamp)
-          .limit(10)
-          .then(res => { results.messages = res; })
       );
     }
 

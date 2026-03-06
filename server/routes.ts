@@ -19,7 +19,6 @@ import {
   insertApiKeySchema,
   insertSocialAccountSchema,
   insertSocialAccountTypeSchema,
-  insertMessageSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -528,7 +527,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         allSocialAccountTypes,
         allProfileVersions,
         allNetworkStates,
-        allMessages,
         mePersonResult,
       ] = await Promise.all([
         storage.getAllUsers(),
@@ -544,7 +542,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         storage.getAllSocialAccountTypes(),
         storage.getAllProfileVersions(),
         storage.getAllNetworkStates(),
-        storage.getAllMessages(),
         db.select().from(people).where(isNotNull(people.userId)).limit(1),
       ]);
       
@@ -800,23 +797,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
         xml += '  </social_network_changes>\n';
       }
-
-      // Export messages
-      xml += '  <messages>\n';
-      for (const msg of allMessages) {
-        xml += '    <message>\n';
-        xml += `      <id>${escapeXml(msg.id)}</id>\n`;
-        xml += `      <upload_timestamp>${escapeXml(msg.uploadTimestamp)}</upload_timestamp>\n`;
-        xml += `      <sent_timestamp>${escapeXml(msg.sentTimestamp)}</sent_timestamp>\n`;
-        xml += `      <type>${escapeXml(msg.type)}</type>\n`;
-        xml += `      <sender>${escapeXml(msg.sender)}</sender>\n`;
-        xml += `      <receivers>${arrayToXml(msg.receivers || [], "receiver")}</receivers>\n`;
-        xml += `      <content>${escapeXml(msg.content || "")}</content>\n`;
-        xml += `      <image_urls>${arrayToXml(msg.imageUrls || [], "image_url")}</image_urls>\n`;
-        xml += `      <is_orphan>${escapeXml(msg.isOrphan)}</is_orphan>\n`;
-        xml += '    </message>\n';
-      }
-      xml += '  </messages>\n';
 
       xml += '</crm_data>';
 
@@ -1309,42 +1289,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Parse and import messages
-      const existingMessageUuids = new Set((await storage.getAllMessages()).map(m => m.id));
-      const messageBlocks = parseAllTags("message", xmlText);
-      for (const block of messageBlocks) {
-        const id = unescapeXml(parseXmlTag("id", block));
-        const sentTimestampStr = unescapeXml(parseXmlTag("sent_timestamp", block));
-        const msgType = unescapeXml(parseXmlTag("type", block));
-        const sender = unescapeXml(parseXmlTag("sender", block));
-        const receivers = parseXmlArray("receivers", "receiver", block);
-        const content = unescapeXml(parseXmlTag("content", block));
-        const imageUrls = parseXmlArray("image_urls", "image_url", block);
-        const isOrphanStr = unescapeXml(parseXmlTag("is_orphan", block));
-
-        if (existingMessageUuids.has(id)) {
-          skippedCounts.messages = (skippedCounts.messages || 0) + 1;
-          continue;
-        }
-
-        try {
-          await storage.createMessageWithId({
-            id,
-            sentTimestamp: new Date(sentTimestampStr),
-            type: msgType as "email" | "phone" | "social",
-            sender,
-            receivers: receivers.length > 0 ? receivers : [],
-            content: content || null,
-            imageUrls: imageUrls.length > 0 ? imageUrls : [],
-            isOrphan: isOrphanStr === "true",
-          });
-          importedCounts.messages = (importedCounts.messages || 0) + 1;
-          existingMessageUuids.add(id);
-        } catch (error) {
-          console.error(`Error importing message ${id}:`, error);
-        }
-      }
-
       res.json({
         success: true,
         imported: importedCounts,
@@ -1353,249 +1297,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error importing XML:", error);
       res.status(500).json({ error: "Failed to import XML" });
-    }
-  });
-
-  // SMS/MMS Import endpoint (SMS Backup & Restore format)
-  app.post("/api/import-sms", upload.single("xml"), async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No XML file provided" });
-      }
-
-      const xmlText = req.file.buffer.toString("utf-8");
-      let importedCount = 0;
-      let skippedCount = 0;
-
-      // Get the import user's phone number to use as fallback for 'device_owner'
-      let importUserPhone = '';
-      const importUserId = req.body.importUserId as string | undefined;
-      
-      if (importUserId) {
-        // Use the specified import user's phone
-        const importPerson = await storage.getPersonById(importUserId);
-        if (importPerson?.phone) {
-          importUserPhone = importPerson.phone.replace(/^\+1/, ''); // normalize
-        }
-      } else if (req.user) {
-        // Fall back to Me user's phone if no import user specified
-        const mePerson = await storage.getMePerson(req.user.id);
-        if (mePerson?.phone) {
-          importUserPhone = mePerson.phone.replace(/^\+1/, ''); // normalize
-        }
-      }
-
-      // Helper to parse SMS element attributes
-      const parseSmsAttributes = (smsMatch: string) => {
-        const getAttr = (name: string): string => {
-          const regex = new RegExp(`${name}="([^"]*)"`, 's');
-          const match = smsMatch.match(regex);
-          return match ? match[1] : '';
-        };
-
-        const address = getAttr('address');
-        const dateStr = getAttr('date');
-        const type = getAttr('type'); // 1 = received, 2 = sent
-        const body = getAttr('body');
-
-        return { address, dateStr, type, body };
-      };
-
-      // Helper to parse MMS element with proper type handling
-      // MMS addr types: 130 = TO, 137 = FROM/SENDER, 151 = BCC (device owner)
-      const parseMmsElement = (mmsBlock: string) => {
-        const getAttr = (name: string): string => {
-          const regex = new RegExp(`${name}="([^"]*)"`, 's');
-          const match = mmsBlock.match(regex);
-          return match ? match[1] : '';
-        };
-
-        const address = getAttr('address');
-        const dateStr = getAttr('date');
-        const msgBox = getAttr('msg_box'); // 1 = received, 2 = sent
-
-        // Extract text content from parts
-        const partsMatch = mmsBlock.match(/<parts>([\s\S]*?)<\/parts>/);
-        let textContent = '';
-        if (partsMatch) {
-          const partRegex = /<part[^>]*text="([^"]*)"[^>]*\/>/g;
-          let partMatch;
-          while ((partMatch = partRegex.exec(partsMatch[1])) !== null) {
-            const partText = partMatch[1];
-            if (partText && !partText.startsWith('<smil>')) {
-              textContent += (textContent ? '\n' : '') + partText;
-            }
-          }
-        }
-
-        // Extract addresses with their types from addrs
-        const addrsMatch = mmsBlock.match(/<addrs>([\s\S]*?)<\/addrs>/);
-        const toAddresses: string[] = [];      // type 130 = TO recipients
-        const fromAddresses: string[] = [];    // type 137 = FROM/SENDER
-        let deviceOwner = '';                  // type 151 = BCC (device owner)
-        
-        if (addrsMatch) {
-          // Match individual addr elements
-          const addrElementRegex = /<addr[^>]+\/>/g;
-          let addrElement;
-          while ((addrElement = addrElementRegex.exec(addrsMatch[1])) !== null) {
-            const element = addrElement[0];
-            // Extract address and type attributes (can be in any order)
-            const addrValueMatch = element.match(/address="([^"]*)"/);
-            const addrTypeMatch = element.match(/type="(\d+)"/);
-            
-            if (!addrValueMatch || !addrTypeMatch) continue;
-            
-            const addrValue = addrValueMatch[1];
-            const addrType = addrTypeMatch[1];
-            
-            if (!addrValue || addrValue.trim() === '') continue;
-            
-            if (addrType === '151') {
-              deviceOwner = addrValue;
-            } else if (addrType === '137') {
-              if (!fromAddresses.includes(addrValue)) {
-                fromAddresses.push(addrValue);
-              }
-            } else if (addrType === '130') {
-              if (!toAddresses.includes(addrValue)) {
-                toAddresses.push(addrValue);
-              }
-            }
-          }
-        }
-
-        return { address, dateStr, msgBox, textContent, toAddresses, fromAddresses, deviceOwner };
-      };
-
-      // Strip +1 country code from phone numbers
-      const normalizePhone = (phone: string): string => {
-        return phone.replace(/^\+1/, '');
-      };
-
-      // Unescape XML entities
-      const unescapeXmlEntities = (text: string): string => {
-        return text
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          .replace(/&apos;/g, "'")
-          .replace(/&#10;/g, '\n')
-          .replace(/&#13;/g, '\r');
-      };
-
-      // Get device owner's phone number from XML if present (from type=151 addr entries)
-      // Type 151 indicates the device owner in MMS addr entries
-      let deviceOwnerPhone = '';
-      const ownerMatch = xmlText.match(/<addr[^>]*type="151"[^>]*address="([^"]*)"[^>]*\/>/);
-      if (ownerMatch) {
-        deviceOwnerPhone = ownerMatch[1];
-      }
-
-      // Parse SMS messages
-      const smsRegex = /<sms[^>]+\/>/g;
-      let smsMatch;
-      while ((smsMatch = smsRegex.exec(xmlText)) !== null) {
-        const { address, dateStr, type, body } = parseSmsAttributes(smsMatch[0]);
-        
-        if (!address || !dateStr || !body) continue;
-
-        // SMS date is in milliseconds
-        const sentTimestamp = new Date(parseInt(dateStr));
-        const isReceived = type === '1';
-        
-        // Use actual phone numbers - the other party is "address", device owner is our phone or import user's phone
-        const ownerIdentifier = deviceOwnerPhone ? normalizePhone(deviceOwnerPhone) : (importUserPhone || 'device_owner');
-        const normalizedAddress = normalizePhone(address);
-        const sender = isReceived ? normalizedAddress : ownerIdentifier;
-        const receivers = isReceived ? [ownerIdentifier] : [normalizedAddress];
-
-        try {
-          await storage.createMessage({
-            sentTimestamp,
-            type: 'phone',
-            sender,
-            receivers,
-            content: unescapeXmlEntities(body),
-            imageUrls: [],
-            isOrphan: true,
-          });
-          importedCount++;
-        } catch (error) {
-          console.error('Error importing SMS:', error);
-          skippedCount++;
-        }
-      }
-
-      // Parse MMS messages
-      const mmsRegex = /<mms[^>]*>[\s\S]*?<\/mms>/g;
-      let mmsMatch;
-      while ((mmsMatch = mmsRegex.exec(xmlText)) !== null) {
-        const { address, dateStr, msgBox, textContent, toAddresses, fromAddresses, deviceOwner } = parseMmsElement(mmsMatch[0]);
-        
-        if (!dateStr) continue;
-
-        // MMS date in SMS Backup & Restore is in milliseconds (like date_sent but in ms)
-        // However some older formats use seconds, so check the magnitude
-        let dateValue = parseInt(dateStr);
-        // If date value is too small (before year 2000 in ms), it's likely seconds
-        if (dateValue < 946684800000) {
-          dateValue = dateValue * 1000;
-        }
-        const sentTimestamp = new Date(dateValue);
-        const isReceived = msgBox === '1';
-
-        // Use device owner from this MMS or fall back to previously detected or import user's phone
-        const ownerPhone = normalizePhone(deviceOwner || deviceOwnerPhone || '') || importUserPhone || 'device_owner';
-        
-        let sender: string;
-        let receivers: string[];
-
-        if (isReceived) {
-          // For received MMS: sender is from type=137 (FROM), receivers include device owner
-          const rawSender = fromAddresses[0] || address.split('~')[0] || 'unknown';
-          sender = normalizePhone(rawSender);
-          receivers = [ownerPhone];
-        } else {
-          // For sent MMS: sender is device owner, receivers are type=130 (TO) addresses
-          sender = ownerPhone;
-          // Use TO addresses, or parse from tilde-separated address attribute
-          if (toAddresses.length > 0) {
-            receivers = toAddresses.filter(a => normalizePhone(a) !== ownerPhone).map(normalizePhone);
-          } else {
-            // Parse tilde-separated addresses from main address attribute
-            receivers = address.split('~').filter(a => a && normalizePhone(a) !== ownerPhone).map(normalizePhone);
-          }
-        }
-
-        if (!sender || receivers.length === 0) continue;
-
-        try {
-          await storage.createMessage({
-            sentTimestamp,
-            type: 'phone',
-            sender,
-            receivers,
-            content: textContent ? unescapeXmlEntities(textContent) : null,
-            imageUrls: [],
-            isOrphan: true,
-          });
-          importedCount++;
-        } catch (error) {
-          console.error('Error importing MMS:', error);
-          skippedCount++;
-        }
-      }
-
-      res.json({
-        success: true,
-        imported: importedCount,
-        skipped: skippedCount,
-      });
-    } catch (error) {
-      console.error("Error importing SMS:", error);
-      res.status(500).json({ error: "Failed to import SMS messages" });
     }
   });
 
@@ -1918,7 +1619,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         includeInteractions: z.enum(['true', 'false']).optional(),
         includeNotes: z.enum(['true', 'false']).optional(),
         includeSocialProfiles: z.enum(['true', 'false']).optional(),
-        includeMessages: z.enum(['true', 'false']).optional(),
       });
 
       const parsed = querySchema.safeParse(req.query);
@@ -1935,7 +1635,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
           interactions: [],
           notes: [],
           socialProfiles: [],
-          messages: [],
         });
       }
 
@@ -1945,7 +1644,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         includeInteractions: parsed.data.includeInteractions !== 'false',
         includeNotes: parsed.data.includeNotes !== 'false',
         includeSocialProfiles: parsed.data.includeSocialProfiles !== 'false',
-        includeMessages: parsed.data.includeMessages !== 'false',
       };
 
       const results = await storage.megaSearch(query, options);
@@ -3957,135 +3655,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting interaction type:", error);
       res.status(500).json({ error: "Failed to delete interaction type" });
-    }
-  });
-
-  // Messages endpoints
-  app.get("/api/messages", async (req, res) => {
-    try {
-      const identifier = req.query.identifier as string | undefined;
-      const orphansOnly = req.query.orphansOnly === "true";
-      
-      if (orphansOnly) {
-        const messages = await storage.getOrphanMessages();
-        res.json(messages);
-      } else if (identifier) {
-        const messages = await storage.getMessagesBySenderOrReceiver(identifier);
-        res.json(messages);
-      } else {
-        const messages = await storage.getAllMessages();
-        res.json(messages);
-      }
-    } catch (error) {
-      console.error("Error fetching messages:", error);
-      res.status(500).json({ error: "Failed to fetch messages" });
-    }
-  });
-
-  app.get("/api/messages/orphans", async (req, res) => {
-    try {
-      const messages = await storage.getOrphanMessages();
-      res.json(messages);
-    } catch (error) {
-      console.error("Error fetching orphan messages:", error);
-      res.status(500).json({ error: "Failed to fetch orphan messages" });
-    }
-  });
-
-  app.get("/api/messages/:id", async (req, res) => {
-    try {
-      const id = req.params.id;
-      const message = await storage.getMessageById(id);
-
-      if (!message) {
-        return res.status(404).json({ error: "Message not found" });
-      }
-
-      res.json(message);
-    } catch (error) {
-      console.error("Error fetching message:", error);
-      res.status(500).json({ error: "Failed to fetch message" });
-    }
-  });
-
-  app.post("/api/messages", async (req, res) => {
-    try {
-      const validatedData = insertMessageSchema.parse(req.body);
-      const message = await storage.createMessage(validatedData);
-      res.status(201).json(message);
-    } catch (error) {
-      console.error("Error creating message:", error);
-      res.status(400).json({ error: "Failed to create message" });
-    }
-  });
-
-  app.patch("/api/messages/:id", async (req, res) => {
-    try {
-      const id = req.params.id;
-      const validatedData = insertMessageSchema.partial().parse(req.body);
-      const message = await storage.updateMessage(id, validatedData);
-
-      if (!message) {
-        return res.status(404).json({ error: "Message not found" });
-      }
-
-      res.json(message);
-    } catch (error) {
-      console.error("Error updating message:", error);
-      res.status(400).json({ error: "Failed to update message" });
-    }
-  });
-
-  app.patch("/api/messages/:id/orphan-status", async (req, res) => {
-    try {
-      const id = req.params.id;
-      const { isOrphan } = req.body;
-      const message = await storage.updateMessageOrphanStatus(id, isOrphan);
-
-      if (!message) {
-        return res.status(404).json({ error: "Message not found" });
-      }
-
-      res.json(message);
-    } catch (error) {
-      console.error("Error updating message orphan status:", error);
-      res.status(400).json({ error: "Failed to update message orphan status" });
-    }
-  });
-
-  app.delete("/api/messages/delete-all", async (req, res) => {
-    try {
-      const messageType = req.query.type as string | undefined;
-      const count = await storage.deleteAllMessages(messageType);
-      res.json({ success: true, deleted: count });
-    } catch (error) {
-      console.error("Error deleting all messages:", error);
-      res.status(500).json({ error: "Failed to delete messages" });
-    }
-  });
-
-  app.delete("/api/messages/:id", async (req, res) => {
-    try {
-      const id = req.params.id;
-      await storage.deleteMessage(id);
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error deleting message:", error);
-      res.status(500).json({ error: "Failed to delete message" });
-    }
-  });
-
-  app.delete("/api/messages", async (req, res) => {
-    try {
-      const ids = req.body.ids as string[];
-      if (!ids || !Array.isArray(ids)) {
-        return res.status(400).json({ error: "ids array is required" });
-      }
-      await storage.deleteMultipleMessages(ids);
-      res.json({ success: true, deletedCount: ids.length });
-    } catch (error) {
-      console.error("Error deleting multiple messages:", error);
-      res.status(500).json({ error: "Failed to delete messages" });
     }
   });
 

@@ -30,7 +30,6 @@ import ApiDocs from "@/pages/api-docs";
 import DeleteOptionsPage from "@/pages/delete-options";
 import ImportExportHome from "@/pages/import-export-home";
 import ImportContactsPage from "@/pages/import-contacts";
-import ImportMessagesPage from "@/pages/import-messages";
 import ImportSocialMediaPage from "@/pages/import-social-media";
 import ImportExportApplicationPage from "@/pages/import-export-application";
 import ImagePassInPage from "@/pages/image-pass-in";
@@ -93,7 +92,6 @@ const settingsMenuItems: MenuItem[] = [
     icon: FolderSync,
     subItems: [
       { title: "Contacts", url: "/import-export/contacts", icon: Users },
-      { title: "Messages", url: "/import-export/messages", icon: MessageSquare },
       { title: "Social Media", url: "/import-export/social-media", icon: Share2 },
       { title: "Application Data", url: "/import-export/application", icon: Database },
       { title: "Image Pass In", url: "/import-export/image-pass-in", icon: ImageIcon },
@@ -219,7 +217,6 @@ export default function SettingsLayout() {
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
               <Route path="/import-export/contacts" component={ImportContactsPage} />
-              <Route path="/import-export/messages" component={ImportMessagesPage} />
               <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
               <Route path="/import-export/application" component={ImportExportApplicationPage} />
               <Route path="/import-export/image-pass-in" component={ImagePassInPage} />

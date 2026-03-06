@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, MessageSquare, Share2, Database, ChevronRight, ImageIcon } from "lucide-react";
+import { Users, Share2, Database, ChevronRight, ImageIcon } from "lucide-react";
 
 const importExportSections = [
   {
@@ -10,12 +10,6 @@ const importExportSections = [
     url: "/import-export/contacts",
   },
   {
-    title: "Messages",
-    description: "Import SMS and MMS messages from an XML backup file created by the \"SMS Backup & Restore\" app. Messages are matched to existing contacts by phone number.",
-    icon: MessageSquare,
-    url: "/import-export/messages",
-  },
-  {
     title: "Social Media",
     description: "Import follower and following data from social media platforms like Instagram. Connect imported accounts to your existing social profiles.",
     icon: Share2,
@@ -23,7 +17,7 @@ const importExportSections = [
   },
   {
     title: "Application Data",
-    description: "Export all your CRM data to an XML backup file, or restore from a previous backup. Includes people, relationships, groups, interactions, notes, social accounts, messages, and more.",
+    description: "Export all your CRM data to an XML backup file, or restore from a previous backup. Includes people, relationships, groups, interactions, notes, social accounts, and more.",
     icon: Database,
     url: "/import-export/application",
   },
@@ -41,7 +35,7 @@ export default function ImportExportHome() {
       <div className="space-y-2 mb-6">
         <h1 className="text-2xl font-semibold" data-testid="text-import-export-title">Import & Export</h1>
         <p className="text-muted-foreground">
-          Manage your data by importing contacts, messages, and social media connections, or export your entire application for backup.
+          Manage your data by importing contacts and social media connections, or export your entire application for backup.
         </p>
       </div>
 

@@ -203,19 +203,6 @@ export const tasks = pgTable("tasks", {
   completedAt: timestamp("completed_at"),
 });
 
-// Messages table - tracks messages between contacts
-export const messages = pgTable("messages", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  uploadTimestamp: timestamp("upload_timestamp").notNull().defaultNow(),
-  sentTimestamp: timestamp("sent_timestamp").notNull(),
-  type: text("type").notNull(), // 'email', 'phone', 'social'
-  sender: text("sender").notNull(), // phone number, email, or social account uuid
-  receivers: text("receivers").array().notNull().default(sql`ARRAY[]::text[]`), // array of phone numbers, emails, or social account uuids
-  content: text("content"),
-  imageUrls: text("image_urls").array().default(sql`ARRAY[]::text[]`), // array of image URLs
-  isOrphan: boolean("is_orphan").notNull().default(true), // true when imported but no known contacts for sender/receiver
-});
-
 // Relations
 export const usersRelations = relations(users, ({ one }) => ({
   person: one(people, {
@@ -419,19 +406,6 @@ export const insertSocialNetworkChangeSchema = createInsertSchema(socialNetworkC
   detectedAt: true,
 });
 
-export const insertMessageSchema = createInsertSchema(messages)
-  .omit({
-    id: true,
-    uploadTimestamp: true,
-  })
-  .extend({
-    sentTimestamp: z.coerce.date(),
-    type: z.enum(["email", "phone", "social"]),
-    receivers: z.array(z.string()).min(1, "At least one receiver is required"),
-    imageUrls: z.array(z.string()).optional(),
-    isOrphan: z.boolean().optional(),
-  });
-
 export const insertTaskSchema = createInsertSchema(tasks).omit({
   id: true,
   createdAt: true,
@@ -490,9 +464,6 @@ export type SocialAccountWithCurrentProfile = SocialAccount & {
   latestState: SocialNetworkState | null;
 };
 
-export type Message = typeof messages.$inferSelect;
-export type InsertMessage = z.infer<typeof insertMessageSchema>;
-
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 
@@ -507,7 +478,6 @@ export type PersonWithRelations = Person & {
   interactions: Interaction[];
   groups: Group[];
   relationships: RelationshipWithPerson[];
-  messages: Message[];
 };
 
 export type GroupWithNotes = Group & {
@@ -515,7 +485,7 @@ export type GroupWithNotes = Group & {
 };
 
 // Flow item types for unified timeline view
-export type FlowItemType = 'note' | 'interaction' | 'message';
+export type FlowItemType = 'note' | 'interaction';
 
 export type FlowItem = {
   id: string;
@@ -524,12 +494,6 @@ export type FlowItem = {
   content: string;
   // Note-specific
   imageUrl?: string | null;
-  // Message-specific
-  messageType?: 'email' | 'phone' | 'social';
-  sender?: string;
-  receivers?: string[];
-  imageUrls?: string[] | null;
-  isOrphan?: boolean;
   // Interaction-specific
   title?: string | null;
   description?: string | null;
@@ -542,8 +506,6 @@ export type FlowResponse = {
   items: FlowItem[];
   nextCursor: string | null;
   hasMore: boolean;
-  personIdentifiers?: string[];
-  identifierToName?: Record<string, string>;
 };
 
 export type SocialGraphSettings = {
@@ -587,5 +549,4 @@ export type MegaSearchResult = {
   interactions: Interaction[];
   notes: Note[];
   socialProfiles: SocialAccountWithCurrentProfile[];
-  messages: Message[];
 };

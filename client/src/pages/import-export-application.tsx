@@ -36,8 +36,6 @@ export default function ImportExportApplicationPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/messages"] });
-
       const imported = data.imported;
       const skipped = data.skipped || { people: 0, relationshipTypes: 0, interactionTypes: 0 };
 
@@ -51,7 +49,6 @@ export default function ImportExportApplicationPage() {
         `${imported.notes} notes`,
         `${imported.socialAccounts || 0} social accounts`,
         `${imported.socialAccountTypes || 0} social account types`,
-        `${imported.messages || 0} messages`,
       ].join(', ');
 
       toast({
@@ -149,7 +146,7 @@ export default function ImportExportApplicationPage() {
             <div className="space-y-2">
               <Label>Export All Data</Label>
               <p className="text-sm text-muted-foreground">
-                Export all people, relationships, groups, interactions, notes, social accounts, social account types, and messages to an XML file (images excluded)
+                Export all people, relationships, groups, interactions, notes, social accounts, and social account types to an XML file (images excluded)
               </p>
             </div>
 
@@ -212,7 +209,7 @@ export default function ImportExportApplicationPage() {
                     <li>Images are not included in imports</li>
                     <li>Importing will add data to your existing database</li>
                     <li>Duplicate IDs will be skipped</li>
-                    <li>Includes people, relationships, groups, interactions, notes, social accounts, social account types, and messages</li>
+                    <li>Includes people, relationships, groups, interactions, notes, social accounts, and social account types</li>
                   </ul>
                 </div>
               </div>
@@ -271,8 +268,7 @@ export default function ImportExportApplicationPage() {
                     {" "}{importXmlMutation.data.imported.interactions} interactions,
                     {" "}{importXmlMutation.data.imported.notes} notes,
                     {" "}{importXmlMutation.data.imported.socialAccounts || 0} social accounts,
-                    {" "}{importXmlMutation.data.imported.socialAccountTypes || 0} social account types,
-                    {" "}{importXmlMutation.data.imported.messages || 0} messages
+                    {" "}{importXmlMutation.data.imported.socialAccountTypes || 0} social account types
                   </p>
                 </div>
               </div>

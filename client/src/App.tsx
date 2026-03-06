@@ -37,7 +37,6 @@ import AuthDirectPage from "@/pages/auth-direct";
 import WelcomePage from "@/pages/welcome-page";
 import SettingsLayout from "@/pages/settings-layout";
 import DummyAuth from "@/pages/dummy-auth";
-import MessagesList from "@/pages/messages-list";
 import EloRanking from "@/pages/elo-ranking";
 import AccountMatching from "@/pages/account-matching";
 import NotFound from "@/pages/not-found";
@@ -62,7 +61,6 @@ function Router() {
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
-      <ProtectedRoute path="/messages" component={MessagesList} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
       <ProtectedRoute path="/dummy-auth" component={DummyAuth} />
       <Route component={NotFound} />

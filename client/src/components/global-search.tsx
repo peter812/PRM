@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Search as SearchIcon, Users, Users2, MoreVertical, GripVertical, FileText, Calendar, AtSign, ChevronUp, ChevronDown, MessageSquare } from "lucide-react";
+import { Search as SearchIcon, Users, Users2, MoreVertical, GripVertical, FileText, Calendar, AtSign, ChevronUp, ChevronDown } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -9,9 +9,9 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useLocation } from "wouter";
-import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, Message, MegaSearchResult } from "@shared/schema";
+import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, MegaSearchResult } from "@shared/schema";
 
-type SearchCategory = 'people' | 'groups' | 'interactions' | 'notes' | 'socialProfiles' | 'messages';
+type SearchCategory = 'people' | 'groups' | 'interactions' | 'notes' | 'socialProfiles';
 
 interface SearchPreferences {
   order: SearchCategory[];
@@ -19,14 +19,13 @@ interface SearchPreferences {
 }
 
 const DEFAULT_PREFERENCES: SearchPreferences = {
-  order: ['people', 'groups', 'interactions', 'notes', 'socialProfiles', 'messages'],
+  order: ['people', 'groups', 'interactions', 'notes', 'socialProfiles'],
   enabled: {
     people: true,
     groups: true,
     interactions: true,
     notes: true,
     socialProfiles: true,
-    messages: true,
   },
 };
 
@@ -36,7 +35,6 @@ const CATEGORY_LABELS: Record<SearchCategory, string> = {
   interactions: 'Interactions',
   notes: 'Notes',
   socialProfiles: 'Social Profiles',
-  messages: 'Messages',
 };
 
 const CATEGORY_ICONS: Record<SearchCategory, typeof Users> = {
@@ -45,7 +43,6 @@ const CATEGORY_ICONS: Record<SearchCategory, typeof Users> = {
   interactions: Calendar,
   notes: FileText,
   socialProfiles: AtSign,
-  messages: MessageSquare,
 };
 
 function loadPreferences(): SearchPreferences {
@@ -195,7 +192,7 @@ export function GlobalSearch() {
       key === 'groups' ? 'includeGroups' :
         key === 'interactions' ? 'includeInteractions' :
           key === 'notes' ? 'includeNotes' :
-            key === 'messages' ? 'includeMessages' : 'includeSocialProfiles';
+            'includeSocialProfiles';
     queryParams.set(paramName, value.toString());
   });
 
@@ -254,8 +251,7 @@ export function GlobalSearch() {
     (results?.groups?.length || 0) +
     (results?.interactions?.length || 0) +
     (results?.notes?.length || 0) +
-    (results?.socialProfiles?.length || 0) +
-    (results?.messages?.length || 0);
+    (results?.socialProfiles?.length || 0);
 
   const renderCategory = (category: SearchCategory) => {
     if (!preferences.enabled[category]) return null;
@@ -457,40 +453,6 @@ export function GlobalSearch() {
                         {account.currentProfile?.accountUrl}
                       </div>
                     )}
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-        );
-      }
-      case 'messages': {
-        const items = results?.messages?.slice(0, 4) || [];
-        if (items.length === 0) return null;
-        return (
-          <div key={category}>
-            <div className="px-3 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2 border-t">
-              <Icon className="h-3 w-3" />
-              {label}
-            </div>
-            {items.map((message) => (
-              <button
-                key={message.id}
-                onClick={() => handleNavigate(`/messages`)}
-                className="w-full px-3 py-2 hover-elevate active-elevate-2 text-left"
-                data-testid={`result-message-${message.id}`}
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
-                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm truncate">
-                      {message.content || '(No content)'}
-                    </div>
-                    <div className="text-xs text-muted-foreground truncate">
-                      {message.type} - {message.sender}
-                    </div>
                   </div>
                 </div>
               </button>
