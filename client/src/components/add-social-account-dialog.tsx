@@ -29,7 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType } from "@shared/schema";
+import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType, type SocialAccount } from "@shared/schema";
 import { ImageUpload } from "./image-upload";
 import { Upload, FileText, CheckCircle2, AlertCircle } from "lucide-react";
 
@@ -40,7 +40,7 @@ function isValidHexColor(color: string): boolean {
 interface AddSocialAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onAccountCreated?: (account: any) => void;
+  onAccountCreated?: (account: SocialAccount) => void;
 }
 
 const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [

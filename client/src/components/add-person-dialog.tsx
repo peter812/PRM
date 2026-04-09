@@ -22,13 +22,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertPersonSchema, type InsertPerson } from "@shared/schema";
+import { insertPersonSchema, type InsertPerson, type Person } from "@shared/schema";
 import { ImageUpload } from "./image-upload";
 
 interface AddPersonDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onPersonCreated?: (person: any) => void;
+  onPersonCreated?: (person: Person) => void;
 }
 
 export function AddPersonDialog({ open, onOpenChange, onPersonCreated }: AddPersonDialogProps) {

@@ -78,9 +78,9 @@ export default function SocialAccountProfile() {
   });
 
   const linkPersonMutation = useMutation({
-    mutationFn: async ({ personId, socialAccountId }: { personId: string; socialAccountId: string }) => {
+    mutationFn: async ({ personId, socialAccountId, existingUuids }: { personId: string; socialAccountId: string; existingUuids: string[] }) => {
       return await apiRequest("PATCH", `/api/people/${personId}`, {
-        socialAccountUuids: [socialAccountId],
+        socialAccountUuids: [...existingUuids, socialAccountId],
       });
     },
     onSuccess: () => {
@@ -773,7 +773,11 @@ export default function SocialAccountProfile() {
         onOpenChange={setIsCreatePersonOpen}
         onPersonCreated={(person) => {
           if (person?.id && account?.id) {
-            linkPersonMutation.mutate({ personId: person.id, socialAccountId: account.id });
+            linkPersonMutation.mutate({
+              personId: person.id,
+              socialAccountId: account.id,
+              existingUuids: person.socialAccountUuids ?? [],
+            });
           }
         }}
       />
