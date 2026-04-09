@@ -1785,6 +1785,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Validate keyType if provided
       const validKeyTypes = ['full', 'chrome'];
+      if (keyType !== undefined && !validKeyTypes.includes(keyType)) {
+        return res.status(400).json({ error: "Invalid key type. Must be 'full' or 'chrome'" });
+      }
       const resolvedKeyType = validKeyTypes.includes(keyType) ? keyType : 'chrome';
 
       // Generate a random API key (32 bytes = 64 hex characters)

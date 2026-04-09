@@ -126,6 +126,35 @@ export default function ApiSettingsPage() {
     createKeyMutation.mutate({ name: keyName, keyType });
   };
 
+  const resetCreateDialog = () => {
+    setIsCreateDialogOpen(false);
+    setKeyName("");
+    setKeyType("chrome");
+  };
+
+  const keyTypeSelector = (testIdSuffix?: string) => (
+    <div className="space-y-2">
+      <Label>Key Type</Label>
+      <div className="flex items-center justify-between rounded-lg border p-3">
+        <div className="space-y-0.5">
+          <div className="text-sm font-medium">
+            {keyType === "full" ? "Full Access" : "Chrome (Limited Access)"}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {keyType === "full"
+              ? "Unrestricted access to all API endpoints"
+              : "Limited access for Chrome extension (search & read only)"}
+          </div>
+        </div>
+        <Switch
+          checked={keyType === "full"}
+          onCheckedChange={(checked) => setKeyType(checked ? "full" : "chrome")}
+          data-testid={testIdSuffix ? `switch-key-type-${testIdSuffix}` : "switch-key-type"}
+        />
+      </div>
+    </div>
+  );
+
   return (
     <div className="container max-w-full md:max-w-4xl py-3 md:py-8 px-4 md:pl-12 space-y-4 md:space-y-8 mx-auto md:mx-0">
       <div>
@@ -176,35 +205,12 @@ export default function ApiSettingsPage() {
                     data-testid="input-key-name"
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>Key Type</Label>
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <div className="space-y-0.5">
-                      <div className="text-sm font-medium">
-                        {keyType === "full" ? "Full Access" : "Chrome (Limited Access)"}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {keyType === "full"
-                          ? "Unrestricted access to all API endpoints"
-                          : "Limited access for Chrome extension (search & read only)"}
-                      </div>
-                    </div>
-                    <Switch
-                      checked={keyType === "full"}
-                      onCheckedChange={(checked) => setKeyType(checked ? "full" : "chrome")}
-                      data-testid="switch-key-type"
-                    />
-                  </div>
-                </div>
+                {keyTypeSelector()}
               </div>
               <div className="flex justify-end gap-2">
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    setIsCreateDialogOpen(false);
-                    setKeyName("");
-                    setKeyType("chrome");
-                  }}
+                  onClick={resetCreateDialog}
                   data-testid="button-cancel-create"
                 >
                   Cancel
@@ -259,35 +265,12 @@ export default function ApiSettingsPage() {
                         data-testid="input-key-name-alt"
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label>Key Type</Label>
-                      <div className="flex items-center justify-between rounded-lg border p-3">
-                        <div className="space-y-0.5">
-                          <div className="text-sm font-medium">
-                            {keyType === "full" ? "Full Access" : "Chrome (Limited Access)"}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {keyType === "full"
-                              ? "Unrestricted access to all API endpoints"
-                              : "Limited access for Chrome extension (search & read only)"}
-                          </div>
-                        </div>
-                        <Switch
-                          checked={keyType === "full"}
-                          onCheckedChange={(checked) => setKeyType(checked ? "full" : "chrome")}
-                          data-testid="switch-key-type-alt"
-                        />
-                      </div>
-                    </div>
+                    {keyTypeSelector("alt")}
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"
-                      onClick={() => {
-                        setIsCreateDialogOpen(false);
-                        setKeyName("");
-                        setKeyType("chrome");
-                      }}
+                      onClick={resetCreateDialog}
                       data-testid="button-cancel-create-alt"
                     >
                       Cancel
