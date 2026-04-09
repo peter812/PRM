@@ -441,14 +441,18 @@ export default function SocialAccountProfile() {
               )}
             </div>
 
-            {owner ? (
+            {account.ownerUuid ? (
               <div className="text-sm">
                 <span className="text-muted-foreground">Linked to: </span>
-                <Link href={`/person/${owner.id}`}>
-                  <a className="text-primary hover:underline font-medium" data-testid="link-owner">
-                    {owner.firstName} {owner.lastName}
-                  </a>
-                </Link>
+                {owner ? (
+                  <Link href={`/person/${owner.id}`}>
+                    <a className="text-primary hover:underline font-medium" data-testid="link-owner">
+                      {owner.firstName} {owner.lastName}
+                    </a>
+                  </Link>
+                ) : (
+                  <span className="text-muted-foreground" data-testid="text-owner-loading">Loading...</span>
+                )}
               </div>
             ) : (
               <Button
