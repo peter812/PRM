@@ -192,7 +192,7 @@ export default function PersonProfile() {
                 data-testid="button-add-social-account"
               >
                 <Plus className="h-4 w-4" />
-                Add social account
+                Add Social Account
               </Button>
             </div>
 
