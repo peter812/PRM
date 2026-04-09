@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import { Button } from "@/components/ui/button";
-import { Settings, Grid2X2, X } from "lucide-react";
+import { Settings, Grid2X2, X, Link2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -15,6 +15,36 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { useToast } from "@/hooks/use-toast";
+
+/**
+ * Read a boolean URL search parameter.
+ * Returns `defaultVal` when the key is absent.
+ */
+function readBoolParam(params: URLSearchParams, key: string, defaultVal: boolean): boolean {
+  const v = params.get(key);
+  if (v === null) return defaultVal;
+  return v === "true" || v === "1";
+}
+
+/**
+ * Build the current graph URL with all active settings as query params.
+ * Only includes params whose values differ from defaults so the URL stays clean.
+ */
+function buildGraphUrl(opts: {
+  highlight?: string | null;
+  showGroups?: boolean;
+  hideOrphans?: boolean;
+  anonymize?: boolean;
+}): string {
+  const p = new URLSearchParams();
+  if (opts.highlight) p.set("highlight", opts.highlight);
+  if (opts.showGroups === false) p.set("showGroups", "false");
+  if (opts.hideOrphans === false) p.set("hideOrphans", "false");
+  if (opts.anonymize === true) p.set("anonymize", "true");
+  const qs = p.toString();
+  return `/graph-3d${qs ? `?${qs}` : ""}`;
+}
 
 interface GraphData {
   people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
@@ -41,12 +71,43 @@ export default function Graph3D() {
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
   const [, navigate] = useLocation();
-  const [showGroups, setShowGroups] = useState(true);
-  const [hideOrphans, setHideOrphans] = useState(true);
-  const [anonymizePeople, setAnonymizePeople] = useState(false);
-  const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  // Initialise state from URL search params so bookmarked / shared URLs restore settings
+  const initParams = new URLSearchParams(window.location.search);
+  const [showGroups, setShowGroups] = useState(() => readBoolParam(initParams, "showGroups", true));
+  const [hideOrphans, setHideOrphans] = useState(() => readBoolParam(initParams, "hideOrphans", true));
+  const [anonymizePeople, setAnonymizePeople] = useState(() => readBoolParam(initParams, "anonymize", false));
+  const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(() => initParams.get("highlight"));
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+
+  /** Keep the browser URL in sync with current settings (replaceState to avoid history spam). */
+  const syncUrl = useCallback(
+    (opts: { highlight?: string | null; showGroups?: boolean; hideOrphans?: boolean; anonymize?: boolean }) => {
+      const url = buildGraphUrl(opts);
+      window.history.replaceState(null, "", url);
+    },
+    [],
+  );
+
+  // Sync URL whenever any setting changes
+  useEffect(() => {
+    syncUrl({ highlight: highlightedPersonId, showGroups, hideOrphans, anonymize: anonymizePeople });
+  }, [highlightedPersonId, showGroups, hideOrphans, anonymizePeople, syncUrl]);
+
+  /** Copy the current graph URL (with all params) to the clipboard. */
+  const handleCopyLink = useCallback(() => {
+    const url = `${window.location.origin}${buildGraphUrl({
+      highlight: highlightedPersonId,
+      showGroups,
+      hideOrphans,
+      anonymize: anonymizePeople,
+    })}`;
+    navigator.clipboard.writeText(url).then(() => {
+      toast({ title: "Link copied", description: "Graph URL copied to clipboard" });
+    });
+  }, [highlightedPersonId, showGroups, hideOrphans, anonymizePeople, toast]);
 
   const { data: graphData } = useQuery<GraphData>({
     queryKey: ["/api/graph"],
@@ -251,6 +312,15 @@ export default function Graph3D() {
           >
             <Grid2X2 className="h-4 w-4 mr-2" />
             2D View
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleCopyLink}
+            title="Copy shareable link"
+            data-testid="button-copy-link"
+          >
+            <Link2 className="h-5 w-5" />
           </Button>
           <Button
             variant="ghost"
