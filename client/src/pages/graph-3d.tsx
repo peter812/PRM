@@ -112,6 +112,8 @@ export default function Graph3D() {
     })}`;
     navigator.clipboard.writeText(url).then(() => {
       toast({ title: "Link copied", description: "Graph URL copied to clipboard" });
+    }).catch(() => {
+      toast({ title: "Copy failed", description: "Could not copy link to clipboard", variant: "destructive" });
     });
   }, [highlightedPersonId, highlightedGroupId, showGroups, hideOrphans, anonymizePeople, toast]);
 
@@ -228,7 +230,8 @@ export default function Graph3D() {
       });
     }
 
-    // Filter to a specific group UUID — show the group + its members + inter-member relationships
+    // Filter to a specific group UUID — show the group + its members + inter-member relationships.
+    // personUuid takes precedence when both are present, so groupUuid only applies if no person is highlighted.
     if (highlightedGroupId && !highlightedPersonId) {
       const group = groups.find(g => g.id === highlightedGroupId);
       if (group) {
