@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, Plus } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useMutation } from "@tanstack/react-query";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
 import { EditPersonDialog } from "@/components/edit-person-dialog";
@@ -16,14 +17,18 @@ import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
+import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
+import { useToast } from "@/hooks/use-toast";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
   const [location, navigate] = useLocation();
+  const { toast } = useToast();
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
+  const [isAddSocialAccountOpen, setIsAddSocialAccountOpen] = useState(false);
 
   const params = new URLSearchParams(window.location.search);
   const from = params.get('from');
@@ -42,6 +47,30 @@ export default function PersonProfile() {
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
     queryKey: ["/api/people", id],
     enabled: !!id,
+  });
+
+  const linkSocialAccountMutation = useMutation({
+    mutationFn: async ({ personId, newAccountId, existingUuids }: { personId: string; newAccountId: string; existingUuids: string[] }) => {
+      return await apiRequest("PATCH", `/api/people/${personId}`, {
+        socialAccountUuids: [...existingUuids, newAccountId],
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/by-ids"] });
+      toast({
+        title: "Success",
+        description: "Social account linked to this person",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to link social account",
+        variant: "destructive",
+      });
+    },
   });
 
   if (isLoading) {
@@ -155,6 +184,17 @@ export default function PersonProfile() {
                 });
               }}
             />
+            <div className="mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsAddSocialAccountOpen(true)}
+                data-testid="button-add-social-account"
+              >
+                <Plus className="h-4 w-4" />
+                Add social account
+              </Button>
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
               {person.email && (
@@ -264,6 +304,19 @@ export default function PersonProfile() {
         onOpenChange={setIsEditPersonOpen}
         person={person}
         onDelete={() => navigate("/people")}
+      />
+      <AddSocialAccountDialog
+        open={isAddSocialAccountOpen}
+        onOpenChange={setIsAddSocialAccountOpen}
+        onAccountCreated={(account) => {
+          if (account?.id && person?.id) {
+            linkSocialAccountMutation.mutate({
+              personId: person.id,
+              newAccountId: account.id,
+              existingUuids: person.socialAccountUuids || [],
+            });
+          }
+        }}
       />
     </div>
   );

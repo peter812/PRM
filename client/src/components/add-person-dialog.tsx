@@ -28,9 +28,10 @@ import { ImageUpload } from "./image-upload";
 interface AddPersonDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onPersonCreated?: (person: any) => void;
 }
 
-export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
+export function AddPersonDialog({ open, onOpenChange, onPersonCreated }: AddPersonDialogProps) {
   const { toast } = useToast();
   const [tagInput, setTagInput] = useState("");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -52,9 +53,10 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
 
   const createMutation = useMutation({
     mutationFn: async (data: InsertPerson) => {
-      return await apiRequest("POST", "/api/people", data);
+      const res = await apiRequest("POST", "/api/people", data);
+      return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       toast({
@@ -63,6 +65,7 @@ export function AddPersonDialog({ open, onOpenChange }: AddPersonDialogProps) {
       });
       form.reset();
       onOpenChange(false);
+      if (onPersonCreated) onPersonCreated(data);
     },
     onError: () => {
       toast({

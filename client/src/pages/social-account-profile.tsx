@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -17,6 +17,7 @@ import type { SocialAccountWithCurrentProfile, Person, SocialAccountType } from 
 import { Link } from "wouter";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
+import { AddPersonDialog } from "@/components/add-person-dialog";
 import { SiInstagram } from "react-icons/si";
 import {
   Dialog,
@@ -39,6 +40,7 @@ export default function SocialAccountProfile() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isLinkFollowingOpen, setIsLinkFollowingOpen] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+  const [isCreatePersonOpen, setIsCreatePersonOpen] = useState(false);
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
 
@@ -73,6 +75,30 @@ export default function SocialAccountProfile() {
   const { data: followers } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts", uuid, "followers"],
     enabled: !!uuid,
+  });
+
+  const linkPersonMutation = useMutation({
+    mutationFn: async ({ personId, socialAccountId }: { personId: string; socialAccountId: string }) => {
+      return await apiRequest("PATCH", `/api/people/${personId}`, {
+        socialAccountUuids: [socialAccountId],
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      toast({
+        title: "Success",
+        description: "Person linked to this account",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to link person to account",
+        variant: "destructive",
+      });
+    },
   });
 
   const updateNotesMutation = useMutation({
@@ -415,7 +441,7 @@ export default function SocialAccountProfile() {
               )}
             </div>
 
-            {owner && (
+            {owner ? (
               <div className="text-sm">
                 <span className="text-muted-foreground">Linked to: </span>
                 <Link href={`/person/${owner.id}`}>
@@ -424,6 +450,16 @@ export default function SocialAccountProfile() {
                   </a>
                 </Link>
               </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsCreatePersonOpen(true)}
+                data-testid="button-create-person"
+              >
+                <UserPlus className="h-4 w-4" />
+                Create Person
+              </Button>
             )}
           </div>
         </div>
@@ -731,6 +767,16 @@ export default function SocialAccountProfile() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AddPersonDialog
+        open={isCreatePersonOpen}
+        onOpenChange={setIsCreatePersonOpen}
+        onPersonCreated={(person) => {
+          if (person?.id && account?.id) {
+            linkPersonMutation.mutate({ personId: person.id, socialAccountId: account.id });
+          }
+        }}
+      />
     </div>
   );
 }
