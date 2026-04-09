@@ -22,6 +22,7 @@ export const apiKeys = pgTable("api_keys", {
   userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(), // User-friendly name for the key
   key: text("key").notNull().unique(), // The actual API key (hashed)
+  keyType: text("key_type").notNull().default("chrome"), // 'full' = full access, 'chrome' = limited access for Chrome extension
   createdAt: timestamp("created_at").notNull().defaultNow(),
   lastUsedAt: timestamp("last_used_at"),
 });
