@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Edit } from "lucide-react";
+import { ArrowLeft, Edit, Network } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -133,6 +133,14 @@ export default function GroupProfile() {
                   </div>
                 </div>
               </div>
+              <Button
+                variant="outline"
+                onClick={() => navigate(`/graph-3d?groupUuid=${group.id}`)}
+                data-testid="button-view-in-graph"
+              >
+                <Network className="h-4 w-4" />
+                View in Graph
+              </Button>
               <Button
                 variant="outline"
                 onClick={() => setIsEditGroupOpen(true)}

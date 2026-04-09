@@ -140,7 +140,7 @@ export default function PersonProfile() {
               </div>
               <Button
                 variant="outline"
-                onClick={() => navigate(`/graph-3d?highlight=${person.id}`)}
+                onClick={() => navigate(`/graph-3d?personUuid=${person.id}`)}
                 data-testid="button-view-in-graph"
               >
                 <Network className="h-4 w-4" />
