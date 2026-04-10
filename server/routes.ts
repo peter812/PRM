@@ -28,6 +28,8 @@ import { triggerTaskWorker } from "./task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import Papa from "papaparse";
+import { sendApiError, ErrorCodes } from "./middleware/error-handler";
+import { sseManager } from "./middleware/sse";
 
 const scryptAsync = promisify(scrypt);
 
@@ -3278,6 +3280,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const validatedData = insertSocialAccountSchema.parse(req.body);
       const account = await storage.createSocialAccount(validatedData);
+      sseManager.broadcast("social_account.created", { id: account.id, username: account.username });
       res.status(201).json(account);
     } catch (error) {
       console.error("Error creating social account:", error);
@@ -3325,6 +3328,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Social account not found" });
       }
 
+      sseManager.broadcast("social_account.updated", { id });
       res.json(account);
     } catch (error) {
       console.error("Error updating social account:", error);
@@ -4029,6 +4033,201 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Error getting image stats:", error);
       res.status(500).json({ error: "Failed to get image stats" });
     }
+  });
+
+  // ========================
+  // V1 API Endpoints
+  // ========================
+
+  // --- Upgrade #9: Health Check with Service Details ---
+  app.get("/api/v1/ping", (_req, res) => {
+    res.json({
+      status: "ok",
+      version: "1.4.0",
+      features: [
+        "social-account-search",
+        "bulk-lookup",
+        "sse-events",
+        "rate-limiting",
+        "etag-caching",
+        "structured-errors",
+        "compression",
+      ],
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // --- Upgrade #1: Social Account Search Endpoint ---
+  app.post("/api/v1/social-accounts/search", async (req, res) => {
+    try {
+      const { username, platform } = req.body;
+      const page = Math.max(1, parseInt(req.body.page as string) || parseInt(req.query.page as string) || 1);
+      const perPage = Math.min(100, Math.max(1, parseInt(req.body.per_page as string) || parseInt(req.query.per_page as string) || 20));
+
+      if (!username || typeof username !== "string") {
+        return sendApiError(res, 400, ErrorCodes.VALIDATION_ERROR, "The 'username' field is required and must be a string.", {}, (req as any).requestId);
+      }
+
+      const { results, total } = await storage.searchSocialAccountsByUsername({
+        username: username.trim(),
+        platform: platform ? String(platform).trim() : undefined,
+        page,
+        perPage,
+      });
+
+      res.json({
+        results,
+        total,
+        page,
+        per_page: perPage,
+      });
+    } catch (error) {
+      console.error("Error searching social accounts:", error);
+      sendApiError(res, 500, ErrorCodes.INTERNAL_ERROR, "Failed to search social accounts.", {}, (req as any).requestId);
+    }
+  });
+
+  // --- Upgrade #5: Bulk Social Account Lookup Endpoint ---
+  app.post("/api/v1/social-accounts/bulk", async (req, res) => {
+    try {
+      const { usernames } = req.body;
+
+      if (!Array.isArray(usernames)) {
+        return sendApiError(res, 400, ErrorCodes.VALIDATION_ERROR, "The 'usernames' field must be an array of {username, platform} objects.", {}, (req as any).requestId);
+      }
+
+      if (usernames.length > 50) {
+        return sendApiError(res, 400, ErrorCodes.BULK_LIMIT_EXCEEDED, "Maximum 50 lookups per request.", { limit: 50, received: usernames.length }, (req as any).requestId);
+      }
+
+      // Validate each entry
+      for (const entry of usernames) {
+        if (!entry.username || typeof entry.username !== "string" || !entry.platform || typeof entry.platform !== "string") {
+          return sendApiError(res, 400, ErrorCodes.VALIDATION_ERROR, "Each entry must have 'username' (string) and 'platform' (string) fields.", {}, (req as any).requestId);
+        }
+      }
+
+      const result = await storage.bulkLookupSocialAccounts(usernames);
+      res.json(result);
+    } catch (error) {
+      console.error("Error in bulk social account lookup:", error);
+      sendApiError(res, 500, ErrorCodes.INTERNAL_ERROR, "Failed to perform bulk lookup.", {}, (req as any).requestId);
+    }
+  });
+
+  // --- Upgrade #6: PATCH for Partial Social Account Updates (v1 route) ---
+  app.patch("/api/v1/social-accounts/:id", async (req, res) => {
+    try {
+      const id = req.params.id;
+      const body = req.body;
+
+      // Check account exists
+      const existing = await storage.getSocialAccountById(id);
+      if (!existing) {
+        return sendApiError(res, 404, ErrorCodes.SOCIAL_ACCOUNT_NOT_FOUND, `No social account found with ID '${id}'.`, {}, (req as any).requestId);
+      }
+
+      // Update registry fields
+      const registryFields: Record<string, any> = {};
+      if (body.username !== undefined) registryFields.username = body.username;
+      if (body.ownerUuid !== undefined) registryFields.ownerUuid = body.ownerUuid;
+      if (body.typeId !== undefined) registryFields.typeId = body.typeId;
+      if (body.internalAccountCreationType !== undefined) registryFields.internalAccountCreationType = body.internalAccountCreationType;
+      if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;
+
+      if (Object.keys(registryFields).length > 0) {
+        await storage.updateSocialAccount(id, registryFields);
+      }
+
+      // Update profile fields
+      const profileFields: Record<string, any> = {};
+      if (body.nickname !== undefined) profileFields.nickname = body.nickname;
+      if (body.accountUrl !== undefined) profileFields.accountUrl = body.accountUrl;
+      if (body.imageUrl !== undefined) profileFields.imageUrl = body.imageUrl;
+      if (body.bio !== undefined) profileFields.bio = body.bio;
+
+      if (Object.keys(profileFields).length > 0) {
+        const currentProfile = await storage.getCurrentProfileVersion(id);
+        if (currentProfile) {
+          await storage.updateProfileVersion(currentProfile.id, profileFields);
+        } else {
+          await storage.createProfileVersion({
+            socialAccountId: id,
+            isCurrent: true,
+            ...profileFields,
+          });
+        }
+      }
+
+      // Broadcast SSE event
+      sseManager.broadcast("social_account.updated", { id });
+
+      const account = await storage.getSocialAccountById(id);
+      res.json(account);
+    } catch (error) {
+      console.error("Error updating social account:", error);
+      sendApiError(res, 500, ErrorCodes.INTERNAL_ERROR, "Failed to update social account.", {}, (req as any).requestId);
+    }
+  });
+
+  // --- Upgrade #2: Pagination on list endpoints (v1 url-list) ---
+  app.get("/api/v1/url-list", async (req, res) => {
+    try {
+      const page = Math.max(1, parseInt(req.query.page as string) || 1);
+      const perPage = Math.min(100, Math.max(1, parseInt(req.query.per_page as string) || 20));
+      const offset = (page - 1) * perPage;
+      const searchQuery = req.query.search as string | undefined;
+      const typeId = req.query.typeId as string | undefined;
+
+      const accounts = await storage.getSocialAccountsPaginated({
+        offset,
+        limit: perPage,
+        searchQuery: searchQuery || undefined,
+        typeId: typeId || undefined,
+      });
+
+      // Get total count for pagination metadata
+      const allAccounts = await storage.getAllSocialAccounts(searchQuery, typeId);
+      const total = allAccounts.length;
+
+      res.json({
+        results: accounts,
+        total,
+        page,
+        per_page: perPage,
+      });
+    } catch (error) {
+      console.error("Error fetching v1 url-list:", error);
+      sendApiError(res, 500, ErrorCodes.INTERNAL_ERROR, "Failed to fetch URL list.", {}, (req as any).requestId);
+    }
+  });
+
+  // --- Upgrade #7: SSE for Real-Time Updates ---
+  app.get("/api/v1/events/stream", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    const clientId = `sse_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    sseManager.addClient(clientId, res);
+
+    // Send initial connected event
+    res.write(`event: connected\ndata: ${JSON.stringify({ clientId })}\n\n`);
+
+    // Send keepalive every 30 seconds
+    const keepalive = setInterval(() => {
+      try {
+        res.write(": keepalive\n\n");
+      } catch {
+        clearInterval(keepalive);
+      }
+    }, 30000);
+
+    req.on("close", () => {
+      clearInterval(keepalive);
+      sseManager.removeClient(clientId);
+    });
   });
 
   const httpServer = createServer(app);
