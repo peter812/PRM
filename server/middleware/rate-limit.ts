@@ -12,7 +12,7 @@ const MAX_REQUESTS = 100; // 100 requests per window
 
 function getClientKey(req: Request): string {
   // Use user ID if authenticated, otherwise fall back to IP
-  if (req.isAuthenticated() && req.user) {
+  if (typeof req.isAuthenticated === "function" && req.isAuthenticated() && req.user) {
     return `user:${req.user.id}`;
   }
   return `ip:${req.ip || req.socket.remoteAddress || "unknown"}`;
