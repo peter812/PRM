@@ -1,6 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Search, X } from "lucide-react";
+import { Search, X, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -15,6 +15,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { SocialAccountWithCurrentProfile } from "@shared/schema";
+
+const PAGE_SIZE = 30;
 
 interface LinkFollowingAccountsDialogProps {
   open: boolean;
@@ -31,21 +33,88 @@ export function LinkFollowingAccountsDialog({
 }: LinkFollowingAccountsDialogProps) {
   const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(linkedAccountIds);
+  const [offset, setOffset] = useState(0);
+  const [accumulatedAccounts, setAccumulatedAccounts] = useState<SocialAccountWithCurrentProfile[]>([]);
+  const [hasMore, setHasMore] = useState(true);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
 
-  const { data: allAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts"],
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setOffset(0);
+      setAccumulatedAccounts([]);
+      setHasMore(true);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!open) {
+      setSearchQuery("");
+      setDebouncedSearch("");
+      setOffset(0);
+      setAccumulatedAccounts([]);
+      setHasMore(true);
+      setSelectedIds(linkedAccountIds);
+    }
+  }, [open, linkedAccountIds]);
+
+  const buildUrl = (search: string, off: number) => {
+    const params = new URLSearchParams({
+      limit: String(PAGE_SIZE),
+      offset: String(off),
+    });
+    if (search) params.set("search", search);
+    return `/api/social-accounts/paginated?${params.toString()}`;
+  };
+
+  const { data: currentPage, isFetching } = useQuery<SocialAccountWithCurrentProfile[]>({
+    queryKey: ["/api/social-accounts/paginated", debouncedSearch, offset],
+    queryFn: async () => {
+      const res = await fetch(buildUrl(debouncedSearch, offset), { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch accounts");
+      return res.json();
+    },
+    enabled: open,
+    staleTime: 30_000,
   });
 
-  const filteredAccounts = useMemo(() => {
-    if (!searchQuery.trim()) return allAccounts;
-    const query = searchQuery.toLowerCase();
-    return allAccounts.filter(
-      (acc) =>
-        acc.username.toLowerCase().includes(query) ||
-        (acc.currentProfile?.accountUrl || '').toLowerCase().includes(query)
+  useEffect(() => {
+    if (!currentPage) return;
+    if (offset === 0) {
+      setAccumulatedAccounts(currentPage);
+    } else {
+      setAccumulatedAccounts((prev) => {
+        const existingIds = new Set(prev.map((a) => a.id));
+        const newItems = currentPage.filter((a) => !existingIds.has(a.id));
+        return [...prev, ...newItems];
+      });
+    }
+    setHasMore(currentPage.length >= PAGE_SIZE);
+  }, [currentPage, offset]);
+
+  const loadMore = useCallback(() => {
+    if (!isFetching && hasMore) {
+      setOffset((prev) => prev + PAGE_SIZE);
+    }
+  }, [isFetching, hasMore]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          loadMore();
+        }
+      },
+      { threshold: 0.1 }
     );
-  }, [allAccounts, searchQuery]);
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadMore]);
 
   const linkMutation = useMutation({
     mutationFn: async (followingIds: string[]) => {
@@ -87,19 +156,17 @@ export function LinkFollowingAccountsDialog({
   };
 
   const getInitials = (username: string) => {
-    if (username.length >= 2) {
-      return username.slice(0, 2).toUpperCase();
-    }
+    if (username.length >= 2) return username.slice(0, 2).toUpperCase();
     return username.slice(0, 1).toUpperCase();
   };
+
+  const isInitialLoading = isFetching && accumulatedAccounts.length === 0;
 
   return (
     <Dialog
       open={open}
       onOpenChange={(isOpen) => {
         if (!isOpen) {
-          setSearchQuery("");
-          setSelectedIds(linkedAccountIds);
           onOpenChange(false);
         }
       }}
@@ -125,49 +192,60 @@ export function LinkFollowingAccountsDialog({
           </div>
 
           <div className="flex-1 overflow-auto space-y-1 md:space-y-2 min-h-0">
-            {filteredAccounts.length > 0 ? (
-              filteredAccounts.map((account) => {
-                const isSelected = selectedIds.includes(account.id);
-                return (
-                  <Card
-                    key={account.id}
-                    className="p-1.5 md:p-3 cursor-pointer transition-all flex-shrink-0"
-                    onClick={() => handleToggle(account.id)}
-                    data-testid={`card-following-account-option-${account.id}`}
-                  >
-                    <div className="flex items-center gap-1.5 md:gap-3">
-                      <Avatar className="h-6 w-6 md:h-8 md:w-8 flex-shrink-0">
-                        {account.currentProfile?.imageUrl && (
-                          <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
-                        )}
-                        <AvatarFallback className="text-[0.5rem] md:text-xs">
-                          {getInitials(account.username)}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium text-[0.65rem] md:text-sm truncate" data-testid={`text-username-following-${account.id}`}>
-                          @{account.username}
-                        </p>
-                        <p className="text-[0.6rem] md:text-xs text-muted-foreground truncate" data-testid={`text-url-following-${account.id}`}>
-                          {account.currentProfile?.accountUrl}
-                        </p>
+            {isInitialLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : accumulatedAccounts.length > 0 ? (
+              <>
+                {accumulatedAccounts.map((account) => {
+                  const isSelected = selectedIds.includes(account.id);
+                  return (
+                    <Card
+                      key={account.id}
+                      className="p-1.5 md:p-3 cursor-pointer transition-all flex-shrink-0"
+                      onClick={() => handleToggle(account.id)}
+                      data-testid={`card-following-account-option-${account.id}`}
+                    >
+                      <div className="flex items-center gap-1.5 md:gap-3">
+                        <Avatar className="h-6 w-6 md:h-8 md:w-8 flex-shrink-0">
+                          {account.currentProfile?.imageUrl && (
+                            <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
+                          )}
+                          <AvatarFallback className="text-[0.5rem] md:text-xs">
+                            {getInitials(account.username)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-[0.65rem] md:text-sm truncate" data-testid={`text-username-following-${account.id}`}>
+                            @{account.username}
+                          </p>
+                          <p className="text-[0.6rem] md:text-xs text-muted-foreground truncate" data-testid={`text-url-following-${account.id}`}>
+                            {account.currentProfile?.accountUrl}
+                          </p>
+                        </div>
+                        <div
+                          className={`h-4 w-4 md:h-5 md:w-5 rounded border flex-shrink-0 flex items-center justify-center transition-all ${
+                            isSelected
+                              ? "bg-primary border-primary"
+                              : "border-muted-foreground"
+                          }`}
+                          data-testid={`checkbox-following-${account.id}`}
+                        >
+                          {isSelected && (
+                            <X className="h-2.5 w-2.5 md:h-3 md:w-3 text-primary-foreground" />
+                          )}
+                        </div>
                       </div>
-                      <div
-                        className={`h-4 w-4 md:h-5 md:w-5 rounded border flex-shrink-0 flex items-center justify-center transition-all ${
-                          isSelected
-                            ? "bg-primary border-primary"
-                            : "border-muted-foreground"
-                        }`}
-                        data-testid={`checkbox-following-${account.id}`}
-                      >
-                        {isSelected && (
-                          <X className="h-2.5 w-2.5 md:h-3 md:w-3 text-primary-foreground" />
-                        )}
-                      </div>
-                    </div>
-                  </Card>
-                );
-              })
+                    </Card>
+                  );
+                })}
+                <div ref={sentinelRef} className="py-2 flex items-center justify-center min-h-[1px]">
+                  {isFetching && (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+              </>
             ) : (
               <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
                 No accounts found
@@ -178,11 +256,7 @@ export function LinkFollowingAccountsDialog({
           <div className="flex flex-col-reverse md:flex-row md:justify-end gap-1.5 md:gap-2 pt-2 md:pt-4 border-t flex-shrink-0">
             <Button
               variant="outline"
-              onClick={() => {
-                setSearchQuery("");
-                setSelectedIds(linkedAccountIds);
-                onOpenChange(false);
-              }}
+              onClick={() => onOpenChange(false)}
               data-testid="button-cancel-following"
               className="w-full md:w-auto text-xs md:text-sm h-7 md:h-auto px-2 md:px-4"
             >
