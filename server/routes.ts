@@ -1778,10 +1778,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ error: "Not authenticated" });
       }
 
-      const { name } = req.body;
+      const { name, keyType } = req.body;
       if (!name || typeof name !== 'string') {
         return res.status(400).json({ error: "Name is required" });
       }
+
+      // Validate keyType if provided
+      const validKeyTypes = ['full', 'chrome'];
+      if (keyType !== undefined && !validKeyTypes.includes(keyType)) {
+        return res.status(400).json({ error: "Invalid key type. Must be 'full' or 'chrome'" });
+      }
+      const resolvedKeyType = validKeyTypes.includes(keyType) ? keyType : 'chrome';
 
       // Generate a random API key (32 bytes = 64 hex characters)
       const crypto = await import("crypto");
@@ -1794,6 +1801,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         userId: req.user.id,
         name,
         key: hashedKey,
+        keyType: resolvedKeyType,
       });
 
       const apiKey = await storage.createApiKey(validatedData);
@@ -1803,6 +1811,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         id: apiKey.id,
         name: apiKey.name,
         key: rawKey, // Show raw key only on creation
+        keyType: apiKey.keyType,
         createdAt: apiKey.createdAt,
       });
     } catch (error) {
