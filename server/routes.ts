@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, type SocialAccountWithCurrentProfile } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
@@ -1851,6 +1851,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Chrome Extension Auth endpoints
 
+  // Rate limiter specifically for code verification (stricter than global rate limiter)
+  // Prevents brute-forcing the 4-digit code
+  const verifyAttempts = new Map<string, { count: number; resetAt: number }>();
+  const VERIFY_MAX_ATTEMPTS = 5; // 5 attempts per window
+  const VERIFY_WINDOW_MS = 60 * 1000; // 1-minute window
+
   // Generate or get current 4-digit auth code (requires session auth)
   app.get("/api/extension-auth/code", async (req, res) => {
     try {
@@ -1893,6 +1899,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Verify 4-digit code from extension (no session auth required - this IS the auth)
   app.post("/api/extension-auth/verify", async (req, res) => {
     try {
+      // Rate limit by IP to prevent brute-forcing the 4-digit code
+      const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+      const now = Date.now();
+      const attempt = verifyAttempts.get(clientIp);
+
+      if (attempt && now < attempt.resetAt) {
+        if (attempt.count >= VERIFY_MAX_ATTEMPTS) {
+          return res.status(429).json({ error: "Too many attempts. Please wait and try again." });
+        }
+        attempt.count++;
+      } else {
+        verifyAttempts.set(clientIp, { count: 1, resetAt: now + VERIFY_WINDOW_MS });
+      }
+
       const { code } = req.body;
       if (!code || typeof code !== "string" || !/^\d{4}$/.test(code)) {
         return res.status(400).json({ error: "A valid 4-digit code is required" });
@@ -1918,8 +1938,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         name: "Chrome Extension",
       });
 
-      // Delete the used auth code
-      await storage.deleteExpiredExtensionAuthCodes();
+      // Delete the used auth code explicitly to prevent reuse
+      await storage.deleteExtensionAuthCodeByUserId(authCode.userId);
 
       res.status(201).json({
         sessionToken: rawToken, // Return raw token only once
@@ -1982,28 +2002,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ error: "Extension token required" });
       }
 
-      // Find the session by comparing the token hash
-      // We need to check all sessions and compare hashes (like password comparison)
-      // For efficiency, we'll iterate through all sessions
-      const allUsers = await storage.getAllUsers();
-      let matchedSession: any = null;
+      // Find the session by comparing the token hash against all sessions
+      const allSessions = await storage.getAllExtensionSessionsAllUsers();
+      let matchedSession: ExtensionSession | null = null;
 
-      for (const user of allUsers) {
-        const sessions = await storage.getAllExtensionSessions(user.id);
-        for (const session of sessions) {
-          try {
-            const [hashed, salt] = session.sessionToken.split(".");
-            const hashedBuf = Buffer.from(hashed, "hex");
-            const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
-            if (timingSafeEqual(hashedBuf, suppliedBuf)) {
-              matchedSession = session;
-              break;
-            }
-          } catch {
-            continue;
+      for (const session of allSessions) {
+        try {
+          const [hashed, salt] = session.sessionToken.split(".");
+          const hashedBuf = Buffer.from(hashed, "hex");
+          const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
+          if (timingSafeEqual(hashedBuf, suppliedBuf)) {
+            matchedSession = session;
+            break;
           }
+        } catch {
+          continue;
         }
-        if (matchedSession) break;
       }
 
       if (!matchedSession) {

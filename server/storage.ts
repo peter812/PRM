@@ -198,7 +198,9 @@ export interface IStorage {
   getExtensionAuthCode(userId: number): Promise<ExtensionAuthCode | undefined>;
   upsertExtensionAuthCode(code: InsertExtensionAuthCode): Promise<ExtensionAuthCode>;
   deleteExpiredExtensionAuthCodes(): Promise<void>;
+  deleteExtensionAuthCodeByUserId(userId: number): Promise<void>;
   getExtensionAuthCodeByCode(code: string): Promise<ExtensionAuthCode | undefined>;
+  getAllExtensionSessionsAllUsers(): Promise<ExtensionSession[]>;
 
   // Group operations
   getAllGroups(searchQuery?: string): Promise<Group[]>;
@@ -1213,6 +1215,16 @@ export class DatabaseStorage implements IStorage {
       .from(extensionAuthCodes)
       .where(eq(extensionAuthCodes.code, code));
     return authCode || undefined;
+  }
+
+  async deleteExtensionAuthCodeByUserId(userId: number): Promise<void> {
+    await db
+      .delete(extensionAuthCodes)
+      .where(eq(extensionAuthCodes.userId, userId));
+  }
+
+  async getAllExtensionSessionsAllUsers(): Promise<ExtensionSession[]> {
+    return await db.select().from(extensionSessions);
   }
 
   // Group operations

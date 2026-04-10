@@ -18,6 +18,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Chrome, RefreshCw, Trash2, Wifi, WifiOff } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
+// Refresh the code 5 seconds before expiry to ensure seamless transition
+const CODE_REFRESH_INTERVAL_MS = 55 * 1000;
+// Sessions active within this threshold show as "Active"
+const ACTIVE_SESSION_THRESHOLD_MS = 5 * 60 * 1000;
+// Code validity duration in seconds (matches server-side 60s)
+const CODE_DURATION_SECONDS = 60;
+
 type AuthCode = {
   code: string;
   expiresAt: string;
@@ -61,10 +68,10 @@ export default function ChromeExtensionSettingsPage() {
   useEffect(() => {
     fetchCode();
 
-    // Refresh code every 55 seconds (before the 60s expiry)
+    // Refresh code before expiry
     fetchTimerRef.current = setInterval(() => {
       fetchCode();
-    }, 55000);
+    }, CODE_REFRESH_INTERVAL_MS);
 
     return () => {
       if (fetchTimerRef.current) clearInterval(fetchTimerRef.current);
@@ -119,7 +126,7 @@ export default function ChromeExtensionSettingsPage() {
 
   const isRecentlyActive = (lastAccessedAt: string) => {
     const diff = Date.now() - new Date(lastAccessedAt).getTime();
-    return diff < 5 * 60 * 1000; // Active within last 5 minutes
+    return diff < ACTIVE_SESSION_THRESHOLD_MS;
   };
 
   return (
@@ -165,7 +172,7 @@ export default function ChromeExtensionSettingsPage() {
                 <div className="w-full max-w-xs bg-secondary rounded-full h-1.5 overflow-hidden">
                   <div
                     className="bg-primary h-full transition-all duration-1000 ease-linear"
-                    style={{ width: `${(secondsLeft / 60) * 100}%` }}
+                    style={{ width: `${(secondsLeft / CODE_DURATION_SECONDS) * 100}%` }}
                   />
                 </div>
               </>
