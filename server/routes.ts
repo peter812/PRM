@@ -1857,6 +1857,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const VERIFY_MAX_ATTEMPTS = 5; // 5 attempts per window
   const VERIFY_WINDOW_MS = 60 * 1000; // 1-minute window
 
+  // Periodically clean up expired rate limit entries to prevent memory leaks
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of verifyAttempts) {
+      if (now >= value.resetAt) {
+        verifyAttempts.delete(key);
+      }
+    }
+  }, 5 * 60 * 1000); // Clean up every 5 minutes
+
   // Generate or get current 4-digit auth code (requires session auth)
   app.get("/api/extension-auth/code", async (req, res) => {
     try {
@@ -1876,8 +1886,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Generate a new 4-digit code
-      const code = String(Math.floor(1000 + Math.random() * 9000));
+      // Generate a new 4-digit code using cryptographically secure random
+      const code = String(crypto.randomInt(1000, 10000));
       const expiresAt = new Date(Date.now() + 60 * 1000); // 60 seconds from now
 
       const authCode = await storage.upsertExtensionAuthCode({
