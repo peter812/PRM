@@ -39,6 +39,7 @@ export function LinkFollowingAccountsDialog({
   const [accumulatedAccounts, setAccumulatedAccounts] = useState<SocialAccountWithCurrentProfile[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -110,7 +111,7 @@ export function LinkFollowingAccountsDialog({
           loadMore();
         }
       },
-      { threshold: 0.1 }
+      { threshold: 0.1, root: listContainerRef.current }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
@@ -191,7 +192,7 @@ export function LinkFollowingAccountsDialog({
             />
           </div>
 
-          <div className="flex-1 overflow-auto space-y-1 md:space-y-2 min-h-0">
+          <div ref={listContainerRef} className="flex-1 overflow-auto space-y-1 md:space-y-2 min-h-0">
             {isInitialLoading ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
