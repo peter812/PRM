@@ -1,10 +1,14 @@
 import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
+import compression from "compression";
 import { setupAuth } from "./auth";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
 import { startTaskWorker } from "./task-worker";
+import { rateLimitMiddleware } from "./middleware/rate-limit";
+import { etagMiddleware } from "./middleware/etag-cache";
+import { requestIdMiddleware } from "./middleware/request-id";
 
 const app = express();
 
@@ -13,12 +17,26 @@ declare module 'http' {
     rawBody: unknown
   }
 }
+
+// --- Upgrade #10: Response compression (gzip/br) ---
+// Compress responses with body size >= 1KB
+app.use(compression({ threshold: 1024 }));
+
 app.use(express.json({
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   }
 }));
 app.use(express.urlencoded({ extended: false }));
+
+// --- Upgrade #8 (partial): Request ID middleware ---
+app.use(requestIdMiddleware);
+
+// --- Upgrade #3: Rate limiting headers ---
+app.use(rateLimitMiddleware);
+
+// --- Upgrade #4: ETag / If-None-Match caching ---
+app.use(etagMiddleware);
 
 // Setup auth after body parsers
 setupAuth(app);
@@ -73,8 +91,21 @@ app.use((req, res, next) => {
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
+    const requestId = (_req as any).requestId || `req_${Date.now().toString(36)}`;
 
-    res.status(status).json({ message });
+    // Use structured error format for API requests
+    if (_req.path.startsWith("/api")) {
+      res.status(status).json({
+        error: {
+          code: status === 404 ? "NOT_FOUND" : status === 401 ? "UNAUTHORIZED" : "INTERNAL_ERROR",
+          message,
+          details: {},
+          request_id: requestId,
+        },
+      });
+    } else {
+      res.status(status).json({ message });
+    }
     throw err;
   });
 
