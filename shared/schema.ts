@@ -196,12 +196,12 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
 export const socialAccountPosts = pgTable("social_account_posts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
-  content: text("content"), // JSON array of CDN image links e.g. ["https://cdn.example.com/img1.jpg"]
+  content: text("content"), // JSON-stringified array of CDN image URLs, e.g. '["https://cdn.example.com/img1.jpg"]', or null
   description: text("description"),
   likeCount: integer("like_count").notNull().default(0),
   commentCount: integer("comment_count").notNull().default(0),
-  comments: text("comments"), // JSON string with post comments
-  mentionedAccounts: text("mentioned_accounts"), // JSON string of mentioned account IDs per image
+  comments: text("comments"), // JSON string with post comments data
+  mentionedAccounts: text("mentioned_accounts"), // Comma-separated list of mentioned account usernames
   isDeleted: boolean("is_deleted").notNull().default(false),
   postedAt: timestamp("posted_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
