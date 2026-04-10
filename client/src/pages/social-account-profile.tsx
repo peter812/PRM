@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -10,14 +10,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccountWithCurrentProfile, Person, SocialAccountType } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost } from "@shared/schema";
 import { Link } from "wouter";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
 import { AddPersonDialog } from "@/components/add-person-dialog";
+import { AddPostDialog } from "@/components/add-post-dialog";
+import { EditPostDialog } from "@/components/edit-post-dialog";
+import { PostDetailDialog } from "@/components/post-detail-dialog";
 import { SiInstagram } from "react-icons/si";
 import {
   Dialog,
@@ -43,6 +47,10 @@ export default function SocialAccountProfile() {
   const [isCreatePersonOpen, setIsCreatePersonOpen] = useState(false);
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
+  const [isAddPostOpen, setIsAddPostOpen] = useState(false);
+  const [isEditPostOpen, setIsEditPostOpen] = useState(false);
+  const [isPostDetailOpen, setIsPostDetailOpen] = useState(false);
+  const [selectedPost, setSelectedPost] = useState<SocialAccountPost | null>(null);
 
   const { data: account, isLoading, isError, error } = useQuery<SocialAccountWithCurrentProfile>({
     queryKey: ["/api/social-accounts", uuid],
@@ -74,6 +82,12 @@ export default function SocialAccountProfile() {
   // Query followers (accounts that have this account in their following list)
   const { data: followers } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts", uuid, "followers"],
+    enabled: !!uuid,
+  });
+
+  // Query posts for this social account
+  const { data: posts } = useQuery<SocialAccountPost[]>({
+    queryKey: ["/api/social-accounts", uuid, "posts"],
     enabled: !!uuid,
   });
 
@@ -141,6 +155,26 @@ export default function SocialAccountProfile() {
       toast({
         title: "Error",
         description: "Failed to delete social account",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deletePostMutation = useMutation({
+    mutationFn: async (postId: string) => {
+      return await apiRequest("DELETE", `/api/social-account-posts/${postId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts"] });
+      toast({
+        title: "Success",
+        description: "Post deleted successfully",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to delete post",
         variant: "destructive",
       });
     },
@@ -469,165 +503,273 @@ export default function SocialAccountProfile() {
         </div>
       </div>
 
-      {/* Mid Section - Editable Notes */}
-      <div className="border-b px-6 py-6">
-        <div className="flex items-start justify-between gap-4 mb-3">
-          <h2 className="text-lg font-semibold" data-testid="text-notes-header">
-            Notes
-          </h2>
-          {!isEditingNotes && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setNotes(account.currentProfile?.bio || "");
-                setIsEditingNotes(true);
-              }}
-              data-testid="button-edit-notes"
-            >
-              Edit
-            </Button>
-          )}
-        </div>
-
-        {isEditingNotes ? (
-          <div className="space-y-3">
-            <Textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Add notes about this social account..."
-              className="min-h-32"
-              data-testid="textarea-notes"
-            />
-            <div className="flex gap-2">
-              <Button
-                onClick={() => updateNotesMutation.mutate(notes)}
-                disabled={updateNotesMutation.isPending}
-                size="sm"
-                data-testid="button-save-notes"
-              >
-                {updateNotesMutation.isPending && (
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                )}
-                Save
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setIsEditingNotes(false)}
-                size="sm"
-                data-testid="button-cancel-notes"
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="text-sm text-muted-foreground">
-            {account.currentProfile?.bio ? (
-              <p data-testid="text-notes-content" className="whitespace-pre-wrap">
-                {account.currentProfile?.bio}
-              </p>
-            ) : (
-              <p className="italic">No notes added yet</p>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Lower Section - Two Columns */}
+      {/* Tabs Section */}
       <div className="flex-1 overflow-auto">
-        <div className="px-6 py-6 grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Followers Column */}
-          <Card className="p-4">
-            <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
-              Followers ({account.latestState?.followerCount || 0})
-            </h3>
-            {followers && followers.length > 0 ? (
-              <div className="space-y-2">
-                {followers.map((followerAccount) => (
-                  <div 
-                    key={followerAccount.id} 
-                    className="flex items-center gap-3 p-2 rounded-md hover-elevate"
-                    data-testid={`card-follower-${followerAccount.id}`}
-                  >
-                    <Avatar className="w-8 h-8">
-                      {followerAccount.currentProfile?.imageUrl && (
-                        <AvatarImage src={followerAccount.currentProfile?.imageUrl} alt={followerAccount.username} />
-                      )}
-                      <AvatarFallback className="text-xs">
-                        {getInitials(followerAccount.username)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <Link 
-                      href={`/social-accounts/${followerAccount.id}`}
-                      className="text-sm font-medium hover:underline"
-                      data-testid={`link-follower-${followerAccount.id}`}
-                    >
-                      {followerAccount.username}
-                    </Link>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground italic">No followers yet</p>
-            )}
-          </Card>
+        <Tabs defaultValue="follow" className="w-full">
+          <div className="border-b px-6">
+            <TabsList className="w-full justify-start" data-testid="tabs-social-account">
+              <TabsTrigger value="follow" data-testid="tab-follow">Follow</TabsTrigger>
+              <TabsTrigger value="notes" data-testid="tab-notes">Notes</TabsTrigger>
+              <TabsTrigger value="posts" data-testid="tab-posts">Posts</TabsTrigger>
+            </TabsList>
+          </div>
 
-          {/* Following Column */}
-          <Card className="p-4">
-            <div className="flex items-center justify-between gap-2 mb-4">
-              <h3 className="text-lg font-semibold" data-testid="text-following-header">
-                Following ({account.latestState?.followingCount || 0})
-              </h3>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsLinkFollowingOpen(true)}
-                data-testid="button-add-following"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-            {account.latestState?.following && account.latestState?.following.length > 0 ? (
-              <div className="space-y-2">
-                {account.latestState?.following.map((followingId) => {
-                  const followingAccount = allSocialAccounts?.find(a => a.id === followingId);
-                  return (
-                    <div 
-                      key={followingId} 
-                      className="flex items-center justify-between gap-3 p-2 rounded-md hover-elevate"
-                      data-testid={`card-following-${followingId}`}
-                    >
-                      <div className="flex items-center gap-3">
+          {/* Follow Tab */}
+          <TabsContent value="follow" className="mt-0">
+            <div className="px-6 py-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Followers Column */}
+              <Card className="p-4">
+                <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
+                  Followers ({account.latestState?.followerCount || 0})
+                </h3>
+                {followers && followers.length > 0 ? (
+                  <div className="space-y-2">
+                    {followers.map((followerAccount) => (
+                      <div 
+                        key={followerAccount.id} 
+                        className="flex items-center gap-3 p-2 rounded-md hover-elevate"
+                        data-testid={`card-follower-${followerAccount.id}`}
+                      >
                         <Avatar className="w-8 h-8">
-                          {followingAccount?.currentProfile?.imageUrl && (
-                            <AvatarImage src={followingAccount.currentProfile?.imageUrl} alt={followingAccount.username} />
+                          {followerAccount.currentProfile?.imageUrl && (
+                            <AvatarImage src={followerAccount.currentProfile?.imageUrl} alt={followerAccount.username} />
                           )}
                           <AvatarFallback className="text-xs">
-                            {followingAccount ? getInitials(followingAccount.username) : "?"}
+                            {getInitials(followerAccount.username)}
                           </AvatarFallback>
                         </Avatar>
-                        {followingAccount ? (
-                          <Link 
-                            href={`/social-accounts/${followingAccount.id}`}
-                            className="text-sm font-medium hover:underline"
-                            data-testid={`link-following-${followingId}`}
-                          >
-                            {followingAccount.username}
-                          </Link>
-                        ) : (
-                          <span className="text-sm text-muted-foreground">{followingId}</span>
-                        )}
+                        <Link 
+                          href={`/social-accounts/${followerAccount.id}`}
+                          className="text-sm font-medium hover:underline"
+                          data-testid={`link-follower-${followerAccount.id}`}
+                        >
+                          {followerAccount.username}
+                        </Link>
                       </div>
-                    </div>
-                  );
-                })}
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground italic">No followers yet</p>
+                )}
+              </Card>
+
+              {/* Following Column */}
+              <Card className="p-4">
+                <div className="flex items-center justify-between gap-2 mb-4">
+                  <h3 className="text-lg font-semibold" data-testid="text-following-header">
+                    Following ({account.latestState?.followingCount || 0})
+                  </h3>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsLinkFollowingOpen(true)}
+                    data-testid="button-add-following"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+                {account.latestState?.following && account.latestState?.following.length > 0 ? (
+                  <div className="space-y-2">
+                    {account.latestState?.following.map((followingId) => {
+                      const followingAccount = allSocialAccounts?.find(a => a.id === followingId);
+                      return (
+                        <div 
+                          key={followingId} 
+                          className="flex items-center justify-between gap-3 p-2 rounded-md hover-elevate"
+                          data-testid={`card-following-${followingId}`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <Avatar className="w-8 h-8">
+                              {followingAccount?.currentProfile?.imageUrl && (
+                                <AvatarImage src={followingAccount.currentProfile?.imageUrl} alt={followingAccount.username} />
+                              )}
+                              <AvatarFallback className="text-xs">
+                                {followingAccount ? getInitials(followingAccount.username) : "?"}
+                              </AvatarFallback>
+                            </Avatar>
+                            {followingAccount ? (
+                              <Link 
+                                href={`/social-accounts/${followingAccount.id}`}
+                                className="text-sm font-medium hover:underline"
+                                data-testid={`link-following-${followingId}`}
+                              >
+                                {followingAccount.username}
+                              </Link>
+                            ) : (
+                              <span className="text-sm text-muted-foreground">{followingId}</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground italic">Not following anyone yet</p>
+                )}
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* Notes Tab */}
+          <TabsContent value="notes" className="mt-0">
+            <div className="px-6 py-6">
+              <div className="flex items-start justify-between gap-4 mb-3">
+                <h2 className="text-lg font-semibold" data-testid="text-notes-header">
+                  Notes
+                </h2>
+                {!isEditingNotes && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setNotes(account.currentProfile?.bio || "");
+                      setIsEditingNotes(true);
+                    }}
+                    data-testid="button-edit-notes"
+                  >
+                    Edit
+                  </Button>
+                )}
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground italic">Not following anyone yet</p>
-            )}
-          </Card>
-        </div>
+
+              {isEditingNotes ? (
+                <div className="space-y-3">
+                  <Textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Add notes about this social account..."
+                    className="min-h-32"
+                    data-testid="textarea-notes"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => updateNotesMutation.mutate(notes)}
+                      disabled={updateNotesMutation.isPending}
+                      size="sm"
+                      data-testid="button-save-notes"
+                    >
+                      {updateNotesMutation.isPending && (
+                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      )}
+                      Save
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsEditingNotes(false)}
+                      size="sm"
+                      data-testid="button-cancel-notes"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  {account.currentProfile?.bio ? (
+                    <p data-testid="text-notes-content" className="whitespace-pre-wrap">
+                      {account.currentProfile?.bio}
+                    </p>
+                  ) : (
+                    <p className="italic">No notes added yet</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </TabsContent>
+
+          {/* Posts Tab */}
+          <TabsContent value="posts" className="mt-0">
+            <div className="px-6 py-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-lg font-semibold">Posts ({posts?.length || 0})</h2>
+                <Button
+                  size="sm"
+                  onClick={() => setIsAddPostOpen(true)}
+                  data-testid="button-add-post"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Post
+                </Button>
+              </div>
+
+              {posts && posts.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  {posts.map((post) => {
+                    let images: string[] = [];
+                    try {
+                      images = post.content ? JSON.parse(post.content) : [];
+                    } catch {
+                      images = [];
+                    }
+                    const firstImage = images[0] || null;
+
+                    return (
+                      <Card
+                        key={post.id}
+                        className="overflow-hidden cursor-pointer hover:shadow-md transition-shadow"
+                        onClick={() => {
+                          setSelectedPost(post);
+                          setIsPostDetailOpen(true);
+                        }}
+                        data-testid={`card-post-${post.id}`}
+                      >
+                        {/* Image thumbnail */}
+                        <div className="aspect-square bg-muted relative overflow-hidden">
+                          {firstImage ? (
+                            <img
+                              src={firstImage}
+                              alt="Post thumbnail"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <ImageIcon className="h-10 w-10 text-muted-foreground/40" />
+                            </div>
+                          )}
+                          {images.length > 1 && (
+                            <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded">
+                              {images.length}
+                            </div>
+                          )}
+                          {post.isDeleted && (
+                            <div className="absolute top-2 left-2">
+                              <Badge variant="destructive" className="text-xs">Deleted</Badge>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Post info */}
+                        <div className="p-3">
+                          {post.description && (
+                            <p className="text-sm line-clamp-2 mb-2">
+                              {post.description}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                              <Heart className="h-3 w-3" />
+                              {post.likeCount}
+                            </span>
+                            <span className="flex items-center gap-1">
+                              <MessageCircle className="h-3 w-3" />
+                              {post.commentCount}
+                            </span>
+                          </div>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-12 text-muted-foreground">
+                  <ImageIcon className="h-12 w-12 mx-auto mb-3 opacity-40" />
+                  <p className="text-sm">No posts yet</p>
+                  <p className="text-xs mt-1">Click "Add Post" to create the first post</p>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
 
       <EditSocialAccountDialog
@@ -785,6 +927,37 @@ export default function SocialAccountProfile() {
           }
         }}
       />
+
+      <AddPostDialog
+        open={isAddPostOpen}
+        onOpenChange={setIsAddPostOpen}
+        socialAccountId={uuid!}
+      />
+
+      {selectedPost && (
+        <>
+          <PostDetailDialog
+            open={isPostDetailOpen}
+            onOpenChange={setIsPostDetailOpen}
+            post={selectedPost}
+            onEdit={() => {
+              setIsPostDetailOpen(false);
+              setIsEditPostOpen(true);
+            }}
+            onDelete={() => {
+              deletePostMutation.mutate(selectedPost.id);
+              setSelectedPost(null);
+            }}
+          />
+
+          <EditPostDialog
+            open={isEditPostOpen}
+            onOpenChange={setIsEditPostOpen}
+            post={selectedPost}
+            socialAccountId={uuid!}
+          />
+        </>
+      )}
     </div>
   );
 }
