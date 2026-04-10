@@ -507,10 +507,28 @@ export default function SocialAccountProfile() {
       <div className="flex-1 overflow-auto">
         <Tabs defaultValue="follow" className="w-full">
           <div className="border-b px-6">
-            <TabsList className="w-full justify-start" data-testid="tabs-social-account">
-              <TabsTrigger value="follow" data-testid="tab-follow">Follow</TabsTrigger>
-              <TabsTrigger value="notes" data-testid="tab-notes">Notes</TabsTrigger>
-              <TabsTrigger value="posts" data-testid="tab-posts">Posts</TabsTrigger>
+            <TabsList className="h-12 bg-transparent p-0 flex-nowrap touch-scroll" data-testid="tabs-social-account">
+              <TabsTrigger
+                value="follow"
+                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                data-testid="tab-follow"
+              >
+                Follow
+              </TabsTrigger>
+              <TabsTrigger
+                value="notes"
+                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                data-testid="tab-notes"
+              >
+                Notes
+              </TabsTrigger>
+              <TabsTrigger
+                value="posts"
+                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                data-testid="tab-posts"
+              >
+                Posts
+              </TabsTrigger>
             </TabsList>
           </div>
 
