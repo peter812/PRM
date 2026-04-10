@@ -192,6 +192,22 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
   batchId: varchar("batch_id"), // groups changes detected at the same time
 });
 
+// Social account posts table
+export const socialAccountPosts = pgTable("social_account_posts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  content: text("content"), // JSON-stringified array of CDN image URLs, e.g. '["https://cdn.example.com/img1.jpg"]', or null
+  description: text("description"),
+  likeCount: integer("like_count").notNull().default(0),
+  commentCount: integer("comment_count").notNull().default(0),
+  comments: text("comments"), // JSON string with post comments data
+  mentionedAccounts: text("mentioned_accounts"), // Comma-separated list of mentioned account usernames
+  isDeleted: boolean("is_deleted").notNull().default(false),
+  postedAt: timestamp("posted_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // Extension sessions table - holds authenticated Chrome extension sessions
 export const extensionSessions = pgTable("extension_sessions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -303,6 +319,7 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one, many })
   profileVersions: many(socialProfileVersions),
   networkState: many(socialNetworkState),
   networkChanges: many(socialNetworkChanges),
+  posts: many(socialAccountPosts),
 }));
 
 export const socialProfileVersionsRelations = relations(socialProfileVersions, ({ one }) => ({
@@ -322,6 +339,13 @@ export const socialNetworkStateRelations = relations(socialNetworkState, ({ one 
 export const socialNetworkChangesRelations = relations(socialNetworkChanges, ({ one }) => ({
   socialAccount: one(socialAccounts, {
     fields: [socialNetworkChanges.socialAccountId],
+    references: [socialAccounts.id],
+  }),
+}));
+
+export const socialAccountPostsRelations = relations(socialAccountPosts, ({ one }) => ({
+  socialAccount: one(socialAccounts, {
+    fields: [socialAccountPosts.socialAccountId],
     references: [socialAccounts.id],
   }),
 }));
@@ -426,6 +450,12 @@ export const insertSocialNetworkChangeSchema = createInsertSchema(socialNetworkC
   detectedAt: true,
 });
 
+export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPosts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const insertTaskSchema = createInsertSchema(tasks).omit({
   id: true,
   createdAt: true,
@@ -489,6 +519,9 @@ export type InsertSocialNetworkState = z.infer<typeof insertSocialNetworkStateSc
 
 export type SocialNetworkChange = typeof socialNetworkChanges.$inferSelect;
 export type InsertSocialNetworkChange = z.infer<typeof insertSocialNetworkChangeSchema>;
+
+export type SocialAccountPost = typeof socialAccountPosts.$inferSelect;
+export type InsertSocialAccountPost = z.infer<typeof insertSocialAccountPostSchema>;
 
 export type SocialAccountWithCurrentProfile = SocialAccount & {
   currentProfile: SocialProfileVersion | null;
