@@ -192,6 +192,25 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
   batchId: varchar("batch_id"), // groups changes detected at the same time
 });
 
+// Extension sessions table - holds authenticated Chrome extension sessions
+export const extensionSessions = pgTable("extension_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sessionToken: text("session_token").notNull().unique(), // Hashed session token
+  name: text("name").notNull().default("Chrome Extension"), // Display name for the session
+  lastAccessedAt: timestamp("last_accessed_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Extension auth codes table - temporary 4-digit codes for pairing
+export const extensionAuthCodes = pgTable("extension_auth_codes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  code: text("code").notNull(), // 4-digit code
+  expiresAt: timestamp("expires_at").notNull(), // Code expires after 60 seconds
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -414,6 +433,17 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   completedAt: true,
 });
 
+export const insertExtensionSessionSchema = createInsertSchema(extensionSessions).omit({
+  id: true,
+  createdAt: true,
+  lastAccessedAt: true,
+});
+
+export const insertExtensionAuthCodeSchema = createInsertSchema(extensionAuthCodes).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -467,6 +497,12 @@ export type SocialAccountWithCurrentProfile = SocialAccount & {
 
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
+
+export type ExtensionSession = typeof extensionSessions.$inferSelect;
+export type InsertExtensionSession = z.infer<typeof insertExtensionSessionSchema>;
+
+export type ExtensionAuthCode = typeof extensionAuthCodes.$inferSelect;
+export type InsertExtensionAuthCode = z.infer<typeof insertExtensionAuthCodeSchema>;
 
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {

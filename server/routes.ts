@@ -1849,6 +1849,175 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Chrome Extension Auth endpoints
+
+  // Generate or get current 4-digit auth code (requires session auth)
+  app.get("/api/extension-auth/code", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      // Clean up expired codes
+      await storage.deleteExpiredExtensionAuthCodes();
+
+      // Check for existing valid code
+      const existing = await storage.getExtensionAuthCode(req.user.id);
+      if (existing && new Date(existing.expiresAt) > new Date()) {
+        return res.json({
+          code: existing.code,
+          expiresAt: existing.expiresAt,
+        });
+      }
+
+      // Generate a new 4-digit code
+      const code = String(Math.floor(1000 + Math.random() * 9000));
+      const expiresAt = new Date(Date.now() + 60 * 1000); // 60 seconds from now
+
+      const authCode = await storage.upsertExtensionAuthCode({
+        userId: req.user.id,
+        code,
+        expiresAt,
+      });
+
+      res.json({
+        code: authCode.code,
+        expiresAt: authCode.expiresAt,
+      });
+    } catch (error) {
+      console.error("Error generating extension auth code:", error);
+      res.status(500).json({ error: "Failed to generate auth code" });
+    }
+  });
+
+  // Verify 4-digit code from extension (no session auth required - this IS the auth)
+  app.post("/api/extension-auth/verify", async (req, res) => {
+    try {
+      const { code } = req.body;
+      if (!code || typeof code !== "string" || !/^\d{4}$/.test(code)) {
+        return res.status(400).json({ error: "A valid 4-digit code is required" });
+      }
+
+      // Clean up expired codes
+      await storage.deleteExpiredExtensionAuthCodes();
+
+      // Look up the code
+      const authCode = await storage.getExtensionAuthCodeByCode(code);
+      if (!authCode || new Date(authCode.expiresAt) <= new Date()) {
+        return res.status(401).json({ error: "Invalid or expired code" });
+      }
+
+      // Generate a session token for the extension
+      const rawToken = crypto.randomBytes(32).toString("hex");
+      const hashedToken = await hashPassword(rawToken);
+
+      // Create the extension session
+      const session = await storage.createExtensionSession({
+        userId: authCode.userId,
+        sessionToken: hashedToken,
+        name: "Chrome Extension",
+      });
+
+      // Delete the used auth code
+      await storage.deleteExpiredExtensionAuthCodes();
+
+      res.status(201).json({
+        sessionToken: rawToken, // Return raw token only once
+        sessionId: session.id,
+        createdAt: session.createdAt,
+      });
+    } catch (error) {
+      console.error("Error verifying extension auth code:", error);
+      res.status(500).json({ error: "Failed to verify auth code" });
+    }
+  });
+
+  // List all extension sessions (requires session auth)
+  app.get("/api/extension-sessions", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const sessions = await storage.getAllExtensionSessions(req.user.id);
+      // Don't return the hashed token
+      const safeSessions = sessions.map(({ sessionToken, ...rest }) => rest);
+      res.json(safeSessions);
+    } catch (error) {
+      console.error("Error fetching extension sessions:", error);
+      res.status(500).json({ error: "Failed to fetch extension sessions" });
+    }
+  });
+
+  // Delete/revoke an extension session (requires session auth)
+  app.delete("/api/extension-sessions/:id", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const id = req.params.id;
+
+      // Verify the session belongs to the user
+      const sessions = await storage.getAllExtensionSessions(req.user.id);
+      const sessionToDelete = sessions.find((s) => s.id === id);
+
+      if (!sessionToDelete) {
+        return res.status(404).json({ error: "Extension session not found" });
+      }
+
+      await storage.deleteExtensionSession(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting extension session:", error);
+      res.status(500).json({ error: "Failed to delete extension session" });
+    }
+  });
+
+  // Extension ping - update last accessed time (requires extension token auth)
+  app.post("/api/extension-auth/ping", async (req, res) => {
+    try {
+      const token = req.headers["x-extension-token"] as string;
+      if (!token) {
+        return res.status(401).json({ error: "Extension token required" });
+      }
+
+      // Find the session by comparing the token hash
+      // We need to check all sessions and compare hashes (like password comparison)
+      // For efficiency, we'll iterate through all sessions
+      const allUsers = await storage.getAllUsers();
+      let matchedSession: any = null;
+
+      for (const user of allUsers) {
+        const sessions = await storage.getAllExtensionSessions(user.id);
+        for (const session of sessions) {
+          try {
+            const [hashed, salt] = session.sessionToken.split(".");
+            const hashedBuf = Buffer.from(hashed, "hex");
+            const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
+            if (timingSafeEqual(hashedBuf, suppliedBuf)) {
+              matchedSession = session;
+              break;
+            }
+          } catch {
+            continue;
+          }
+        }
+        if (matchedSession) break;
+      }
+
+      if (!matchedSession) {
+        return res.status(401).json({ error: "Invalid extension token" });
+      }
+
+      await storage.updateExtensionSessionLastAccessed(matchedSession.id);
+      res.json({ success: true, lastAccessedAt: new Date().toISOString() });
+    } catch (error) {
+      console.error("Error processing extension ping:", error);
+      res.status(500).json({ error: "Failed to process ping" });
+    }
+  });
+
   // SSO Config endpoints
   // Public endpoint to check if SSO is enabled (no auth required)
   app.get("/api/sso-config/status", async (req, res) => {

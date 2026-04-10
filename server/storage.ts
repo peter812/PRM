@@ -55,6 +55,12 @@ import {
   tasks,
   type Task,
   type InsertTask,
+  extensionSessions,
+  type ExtensionSession,
+  type InsertExtensionSession,
+  extensionAuthCodes,
+  type ExtensionAuthCode,
+  type InsertExtensionAuthCode,
   type FlowItem,
   type FlowResponse,
   type MegaSearchResult,
@@ -64,7 +70,7 @@ import {
   type SocialGraphLink,
 } from "@shared/schema";
 import { db, pool } from "./db";
-import { eq, or, and, ilike, sql, inArray, arrayContains, desc } from "drizzle-orm";
+import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 
@@ -180,6 +186,19 @@ export interface IStorage {
   updateSsoConfig(userId: number, config: Partial<InsertSsoConfig>): Promise<SsoConfig | undefined>;
   deleteSsoConfig(userId: number): Promise<void>;
   getUserBySsoEmail(ssoEmail: string): Promise<User | undefined>;
+
+  // Extension session operations
+  getAllExtensionSessions(userId: number): Promise<ExtensionSession[]>;
+  getExtensionSessionByToken(tokenHash: string): Promise<ExtensionSession | undefined>;
+  createExtensionSession(session: InsertExtensionSession): Promise<ExtensionSession>;
+  deleteExtensionSession(id: string): Promise<void>;
+  updateExtensionSessionLastAccessed(id: string): Promise<void>;
+
+  // Extension auth code operations
+  getExtensionAuthCode(userId: number): Promise<ExtensionAuthCode | undefined>;
+  upsertExtensionAuthCode(code: InsertExtensionAuthCode): Promise<ExtensionAuthCode>;
+  deleteExpiredExtensionAuthCodes(): Promise<void>;
+  getExtensionAuthCodeByCode(code: string): Promise<ExtensionAuthCode | undefined>;
 
   // Group operations
   getAllGroups(searchQuery?: string): Promise<Group[]>;
@@ -1121,6 +1140,79 @@ export class DatabaseStorage implements IStorage {
       .from(users)
       .where(eq(users.ssoEmail, ssoEmail));
     return user || undefined;
+  }
+
+  // Extension session operations
+  async getAllExtensionSessions(userId: number): Promise<ExtensionSession[]> {
+    return await db
+      .select()
+      .from(extensionSessions)
+      .where(eq(extensionSessions.userId, userId));
+  }
+
+  async getExtensionSessionByToken(tokenHash: string): Promise<ExtensionSession | undefined> {
+    const [session] = await db
+      .select()
+      .from(extensionSessions)
+      .where(eq(extensionSessions.sessionToken, tokenHash));
+    return session || undefined;
+  }
+
+  async createExtensionSession(insertSession: InsertExtensionSession): Promise<ExtensionSession> {
+    const [session] = await db
+      .insert(extensionSessions)
+      .values(insertSession)
+      .returning();
+    return session;
+  }
+
+  async deleteExtensionSession(id: string): Promise<void> {
+    await db.delete(extensionSessions).where(eq(extensionSessions.id, id));
+  }
+
+  async updateExtensionSessionLastAccessed(id: string): Promise<void> {
+    await db
+      .update(extensionSessions)
+      .set({ lastAccessedAt: new Date() })
+      .where(eq(extensionSessions.id, id));
+  }
+
+  // Extension auth code operations
+  async getExtensionAuthCode(userId: number): Promise<ExtensionAuthCode | undefined> {
+    const [code] = await db
+      .select()
+      .from(extensionAuthCodes)
+      .where(eq(extensionAuthCodes.userId, userId));
+    return code || undefined;
+  }
+
+  async upsertExtensionAuthCode(insertCode: InsertExtensionAuthCode): Promise<ExtensionAuthCode> {
+    const [code] = await db
+      .insert(extensionAuthCodes)
+      .values(insertCode)
+      .onConflictDoUpdate({
+        target: extensionAuthCodes.userId,
+        set: {
+          code: insertCode.code,
+          expiresAt: insertCode.expiresAt,
+        },
+      })
+      .returning();
+    return code;
+  }
+
+  async deleteExpiredExtensionAuthCodes(): Promise<void> {
+    await db
+      .delete(extensionAuthCodes)
+      .where(lt(extensionAuthCodes.expiresAt, new Date()));
+  }
+
+  async getExtensionAuthCodeByCode(code: string): Promise<ExtensionAuthCode | undefined> {
+    const [authCode] = await db
+      .select()
+      .from(extensionAuthCodes)
+      .where(eq(extensionAuthCodes.code, code));
+    return authCode || undefined;
   }
 
   // Group operations
