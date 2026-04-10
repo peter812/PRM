@@ -1806,7 +1806,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         keyType: resolvedKeyType,
       });
 
-      const apiKey = await storage.createApiKey(validatedData);
+      const apiKey = await storage.createApiKey({
+        ...validatedData,
+        keyType: resolvedKeyType,
+      });
 
       // Return the raw key ONLY THIS ONE TIME (never stored/shown again)
       res.status(201).json({
