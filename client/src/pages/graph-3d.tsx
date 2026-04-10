@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import { Button } from "@/components/ui/button";
-import { Settings, Grid2X2, X } from "lucide-react";
+import { Settings, Grid2X2, X, Link2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -15,6 +15,39 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { useToast } from "@/hooks/use-toast";
+
+/**
+ * Read a boolean URL search parameter.
+ * Returns `defaultVal` when the key is absent.
+ */
+function readBoolParam(params: URLSearchParams, key: string, defaultVal: boolean): boolean {
+  const v = params.get(key);
+  if (v === null) return defaultVal;
+  return v === "true" || v === "1";
+}
+
+/**
+ * Build the current graph URL with all active settings as query params.
+ * Only includes params whose values differ from defaults so the URL stays clean.
+ * Uses explicit UUID param names (personUuid, groupUuid) so URLs are unambiguous.
+ */
+function buildGraphUrl(opts: {
+  personUuid?: string | null;
+  groupUuid?: string | null;
+  showGroups?: boolean;
+  hideOrphans?: boolean;
+  anonymize?: boolean;
+}): string {
+  const p = new URLSearchParams();
+  if (opts.personUuid) p.set("personUuid", opts.personUuid);
+  if (opts.groupUuid) p.set("groupUuid", opts.groupUuid);
+  if (opts.showGroups === false) p.set("showGroups", "false");
+  if (opts.hideOrphans === false) p.set("hideOrphans", "false");
+  if (opts.anonymize === true) p.set("anonymize", "true");
+  const qs = p.toString();
+  return `/graph-3d${qs ? `?${qs}` : ""}`;
+}
 
 interface GraphData {
   people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
@@ -41,12 +74,48 @@ export default function Graph3D() {
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
   const [, navigate] = useLocation();
-  const [showGroups, setShowGroups] = useState(true);
-  const [hideOrphans, setHideOrphans] = useState(true);
-  const [anonymizePeople, setAnonymizePeople] = useState(false);
-  const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  // Initialise state from URL search params so bookmarked / shared URLs restore settings
+  // Person and group identifiers use explicit UUID param names (personUuid, groupUuid)
+  const initParams = new URLSearchParams(window.location.search);
+  const [showGroups, setShowGroups] = useState(() => readBoolParam(initParams, "showGroups", true));
+  const [hideOrphans, setHideOrphans] = useState(() => readBoolParam(initParams, "hideOrphans", true));
+  const [anonymizePeople, setAnonymizePeople] = useState(() => readBoolParam(initParams, "anonymize", false));
+  const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(() => initParams.get("personUuid"));
+  const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(() => initParams.get("groupUuid"));
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+
+  /** Keep the browser URL in sync with current settings (replaceState to avoid history spam). */
+  const syncUrl = useCallback(
+    (opts: { personUuid?: string | null; groupUuid?: string | null; showGroups?: boolean; hideOrphans?: boolean; anonymize?: boolean }) => {
+      const url = buildGraphUrl(opts);
+      window.history.replaceState(null, "", url);
+    },
+    [],
+  );
+
+  // Sync URL whenever any setting changes
+  useEffect(() => {
+    syncUrl({ personUuid: highlightedPersonId, groupUuid: highlightedGroupId, showGroups, hideOrphans, anonymize: anonymizePeople });
+  }, [highlightedPersonId, highlightedGroupId, showGroups, hideOrphans, anonymizePeople, syncUrl]);
+
+  /** Copy the current graph URL (with all params) to the clipboard. */
+  const handleCopyLink = useCallback(() => {
+    const url = `${window.location.origin}${buildGraphUrl({
+      personUuid: highlightedPersonId,
+      groupUuid: highlightedGroupId,
+      showGroups,
+      hideOrphans,
+      anonymize: anonymizePeople,
+    })}`;
+    navigator.clipboard.writeText(url).then(() => {
+      toast({ title: "Link copied", description: "Graph URL copied to clipboard" });
+    }).catch(() => {
+      toast({ title: "Copy failed", description: "Could not copy link to clipboard", variant: "destructive" });
+    });
+  }, [highlightedPersonId, highlightedGroupId, showGroups, hideOrphans, anonymizePeople, toast]);
 
   const { data: graphData } = useQuery<GraphData>({
     queryKey: ["/api/graph"],
@@ -161,6 +230,32 @@ export default function Graph3D() {
       });
     }
 
+    // Filter to a specific group UUID — show the group + its members + inter-member relationships.
+    // personUuid takes precedence when both are present, so groupUuid only applies if no person is highlighted.
+    if (highlightedGroupId && !highlightedPersonId) {
+      const group = groups.find(g => g.id === highlightedGroupId);
+      if (group) {
+        const memberIds = new Set<string>(group.members);
+        const groupNodeId = `group-${group.id}`;
+
+        nodes = nodes.filter(node => {
+          if (node.type === 'group') return node.id === groupNodeId;
+          return memberIds.has(node.id);
+        });
+
+        links = links.filter(link => {
+          const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
+          const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
+
+          if (link.type === 'group-member') {
+            return sourceId === groupNodeId && memberIds.has(targetId);
+          }
+          // Keep relationships between group members
+          return memberIds.has(sourceId) && memberIds.has(targetId);
+        });
+      }
+    }
+
     const gData = { nodes, links };
 
     const styles = getComputedStyle(document.documentElement);
@@ -211,7 +306,7 @@ export default function Graph3D() {
         fgRef.current = null;
       }
     };
-  }, [people, groups, relationships, navigate, showGroups, highlightedPersonId, anonymizePeople, meData?.id]);
+  }, [people, groups, relationships, navigate, showGroups, highlightedPersonId, highlightedGroupId, anonymizePeople, meData?.id]);
 
   const handleResetCamera = () => {
     if (fgRef.current) {
@@ -251,6 +346,15 @@ export default function Graph3D() {
           >
             <Grid2X2 className="h-4 w-4 mr-2" />
             2D View
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleCopyLink}
+            title="Copy shareable link"
+            data-testid="button-copy-link"
+          >
+            <Link2 className="h-5 w-5" />
           </Button>
           <Button
             variant="ghost"
