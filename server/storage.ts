@@ -2311,7 +2311,9 @@ export class DatabaseStorage implements IStorage {
             ilike(people.lastName, searchPattern),
             ilike(people.company, searchPattern),
             ilike(people.title, searchPattern),
-            ilike(people.email, searchPattern)
+            ilike(people.email, searchPattern),
+            ilike(people.phone, searchPattern),
+            sql`EXISTS (SELECT 1 FROM unnest(${people.tags}) AS t WHERE t ILIKE ${searchPattern})`
           ))
           .orderBy(
             sql`CASE WHEN ${people.firstName} ILIKE ${startPattern} OR ${people.lastName} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
