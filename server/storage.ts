@@ -211,6 +211,17 @@ export interface IStorage {
   deleteSocialAccount(id: string): Promise<void>;
   deleteAllSocialAccounts(): Promise<number>;
 
+  // V1 Social account search/bulk operations
+  searchSocialAccountsByUsername(options: {
+    username: string;
+    platform?: string;
+    page: number;
+    perPage: number;
+  }): Promise<{ results: SocialAccountWithCurrentProfile[]; total: number }>;
+  bulkLookupSocialAccounts(
+    lookups: Array<{ username: string; platform: string }>
+  ): Promise<{ results: Record<string, SocialAccountWithCurrentProfile>; not_found: string[] }>;
+
   // Social profile version operations
   getCurrentProfileVersion(socialAccountId: string): Promise<SocialProfileVersion | null>;
   getProfileVersions(socialAccountId: string): Promise<SocialProfileVersion[]>;
@@ -1795,6 +1806,164 @@ export class DatabaseStorage implements IStorage {
     await db.delete(socialAccounts);
 
     return count;
+  }
+
+  // V1 Social account search by username with fuzzy matching and pagination
+  async searchSocialAccountsByUsername(options: {
+    username: string;
+    platform?: string;
+    page: number;
+    perPage: number;
+  }): Promise<{ results: SocialAccountWithCurrentProfile[]; total: number }> {
+    const { username, platform, page, perPage } = options;
+    const offset = (page - 1) * perPage;
+    const fuzzyQuery = `%${username}%`;
+
+    const conditions = [
+      ilike(socialAccounts.username, fuzzyQuery),
+    ];
+
+    // If platform is specified, filter by social account type name
+    if (platform) {
+      conditions.push(
+        sql`EXISTS (
+          SELECT 1 FROM ${socialAccountTypes} sat
+          WHERE sat.id = ${socialAccounts.typeId}
+          AND LOWER(sat.name) = LOWER(${platform})
+        )`
+      );
+    }
+
+    const whereClause = conditions.length === 1 ? conditions[0]! : and(...conditions);
+
+    // Get total count
+    const [countResult] = await db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(socialAccounts)
+      .leftJoin(
+        socialProfileVersions,
+        and(
+          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+          eq(socialProfileVersions.isCurrent, true)
+        )
+      )
+      .where(whereClause);
+    const total = Number(countResult?.count || 0);
+
+    // Prioritize exact username match, then prefix, then fuzzy
+    const startQuery = `${username}%`;
+    const rows = await db
+      .select({
+        account: socialAccounts,
+        profile: socialProfileVersions,
+        stateId: socialNetworkState.id,
+        stateSocialAccountId: socialNetworkState.socialAccountId,
+        followerCount: socialNetworkState.followerCount,
+        followingCount: socialNetworkState.followingCount,
+        stateUpdatedAt: socialNetworkState.updatedAt,
+      })
+      .from(socialAccounts)
+      .leftJoin(
+        socialProfileVersions,
+        and(
+          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+          eq(socialProfileVersions.isCurrent, true)
+        )
+      )
+      .leftJoin(
+        socialNetworkState,
+        eq(socialNetworkState.socialAccountId, socialAccounts.id)
+      )
+      .where(whereClause)
+      .orderBy(
+        sql`CASE
+          WHEN LOWER(${socialAccounts.username}) = LOWER(${username}) THEN 0
+          WHEN ${socialAccounts.username} ILIKE ${startQuery} THEN 1
+          ELSE 2
+        END`,
+        socialAccounts.username
+      )
+      .offset(offset)
+      .limit(perPage);
+
+    const results = rows.map(row => {
+      const state = row.stateId ? {
+        id: row.stateId,
+        socialAccountId: row.stateSocialAccountId,
+        followerCount: row.followerCount,
+        followingCount: row.followingCount,
+        followers: null,
+        following: null,
+        updatedAt: row.stateUpdatedAt,
+      } as unknown as SocialNetworkState : null;
+      return this.buildSocialAccountWithProfile(row.account, row.profile, state);
+    });
+
+    return { results, total };
+  }
+
+  // V1 Bulk lookup social accounts by username+platform pairs
+  async bulkLookupSocialAccounts(
+    lookups: Array<{ username: string; platform: string }>
+  ): Promise<{ results: Record<string, SocialAccountWithCurrentProfile>; not_found: string[] }> {
+    const results: Record<string, SocialAccountWithCurrentProfile> = {};
+    const notFound: string[] = [];
+
+    for (const lookup of lookups) {
+      const platformCondition = sql`EXISTS (
+        SELECT 1 FROM ${socialAccountTypes} sat
+        WHERE sat.id = ${socialAccounts.typeId}
+        AND LOWER(sat.name) = LOWER(${lookup.platform})
+      )`;
+
+      const rows = await db
+        .select({
+          account: socialAccounts,
+          profile: socialProfileVersions,
+          stateId: socialNetworkState.id,
+          stateSocialAccountId: socialNetworkState.socialAccountId,
+          followerCount: socialNetworkState.followerCount,
+          followingCount: socialNetworkState.followingCount,
+          stateUpdatedAt: socialNetworkState.updatedAt,
+        })
+        .from(socialAccounts)
+        .leftJoin(
+          socialProfileVersions,
+          and(
+            eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+            eq(socialProfileVersions.isCurrent, true)
+          )
+        )
+        .leftJoin(
+          socialNetworkState,
+          eq(socialNetworkState.socialAccountId, socialAccounts.id)
+        )
+        .where(
+          and(
+            eq(socialAccounts.username, lookup.username),
+            platformCondition
+          )
+        )
+        .limit(1);
+
+      if (rows.length > 0) {
+        const row = rows[0];
+        const state = row.stateId ? {
+          id: row.stateId,
+          socialAccountId: row.stateSocialAccountId,
+          followerCount: row.followerCount,
+          followingCount: row.followingCount,
+          followers: null,
+          following: null,
+          updatedAt: row.stateUpdatedAt,
+        } as unknown as SocialNetworkState : null;
+        results[lookup.username] = this.buildSocialAccountWithProfile(row.account, row.profile, state);
+      } else {
+        notFound.push(lookup.username);
+      }
+    }
+
+    return { results, not_found: notFound };
   }
 
   // Social profile version operations

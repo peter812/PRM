@@ -23,6 +23,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Copy, Trash2, Key, AlertTriangle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -32,6 +34,7 @@ type ApiKey = {
   userId: number;
   name: string;
   key: string;
+  keyType: string;
   createdAt: string;
   lastUsedAt: string | null;
 };
@@ -40,7 +43,8 @@ export default function ApiSettingsPage() {
   const { toast } = useToast();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [keyName, setKeyName] = useState("");
-  const [newKeyData, setNewKeyData] = useState<{ name: string; key: string } | null>(null);
+  const [keyType, setKeyType] = useState<"chrome" | "full">("chrome");
+  const [newKeyData, setNewKeyData] = useState<{ name: string; key: string; keyType: string } | null>(null);
   const [keyToDelete, setKeyToDelete] = useState<string | null>(null);
 
   const { data: apiKeys = [], isLoading } = useQuery<ApiKey[]>({
@@ -48,8 +52,8 @@ export default function ApiSettingsPage() {
   });
 
   const createKeyMutation = useMutation({
-    mutationFn: async (name: string) => {
-      const response = await apiRequest("POST", "/api/api-keys", { name });
+    mutationFn: async ({ name, keyType }: { name: string; keyType: string }) => {
+      const response = await apiRequest("POST", "/api/api-keys", { name, keyType });
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.error || "Failed to create API key");
@@ -57,9 +61,10 @@ export default function ApiSettingsPage() {
       return response.json();
     },
     onSuccess: (data) => {
-      setNewKeyData({ name: data.name, key: data.key });
+      setNewKeyData({ name: data.name, key: data.key, keyType: data.keyType });
       setIsCreateDialogOpen(false);
       setKeyName("");
+      setKeyType("chrome");
       queryClient.invalidateQueries({ queryKey: ["/api/api-keys"] });
       toast({
         title: "API Key Created",
@@ -118,8 +123,37 @@ export default function ApiSettingsPage() {
       });
       return;
     }
-    createKeyMutation.mutate(keyName);
+    createKeyMutation.mutate({ name: keyName, keyType });
   };
+
+  const resetCreateDialog = () => {
+    setIsCreateDialogOpen(false);
+    setKeyName("");
+    setKeyType("chrome");
+  };
+
+  const keyTypeSelector = (testIdSuffix?: string) => (
+    <div className="space-y-2">
+      <Label>Key Type</Label>
+      <div className="flex items-center justify-between rounded-lg border p-3">
+        <div className="space-y-0.5">
+          <div className="text-sm font-medium">
+            {keyType === "full" ? "Full Access" : "Chrome (Limited Access)"}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {keyType === "full"
+              ? "Unrestricted access to all API endpoints"
+              : "Limited access for Chrome extension (search & read only)"}
+          </div>
+        </div>
+        <Switch
+          checked={keyType === "full"}
+          onCheckedChange={(checked) => setKeyType(checked ? "full" : "chrome")}
+          data-testid={testIdSuffix ? `switch-key-type-${testIdSuffix}` : "switch-key-type"}
+        />
+      </div>
+    </div>
+  );
 
   return (
     <div className="container max-w-full md:max-w-4xl py-3 md:py-8 px-4 md:pl-12 space-y-4 md:space-y-8 mx-auto md:mx-0">
@@ -171,14 +205,12 @@ export default function ApiSettingsPage() {
                     data-testid="input-key-name"
                   />
                 </div>
+                {keyTypeSelector()}
               </div>
               <div className="flex justify-end gap-2">
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    setIsCreateDialogOpen(false);
-                    setKeyName("");
-                  }}
+                  onClick={resetCreateDialog}
                   data-testid="button-cancel-create"
                 >
                   Cancel
@@ -233,14 +265,12 @@ export default function ApiSettingsPage() {
                         data-testid="input-key-name-alt"
                       />
                     </div>
+                    {keyTypeSelector("alt")}
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"
-                      onClick={() => {
-                        setIsCreateDialogOpen(false);
-                        setKeyName("");
-                      }}
+                      onClick={resetCreateDialog}
                       data-testid="button-cancel-create-alt"
                     >
                       Cancel
@@ -269,6 +299,16 @@ export default function ApiSettingsPage() {
                         <h3 className="font-medium" data-testid={`text-key-name-${key.id}`}>
                           {key.name}
                         </h3>
+                        <Badge
+                          className={
+                            key.keyType === "full"
+                              ? "bg-green-500/15 text-green-700 dark:text-green-400 border-green-500/25 hover:bg-green-500/25"
+                              : "bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/25 hover:bg-blue-500/25"
+                          }
+                          data-testid={`badge-key-type-${key.id}`}
+                        >
+                          {key.keyType === "full" ? "Full Access" : "Chrome"}
+                        </Badge>
                       </div>
                       <div className="text-sm text-muted-foreground space-y-1">
                         <p data-testid={`text-key-created-${key.id}`}>

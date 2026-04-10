@@ -29,7 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType } from "@shared/schema";
+import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType, type SocialAccount } from "@shared/schema";
 import { ImageUpload } from "./image-upload";
 import { Upload, FileText, CheckCircle2, AlertCircle } from "lucide-react";
 
@@ -40,6 +40,7 @@ function isValidHexColor(color: string): boolean {
 interface AddSocialAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onAccountCreated?: (account: SocialAccount) => void;
 }
 
 const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [
@@ -49,7 +50,7 @@ const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [
   { pattern: /twitter\.com/i, typeName: "X.com" },
 ];
 
-export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountDialogProps) {
+export function AddSocialAccountDialog({ open, onOpenChange, onAccountCreated }: AddSocialAccountDialogProps) {
   const { toast } = useToast();
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [selectedTypeId, setSelectedTypeId] = useState<string>("");
@@ -115,9 +116,10 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
 
   const createMutation = useMutation({
     mutationFn: async (data: InsertSocialAccount) => {
-      return await apiRequest("POST", "/api/social-accounts", data);
+      const res = await apiRequest("POST", "/api/social-accounts", data);
+      return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
       toast({
@@ -128,6 +130,7 @@ export function AddSocialAccountDialog({ open, onOpenChange }: AddSocialAccountD
       setImageUrl(null);
       setSelectedTypeId("");
       onOpenChange(false);
+      if (onAccountCreated) onAccountCreated(data);
     },
     onError: () => {
       toast({
