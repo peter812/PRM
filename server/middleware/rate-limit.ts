@@ -72,7 +72,7 @@ export function rateLimitMiddleware(req: Request, res: Response, next: NextFunct
           limit: MAX_REQUESTS,
           windowMs: WINDOW_MS,
         },
-        request_id: req.headers["x-request-id"] as string || `req_${Date.now().toString(36)}`,
+        request_id: (req as any).requestId || `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       },
     });
     return;

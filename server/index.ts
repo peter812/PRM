@@ -91,7 +91,7 @@ app.use((req, res, next) => {
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
-    const requestId = (_req as any).requestId || `req_${Date.now().toString(36)}`;
+    const requestId = (_req as any).requestId || `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     // Use structured error format for API requests
     if (_req.path.startsWith("/api")) {

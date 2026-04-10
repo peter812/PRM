@@ -4137,11 +4137,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (body.imageUrl !== undefined) profileFields.imageUrl = body.imageUrl;
       if (body.bio !== undefined) profileFields.bio = body.bio;
 
-      // Update network state fields (followers, following counts)
-      if (body.followers !== undefined || body.following !== undefined || body.bio !== undefined) {
-        // bio is handled above via profile; followers/following via network state
-      }
-
       if (Object.keys(profileFields).length > 0) {
         const currentProfile = await storage.getCurrentProfileVersion(id);
         if (currentProfile) {
@@ -4162,7 +4157,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(account);
     } catch (error) {
       console.error("Error updating social account:", error);
-      sendApiError(res, 400, ErrorCodes.INTERNAL_ERROR, "Failed to update social account.", {}, (req as any).requestId);
+      sendApiError(res, 500, ErrorCodes.INTERNAL_ERROR, "Failed to update social account.", {}, (req as any).requestId);
     }
   });
 

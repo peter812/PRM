@@ -1940,7 +1940,7 @@ export class DatabaseStorage implements IStorage {
         )
         .where(
           and(
-            ilike(socialAccounts.username, lookup.username),
+            eq(socialAccounts.username, lookup.username),
             platformCondition
           )
         )

@@ -18,7 +18,7 @@ export function etagMiddleware(req: Request, res: Response, next: NextFunction):
   res.json = function (body: any) {
     // Generate ETag from the response body
     const bodyStr = JSON.stringify(body);
-    const hash = crypto.createHash("md5").update(bodyStr).digest("hex");
+    const hash = crypto.createHash("sha256").update(bodyStr).digest("hex").slice(0, 32);
     const etag = `"${hash}"`;
 
     res.setHeader("ETag", etag);
