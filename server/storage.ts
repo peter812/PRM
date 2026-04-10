@@ -16,6 +16,7 @@ import {
   socialProfileVersions,
   socialNetworkState,
   socialNetworkChanges,
+  socialAccountPosts,
   type Person,
   type InsertPerson,
   type Note,
@@ -52,6 +53,8 @@ import {
   type SocialNetworkChange,
   type InsertSocialNetworkChange,
   type SocialAccountWithCurrentProfile,
+  type SocialAccountPost,
+  type InsertSocialAccountPost,
   tasks,
   type Task,
   type InsertTask,
@@ -268,6 +271,13 @@ export interface IStorage {
   createSocialAccountTypeWithId(type: InsertSocialAccountType & { id: string }): Promise<SocialAccountType>;
   updateSocialAccountType(id: string, type: Partial<InsertSocialAccountType>): Promise<SocialAccountType | undefined>;
   deleteSocialAccountType(id: string): Promise<void>;
+
+  // Social account post operations
+  getPostsBySocialAccountId(socialAccountId: string, includeDeleted?: boolean): Promise<SocialAccountPost[]>;
+  getPostById(id: string): Promise<SocialAccountPost | undefined>;
+  createPost(post: InsertSocialAccountPost): Promise<SocialAccountPost>;
+  updatePost(id: string, post: Partial<InsertSocialAccountPost>): Promise<SocialAccountPost | undefined>;
+  deletePost(id: string): Promise<void>;
 
   // Flow operations (unified timeline)
   getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse>;
@@ -2562,6 +2572,48 @@ export class DatabaseStorage implements IStorage {
       .from(tasks)
       .where(eq(tasks.id, id));
     return task || undefined;
+  }
+
+  // Social account post operations
+  async getPostsBySocialAccountId(socialAccountId: string, includeDeleted: boolean = false): Promise<SocialAccountPost[]> {
+    const conditions = [eq(socialAccountPosts.socialAccountId, socialAccountId)];
+    if (!includeDeleted) {
+      conditions.push(eq(socialAccountPosts.isDeleted, false));
+    }
+    return await db
+      .select()
+      .from(socialAccountPosts)
+      .where(and(...conditions))
+      .orderBy(desc(socialAccountPosts.createdAt));
+  }
+
+  async getPostById(id: string): Promise<SocialAccountPost | undefined> {
+    const [post] = await db
+      .select()
+      .from(socialAccountPosts)
+      .where(eq(socialAccountPosts.id, id));
+    return post || undefined;
+  }
+
+  async createPost(post: InsertSocialAccountPost): Promise<SocialAccountPost> {
+    const [created] = await db
+      .insert(socialAccountPosts)
+      .values(post)
+      .returning();
+    return created;
+  }
+
+  async updatePost(id: string, post: Partial<InsertSocialAccountPost>): Promise<SocialAccountPost | undefined> {
+    const [updated] = await db
+      .update(socialAccountPosts)
+      .set({ ...post, updatedAt: new Date() })
+      .where(eq(socialAccountPosts.id, id))
+      .returning();
+    return updated || undefined;
+  }
+
+  async deletePost(id: string): Promise<void> {
+    await db.delete(socialAccountPosts).where(eq(socialAccountPosts.id, id));
   }
 }
 

@@ -19,6 +19,7 @@ import {
   insertApiKeySchema,
   insertSocialAccountSchema,
   insertSocialAccountTypeSchema,
+  insertSocialAccountPostSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -3666,6 +3667,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error updating network state:", error);
       res.status(500).json({ error: "Failed to update network state" });
+    }
+  });
+
+  // Social account post endpoints
+  app.get("/api/social-accounts/:id/posts", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const includeDeleted = req.query.includeDeleted === "true";
+      const posts = await storage.getPostsBySocialAccountId(req.params.id, includeDeleted);
+      res.json(posts);
+    } catch (error) {
+      console.error("Error fetching posts:", error);
+      res.status(500).json({ error: "Failed to fetch posts" });
+    }
+  });
+
+  app.get("/api/social-account-posts/:id", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const post = await storage.getPostById(req.params.id);
+      if (!post) return res.status(404).json({ error: "Post not found" });
+      res.json(post);
+    } catch (error) {
+      console.error("Error fetching post:", error);
+      res.status(500).json({ error: "Failed to fetch post" });
+    }
+  });
+
+  app.post("/api/social-accounts/:id/posts", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const parsed = insertSocialAccountPostSchema.parse({
+        ...req.body,
+        socialAccountId: req.params.id,
+      });
+      const post = await storage.createPost(parsed);
+      res.status(201).json(post);
+    } catch (error) {
+      console.error("Error creating post:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid post data", details: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create post" });
+    }
+  });
+
+  app.patch("/api/social-account-posts/:id", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const post = await storage.updatePost(req.params.id, req.body);
+      if (!post) return res.status(404).json({ error: "Post not found" });
+      res.json(post);
+    } catch (error) {
+      console.error("Error updating post:", error);
+      res.status(500).json({ error: "Failed to update post" });
+    }
+  });
+
+  app.delete("/api/social-account-posts/:id", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      await storage.deletePost(req.params.id);
+      res.status(204).end();
+    } catch (error) {
+      console.error("Error deleting post:", error);
+      res.status(500).json({ error: "Failed to delete post" });
     }
   });
 
