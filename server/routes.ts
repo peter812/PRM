@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, type SocialAccountWithCurrentProfile } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
@@ -1846,6 +1846,199 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting API key:", error);
       res.status(500).json({ error: "Failed to delete API key" });
+    }
+  });
+
+  // Chrome Extension Auth endpoints
+
+  // Rate limiter specifically for code verification (stricter than global rate limiter)
+  // Prevents brute-forcing the 4-digit code
+  const verifyAttempts = new Map<string, { count: number; resetAt: number }>();
+  const VERIFY_MAX_ATTEMPTS = 5; // 5 attempts per window
+  const VERIFY_WINDOW_MS = 60 * 1000; // 1-minute window
+
+  // Periodically clean up expired rate limit entries to prevent memory leaks
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of verifyAttempts) {
+      if (now >= value.resetAt) {
+        verifyAttempts.delete(key);
+      }
+    }
+  }, 5 * 60 * 1000); // Clean up every 5 minutes
+
+  // Generate or get current 4-digit auth code (requires session auth)
+  app.get("/api/extension-auth/code", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      // Clean up expired codes
+      await storage.deleteExpiredExtensionAuthCodes();
+
+      // Check for existing valid code
+      const existing = await storage.getExtensionAuthCode(req.user.id);
+      if (existing && new Date(existing.expiresAt) > new Date()) {
+        return res.json({
+          code: existing.code,
+          expiresAt: existing.expiresAt,
+        });
+      }
+
+      // Generate a new 4-digit code using cryptographically secure random
+      const code = String(crypto.randomInt(1000, 10000));
+      const expiresAt = new Date(Date.now() + 60 * 1000); // 60 seconds from now
+
+      const authCode = await storage.upsertExtensionAuthCode({
+        userId: req.user.id,
+        code,
+        expiresAt,
+      });
+
+      res.json({
+        code: authCode.code,
+        expiresAt: authCode.expiresAt,
+      });
+    } catch (error) {
+      console.error("Error generating extension auth code:", error);
+      res.status(500).json({ error: "Failed to generate auth code" });
+    }
+  });
+
+  // Verify 4-digit code from extension (no session auth required - this IS the auth)
+  app.post("/api/extension-auth/verify", async (req, res) => {
+    try {
+      // Rate limit by IP to prevent brute-forcing the 4-digit code
+      const clientIp = req.ip || req.socket.remoteAddress || "unknown";
+      const now = Date.now();
+      const attempt = verifyAttempts.get(clientIp);
+
+      if (attempt && now < attempt.resetAt) {
+        if (attempt.count >= VERIFY_MAX_ATTEMPTS) {
+          return res.status(429).json({ error: "Too many attempts. Please wait and try again." });
+        }
+        attempt.count++;
+      } else {
+        verifyAttempts.set(clientIp, { count: 1, resetAt: now + VERIFY_WINDOW_MS });
+      }
+
+      const { code } = req.body;
+      if (!code || typeof code !== "string" || !/^\d{4}$/.test(code)) {
+        return res.status(400).json({ error: "A valid 4-digit code is required" });
+      }
+
+      // Clean up expired codes
+      await storage.deleteExpiredExtensionAuthCodes();
+
+      // Look up the code
+      const authCode = await storage.getExtensionAuthCodeByCode(code);
+      if (!authCode || new Date(authCode.expiresAt) <= new Date()) {
+        return res.status(401).json({ error: "Invalid or expired code" });
+      }
+
+      // Generate a session token for the extension
+      const rawToken = crypto.randomBytes(32).toString("hex");
+      const hashedToken = await hashPassword(rawToken);
+
+      // Create the extension session
+      const session = await storage.createExtensionSession({
+        userId: authCode.userId,
+        sessionToken: hashedToken,
+        name: "Chrome Extension",
+      });
+
+      // Delete the used auth code explicitly to prevent reuse
+      await storage.deleteExtensionAuthCodeByUserId(authCode.userId);
+
+      res.status(201).json({
+        sessionToken: rawToken, // Return raw token only once
+        sessionId: session.id,
+        createdAt: session.createdAt,
+      });
+    } catch (error) {
+      console.error("Error verifying extension auth code:", error);
+      res.status(500).json({ error: "Failed to verify auth code" });
+    }
+  });
+
+  // List all extension sessions (requires session auth)
+  app.get("/api/extension-sessions", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const sessions = await storage.getAllExtensionSessions(req.user.id);
+      // Don't return the hashed token
+      const safeSessions = sessions.map(({ sessionToken, ...rest }) => rest);
+      res.json(safeSessions);
+    } catch (error) {
+      console.error("Error fetching extension sessions:", error);
+      res.status(500).json({ error: "Failed to fetch extension sessions" });
+    }
+  });
+
+  // Delete/revoke an extension session (requires session auth)
+  app.delete("/api/extension-sessions/:id", async (req, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const id = req.params.id;
+
+      // Verify the session belongs to the user
+      const sessions = await storage.getAllExtensionSessions(req.user.id);
+      const sessionToDelete = sessions.find((s) => s.id === id);
+
+      if (!sessionToDelete) {
+        return res.status(404).json({ error: "Extension session not found" });
+      }
+
+      await storage.deleteExtensionSession(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting extension session:", error);
+      res.status(500).json({ error: "Failed to delete extension session" });
+    }
+  });
+
+  // Extension ping - update last accessed time (requires extension token auth)
+  app.post("/api/extension-auth/ping", async (req, res) => {
+    try {
+      const token = req.headers["x-extension-token"] as string;
+      if (!token) {
+        return res.status(401).json({ error: "Extension token required" });
+      }
+
+      // Find the session by comparing the token hash against all sessions
+      const allSessions = await storage.getAllExtensionSessionsAllUsers();
+      let matchedSession: ExtensionSession | null = null;
+
+      for (const session of allSessions) {
+        try {
+          const [hashed, salt] = session.sessionToken.split(".");
+          const hashedBuf = Buffer.from(hashed, "hex");
+          const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
+          if (timingSafeEqual(hashedBuf, suppliedBuf)) {
+            matchedSession = session;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      if (!matchedSession) {
+        return res.status(401).json({ error: "Invalid extension token" });
+      }
+
+      await storage.updateExtensionSessionLastAccessed(matchedSession.id);
+      res.json({ success: true, lastAccessedAt: new Date().toISOString() });
+    } catch (error) {
+      console.error("Error processing extension ping:", error);
+      res.status(500).json({ error: "Failed to process ping" });
     }
   });
 

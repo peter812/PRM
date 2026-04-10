@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -26,6 +26,7 @@ import RelationshipTypesList from "@/pages/relationship-types-list";
 import InteractionTypesList from "@/pages/interaction-types-list";
 import SocialAccountTypesList from "@/pages/social-account-types-list";
 import ApiSettingsPage from "@/pages/api-settings";
+import ChromeExtensionSettingsPage from "@/pages/chrome-extension-settings";
 import ApiDocs from "@/pages/api-docs";
 import DeleteOptionsPage from "@/pages/delete-options";
 import ImportExportHome from "@/pages/import-export-home";
@@ -101,6 +102,11 @@ const settingsMenuItems: MenuItem[] = [
     title: "API Settings",
     url: "/api-settings",
     icon: Key,
+  },
+  {
+    title: "Chrome Extension",
+    url: "/chrome-extension",
+    icon: Chrome,
   },
   {
     title: "API Documentation",
@@ -222,6 +228,7 @@ export default function SettingsLayout() {
               <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
               <Route path="/import-export" component={ImportExportHome} />
               <Route path="/api-settings" component={ApiSettingsPage} />
+              <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
               <Route path="/api" component={ApiDocs} />
               <Route path="/delete" component={DeleteOptionsPage} />
               <Route component={NotFound} />
