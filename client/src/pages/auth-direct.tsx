@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Users, Network, Search, Shield } from "lucide-react";
+import { Users, Network, Search, Shield, LockKeyhole, Database, LineChart } from "lucide-react";
 import { Redirect, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Separator } from "@/components/ui/separator";
@@ -57,7 +57,7 @@ export default function AuthDirectPage() {
           <div className="mb-8">
             <h1 className="text-3xl font-bold mb-2">People Manager</h1>
             <p className="text-muted-foreground">
-              Sign in to manage your professional network
+              Sign in to manage your network with direct access, graphs, and matching tools
             </p>
           </div>
 
@@ -65,7 +65,7 @@ export default function AuthDirectPage() {
             <CardHeader>
               <CardTitle>Direct Sign In</CardTitle>
               <CardDescription>
-                Enter your credentials to access your account
+                Enter your credentials to access the full product experience
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -139,6 +139,21 @@ export default function AuthDirectPage() {
                   </Button>
                 </>
               )}
+
+              <div className="mt-6 grid gap-3 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2" data-testid="feature-direct-access">
+                  <LockKeyhole className="h-4 w-4" />
+                  <span>Direct access without SSO</span>
+                </div>
+                <div className="flex items-center gap-2" data-testid="feature-network-views">
+                  <LineChart className="h-4 w-4" />
+                  <span>Graph and network views</span>
+                </div>
+                <div className="flex items-center gap-2" data-testid="feature-matching-tools">
+                  <Database className="h-4 w-4" />
+                  <span>Matching, ranking, and account insights</span>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -148,7 +163,7 @@ export default function AuthDirectPage() {
         <div className="max-w-md">
           <h2 className="text-4xl font-bold mb-6">Manage Your Professional Network</h2>
           <p className="text-lg mb-8 opacity-90">
-            A powerful CRM to track contacts, interactions, and relationships all in one place.
+            Track people, groups, social accounts, and matching insights in one place.
           </p>
           <div className="space-y-4">
             <div className="flex items-start gap-3">

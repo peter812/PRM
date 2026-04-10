@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Users, Network, Search, Shield } from "lucide-react";
+import { Users, Network, Search, Shield, Sparkles, LockKeyhole, Database, LineChart } from "lucide-react";
 import { Redirect } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Separator } from "@/components/ui/separator";
@@ -61,7 +61,7 @@ export default function AuthPage() {
           <div className="mb-8">
             <h1 className="text-3xl font-bold mb-2">People Manager</h1>
             <p className="text-muted-foreground">
-              Sign in to manage your professional network
+              Sign in to manage your network with SSO, direct login, graphs, and account matching
             </p>
           </div>
 
@@ -69,7 +69,7 @@ export default function AuthPage() {
             <CardHeader>
               <CardTitle>Welcome back</CardTitle>
               <CardDescription>
-                Enter your credentials to access your account
+                Use your password or single sign-on to access your account
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -143,6 +143,25 @@ export default function AuthPage() {
                   </Button>
                 </>
               )}
+
+              <div className="mt-6 grid gap-3 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2" data-testid="feature-sso">
+                  <Shield className="h-4 w-4" />
+                  <span>SSO sign-in when enabled</span>
+                </div>
+                <div className="flex items-center gap-2" data-testid="feature-direct-login">
+                  <LockKeyhole className="h-4 w-4" />
+                  <span>Direct username and password login</span>
+                </div>
+                <div className="flex items-center gap-2" data-testid="feature-graph">
+                  <LineChart className="h-4 w-4" />
+                  <span>Relationship graphs and network views</span>
+                </div>
+                <div className="flex items-center gap-2" data-testid="feature-matching">
+                  <Sparkles className="h-4 w-4" />
+                  <span>Account matching and ranking tools</span>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -152,9 +171,9 @@ export default function AuthPage() {
         <div className="max-w-md">
           <h2 className="text-4xl font-bold mb-6">Manage Your Professional Network</h2>
           <p className="text-lg mb-8 opacity-90">
-            A powerful CRM to track contacts, interactions, and relationships all in one place.
+            Track people, groups, social accounts, and matching insights in one place.
           </p>
-          <div className="space-y-4">
+          <div className="grid gap-4">
             <div className="flex items-start gap-3">
               <Users className="h-6 w-6 mt-1 flex-shrink-0" />
               <div>
@@ -179,6 +198,15 @@ export default function AuthPage() {
                 <h3 className="font-semibold mb-1">Advanced Search</h3>
                 <p className="opacity-80">
                   Find contacts quickly with powerful search and filtering
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <Database className="h-6 w-6 mt-1 flex-shrink-0" />
+              <div>
+                <h3 className="font-semibold mb-1">Smart Matching</h3>
+                <p className="opacity-80">
+                  Compare accounts and ranking signals for better recommendations
                 </p>
               </div>
             </div>
