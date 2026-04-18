@@ -3716,7 +3716,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.patch("/api/social-account-posts/:id", async (req, res) => {
     try {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const allowedFields = ["content", "description", "likeCount", "commentCount", "comments", "mentionedAccounts", "isDeleted", "postedAt"];
+      const allowedFields = ["postType", "content", "description", "likeCount", "commentCount", "comments", "mentionedAccounts", "isDeleted", "postedAt"];
       const updateData: Record<string, unknown> = {};
       for (const key of allowedFields) {
         if (key in req.body) {

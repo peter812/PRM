@@ -196,6 +196,7 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
 export const socialAccountPosts = pgTable("social_account_posts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  postType: text("post_type").notNull().default("post"), // 'post', 'story', 'reel', etc.
   content: text("content"), // JSON-stringified array of CDN image URLs, e.g. '["https://cdn.example.com/img1.jpg"]', or null
   description: text("description"),
   likeCount: integer("like_count").notNull().default(0),
