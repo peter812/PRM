@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useLocation } from "wouter";
+import { getInitials } from "@/lib/utils";
 import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, MegaSearchResult } from "@shared/schema";
 
 type SearchCategory = 'people' | 'groups' | 'interactions' | 'notes' | 'socialProfiles';
@@ -234,18 +235,6 @@ export function GlobalSearch() {
     setIsOpen(false);
   };
 
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0] || ''}${lastName[0] || ''}`.toUpperCase();
-  };
-
-  const getGroupInitials = (name: string) => {
-    const words = name.split(" ");
-    if (words.length >= 2) {
-      return `${words[0][0]}${words[1][0]}`.toUpperCase();
-    }
-    return name.slice(0, 2).toUpperCase();
-  };
-
   const totalResults =
     (results?.people?.length || 0) +
     (results?.groups?.length || 0) +
@@ -328,7 +317,7 @@ export function GlobalSearch() {
                       className="text-xs"
                       style={{ backgroundColor: group.color }}
                     >
-                      {getGroupInitials(group.name)}
+                      {getInitials(group.name)}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0">

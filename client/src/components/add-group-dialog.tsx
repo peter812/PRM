@@ -25,6 +25,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import { insertGroupSchema, type Person } from "@shared/schema";
 import { ImageUpload } from "@/components/image-upload";
 import { X } from "lucide-react";
@@ -124,10 +125,6 @@ export function AddGroupDialog({ open, onOpenChange }: AddGroupDialogProps) {
         ? prev.filter((id) => id !== personId)
         : [...prev, personId]
     );
-  };
-
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
   };
 
   return (

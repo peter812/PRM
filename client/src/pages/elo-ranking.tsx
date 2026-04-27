@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { Person, RelationshipType, RelationshipWithPerson } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 const GREY_COLOR = "#9ca3af";
@@ -76,10 +77,6 @@ function PersonCardContent({
   size,
   testIdSuffix,
 }: PersonCardContentProps) {
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
-  };
-
   const avatarSize = size === "lg" ? "w-24 h-24" : "w-16 h-16";
   const nameSize = size === "lg" ? "text-xl" : "text-base";
   const fallbackSize = size === "lg" ? "text-2xl" : "text-lg";

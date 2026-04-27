@@ -11,6 +11,7 @@ import { EditGroupDialog } from "@/components/edit-group-dialog";
 import { MembersTab } from "@/components/members-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
+import { getInitials } from "@/lib/utils";
 
 type GroupWithMembers = Group & {
   memberDetails: Person[];
@@ -77,14 +78,6 @@ export default function GroupProfile() {
       </div>
     );
   }
-
-  const getInitials = (name: string) => {
-    const words = name.split(" ");
-    if (words.length >= 2) {
-      return `${words[0][0]}${words[1][0]}`.toUpperCase();
-    }
-    return name.substring(0, 2).toUpperCase();
-  };
 
   return (
     <div className="flex flex-col h-full">

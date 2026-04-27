@@ -19,6 +19,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { AddGroupDialog } from "@/components/add-group-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import type { Group } from "@shared/schema";
 
 type ViewMode = "list" | "wide";
@@ -68,14 +69,6 @@ export default function GroupsList() {
       });
     },
   });
-
-  const getInitials = (name: string) => {
-    const words = name.split(" ");
-    if (words.length >= 2) {
-      return `${words[0][0]}${words[1][0]}`.toUpperCase();
-    }
-    return name.substring(0, 2).toUpperCase();
-  };
 
   return (
     <div className="flex flex-col h-full">

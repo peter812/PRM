@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import { EditRelationshipDialog } from "@/components/edit-relationship-dialog";
 import type { RelationshipWithPerson } from "@shared/schema";
 import { useState } from "react";
@@ -44,10 +45,6 @@ export function RelationshipsTab({
       });
     },
   });
-
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
-  };
 
   return (
     <div className="p-6">

@@ -16,6 +16,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import type { Person } from "@shared/schema";
 import { Link } from "wouter";
 
@@ -100,10 +101,6 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
       });
     },
   });
-
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
-  };
 
   return (
     <>
@@ -306,10 +303,6 @@ function AddMembersDialog({
     setSelectedIds((prev) =>
       prev.includes(personId) ? prev.filter((id) => id !== personId) : [...prev, personId]
     );
-  };
-
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
   };
 
   // Filter available people based on search query

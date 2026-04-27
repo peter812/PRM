@@ -16,6 +16,7 @@ import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
+import { getInitials } from "@/lib/utils";
 
 export default function MeProfile() {
   const [, navigate] = useLocation();
@@ -77,10 +78,6 @@ export default function MeProfile() {
       </div>
     );
   }
-
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
-  };
 
   return (
     <div className="flex flex-col h-full">

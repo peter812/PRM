@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
@@ -143,13 +144,6 @@ export default function SocialAccountsList() {
       });
     },
   });
-
-  const getInitials = (username: string) => {
-    if (username.length >= 2) {
-      return username.slice(0, 2).toUpperCase();
-    }
-    return username.slice(0, 1).toUpperCase();
-  };
 
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
