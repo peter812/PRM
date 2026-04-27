@@ -37,5 +37,5 @@ const interactionTypeConfig: TypeListConfig<InteractionType> = {
 };
 
 export default function InteractionTypesList() {
-  return <TypeListPage<InteractionType> config={interactionTypeConfig} />;
+  return <TypeListPage config={interactionTypeConfig} />;
 }

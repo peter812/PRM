@@ -36,5 +36,5 @@ const relationshipTypeConfig: TypeListConfig<RelationshipType> = {
 };
 
 export default function RelationshipTypesList() {
-  return <TypeListPage<RelationshipType> config={relationshipTypeConfig} />;
+  return <TypeListPage config={relationshipTypeConfig} />;
 }

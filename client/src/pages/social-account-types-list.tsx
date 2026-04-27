@@ -14,5 +14,5 @@ const socialAccountTypeConfig: TypeListConfig<SocialAccountType> = {
 };
 
 export default function SocialAccountTypesList() {
-  return <TypeListPage<SocialAccountType> config={socialAccountTypeConfig} />;
+  return <TypeListPage config={socialAccountTypeConfig} />;
 }
