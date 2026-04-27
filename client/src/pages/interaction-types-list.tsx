@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import TypeListPage, { type TypeListConfig } from "@/components/type-list-page";
 import type { InteractionType } from "@shared/schema";
 
@@ -38,6 +37,5 @@ const interactionTypeConfig: TypeListConfig<InteractionType> = {
 };
 
 export default function InteractionTypesList() {
-  const config = useMemo(() => interactionTypeConfig, []);
-  return <TypeListPage<InteractionType> config={config} />;
+  return <TypeListPage<InteractionType> config={interactionTypeConfig} />;
 }

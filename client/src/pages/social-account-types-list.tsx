@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import TypeListPage, { type TypeListConfig } from "@/components/type-list-page";
 import type { SocialAccountType } from "@shared/schema";
 
@@ -15,6 +14,5 @@ const socialAccountTypeConfig: TypeListConfig<SocialAccountType> = {
 };
 
 export default function SocialAccountTypesList() {
-  const config = useMemo(() => socialAccountTypeConfig, []);
-  return <TypeListPage<SocialAccountType> config={config} />;
+  return <TypeListPage<SocialAccountType> config={socialAccountTypeConfig} />;
 }

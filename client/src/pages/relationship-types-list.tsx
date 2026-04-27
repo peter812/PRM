@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import TypeListPage, { type TypeListConfig } from "@/components/type-list-page";
 import type { RelationshipType } from "@shared/schema";
 
@@ -37,6 +36,5 @@ const relationshipTypeConfig: TypeListConfig<RelationshipType> = {
 };
 
 export default function RelationshipTypesList() {
-  const config = useMemo(() => relationshipTypeConfig, []);
-  return <TypeListPage<RelationshipType> config={config} />;
+  return <TypeListPage<RelationshipType> config={relationshipTypeConfig} />;
 }
