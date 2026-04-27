@@ -1,0 +1,57 @@
+The person graph and social account graph will be merged into the social graph page
+
+Important:
+there will be 1 graph backend, that supports both social accounts and people
+
+
+right settings panel updates:
+- the right settings panel will be controlled by a dropdown menu located in the new right side top bar contextual settings area:
+- there will be a drop down menu with 3 options
+	- person view
+	- social account view
+	- hybrid view (TO BE IMPLEMENTED LATER) (BUT IN TAB BUT MAKE IT UNCLICKABLE)
+- The right side context menu will have separate options based one to option selected in the top menu drop down
+	- Person view:
+		- Retain options from the person graph page
+	- social account view:
+		- retain options from the current social account graph page
+	- hybrid view:
+		- leave the right side menu black until further notice
+- Person view
+- all three of these options will radically change the settings panel below
+- 
+
+
+left side panel updates:
+- WHEN IN PERSON VIEW:
+	- when the user clicks on a node, the left side bar will become visible and display information about the person:
+		- profile image
+		- name
+		- interface to display linked social accounts (chip form)
+			- when the user clicks on one of these chips they will be linked to a social account view with this account highlighted
+		- link to full account page: ("More")
+- WHEN IS SOCIAL ACCOUNT VIEW
+	- when the user clicks on a node, the left side bar will become visible and display information about the social account:
+	- profile image (with small line around the circle image with account type color)
+	- profile username
+	- in smaller type: profile display name
+	- display linked person profile
+		- when the user clicks on one of these chips they will be directed to the person section of the graph
+	- Link to full account page: ("More")
+
+backend update:
+- sweeping API changes need to made to bring person profiles into the up-to-date social accounts graph API
+- make sure to keep the same backend processing stack the same:
+- backend renders options
+- frontend renders color options
+
+
+  updates to person pages
+- add link to go to graph view
+	- button icon should be a triangle with 3 nodes with points at the 3 ends of the triangle
+  
+  
+  
+  updates to social account pages:
+- add link to go to graph view
+	- button icon should be a triangle with 3 nodes with points at the 3 ends of the triangle
