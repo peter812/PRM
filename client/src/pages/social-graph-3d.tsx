@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import * as THREE from "three";
@@ -134,56 +135,98 @@ export default function SocialGraph3D() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  if (viewMode === 'person') {
-    return (
-      <PersonGraphView
-        viewMode={viewMode}
-        setViewMode={setViewMode}
-        selectedPersonId={selectedPersonId}
-        setSelectedPersonId={setSelectedPersonId}
-      />
-    );
-  }
-
-  if (viewMode === 'hybrid') {
-    return (
-      <div
-        className="flex h-full w-full items-center justify-center p-6"
-        data-testid="placeholder-hybrid-view"
-      >
-        <Card className="max-w-md p-6 text-center space-y-3">
-          <h2 className="text-lg font-semibold">Hybrid view is coming soon</h2>
-          <p className="text-sm text-muted-foreground">
-            We're working on a unified hybrid graph that shows people and their
-            social accounts together. For now, choose Person or Social Account.
-          </p>
-          <div className="flex justify-center gap-2 pt-2">
-            <Button
-              variant="outline"
-              onClick={() => setViewMode('person')}
-              data-testid="button-switch-person"
-            >
-              Open Person view
-            </Button>
-            <Button
-              onClick={() => setViewMode('social')}
-              data-testid="button-switch-social"
-            >
-              Open Social view
-            </Button>
-          </div>
-        </Card>
-      </div>
-    );
-  }
-
   return (
-    <SocialGraphContent
-      viewMode={viewMode}
-      setViewMode={setViewMode}
-      selectedAccountId={selectedAccountId}
-      setSelectedAccountId={setSelectedAccountId}
-    />
+    <>
+      <ViewModeHeaderControl viewMode={viewMode} setViewMode={setViewMode} />
+      {viewMode === 'person' ? (
+        <PersonGraphView
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+          selectedPersonId={selectedPersonId}
+          setSelectedPersonId={setSelectedPersonId}
+        />
+      ) : viewMode === 'hybrid' ? (
+        <div
+          className="flex h-full w-full items-center justify-center p-6"
+          data-testid="placeholder-hybrid-view"
+        >
+          <Card className="max-w-md p-6 text-center space-y-3">
+            <h2 className="text-lg font-semibold">Hybrid view is coming soon</h2>
+            <p className="text-sm text-muted-foreground">
+              We're working on a unified hybrid graph that shows people and their
+              social accounts together. For now, choose Person or Social Account.
+            </p>
+            <div className="flex justify-center gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setViewMode('person')}
+                data-testid="button-switch-person"
+              >
+                Open Person view
+              </Button>
+              <Button
+                onClick={() => setViewMode('social')}
+                data-testid="button-switch-social"
+              >
+                Open Social view
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : (
+        <SocialGraphContent
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+          selectedAccountId={selectedAccountId}
+          setSelectedAccountId={setSelectedAccountId}
+        />
+      )}
+    </>
+  );
+}
+
+interface ViewModeHeaderControlProps {
+  viewMode: ViewMode;
+  setViewMode: (v: ViewMode, selected?: string | null) => void;
+}
+
+function ViewModeHeaderControl({ viewMode, setViewMode }: ViewModeHeaderControlProps) {
+  // Portal the view-mode dropdown into the app's top-bar contextual-actions
+  // slot so it sits next to the page title regardless of which view we render.
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHost(document.getElementById('header-contextual-actions'));
+  }, []);
+  if (!host) return null;
+  return createPortal(
+    <Select
+      value={viewMode}
+      onValueChange={(v) => {
+        if (v === 'person' || v === 'social' || v === 'hybrid') {
+          setViewMode(v as ViewMode);
+        }
+      }}
+    >
+      <SelectTrigger
+        className="h-8 w-[180px]"
+        data-testid="select-view-mode"
+        aria-label="Graph view mode"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="person" data-testid="option-view-person">
+          Person
+        </SelectItem>
+        <SelectItem value="social" data-testid="option-view-social">
+          Social Account
+        </SelectItem>
+        <SelectItem value="hybrid" disabled data-testid="option-view-hybrid">
+          Hybrid (coming soon)
+        </SelectItem>
+      </SelectContent>
+    </Select>,
+    host,
   );
 }
 
@@ -790,27 +833,6 @@ function SocialGraphContent({
               >
                 <X className="h-4 w-4" />
               </Button>
-            </div>
-
-            <div className="space-y-2">
-              <Label>View Mode</Label>
-              <Select
-                value={viewMode}
-                onValueChange={(v) => {
-                  if (v === 'person' || v === 'social') {
-                    setViewMode(v);
-                  }
-                }}
-              >
-                <SelectTrigger data-testid="select-view-mode">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="person" data-testid="option-view-person">Person</SelectItem>
-                  <SelectItem value="social" data-testid="option-view-social">Social Account</SelectItem>
-                  <SelectItem value="hybrid" disabled data-testid="option-view-hybrid">Hybrid (coming soon)</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
 
             <Tabs defaultValue="filter" data-testid="options-tabs">

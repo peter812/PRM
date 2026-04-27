@@ -120,6 +120,7 @@ function AppLayout() {
               <GlobalSearch />
             </div>
             <div
+              id="header-contextual-actions"
               className="flex items-center gap-2 shrink-0 min-w-[2.25rem] justify-end"
               data-testid="contextual-actions"
             />

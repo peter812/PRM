@@ -16,13 +16,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { getInitials } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import type { PersonGraphData } from "@shared/schema";
@@ -525,34 +518,7 @@ export default function PersonGraphView({
               </Button>
             </div>
 
-            <div className="space-y-2">
-              <Label>View Mode</Label>
-              <Select
-                value={viewMode}
-                onValueChange={(v) => {
-                  if (v === "person" || v === "social") {
-                    setViewMode(v);
-                  }
-                }}
-              >
-                <SelectTrigger data-testid="select-view-mode">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="person" data-testid="option-view-person">
-                    Person
-                  </SelectItem>
-                  <SelectItem value="social" data-testid="option-view-social">
-                    Social Account
-                  </SelectItem>
-                  <SelectItem value="hybrid" disabled data-testid="option-view-hybrid">
-                    Hybrid (coming soon)
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-4 pt-2 border-t">
+            <div className="space-y-4">
               <div className="space-y-2">
                 <Label>Highlight Person</Label>
                 <div className="relative">
