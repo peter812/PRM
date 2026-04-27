@@ -39,7 +39,7 @@ function GraphRedirect() {
   const search = new URLSearchParams();
   search.set("view", "person");
   if (personUuid) search.set("selected", personUuid);
-  if (groupUuid && !personUuid) search.set("group", groupUuid);
+  if (groupUuid && !personUuid) search.set("highlightGroup", groupUuid);
   const target = `/social-graph-3d?${search.toString()}`;
   navigate(target, { replace: true });
   return null;

@@ -128,7 +128,7 @@ export default function GroupProfile() {
               </div>
               <Button
                 variant="outline"
-                onClick={() => navigate(`/social-graph-3d?view=person&group=${group.id}`)}
+                onClick={() => navigate(`/social-graph-3d?view=person&highlightGroup=${group.id}`)}
                 data-testid="button-view-in-graph"
               >
                 <Network className="h-4 w-4" />

@@ -40,11 +40,7 @@ function parseGraphUrl() {
 
 function buildGraphUrl(view: 'person' | 'social', selected: string | null): string {
   const params = new URLSearchParams(window.location.search);
-  if (view === 'social') {
-    params.delete('view');
-  } else {
-    params.set('view', view);
-  }
+  params.set('view', view);
   if (selected) {
     params.set('selected', selected);
   } else {
@@ -552,6 +548,35 @@ function SocialGraphContent({
     nodeColorMapRef.current = colorMap;
     fgRef.current.nodeColor((node: any) => nodeColorMapRef.current.get(node.id) || '#10b981');
   }, [colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, computeColorMap, graphData]);
+
+  // Re-center camera on the currently selected social account whenever it
+  // changes (e.g. via cross-view chip navigation, URL deep-links, or
+  // popstate). Retries briefly while the layout is still settling so the
+  // focus also works on first mount.
+  useEffect(() => {
+    if (!selectedAccountId || !graphData?.nodes?.length) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryFocus = () => {
+      if (cancelled || !fgRef.current) return;
+      const target: any = (fgRef.current.graphData()?.nodes || []).find(
+        (n: any) => n.id === selectedAccountId
+      );
+      if (!target || typeof target.x !== 'number') {
+        if (attempts++ < 30) setTimeout(tryFocus, 100);
+        return;
+      }
+      const dist = 220;
+      const distRatio = 1 + dist / Math.hypot(target.x, target.y, target.z || 0.001);
+      fgRef.current.cameraPosition(
+        { x: target.x * distRatio, y: target.y * distRatio, z: (target.z || 0) * distRatio },
+        { x: target.x, y: target.y, z: target.z || 0 },
+        900
+      );
+    };
+    tryFocus();
+    return () => { cancelled = true; };
+  }, [selectedAccountId, graphData]);
 
   useEffect(() => {
     const handleClickOutside = () => setContextMenu(null);

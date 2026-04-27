@@ -316,6 +316,35 @@ export default function PersonGraphView({
     setSelectedPersonId,
   ]);
 
+  // Re-center camera on the currently selected person whenever it changes
+  // (e.g. via cross-view chip navigation, URL deep-links, or popstate).
+  // Retries briefly while the layout is still settling so the focus also
+  // works on first mount.
+  useEffect(() => {
+    if (!selectedPersonId || !people.length) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tryFocus = () => {
+      if (cancelled || !fgRef.current) return;
+      const target: any = (fgRef.current.graphData()?.nodes || []).find(
+        (n: any) => n.id === selectedPersonId
+      );
+      if (!target || typeof target.x !== 'number') {
+        if (attempts++ < 30) setTimeout(tryFocus, 100);
+        return;
+      }
+      const dist = 220;
+      const distRatio = 1 + dist / Math.hypot(target.x, target.y, target.z || 0.001);
+      fgRef.current.cameraPosition(
+        { x: target.x * distRatio, y: target.y * distRatio, z: (target.z || 0) * distRatio },
+        { x: target.x, y: target.y, z: target.z || 0 },
+        900
+      );
+    };
+    tryFocus();
+    return () => { cancelled = true; };
+  }, [selectedPersonId, people]);
+
   const handleResetCamera = () => {
     if (fgRef.current) {
       fgRef.current.cameraPosition(
