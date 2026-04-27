@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon } from "lucide-react";
+import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -378,6 +379,14 @@ export default function SocialAccountProfile() {
                     <Upload className="h-4 w-4" />
                   </Button>
                 )}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)}
+                  data-testid="button-open-in-graph"
+                >
+                  <GraphTriangleIcon className="h-4 w-4" />
+                </Button>
                 <Button
                   variant="outline"
                   size="icon"

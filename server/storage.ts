@@ -312,7 +312,7 @@ export class DatabaseStorage implements IStorage {
 
   // Graph operations
   async getGraphData(): Promise<{
-    people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
+    people: Array<{ id: string; firstName: string; lastName: string; company: string | null; imageUrl: string | null; socialAccountUuids: string[] }>;
     relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
     groups: Array<{ id: string; name: string; color: string; members: string[] }>;
   }> {
@@ -323,6 +323,8 @@ export class DatabaseStorage implements IStorage {
         firstName: people.firstName,
         lastName: people.lastName,
         company: people.company,
+        imageUrl: people.imageUrl,
+        socialAccountUuids: people.socialAccountUuids,
       })
       .from(people);
 
@@ -348,7 +350,14 @@ export class DatabaseStorage implements IStorage {
       .from(groups);
 
     return {
-      people: peopleData,
+      people: peopleData.map(p => ({
+        id: p.id,
+        firstName: p.firstName,
+        lastName: p.lastName,
+        company: p.company,
+        imageUrl: p.imageUrl,
+        socialAccountUuids: p.socialAccountUuids || [],
+      })),
       relationships: relationshipsData.map(rel => ({
         id: rel.id,
         fromPersonId: rel.fromPersonId,

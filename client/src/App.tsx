@@ -20,7 +20,6 @@ import GroupProfile from "@/pages/group-profile";
 import SocialAccountsList from "@/pages/social-accounts-list";
 import SocialAccountProfile from "@/pages/social-account-profile";
 import Graph from "@/pages/graph";
-import Graph3D from "@/pages/graph-3d";
 import SocialGraph3D from "@/pages/social-graph-3d";
 import ApiPlayground from "@/pages/api-playground";
 import AuthPage from "@/pages/auth-page";
@@ -31,6 +30,20 @@ import DummyAuth from "@/pages/dummy-auth";
 import EloRanking from "@/pages/elo-ranking";
 import AccountMatching from "@/pages/account-matching";
 import NotFound from "@/pages/not-found";
+
+function GraphRedirect() {
+  const [, navigate] = useLocation();
+  const params = new URLSearchParams(window.location.search);
+  const personUuid = params.get("personUuid");
+  const groupUuid = params.get("groupUuid");
+  const search = new URLSearchParams();
+  search.set("view", "person");
+  if (personUuid) search.set("selected", personUuid);
+  if (groupUuid && !personUuid) search.set("group", groupUuid);
+  const target = `/social-graph-3d?${search.toString()}`;
+  navigate(target, { replace: true });
+  return null;
+}
 
 function Router() {
   return (
@@ -47,7 +60,7 @@ function Router() {
       <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
       <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
       <ProtectedRoute path="/graph" component={Graph} />
-      <ProtectedRoute path="/graph-3d" component={Graph3D} />
+      <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
       <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />

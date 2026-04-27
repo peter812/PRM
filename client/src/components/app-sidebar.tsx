@@ -3,7 +3,6 @@ import {
   Users2,
   User,
   Code,
-  Box,
   AtSign,
   Trophy,
   Share2,
@@ -64,11 +63,6 @@ const menuItems = [
     title: "Social Graph",
     url: "/social-graph-3d",
     icon: Share2,
-  },
-  {
-    title: "Graph (3D)",
-    url: "/graph-3d",
-    icon: Box,
   },
   {
     title: "ELO Ranking",

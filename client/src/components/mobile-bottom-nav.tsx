@@ -51,12 +51,12 @@ export function MobileBottomNav({ onAddPersonClick }: MobileBottomNavProps) {
           <Plus className="h-7 w-7" />
         </Button>
 
-        <Link href="/graph-3d">
+        <Link href="/social-graph-3d">
           <Button
             variant="ghost"
             size="icon"
-            className={`h-11 w-11 ${isActive("/graph-3d") ? "text-primary" : "text-muted-foreground"}`}
-            data-testid="nav-graph-3d"
+            className={`h-11 w-11 ${isActive("/social-graph-3d") ? "text-primary" : "text-muted-foreground"}`}
+            data-testid="nav-social-graph-3d"
           >
             <Box className="h-7 w-7" />
           </Button>

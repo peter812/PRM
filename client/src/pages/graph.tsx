@@ -855,7 +855,7 @@ export default function Graph() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => navigate('/graph-3d')}
+            onClick={() => navigate('/social-graph-3d?view=person')}
             data-testid="button-switch-to-3d"
           >
             <Box className="h-4 w-4 mr-2" />

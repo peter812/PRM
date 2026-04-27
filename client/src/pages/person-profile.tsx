@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Network, Plus } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, Plus } from "lucide-react";
+import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -38,8 +39,8 @@ export default function PersonProfile() {
   const handleBack = () => {
     if (from === 'graph') {
       navigate('/graph');
-    } else if (from === 'graph-3d') {
-      navigate('/graph-3d');
+    } else if (from === 'graph-3d' || from === 'social-graph-3d') {
+      navigate('/social-graph-3d?view=person');
     } else if (from === 'group' && groupId) {
       navigate(`/group/${groupId}`);
     } else {
@@ -166,11 +167,11 @@ export default function PersonProfile() {
               </div>
               <Button
                 variant="outline"
-                onClick={() => navigate(`/graph-3d?personUuid=${person.id}`)}
+                onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
                 data-testid="button-view-in-graph"
               >
-                <Network className="h-4 w-4" />
-                View in Graph
+                <GraphTriangleIcon className="h-4 w-4" />
+                Open in graph
               </Button>
               <Button
                 variant="outline"

@@ -8,7 +8,6 @@ export function getPageTitle(location: string): string {
   if (location.startsWith("/social-accounts/")) return "Social Account";
   if (location === "/account-matching") return "Link Accounts";
   if (location === "/graph") return "Graph";
-  if (location === "/graph-3d") return "Graph (3D)";
   if (location === "/social-graph-3d") return "Social Graph";
   if (location === "/elo-ranking") return "ELO Ranking";
   if (location === "/api-playground") return "API Playground";

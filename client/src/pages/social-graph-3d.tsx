@@ -27,7 +27,35 @@ import {
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import type { SocialAccount, SocialAccountType, SocialGraphData } from "@shared/schema";
+import type { Person, SocialAccount, SocialAccountType, SocialGraphData } from "@shared/schema";
+import PersonGraphView from "./person-graph-view";
+
+function parseGraphUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    view: (params.get('view') === 'person' ? 'person' : 'social') as 'person' | 'social',
+    selected: params.get('selected'),
+  };
+}
+
+function syncGraphUrl(view: 'person' | 'social', selected: string | null) {
+  const params = new URLSearchParams(window.location.search);
+  if (view === 'social') {
+    params.delete('view');
+  } else {
+    params.set('view', view);
+  }
+  if (selected) {
+    params.set('selected', selected);
+  } else {
+    params.delete('selected');
+  }
+  const qs = params.toString();
+  const newUrl = `/social-graph-3d${qs ? `?${qs}` : ''}`;
+  if (window.location.pathname + window.location.search !== newUrl) {
+    window.history.replaceState(null, '', newUrl);
+  }
+}
 
 interface GraphNode {
   id: string;
@@ -46,6 +74,73 @@ interface GraphLink {
 }
 
 export default function SocialGraph3D() {
+  const initial = parseGraphUrl();
+  const [viewMode, setViewModeState] = useState<'person' | 'social'>(initial.view);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
+    initial.view === 'social' ? initial.selected : null
+  );
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(
+    initial.view === 'person' ? initial.selected : null
+  );
+
+  const setViewMode = useCallback(
+    (v: 'person' | 'social', selected?: string | null) => {
+      setViewModeState(v);
+      if (v === 'person') {
+        const target = selected !== undefined ? selected : selectedPersonId;
+        setSelectedPersonId(target);
+        syncGraphUrl(v, target);
+      } else {
+        const target = selected !== undefined ? selected : selectedAccountId;
+        setSelectedAccountId(target);
+        syncGraphUrl(v, target);
+      }
+    },
+    [selectedPersonId, selectedAccountId]
+  );
+
+  useEffect(() => {
+    if (viewMode === 'person') {
+      syncGraphUrl(viewMode, selectedPersonId);
+    } else {
+      syncGraphUrl(viewMode, selectedAccountId);
+    }
+  }, [viewMode, selectedAccountId, selectedPersonId]);
+
+  if (viewMode === 'person') {
+    return (
+      <PersonGraphView
+        viewMode={viewMode}
+        setViewMode={setViewMode}
+        selectedPersonId={selectedPersonId}
+        setSelectedPersonId={setSelectedPersonId}
+      />
+    );
+  }
+
+  return (
+    <SocialGraphContent
+      viewMode={viewMode}
+      setViewMode={setViewMode}
+      selectedAccountId={selectedAccountId}
+      setSelectedAccountId={setSelectedAccountId}
+    />
+  );
+}
+
+interface SocialGraphContentProps {
+  viewMode: 'person' | 'social';
+  setViewMode: (v: 'person' | 'social', selected?: string | null) => void;
+  selectedAccountId: string | null;
+  setSelectedAccountId: (id: string | null) => void;
+}
+
+function SocialGraphContent({
+  viewMode,
+  setViewMode,
+  selectedAccountId,
+  setSelectedAccountId,
+}: SocialGraphContentProps) {
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
   const materialCacheRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
@@ -82,7 +177,6 @@ export default function SocialGraph3D() {
   const [multiHighlightSearchQuery, setMultiHighlightSearchQuery] = useState('');
   const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(0.5);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
 
   const extrasSteps = [5, 10, 20, 50, 100];
@@ -141,6 +235,11 @@ export default function SocialGraph3D() {
   const allSocialAccounts = socialAccounts || [];
   const selectedAccount = selectedAccountId ? allSocialAccounts.find(a => a.id === selectedAccountId) : null;
   const selectedAccountType = selectedAccount?.typeId && socialAccountTypes ? socialAccountTypes.find(t => t.id === selectedAccount.typeId) : null;
+
+  const { data: selectedAccountOwner } = useQuery<Person>({
+    queryKey: selectedAccount?.ownerUuid ? [`/api/people/${selectedAccount.ownerUuid}`] : [],
+    enabled: !!selectedAccount?.ownerUuid,
+  });
 
   const interpolateColor = useCallback((hex1: string, hex2: string, t: number) => {
     const parse = (hex: string) => {
@@ -542,6 +641,21 @@ export default function SocialGraph3D() {
                   </div>
                 )}
               </div>
+              {selectedAccountOwner && (
+                <div className="space-y-2 pt-2 border-t">
+                  <Label className="text-xs text-muted-foreground">Owner</Label>
+                  <div className="flex flex-wrap gap-1" data-testid="chips-owner">
+                    <Badge
+                      variant="outline"
+                      className="cursor-pointer hover-elevate"
+                      onClick={() => setViewMode('person', selectedAccountOwner.id)}
+                      data-testid={`chip-owner-${selectedAccountOwner.id}`}
+                    >
+                      {selectedAccountOwner.firstName} {selectedAccountOwner.lastName}
+                    </Badge>
+                  </div>
+                </div>
+              )}
               <div className="pt-2 border-t">
                 <Button
                   variant="outline"
@@ -569,6 +683,27 @@ export default function SocialGraph3D() {
               >
                 <X className="h-4 w-4" />
               </Button>
+            </div>
+
+            <div className="space-y-2">
+              <Label>View Mode</Label>
+              <Select
+                value={viewMode}
+                onValueChange={(v) => {
+                  if (v === 'person' || v === 'social') {
+                    setViewMode(v);
+                  }
+                }}
+              >
+                <SelectTrigger data-testid="select-view-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="person" data-testid="option-view-person">Person</SelectItem>
+                  <SelectItem value="social" data-testid="option-view-social">Social Account</SelectItem>
+                  <SelectItem value="hybrid" disabled data-testid="option-view-hybrid">Hybrid (coming soon)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <Tabs defaultValue="filter" data-testid="options-tabs">
