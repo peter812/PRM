@@ -71,6 +71,8 @@ import {
   type SocialGraphData,
   type SocialGraphNode,
   type SocialGraphLink,
+  type PersonGraphData,
+  type PersonGraphPerson,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt } from "drizzle-orm";
@@ -119,10 +121,11 @@ const socialAccountTypesCache = new TTLCache<SocialAccountType[]>(300);
 export interface IStorage {
   // Graph operations
   getGraphData(): Promise<{
-    people: Array<{ id: string; firstName: string; lastName: string; company: string | null }>;
+    people: Array<{ id: string; firstName: string; lastName: string; company: string | null; imageUrl: string | null; socialAccountUuids: string[] }>;
     relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
     groups: Array<{ id: string; name: string; color: string; members: string[] }>;
   }>;
+  getPersonGraph(): Promise<PersonGraphData>;
 
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
@@ -370,6 +373,65 @@ export class DatabaseStorage implements IStorage {
         color: g.color,
         members: g.members || [],
       })),
+    };
+  }
+
+  async getPersonGraph(): Promise<PersonGraphData> {
+    const base = await this.getGraphData();
+
+    const accountIdSet = new Set<string>();
+    base.people.forEach(p => {
+      (p.socialAccountUuids || []).forEach(id => accountIdSet.add(id));
+    });
+
+    const accountIds = Array.from(accountIdSet);
+
+    const [accounts, types, currentProfiles] = await Promise.all([
+      accountIds.length
+        ? db.select({ id: socialAccounts.id, username: socialAccounts.username, typeId: socialAccounts.typeId })
+            .from(socialAccounts)
+            .where(inArray(socialAccounts.id, accountIds))
+        : Promise.resolve([] as Array<{ id: string; username: string; typeId: string | null }>),
+      db.select({ id: socialAccountTypes.id, color: socialAccountTypes.color }).from(socialAccountTypes),
+      accountIds.length
+        ? db.select({ socialAccountId: socialProfileVersions.socialAccountId, imageUrl: socialProfileVersions.imageUrl })
+            .from(socialProfileVersions)
+            .where(and(eq(socialProfileVersions.isCurrent, true), inArray(socialProfileVersions.socialAccountId, accountIds)))
+        : Promise.resolve([] as Array<{ socialAccountId: string; imageUrl: string | null }>),
+    ]);
+
+    const typeColorById = new Map<string, string | null>();
+    types.forEach(t => typeColorById.set(t.id, t.color || null));
+
+    const profileImageById = new Map<string, string | null>();
+    currentProfiles.forEach(p => profileImageById.set(p.socialAccountId, p.imageUrl || null));
+
+    const briefById = new Map<string, { id: string; username: string; typeColor: string | null; imageUrl: string | null }>();
+    accounts.forEach(a => {
+      briefById.set(a.id, {
+        id: a.id,
+        username: a.username,
+        typeColor: a.typeId ? (typeColorById.get(a.typeId) ?? null) : null,
+        imageUrl: profileImageById.get(a.id) ?? null,
+      });
+    });
+
+    const people: PersonGraphPerson[] = base.people.map(p => ({
+      id: p.id,
+      firstName: p.firstName,
+      lastName: p.lastName,
+      company: p.company,
+      imageUrl: p.imageUrl,
+      socialAccountBriefs: (p.socialAccountUuids || [])
+        .map(uuid => briefById.get(uuid))
+        .filter((b): b is { id: string; username: string; typeColor: string | null; imageUrl: string | null } => !!b),
+    }));
+
+    return {
+      view: "person",
+      people,
+      relationships: base.relationships,
+      groups: base.groups,
     };
   }
 
@@ -1534,8 +1596,19 @@ export class DatabaseStorage implements IStorage {
     const accountIds = new Set(filtered.map(a => a.id));
     const filteredMap = new Map(filtered.map(a => [a.id, a]));
 
+    const ownerIds = Array.from(new Set(filtered.map(a => a.ownerUuid).filter((u): u is string => !!u)));
+    const ownerRows = ownerIds.length
+      ? await db
+          .select({ id: people.id, firstName: people.firstName, lastName: people.lastName, imageUrl: people.imageUrl })
+          .from(people)
+          .where(inArray(people.id, ownerIds))
+      : [];
+    const ownerMap = new Map<string, { id: string; firstName: string; lastName: string; imageUrl: string | null }>();
+    ownerRows.forEach(o => ownerMap.set(o.id, o));
+
     let nodes: SocialGraphNode[] = filtered.map(a => {
       const profile = profileMap.get(a.id);
+      const owner = a.ownerUuid ? ownerMap.get(a.ownerUuid) : undefined;
       return {
         id: a.id,
         name: profile?.nickname || a.username,
@@ -1543,6 +1616,9 @@ export class DatabaseStorage implements IStorage {
         connectionCount: uniqueConnectionCounts.get(a.id) || 0,
         val: 10,
         size: 50,
+        ownerPersonId: owner?.id ?? null,
+        ownerName: owner ? `${owner.firstName} ${owner.lastName}` : null,
+        ownerImageUrl: owner?.imageUrl ?? null,
       };
     });
 

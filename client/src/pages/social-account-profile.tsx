@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { isValidHexColor } from "@/lib/utils";
@@ -379,14 +380,20 @@ export default function SocialAccountProfile() {
                     <Upload className="h-4 w-4" />
                   </Button>
                 )}
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)}
-                  data-testid="button-open-in-graph"
-                >
-                  <GraphTriangleIcon className="h-4 w-4" />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)}
+                      data-testid="button-open-in-graph"
+                      aria-label="Open in graph"
+                    >
+                      <GraphTriangleIcon className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Open in graph</TooltipContent>
+                </Tooltip>
                 <Button
                   variant="outline"
                   size="icon"

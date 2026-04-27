@@ -5,6 +5,7 @@ import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -165,14 +166,20 @@ export default function PersonProfile() {
                   </div>
                 )}
               </div>
-              <Button
-                variant="outline"
-                onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
-                data-testid="button-view-in-graph"
-              >
-                <GraphTriangleIcon className="h-4 w-4" />
-                Open in graph
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
+                    data-testid="button-view-in-graph"
+                    aria-label="Open in graph"
+                  >
+                    <GraphTriangleIcon className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Open in graph</TooltipContent>
+              </Tooltip>
               <Button
                 variant="outline"
                 onClick={() => setIsEditPersonOpen(true)}

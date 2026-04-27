@@ -2990,6 +2990,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/social-graph", async (req, res) => {
     try {
       const settings = req.body as {
+        view?: 'person' | 'social';
         hideOrphans?: boolean;
         minConnections?: number;
         limitExtras?: boolean;
@@ -3002,6 +3003,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         singleRemoveExtras?: boolean;
         multiHighlightAccountIds?: string[];
       };
+
+      if (settings.view === 'person') {
+        const personGraph = await storage.getPersonGraph();
+        return res.json(personGraph);
+      }
 
       const graphData = await storage.getSocialGraph({
         hideOrphans: settings.hideOrphans ?? true,

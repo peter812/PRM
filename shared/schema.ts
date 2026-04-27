@@ -601,6 +601,37 @@ export type SocialGraphNode = {
   val: number;
   size: number;
   mergedNames?: string[];
+  ownerPersonId?: string | null;
+  ownerName?: string | null;
+  ownerImageUrl?: string | null;
+};
+
+export type PersonGraphAccountBrief = {
+  id: string;
+  username: string;
+  typeColor: string | null;
+  imageUrl: string | null;
+};
+
+export type PersonGraphPerson = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  company: string | null;
+  imageUrl: string | null;
+  socialAccountBriefs: PersonGraphAccountBrief[];
+};
+
+export type PersonGraphData = {
+  view: "person";
+  people: PersonGraphPerson[];
+  relationships: Array<{
+    id: string;
+    fromPersonId: string;
+    toPersonId: string;
+    typeColor: string | null;
+  }>;
+  groups: Array<{ id: string; name: string; color: string; members: string[] }>;
 };
 
 export type SocialGraphLink = {

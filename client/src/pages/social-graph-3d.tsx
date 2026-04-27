@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import type { Person, SocialAccount, SocialAccountType, SocialGraphData } from "@shared/schema";
+import type { SocialAccount, SocialAccountType, SocialGraphData } from "@shared/schema";
 import PersonGraphView from "./person-graph-view";
 
 function parseGraphUrl() {
@@ -38,7 +38,7 @@ function parseGraphUrl() {
   };
 }
 
-function syncGraphUrl(view: 'person' | 'social', selected: string | null) {
+function buildGraphUrl(view: 'person' | 'social', selected: string | null): string {
   const params = new URLSearchParams(window.location.search);
   if (view === 'social') {
     params.delete('view');
@@ -51,9 +51,17 @@ function syncGraphUrl(view: 'person' | 'social', selected: string | null) {
     params.delete('selected');
   }
   const qs = params.toString();
-  const newUrl = `/social-graph-3d${qs ? `?${qs}` : ''}`;
+  return `/social-graph-3d${qs ? `?${qs}` : ''}`;
+}
+
+function syncGraphUrl(view: 'person' | 'social', selected: string | null, mode: 'push' | 'replace' = 'replace') {
+  const newUrl = buildGraphUrl(view, selected);
   if (window.location.pathname + window.location.search !== newUrl) {
-    window.history.replaceState(null, '', newUrl);
+    if (mode === 'push') {
+      window.history.pushState(null, '', newUrl);
+    } else {
+      window.history.replaceState(null, '', newUrl);
+    }
   }
 }
 
@@ -89,23 +97,37 @@ export default function SocialGraph3D() {
       if (v === 'person') {
         const target = selected !== undefined ? selected : selectedPersonId;
         setSelectedPersonId(target);
-        syncGraphUrl(v, target);
+        syncGraphUrl(v, target, 'push');
       } else {
         const target = selected !== undefined ? selected : selectedAccountId;
         setSelectedAccountId(target);
-        syncGraphUrl(v, target);
+        syncGraphUrl(v, target, 'push');
       }
     },
     [selectedPersonId, selectedAccountId]
   );
 
+  // Mirror selection changes from inside views into the URL via push so
+  // the browser back button restores the previous selection.
   useEffect(() => {
-    if (viewMode === 'person') {
-      syncGraphUrl(viewMode, selectedPersonId);
-    } else {
-      syncGraphUrl(viewMode, selectedAccountId);
-    }
+    const next = viewMode === 'person' ? selectedPersonId : selectedAccountId;
+    syncGraphUrl(viewMode, next, 'push');
   }, [viewMode, selectedAccountId, selectedPersonId]);
+
+  // React to browser back/forward by re-reading URL into state.
+  useEffect(() => {
+    const onPop = () => {
+      const parsed = parseGraphUrl();
+      setViewModeState(parsed.view);
+      if (parsed.view === 'person') {
+        setSelectedPersonId(parsed.selected);
+      } else {
+        setSelectedAccountId(parsed.selected);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   if (viewMode === 'person') {
     return (
@@ -236,10 +258,17 @@ function SocialGraphContent({
   const selectedAccount = selectedAccountId ? allSocialAccounts.find(a => a.id === selectedAccountId) : null;
   const selectedAccountType = selectedAccount?.typeId && socialAccountTypes ? socialAccountTypes.find(t => t.id === selectedAccount.typeId) : null;
 
-  const { data: selectedAccountOwner } = useQuery<Person>({
-    queryKey: selectedAccount?.ownerUuid ? [`/api/people/${selectedAccount.ownerUuid}`] : [],
-    enabled: !!selectedAccount?.ownerUuid,
-  });
+  // Owner info comes from the social-graph response payload — no extra round-trip.
+  const selectedAccountNode = selectedAccountId
+    ? graphData?.nodes.find(n => n.id === selectedAccountId)
+    : null;
+  const selectedAccountOwner = selectedAccountNode?.ownerPersonId
+    ? {
+        id: selectedAccountNode.ownerPersonId,
+        name: selectedAccountNode.ownerName ?? '',
+        imageUrl: selectedAccountNode.ownerImageUrl ?? null,
+      }
+    : null;
 
   const interpolateColor = useCallback((hex1: string, hex2: string, t: number) => {
     const parse = (hex: string) => {
@@ -588,7 +617,11 @@ function SocialGraphContent({
                 </Button>
               </div>
               <div className="flex flex-col items-center gap-3">
-                <Avatar className="h-20 w-20">
+                <Avatar
+                  className="h-20 w-20"
+                  style={selectedAccountType?.color ? { boxShadow: `0 0 0 2px ${selectedAccountType.color}` } : undefined}
+                  data-testid="avatar-sidebar-account"
+                >
                   {selectedAccount.currentProfile?.imageUrl ? (
                     <AvatarImage src={selectedAccount.currentProfile?.imageUrl} alt={selectedAccount.username} />
                   ) : null}
@@ -644,15 +677,23 @@ function SocialGraphContent({
               {selectedAccountOwner && (
                 <div className="space-y-2 pt-2 border-t">
                   <Label className="text-xs text-muted-foreground">Owner</Label>
-                  <div className="flex flex-wrap gap-1" data-testid="chips-owner">
-                    <Badge
-                      variant="outline"
-                      className="cursor-pointer hover-elevate"
+                  <div className="flex flex-col gap-1" data-testid="chips-owner">
+                    <button
+                      type="button"
                       onClick={() => setViewMode('person', selectedAccountOwner.id)}
+                      className="flex items-center gap-2 rounded-md border px-2 py-1 text-left hover-elevate"
                       data-testid={`chip-owner-${selectedAccountOwner.id}`}
                     >
-                      {selectedAccountOwner.firstName} {selectedAccountOwner.lastName}
-                    </Badge>
+                      <Avatar className="h-6 w-6">
+                        {selectedAccountOwner.imageUrl && (
+                          <AvatarImage src={selectedAccountOwner.imageUrl} alt={selectedAccountOwner.name} />
+                        )}
+                        <AvatarFallback className="text-[10px]">
+                          {selectedAccountOwner.name.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="text-sm flex-1 truncate">{selectedAccountOwner.name}</span>
+                    </button>
                   </div>
                 </div>
               )}

@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import { Button } from "@/components/ui/button";
-import { Settings, X, Users2 } from "lucide-react";
+import { Settings, X } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Command,
@@ -25,25 +24,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getInitials } from "@/lib/utils";
-import type { SocialAccount, SocialAccountType } from "@shared/schema";
-
-interface PersonGraphData {
-  people: Array<{
-    id: string;
-    firstName: string;
-    lastName: string;
-    company: string | null;
-    imageUrl: string | null;
-    socialAccountUuids: string[];
-  }>;
-  relationships: Array<{
-    id: string;
-    fromPersonId: string;
-    toPersonId: string;
-    typeColor: string | null;
-  }>;
-  groups: Array<{ id: string; name: string; color: string; members: string[] }>;
-}
+import { apiRequest } from "@/lib/queryClient";
+import type { PersonGraphData } from "@shared/schema";
 
 interface GraphNode {
   id: string;
@@ -54,10 +36,37 @@ interface GraphNode {
 }
 
 interface GraphLink {
-  source: string;
-  target: string;
+  source: string | { id: string };
+  target: string | { id: string };
   type: "relationship" | "group-member";
   color?: string;
+}
+
+interface ForceGraphInstance {
+  graphData: (data: { nodes: GraphNode[]; links: GraphLink[] }) => ForceGraphInstance;
+  backgroundColor: (c: string) => ForceGraphInstance;
+  nodeLabel: (key: string) => ForceGraphInstance;
+  nodeColor: (key: string) => ForceGraphInstance;
+  nodeVal: (key: string) => ForceGraphInstance;
+  linkColor: (key: string) => ForceGraphInstance;
+  linkOpacity: (n: number) => ForceGraphInstance;
+  linkWidth: (n: number) => ForceGraphInstance;
+  enableNodeDrag: (b: boolean) => ForceGraphInstance;
+  enableNavigationControls: (b: boolean) => ForceGraphInstance;
+  showNavInfo: (b: boolean) => ForceGraphInstance;
+  onNodeClick: (cb: (node: GraphNode) => void) => ForceGraphInstance;
+  onNodeHover: (cb: (node: GraphNode | null) => void) => ForceGraphInstance;
+  d3AlphaDecay: (n: number) => ForceGraphInstance;
+  d3VelocityDecay: (n: number) => ForceGraphInstance;
+  warmupTicks: (n: number) => ForceGraphInstance;
+  cooldownTime: (n: number) => ForceGraphInstance;
+  cameraPosition: (
+    pos: { x: number; y: number; z: number },
+    look: { x: number; y: number; z: number },
+    ms: number
+  ) => ForceGraphInstance;
+  zoomToFit: (ms: number, padding: number) => ForceGraphInstance;
+  _destructor: () => void;
 }
 
 interface PersonGraphViewProps {
@@ -67,6 +76,10 @@ interface PersonGraphViewProps {
   setSelectedPersonId: (id: string | null) => void;
 }
 
+function getLinkEndpointId(endpoint: string | { id: string }): string {
+  return typeof endpoint === "string" ? endpoint : endpoint.id;
+}
+
 export default function PersonGraphView({
   viewMode,
   setViewMode,
@@ -74,7 +87,7 @@ export default function PersonGraphView({
   setSelectedPersonId,
 }: PersonGraphViewProps) {
   const graphRef = useRef<HTMLDivElement>(null);
-  const fgRef = useRef<any>(null);
+  const fgRef = useRef<ForceGraphInstance | null>(null);
   const [, navigate] = useLocation();
 
   const initParams = new URLSearchParams(window.location.search);
@@ -91,20 +104,16 @@ export default function PersonGraphView({
   const [searchOpen, setSearchOpen] = useState(false);
 
   const { data: graphData } = useQuery<PersonGraphData>({
-    queryKey: ["/api/graph"],
+    queryKey: ["/api/social-graph", "person"],
+    queryFn: async () => {
+      const res = await apiRequest("POST", "/api/social-graph", { view: "person" });
+      return res.json();
+    },
   });
 
   const { data: meData } = useQuery<{ id: string }>({
     queryKey: ["/api/me"],
     select: (data) => ({ id: data.id }),
-  });
-
-  const { data: socialAccounts } = useQuery<SocialAccount[]>({
-    queryKey: ["/api/social-accounts"],
-  });
-
-  const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
-    queryKey: ["/api/social-account-types"],
   });
 
   const allPeople = graphData?.people || [];
@@ -205,8 +214,8 @@ export default function PersonGraphView({
       });
 
       links = links.filter((link) => {
-        const sourceId = typeof link.source === "object" ? (link.source as any).id : link.source;
-        const targetId = typeof link.target === "object" ? (link.target as any).id : link.target;
+        const sourceId = getLinkEndpointId(link.source);
+        const targetId = getLinkEndpointId(link.target);
 
         if (link.type === "relationship") {
           return connectedPersonIds.has(sourceId) && connectedPersonIds.has(targetId);
@@ -228,8 +237,8 @@ export default function PersonGraphView({
         });
 
         links = links.filter((link) => {
-          const sourceId = typeof link.source === "object" ? (link.source as any).id : link.source;
-          const targetId = typeof link.target === "object" ? (link.target as any).id : link.target;
+          const sourceId = getLinkEndpointId(link.source);
+          const targetId = getLinkEndpointId(link.target);
 
           if (link.type === "group-member") {
             return sourceId === groupNodeId && memberIds.has(targetId);
@@ -250,7 +259,9 @@ export default function PersonGraphView({
       const fg = ForceGraph3D({
         controlType: "orbit",
         rendererConfig: { antialias: true, alpha: true },
-      })(graphRef.current)
+      })(graphRef.current) as unknown as ForceGraphInstance;
+
+      fg
         .graphData(gData)
         .backgroundColor(bgColor)
         .nodeLabel("name")
@@ -262,7 +273,7 @@ export default function PersonGraphView({
         .enableNodeDrag(true)
         .enableNavigationControls(true)
         .showNavInfo(false)
-        .onNodeClick((node: any) => {
+        .onNodeClick((node) => {
           if (node.type === "person") {
             setSelectedPersonId(node.id);
           } else if (node.type === "group") {
@@ -270,8 +281,10 @@ export default function PersonGraphView({
             navigate(`/group/${groupId}?from=social-graph-3d`);
           }
         })
-        .onNodeHover((node: any) => {
-          graphRef.current!.style.cursor = node ? "pointer" : "default";
+        .onNodeHover((node) => {
+          if (graphRef.current) {
+            graphRef.current.style.cursor = node ? "pointer" : "default";
+          }
         })
         .d3AlphaDecay(0.01)
         .d3VelocityDecay(0.3)
@@ -319,12 +332,7 @@ export default function PersonGraphView({
     }
   };
 
-  // Linked social account briefs for the selected person
-  const linkedSocialBriefs = selectedPerson
-    ? (selectedPerson.socialAccountUuids || [])
-        .map((uuid) => socialAccounts?.find((a) => a.id === uuid))
-        .filter((a): a is SocialAccount => !!a)
-    : [];
+  const linkedSocialBriefs = selectedPerson?.socialAccountBriefs ?? [];
 
   return (
     <div className="h-full flex flex-col">
@@ -404,30 +412,35 @@ export default function PersonGraphView({
                 <div className="space-y-2">
                   <Label className="text-xs text-muted-foreground">Social Accounts</Label>
                   <div
-                    className="flex flex-wrap gap-1"
+                    className="flex flex-col gap-1"
                     data-testid="chips-linked-social-accounts"
                   >
-                    {linkedSocialBriefs.map((acc) => {
-                      const acctType = acc.typeId
-                        ? socialAccountTypes?.find((t) => t.id === acc.typeId)
-                        : null;
-                      return (
-                        <Badge
-                          key={acc.id}
-                          variant="outline"
-                          className="cursor-pointer hover-elevate"
-                          style={
-                            acctType?.color
-                              ? { borderColor: acctType.color }
-                              : undefined
-                          }
-                          onClick={() => setViewMode("social", acc.id)}
-                          data-testid={`chip-social-account-${acc.id}`}
-                        >
-                          @{acc.username}
-                        </Badge>
-                      );
-                    })}
+                    {linkedSocialBriefs.map((acc) => (
+                      <button
+                        key={acc.id}
+                        type="button"
+                        onClick={() => setViewMode("social", acc.id)}
+                        className="flex items-center gap-2 rounded-md border px-2 py-1 text-left hover-elevate"
+                        data-testid={`chip-social-account-${acc.id}`}
+                      >
+                        <Avatar className="h-6 w-6">
+                          {acc.imageUrl && (
+                            <AvatarImage src={acc.imageUrl} alt={acc.username} />
+                          )}
+                          <AvatarFallback className="text-[10px]">
+                            {acc.username.slice(0, 2).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm flex-1 truncate">@{acc.username}</span>
+                        {acc.typeColor && (
+                          <span
+                            className="h-2 w-2 rounded-full shrink-0"
+                            style={{ backgroundColor: acc.typeColor }}
+                            data-testid={`dot-type-${acc.id}`}
+                          />
+                        )}
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
@@ -441,7 +454,7 @@ export default function PersonGraphView({
                   }
                   data-testid="button-sidebar-view-profile"
                 >
-                  View Full Profile
+                  More
                 </Button>
               </div>
             </div>
