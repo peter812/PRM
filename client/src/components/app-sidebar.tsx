@@ -1,8 +1,24 @@
-import { Users, Network, Users2, User, Code, Box, AtSign, Trophy, Share2, Link2 } from "lucide-react";
+import {
+  Users,
+  Users2,
+  User,
+  Code,
+  Box,
+  AtSign,
+  Trophy,
+  Share2,
+  Link2,
+  Settings,
+  LogOut,
+  Moon,
+  Sun,
+} from "lucide-react";
 import { Link, useLocation } from "wouter";
+import { useEffect, useState } from "react";
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -12,7 +28,9 @@ import {
   SidebarMenuSub,
   SidebarMenuSubItem,
   SidebarMenuSubButton,
+  SidebarSeparator,
 } from "@/components/ui/sidebar";
+import { useAuth } from "@/hooks/use-auth";
 
 const menuItems = [
   {
@@ -65,7 +83,31 @@ const menuItems = [
 ];
 
 export function AppSidebar() {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
+  const { user, logoutMutation } = useAuth();
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | null;
+    const initialTheme = savedTheme || "light";
+    setTheme(initialTheme);
+    document.documentElement.classList.toggle("dark", initialTheme === "dark");
+  }, []);
+
+  const handleThemeToggle = () => {
+    const newTheme = theme === "light" ? "dark" : "light";
+    setTheme(newTheme);
+    localStorage.setItem("theme", newTheme);
+    document.documentElement.classList.toggle("dark", newTheme === "dark");
+  };
+
+  const handleSettingsClick = () => {
+    navigate("/settings");
+  };
+
+  const handleLogout = () => {
+    logoutMutation.mutate();
+  };
 
   return (
     <Sidebar>
@@ -76,8 +118,15 @@ export function AppSidebar() {
             <SidebarMenu>
               {menuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild isActive={location === item.url}>
-                    <Link href={item.url} data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, "-")}`}>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location === item.url}
+                    tooltip={item.title}
+                  >
+                    <Link
+                      href={item.url}
+                      data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
+                    >
                       <item.icon />
                       <span>{item.title}</span>
                     </Link>
@@ -86,8 +135,14 @@ export function AppSidebar() {
                     <SidebarMenuSub>
                       {item.subItems.map((sub) => (
                         <SidebarMenuSubItem key={sub.title}>
-                          <SidebarMenuSubButton asChild isActive={location === sub.url}>
-                            <Link href={sub.url} data-testid={`link-${sub.title.toLowerCase().replace(/\s+/g, "-")}`}>
+                          <SidebarMenuSubButton
+                            asChild
+                            isActive={location === sub.url}
+                          >
+                            <Link
+                              href={sub.url}
+                              data-testid={`link-${sub.title.toLowerCase().replace(/\s+/g, "-")}`}
+                            >
                               <sub.icon className="h-4 w-4" />
                               <span>{sub.title}</span>
                             </Link>
@@ -102,6 +157,47 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarSeparator />
+      <SidebarFooter>
+        <SidebarMenu>
+          {user && (
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                onClick={handleSettingsClick}
+                isActive={location.startsWith("/settings")}
+                tooltip="Settings"
+                data-testid="sidebar-button-settings"
+              >
+                <Settings />
+                <span>Settings</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              onClick={handleThemeToggle}
+              tooltip={theme === "light" ? "Dark mode" : "Light mode"}
+              data-testid="sidebar-button-theme"
+            >
+              {theme === "light" ? <Moon /> : <Sun />}
+              <span>{theme === "light" ? "Dark mode" : "Light mode"}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          {user && (
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                onClick={handleLogout}
+                disabled={logoutMutation.isPending}
+                tooltip="Log out"
+                data-testid="sidebar-button-logout"
+              >
+                <LogOut />
+                <span>Log out</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
+        </SidebarMenu>
+      </SidebarFooter>
     </Sidebar>
   );
 }

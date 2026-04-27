@@ -5,22 +5,13 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/lib/protected-route";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
-import { LogOut, Settings, Menu, Moon, Sun } from "lucide-react";
 import { useState } from "react";
-import { GlobalSearch, SearchSettingsButton } from "@/components/global-search";
+import { GlobalSearch } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
 import { AddPersonDialog } from "@/components/add-person-dialog";
+import { getPageTitle } from "@/lib/page-title";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import MeProfile from "@/pages/me-profile";
@@ -69,10 +60,8 @@ function Router() {
 }
 
 function AppLayout() {
-  const [location, navigate] = useLocation();
-  const { user, logoutMutation } = useAuth();
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [location] = useLocation();
+  const { user } = useAuth();
   const [isAddPersonDialogOpen, setIsAddPersonDialogOpen] = useState(false);
   const isAuthPage = location === "/auth" || location === "/auth-direct";
   const isWelcomePage = location === "/welcome";
@@ -83,22 +72,6 @@ function AppLayout() {
     queryKey: ["/api/setup/status"],
     enabled: !isWelcomePage && !isAuthPage && !isSettingsPage,
   });
-
-  const handleLogout = () => {
-    logoutMutation.mutate();
-  };
-
-  const handleSettingsClick = () => {
-    navigate("/settings");
-    setIsMenuOpen(false);
-  };
-
-  const handleThemeToggle = () => {
-    const newTheme = theme === "light" ? "dark" : "light";
-    setTheme(newTheme);
-    localStorage.setItem("theme", newTheme);
-    document.documentElement.classList.toggle("dark", newTheme === "dark");
-  };
 
   const style = {
     "--sidebar-width": "16rem",
@@ -114,78 +87,32 @@ function AppLayout() {
     return <Router />;
   }
 
+  const pageTitle = getPageTitle(location);
+
   return (
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
         <AppSidebar />
         <div className="flex flex-col flex-1 overflow-hidden">
-          <header className="flex items-center justify-between gap-2 px-4 py-3 border-b">
-            <SidebarTrigger data-testid="button-sidebar-toggle" />
-            <GlobalSearch />
-            {/* Desktop Menu - Hidden on mobile */}
-            <div className="hidden md:flex items-center gap-2">
-              {user && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleSettingsClick}
-                  data-testid="button-settings"
-                  title="Settings"
+          <header className="flex items-center gap-3 px-3 py-2 border-b">
+            <div className="flex items-center gap-2 min-w-0 shrink-0">
+              <SidebarTrigger data-testid="button-sidebar-toggle" />
+              {pageTitle && (
+                <h1
+                  className="text-sm font-semibold truncate"
+                  data-testid="text-page-title"
                 >
-                  <Settings className="h-5 w-5" />
-                </Button>
-              )}
-              <SearchSettingsButton />
-              <ThemeToggle />
-              {user && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleLogout}
-                  disabled={logoutMutation.isPending}
-                  data-testid="button-logout"
-                >
-                  <LogOut className="h-5 w-5" />
-                </Button>
+                  {pageTitle}
+                </h1>
               )}
             </div>
-            {/* Mobile Menu - Visible only on mobile */}
-            <div className="flex md:hidden items-center gap-2">
-              <SearchSettingsButton />
-              {user && (
-                <DropdownMenu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" data-testid="button-mobile-menu">
-                      <Menu className="h-5 w-5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" data-testid="menu-mobile-options">
-                    <DropdownMenuItem onClick={handleSettingsClick} data-testid="menu-settings">
-                      <Settings className="h-4 w-4 mr-2" />
-                      <span>Settings</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={handleThemeToggle} data-testid="menu-theme">
-                      {theme === "light" ? (
-                        <Moon className="h-4 w-4 mr-2" />
-                      ) : (
-                        <Sun className="h-4 w-4 mr-2" />
-                      )}
-                      <span>Theme</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={handleLogout}
-                      disabled={logoutMutation.isPending}
-                      data-testid="menu-logout"
-                    >
-                      <LogOut className="h-4 w-4 mr-2" />
-                      <span>Logout</span>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+            <div className="flex-1 min-w-0 flex">
+              <GlobalSearch />
             </div>
+            <div
+              className="flex items-center gap-2 shrink-0"
+              data-testid="contextual-actions"
+            />
           </header>
           <main className="flex-1 overflow-hidden pb-16 md:pb-0">
             <Router />
