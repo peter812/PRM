@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Settings, X, Filter, Palette } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
@@ -30,15 +31,19 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import type { SocialAccount, SocialAccountType, SocialGraphData } from "@shared/schema";
 import PersonGraphView from "./person-graph-view";
 
+type ViewMode = 'person' | 'social' | 'hybrid';
+
 function parseGraphUrl() {
   const params = new URLSearchParams(window.location.search);
+  const raw = params.get('view');
+  const view: ViewMode = raw === 'person' || raw === 'hybrid' ? raw : 'social';
   return {
-    view: (params.get('view') === 'person' ? 'person' : 'social') as 'person' | 'social',
+    view,
     selected: params.get('selected'),
   };
 }
 
-function buildGraphUrl(view: 'person' | 'social', selected: string | null): string {
+function buildGraphUrl(view: ViewMode, selected: string | null): string {
   const params = new URLSearchParams(window.location.search);
   params.set('view', view);
   if (selected) {
@@ -50,7 +55,7 @@ function buildGraphUrl(view: 'person' | 'social', selected: string | null): stri
   return `/social-graph-3d${qs ? `?${qs}` : ''}`;
 }
 
-function syncGraphUrl(view: 'person' | 'social', selected: string | null, mode: 'push' | 'replace' = 'replace') {
+function syncGraphUrl(view: ViewMode, selected: string | null, mode: 'push' | 'replace' = 'replace') {
   const newUrl = buildGraphUrl(view, selected);
   if (window.location.pathname + window.location.search !== newUrl) {
     if (mode === 'push') {
@@ -79,7 +84,7 @@ interface GraphLink {
 
 export default function SocialGraph3D() {
   const initial = parseGraphUrl();
-  const [viewMode, setViewModeState] = useState<'person' | 'social'>(initial.view);
+  const [viewMode, setViewModeState] = useState<ViewMode>(initial.view);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     initial.view === 'social' ? initial.selected : null
   );
@@ -88,16 +93,19 @@ export default function SocialGraph3D() {
   );
 
   const setViewMode = useCallback(
-    (v: 'person' | 'social', selected?: string | null) => {
+    (v: ViewMode, selected?: string | null) => {
       setViewModeState(v);
       if (v === 'person') {
         const target = selected !== undefined ? selected : selectedPersonId;
         setSelectedPersonId(target);
         syncGraphUrl(v, target, 'push');
-      } else {
+      } else if (v === 'social') {
         const target = selected !== undefined ? selected : selectedAccountId;
         setSelectedAccountId(target);
         syncGraphUrl(v, target, 'push');
+      } else {
+        // hybrid: preserve existing selections, just sync view in URL.
+        syncGraphUrl(v, null, 'push');
       }
     },
     [selectedPersonId, selectedAccountId]
@@ -106,6 +114,7 @@ export default function SocialGraph3D() {
   // Mirror selection changes from inside views into the URL via push so
   // the browser back button restores the previous selection.
   useEffect(() => {
+    if (viewMode === 'hybrid') return;
     const next = viewMode === 'person' ? selectedPersonId : selectedAccountId;
     syncGraphUrl(viewMode, next, 'push');
   }, [viewMode, selectedAccountId, selectedPersonId]);
@@ -133,6 +142,38 @@ export default function SocialGraph3D() {
         selectedPersonId={selectedPersonId}
         setSelectedPersonId={setSelectedPersonId}
       />
+    );
+  }
+
+  if (viewMode === 'hybrid') {
+    return (
+      <div
+        className="flex h-full w-full items-center justify-center p-6"
+        data-testid="placeholder-hybrid-view"
+      >
+        <Card className="max-w-md p-6 text-center space-y-3">
+          <h2 className="text-lg font-semibold">Hybrid view is coming soon</h2>
+          <p className="text-sm text-muted-foreground">
+            We're working on a unified hybrid graph that shows people and their
+            social accounts together. For now, choose Person or Social Account.
+          </p>
+          <div className="flex justify-center gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setViewMode('person')}
+              data-testid="button-switch-person"
+            >
+              Open Person view
+            </Button>
+            <Button
+              onClick={() => setViewMode('social')}
+              data-testid="button-switch-social"
+            >
+              Open Social view
+            </Button>
+          </div>
+        </Card>
+      </div>
     );
   }
 

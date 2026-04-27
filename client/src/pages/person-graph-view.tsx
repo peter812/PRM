@@ -42,8 +42,18 @@ interface GraphLink {
   color?: string;
 }
 
+interface PositionedNode {
+  id: string;
+  x?: number;
+  y?: number;
+  z?: number;
+}
+
 interface ForceGraphInstance {
-  graphData: (data: { nodes: GraphNode[]; links: GraphLink[] }) => ForceGraphInstance;
+  graphData: {
+    (data: { nodes: GraphNode[]; links: GraphLink[] }): ForceGraphInstance;
+    (): { nodes: PositionedNode[]; links: GraphLink[] };
+  };
   backgroundColor: (c: string) => ForceGraphInstance;
   nodeLabel: (key: string) => ForceGraphInstance;
   nodeColor: (key: string) => ForceGraphInstance;
@@ -256,10 +266,17 @@ export default function PersonGraphView({
     const bgColor = `hsl(${values[0]}, ${values[1]}%, ${values[2]}%)`;
 
     if (!fgRef.current) {
-      const fg = ForceGraph3D({
+      // The 3d-force-graph lib uses a Kapsule factory at runtime:
+      // `ForceGraph3D({ opts })(element)`. Its bundled .d.ts only types the
+      // constructor form, so we cast the factory call result to our local
+      // typed surface to keep the rest of this file fully typed.
+      const factory = ForceGraph3D as unknown as (
+        opts: { controlType: string; rendererConfig: { antialias: boolean; alpha: boolean } }
+      ) => (el: HTMLElement) => ForceGraphInstance;
+      const fg = factory({
         controlType: "orbit",
         rendererConfig: { antialias: true, alpha: true },
-      })(graphRef.current) as unknown as ForceGraphInstance;
+      })(graphRef.current);
 
       fg
         .graphData(gData)
@@ -326,18 +343,20 @@ export default function PersonGraphView({
     let attempts = 0;
     const tryFocus = () => {
       if (cancelled || !fgRef.current) return;
-      const target: any = (fgRef.current.graphData()?.nodes || []).find(
-        (n: any) => n.id === selectedPersonId
-      );
-      if (!target || typeof target.x !== 'number') {
+      const nodes = fgRef.current.graphData().nodes;
+      const target = nodes.find((n) => n.id === selectedPersonId);
+      if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') {
         if (attempts++ < 30) setTimeout(tryFocus, 100);
         return;
       }
+      const tx = target.x;
+      const ty = target.y;
+      const tz = target.z ?? 0;
       const dist = 220;
-      const distRatio = 1 + dist / Math.hypot(target.x, target.y, target.z || 0.001);
+      const distRatio = 1 + dist / Math.hypot(tx, ty, tz || 0.001);
       fgRef.current.cameraPosition(
-        { x: target.x * distRatio, y: target.y * distRatio, z: (target.z || 0) * distRatio },
-        { x: target.x, y: target.y, z: target.z || 0 },
+        { x: tx * distRatio, y: ty * distRatio, z: tz * distRatio },
+        { x: tx, y: ty, z: tz },
         900
       );
     };

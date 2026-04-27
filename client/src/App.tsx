@@ -32,7 +32,6 @@ import AccountMatching from "@/pages/account-matching";
 import NotFound from "@/pages/not-found";
 
 function GraphRedirect() {
-  const [, navigate] = useLocation();
   const params = new URLSearchParams(window.location.search);
   const personUuid = params.get("personUuid");
   const groupUuid = params.get("groupUuid");
@@ -40,9 +39,7 @@ function GraphRedirect() {
   search.set("view", "person");
   if (personUuid) search.set("selected", personUuid);
   if (groupUuid && !personUuid) search.set("highlightGroup", groupUuid);
-  const target = `/social-graph-3d?${search.toString()}`;
-  navigate(target, { replace: true });
-  return null;
+  return <Redirect to={`/social-graph-3d?${search.toString()}`} replace />;
 }
 
 function Router() {
