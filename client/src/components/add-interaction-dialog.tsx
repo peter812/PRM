@@ -29,6 +29,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { formatDateForInput } from "@/lib/utils";
 import { insertInteractionSchema, type Person, type Group, type InteractionType } from "@shared/schema";
 import { z } from "zod";
 import { X, Upload, Trash2, Search } from "lucide-react";
@@ -215,15 +216,6 @@ export function AddInteractionDialog({
       }
       return [...prev, id];
     });
-  };
-
-  const formatDateForInput = (date: Date) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    const hours = String(date.getHours()).padStart(2, "0");
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
   };
 
   // Sort people with ME user first

@@ -20,25 +20,16 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { isValidHexColor } from "@/lib/utils";
+import { URL_TYPE_MAPPINGS } from "@/lib/constants";
 import { Loader2 } from "lucide-react";
 import type { SocialAccountWithCurrentProfile, SocialAccountType } from "@shared/schema";
-
-function isValidHexColor(color: string): boolean {
-  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
-}
 
 interface EditSocialAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   account: SocialAccountWithCurrentProfile;
 }
-
-const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [
-  { pattern: /instagram\.com/i, typeName: "Instagram" },
-  { pattern: /facebook\.com/i, typeName: "Facebook" },
-  { pattern: /x\.com/i, typeName: "X.com" },
-  { pattern: /twitter\.com/i, typeName: "X.com" },
-];
 
 export function EditSocialAccountDialog({
   open,

@@ -18,6 +18,7 @@ import { PersonSocialAccountsChips } from "@/components/person-social-accounts-c
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
+import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 export default function PersonProfile() {
@@ -124,10 +125,6 @@ export default function PersonProfile() {
       </div>
     );
   }
-
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
-  };
 
   return (
     <div className="flex flex-col h-full">

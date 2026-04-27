@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { isValidHexColor } from "@/lib/utils";
 import { useMutation } from "@tanstack/react-query";
 import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost } from "@shared/schema";
 import { Link } from "wouter";
@@ -30,10 +31,6 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-
-function isValidHexColor(color: string): boolean {
-  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
-}
 
 export default function SocialAccountProfile() {
   const { uuid } = useParams<{ uuid: string }>();

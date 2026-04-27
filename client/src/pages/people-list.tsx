@@ -21,6 +21,7 @@ import {
 import type { Person } from "@shared/schema";
 import { AddPersonDialog } from "@/components/add-person-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 type PersonWithRelationship = Person & {
@@ -127,10 +128,6 @@ export default function PeopleList() {
     const newStarred = currentStarred === 1 ? 0 : 1;
     setStarredStates((prev) => ({ ...prev, [person.id]: newStarred }));
     starMutation.mutate({ personId: person.id, isStarred: currentStarred });
-  };
-
-  const getInitials = (firstName: string, lastName: string) => {
-    return `${firstName[0]}${lastName[0]}`.toUpperCase();
   };
 
   return (

@@ -14,6 +14,7 @@ import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getInitials } from "@/lib/utils";
 import type { SocialAccountWithCurrentProfile } from "@shared/schema";
 
 interface LinkSocialAccountDialogProps {
@@ -97,13 +98,6 @@ export function LinkSocialAccountDialog({
 
   const handleSave = () => {
     linkMutation.mutate(selectedIds);
-  };
-
-  const getInitials = (username: string) => {
-    if (username.length >= 2) {
-      return username.slice(0, 2).toUpperCase();
-    }
-    return username.slice(0, 1).toUpperCase();
   };
 
   return (

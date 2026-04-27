@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, X, Trash2 } fro
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { SocialAccountPost } from "@shared/schema";
+import { safeJsonParse } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -19,12 +20,7 @@ interface PostDetailDialogProps {
 export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }: PostDetailDialogProps) {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
-  let images: string[] = [];
-  try {
-    images = post.content ? JSON.parse(post.content) : [];
-  } catch {
-    images = [];
-  }
+  const images: string[] = safeJsonParse<string[]>(post.content, []);
 
   const nextImage = () => {
     if (currentImageIndex < images.length - 1) {
@@ -140,11 +136,11 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-1.5 text-sm" data-testid="text-post-likes">
                   <Heart className="h-4 w-4" />
-                  <span>{post.likeCount.toLocaleString()}</span>
+                  <span>{(post.likeCount ?? 0).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-sm" data-testid="text-post-comments">
                   <MessageCircle className="h-4 w-4" />
-                  <span>{post.commentCount.toLocaleString()}</span>
+                  <span>{(post.commentCount ?? 0).toLocaleString()}</span>
                 </div>
               </div>
 

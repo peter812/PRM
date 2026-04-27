@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { safeJsonParse } from "@/lib/utils";
 import type { SocialAccountPost } from "@shared/schema";
 import {
   Dialog,
@@ -35,17 +36,13 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
 
   useEffect(() => {
     if (open && post) {
-      try {
-        const urls = post.content ? JSON.parse(post.content) : [""];
-        setImageUrls(Array.isArray(urls) && urls.length > 0 ? urls : [""]);
-      } catch {
-        setImageUrls([""]);
-      }
-      setDescription(post.description || "");
-      setLikeCount(post.likeCount);
-      setCommentCount(post.commentCount);
-      setMentionedAccounts(post.mentionedAccounts || "");
-      setIsDeleted(post.isDeleted);
+      const urls = safeJsonParse<string[]>(post.content, [""]);
+      setImageUrls(Array.isArray(urls) && urls.length > 0 ? urls : [""]);
+      setDescription(post.description ?? "");
+      setLikeCount(post.likeCount ?? 0);
+      setCommentCount(post.commentCount ?? 0);
+      setMentionedAccounts(post.mentionedAccounts ?? "");
+      setIsDeleted(post.isDeleted ?? false);
     }
   }, [open, post]);
 

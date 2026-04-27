@@ -29,26 +29,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { isValidHexColor } from "@/lib/utils";
+import { URL_TYPE_MAPPINGS } from "@/lib/constants";
 import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType, type SocialAccount } from "@shared/schema";
 import { ImageUpload } from "./image-upload";
 import { Upload, FileText, CheckCircle2, AlertCircle } from "lucide-react";
-
-function isValidHexColor(color: string): boolean {
-  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
-}
 
 interface AddSocialAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAccountCreated?: (account: SocialAccount) => void;
 }
-
-const URL_TYPE_MAPPINGS: { pattern: RegExp; typeName: string }[] = [
-  { pattern: /instagram\.com/i, typeName: "Instagram" },
-  { pattern: /facebook\.com/i, typeName: "Facebook" },
-  { pattern: /x\.com/i, typeName: "X.com" },
-  { pattern: /twitter\.com/i, typeName: "X.com" },
-];
 
 export function AddSocialAccountDialog({ open, onOpenChange, onAccountCreated }: AddSocialAccountDialogProps) {
   const { toast } = useToast();

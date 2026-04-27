@@ -27,15 +27,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
+import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getInitials, isValidHexColor } from "@/lib/utils";
 import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
-
-function isValidHexColor(color: string): boolean {
-  return /^#[0-9A-Fa-f]{6}$/.test(color) || /^#[0-9A-Fa-f]{3}$/.test(color);
-}
 
 const PAGE_SIZE = 30;
 
@@ -48,7 +46,7 @@ export default function SocialAccountsList() {
   const [accountToExport, setAccountToExport] = useState<SocialAccount | null>(null);
   const [showMassExportDialog, setShowMassExportDialog] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const debouncedSearch = useDebounce(searchQuery, 300);
   const [showFollowsYou, setShowFollowsYou] = useState(false);
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -60,13 +58,6 @@ export default function SocialAccountsList() {
   useEffect(() => {
     setSelectedTypeId(typeIdFromUrl);
   }, [typeIdFromUrl]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
 
   const handleTypeChange = (value: string) => {
     setSelectedTypeId(value);
@@ -143,13 +134,6 @@ export default function SocialAccountsList() {
       });
     },
   });
-
-  const getInitials = (username: string) => {
-    if (username.length >= 2) {
-      return username.slice(0, 2).toUpperCase();
-    }
-    return username.slice(0, 1).toUpperCase();
-  };
 
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
