@@ -1322,13 +1322,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Import type must be 'followers' or 'following'" });
       }
 
-      // Get the target account (WE/US)
       const targetAccount = await storage.getSocialAccountById(accountId);
       if (!targetAccount) {
         return res.status(404).json({ error: "Target social account not found" });
       }
 
-      // Parse CSV file with semicolon delimiter
       const csvText = req.file.buffer.toString("utf-8");
       const parseResult = Papa.parse(csvText, {
         header: true,
@@ -1337,146 +1335,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         transformHeader: (header: string) => header.trim().replace(/"/g, ""),
       });
 
-      if (parseResult.errors.length > 0) {
-        console.warn("CSV parsing warnings (skipping bad rows):", parseResult.errors.length, "errors");
-      }
-
       const rows = parseResult.data as any[];
-
       if (rows.length === 0) {
         return res.status(400).json({ error: "CSV file contains no data" });
       }
 
-      let importedCount = 0;
-      let updatedCount = 0;
-      const processedAccountIds: string[] = [];
-
-      // Get the Instagram social account type
-      const instagramType = await storage.getSocialAccountTypeByName("instagram");
-      const instagramTypeId = instagramType?.id || null;
-
-      // Get all existing social accounts for username lookup
-      const allAccounts = await storage.getAllSocialAccounts();
-      const accountsByUsername = new Map(allAccounts.map(a => [a.username.toLowerCase(), a]));
-
-      const mutualFollowIds: string[] = [];
-
-      for (const row of rows) {
-        const username = (row.username || row["username"] || "").toString().trim().replace(/"/g, "");
-        const fullName = (row.full_name || row["full_name"] || "").toString().trim().replace(/"/g, "");
-        const instagramId = (row.id || row["id"] || "").toString().trim().replace(/"/g, "");
-        const profilePicUrl = (row.profile_pic_url || row["profile_pic_url"] || "").toString().trim().replace(/"/g, "");
-        const followedByViewer = (row.followed_by_viewer || row["followed_by_viewer"] || "").toString().toLowerCase() === "true";
-
-        if (!username) continue;
-
-        let existingAccount = accountsByUsername.get(username.toLowerCase());
-
-        if (existingAccount) {
-          if (fullName && existingAccount.currentProfile?.nickname !== fullName) {
-            await storage.createProfileVersion({
-              socialAccountId: existingAccount.id,
-              nickname: fullName,
-              accountUrl: existingAccount.currentProfile?.accountUrl || null,
-              imageUrl: existingAccount.currentProfile?.imageUrl || null,
-              isCurrent: true,
-            });
-            updatedCount++;
-          }
-
-          if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
-            const currentProfile = await storage.getCurrentProfileVersion(existingAccount.id);
-            await storage.createTask({
-              type: "get_img",
-              status: "pending",
-              payload: JSON.stringify({
-                socialAccountId: existingAccount.id,
-                profileVersionId: currentProfile?.id || null,
-                imageUrl: profilePicUrl,
-              }),
-            });
-          }
-
-          processedAccountIds.push(existingAccount.id);
-        } else {
-          const newAccount = await storage.createSocialAccount({
-            username,
-            ownerUuid: null,
-            typeId: instagramTypeId,
-            internalAccountCreationType: `${targetAccount.username} import`,
-          });
-
-          const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
-          if (currentProfile) {
-            await storage.updateProfileVersion(currentProfile.id, {
-              nickname: fullName || null,
-              accountUrl: `https://instagram.com/${username}`,
-            });
-          }
-          
-          if (profilePicUrl) {
-            await storage.createTask({
-              type: "get_img",
-              status: "pending",
-              payload: JSON.stringify({
-                socialAccountId: newAccount.id,
-                profileVersionId: currentProfile?.id || null,
-                imageUrl: profilePicUrl,
-              }),
-            });
-          }
-
-          accountsByUsername.set(username.toLowerCase(), newAccount);
-          processedAccountIds.push(newAccount.id);
-          importedCount++;
-        }
-
-        if (followedByViewer) {
-          const importedAccountId = accountsByUsername.get(username.toLowerCase())?.id;
-          if (importedAccountId) {
-            mutualFollowIds.push(importedAccountId);
-          }
-        }
-      }
-
-      // Build network state for the target account
-      const existingState = await storage.getNetworkState(accountId);
-      const existingFollowers = existingState?.followers || [];
-      const existingFollowing = existingState?.following || [];
-
-      let newFollowers: string[];
-      let newFollowing: string[];
-
-      if (importType === "followers") {
-        newFollowers = Array.from(new Set([...existingFollowers, ...processedAccountIds]));
-        newFollowing = Array.from(new Set([...existingFollowing, ...mutualFollowIds]));
-      } else {
-        newFollowing = Array.from(new Set([...existingFollowing, ...processedAccountIds]));
-        newFollowers = Array.from(new Set([...existingFollowers, ...mutualFollowIds]));
-      }
-
-      await storage.upsertNetworkState({
-        socialAccountId: accountId,
-        followerCount: newFollowers.length,
-        followingCount: newFollowing.length,
-        followers: newFollowers,
-        following: newFollowing,
+      const task = await storage.createTask({
+        type: "import_instagram",
+        status: "pending",
+        payload: JSON.stringify({
+          accountId,
+          targetAccountUsername: targetAccount.username,
+          importType,
+          forceUpdateImages,
+          rows,
+          skippedRows: parseResult.errors.length,
+        }),
       });
-
-      const skippedRows = parseResult.errors.length;
 
       triggerTaskWorker();
 
-      res.json({
-        success: true,
-        imported: importedCount,
-        updated: updatedCount,
-        total: processedAccountIds.length,
-        skippedRows,
-      });
+      res.json({ taskId: task.id, total: rows.length });
     } catch (error) {
-      console.error("Error importing Instagram data:", error);
-      res.status(500).json({ error: "Failed to import Instagram data" });
+      console.error("Error queuing Instagram import:", error);
+      res.status(500).json({ error: "Failed to start Instagram import" });
     }
   });
 

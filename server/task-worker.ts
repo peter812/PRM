@@ -217,6 +217,138 @@ async function processTransferImagesToS3(taskId: string): Promise<string> {
   return JSON.stringify({ transferred, failed, total: localUrls.length, errors });
 }
 
+async function processImportInstagram(taskId: string, payload: {
+  accountId: string;
+  targetAccountUsername: string;
+  importType: "followers" | "following";
+  forceUpdateImages: boolean;
+  rows: any[];
+  skippedRows: number;
+}): Promise<string> {
+  const { accountId, targetAccountUsername, importType, forceUpdateImages, rows, skippedRows } = payload;
+
+  const instagramType = await storage.getSocialAccountTypeByName("instagram");
+  const instagramTypeId = instagramType?.id || null;
+
+  const allAccounts = await storage.getAllSocialAccounts();
+  const accountsByUsername = new Map(allAccounts.map(a => [a.username.toLowerCase(), a]));
+
+  let importedCount = 0;
+  let updatedCount = 0;
+  const processedAccountIds: string[] = [];
+  const mutualFollowIds: string[] = [];
+
+  for (const row of rows) {
+    if (await isTaskCancelled(taskId)) {
+      return JSON.stringify({ cancelled: true, imported: importedCount, updated: updatedCount });
+    }
+
+    const username = (row.username || "").toString().trim().replace(/"/g, "");
+    const fullName = (row.full_name || "").toString().trim().replace(/"/g, "");
+    const profilePicUrl = (row.profile_pic_url || "").toString().trim().replace(/"/g, "");
+    const followedByViewer = (row.followed_by_viewer || "").toString().toLowerCase() === "true";
+
+    if (!username) continue;
+
+    const existingAccount = accountsByUsername.get(username.toLowerCase());
+
+    if (existingAccount) {
+      if (fullName && existingAccount.currentProfile?.nickname !== fullName) {
+        await storage.createProfileVersion({
+          socialAccountId: existingAccount.id,
+          nickname: fullName,
+          accountUrl: existingAccount.currentProfile?.accountUrl || null,
+          imageUrl: existingAccount.currentProfile?.imageUrl || null,
+          isCurrent: true,
+        });
+        updatedCount++;
+      }
+
+      if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
+        const currentProfile = await storage.getCurrentProfileVersion(existingAccount.id);
+        await storage.createTask({
+          type: "get_img",
+          status: "pending",
+          payload: JSON.stringify({
+            socialAccountId: existingAccount.id,
+            profileVersionId: currentProfile?.id || null,
+            imageUrl: profilePicUrl,
+          }),
+        });
+      }
+
+      processedAccountIds.push(existingAccount.id);
+    } else {
+      const newAccount = await storage.createSocialAccount({
+        username,
+        ownerUuid: null,
+        typeId: instagramTypeId,
+        internalAccountCreationType: `${targetAccountUsername} import`,
+      });
+
+      const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
+      if (currentProfile) {
+        await storage.updateProfileVersion(currentProfile.id, {
+          nickname: fullName || null,
+          accountUrl: `https://instagram.com/${username}`,
+        });
+      }
+
+      if (profilePicUrl) {
+        await storage.createTask({
+          type: "get_img",
+          status: "pending",
+          payload: JSON.stringify({
+            socialAccountId: newAccount.id,
+            profileVersionId: currentProfile?.id || null,
+            imageUrl: profilePicUrl,
+          }),
+        });
+      }
+
+      accountsByUsername.set(username.toLowerCase(), newAccount);
+      processedAccountIds.push(newAccount.id);
+      importedCount++;
+    }
+
+    if (followedByViewer) {
+      const acct = accountsByUsername.get(username.toLowerCase());
+      if (acct) mutualFollowIds.push(acct.id);
+    }
+  }
+
+  const existingState = await storage.getNetworkState(accountId);
+  const existingFollowers = existingState?.followers || [];
+  const existingFollowing = existingState?.following || [];
+
+  let newFollowers: string[];
+  let newFollowing: string[];
+
+  if (importType === "followers") {
+    newFollowers = Array.from(new Set([...existingFollowers, ...processedAccountIds]));
+    newFollowing = Array.from(new Set([...existingFollowing, ...mutualFollowIds]));
+  } else {
+    newFollowing = Array.from(new Set([...existingFollowing, ...processedAccountIds]));
+    newFollowers = Array.from(new Set([...existingFollowers, ...mutualFollowIds]));
+  }
+
+  await storage.upsertNetworkState({
+    socialAccountId: accountId,
+    followerCount: newFollowers.length,
+    followingCount: newFollowing.length,
+    followers: newFollowers,
+    following: newFollowing,
+  });
+
+  return JSON.stringify({
+    success: true,
+    imported: importedCount,
+    updated: updatedCount,
+    total: processedAccountIds.length,
+    skippedRows,
+  });
+}
+
 async function processNextTask(): Promise<boolean> {
   const task = await storage.getNextPendingTask();
   if (!task) return false;
@@ -248,6 +380,11 @@ async function processNextTask(): Promise<boolean> {
       }
       case "transfer_images_to_s3": {
         result = await processTransferImagesToS3(task.id);
+        break;
+      }
+      case "import_instagram": {
+        const payload = JSON.parse(task.payload);
+        result = await processImportInstagram(task.id, payload);
         break;
       }
       default:

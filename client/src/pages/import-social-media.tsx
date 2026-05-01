@@ -15,7 +15,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Upload, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
 import { SiInstagram } from "react-icons/si";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import type { SocialAccount } from "@shared/schema";
@@ -30,6 +30,10 @@ export default function ImportSocialMediaPage() {
   const [accountSearchQuery, setAccountSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SocialAccount[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [taskResult, setTaskResult] = useState<{ imported: number; updated: number; total: number; skippedRows: number } | null>(null);
+  const [isPolling, setIsPolling] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -61,6 +65,55 @@ export default function ImportSocialMediaPage() {
     return () => clearTimeout(timer);
   }, [accountSearchQuery]);
 
+  useEffect(() => {
+    if (!activeTaskId) return;
+
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/tasks/${activeTaskId}`, { credentials: "include" });
+        if (!response.ok) return;
+        const task = await response.json();
+
+        if (task.status === "completed") {
+          setIsPolling(false);
+          setActiveTaskId(null);
+          const result = JSON.parse(task.result || "{}");
+          setTaskResult(result);
+          queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
+          queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
+          toast({
+            title: "Instagram Import Successful",
+            description: `Imported ${result.imported} accounts${result.updated > 0 ? `, updated ${result.updated}` : ""}${result.skippedRows > 0 ? ` (${result.skippedRows} rows skipped)` : ""}`,
+          });
+          setSelectedInstagramFile(null);
+          setSelectedAccountId("");
+          setSelectedAccountLabel("");
+          const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
+          if (fileInput) fileInput.value = "";
+        } else if (task.status === "failed") {
+          setIsPolling(false);
+          setActiveTaskId(null);
+          toast({
+            title: "Instagram Import Failed",
+            description: task.result || "An error occurred during import",
+            variant: "destructive",
+          });
+        } else {
+          pollRef.current = setTimeout(poll, 2000);
+        }
+      } catch {
+        pollRef.current = setTimeout(poll, 3000);
+      }
+    };
+
+    setIsPolling(true);
+    pollRef.current = setTimeout(poll, 1000);
+
+    return () => {
+      if (pollRef.current) clearTimeout(pollRef.current);
+    };
+  }, [activeTaskId]);
+
   const importInstagramMutation = useMutation({
     mutationFn: async ({ file, accountId, importType, forceImages }: { file: File; accountId: string; importType: "followers" | "following"; forceImages: boolean }) => {
       const formData = new FormData();
@@ -82,22 +135,8 @@ export default function ImportSocialMediaPage() {
       return response.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
-
-      toast({
-        title: "Instagram Import Successful",
-        description: `Successfully imported ${data.imported} accounts${data.updated > 0 ? ` (${data.updated} updated)` : ""}${data.skippedRows > 0 ? ` (${data.skippedRows} rows skipped due to formatting issues)` : ""}`,
-      });
-
-      setSelectedInstagramFile(null);
-      setSelectedAccountId("");
-      setSelectedAccountLabel("");
-
-      const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
-      if (fileInput) {
-        fileInput.value = "";
-      }
+      setTaskResult(null);
+      setActiveTaskId(data.taskId);
     },
     onError: (error: Error) => {
       toast({
@@ -107,6 +146,8 @@ export default function ImportSocialMediaPage() {
       });
     },
   });
+
+  const isPending = importInstagramMutation.isPending || isPolling;
 
   const handleInstagramFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -125,6 +166,7 @@ export default function ImportSocialMediaPage() {
 
   const handleInstagramImport = () => {
     if (selectedInstagramFile && selectedAccountId) {
+      setTaskResult(null);
       importInstagramMutation.mutate({
         file: selectedInstagramFile,
         accountId: selectedAccountId,
@@ -247,7 +289,7 @@ export default function ImportSocialMediaPage() {
                   type="file"
                   accept=".csv"
                   onChange={handleInstagramFileChange}
-                  disabled={importInstagramMutation.isPending}
+                  disabled={isPending}
                   data-testid="input-instagram-file"
                   className="cursor-pointer"
                 />
@@ -295,14 +337,14 @@ export default function ImportSocialMediaPage() {
             <div className="flex items-center gap-3">
               <Button
                 onClick={handleInstagramImport}
-                disabled={!selectedInstagramFile || !selectedAccountId || importInstagramMutation.isPending}
+                disabled={!selectedInstagramFile || !selectedAccountId || isPending}
                 data-testid="button-import-instagram"
                 className="gap-2"
               >
-                {importInstagramMutation.isPending ? (
+                {isPending ? (
                   <>
                     <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
-                    Importing...
+                    {isPolling ? "Processing..." : "Uploading..."}
                   </>
                 ) : (
                   <>
@@ -312,7 +354,7 @@ export default function ImportSocialMediaPage() {
                 )}
               </Button>
 
-              {selectedInstagramFile && !importInstagramMutation.isPending && (
+              {selectedInstagramFile && !isPending && (
                 <Button
                   variant="outline"
                   onClick={() => {
@@ -328,9 +370,18 @@ export default function ImportSocialMediaPage() {
                 </Button>
               )}
             </div>
+
+            {isPolling && (
+              <div className="rounded-md bg-muted p-4">
+                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                  <div className="h-4 w-4 border-2 border-muted-foreground border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                  <span>Import is running in the background. This may take a few minutes for large files.</span>
+                </div>
+              </div>
+            )}
           </div>
 
-          {importInstagramMutation.isSuccess && importInstagramMutation.data && (
+          {taskResult && (
             <div className="rounded-md bg-primary/10 border border-primary/20 p-4">
               <div className="flex items-start gap-3">
                 <CheckCircle2 className="h-5 w-5 text-primary mt-0.5" />
@@ -339,11 +390,12 @@ export default function ImportSocialMediaPage() {
                     Instagram Import Complete
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Imported {importInstagramMutation.data.imported} account{importInstagramMutation.data.imported !== 1 ? "s" : ""}
-                    {importInstagramMutation.data.updated > 0 && (
-                      <span className="ml-1">
-                        ({importInstagramMutation.data.updated} updated)
-                      </span>
+                    Imported {taskResult.imported} account{taskResult.imported !== 1 ? "s" : ""}
+                    {taskResult.updated > 0 && (
+                      <span className="ml-1">({taskResult.updated} updated)</span>
+                    )}
+                    {taskResult.skippedRows > 0 && (
+                      <span className="ml-1">({taskResult.skippedRows} rows skipped)</span>
                     )}
                   </p>
                 </div>
