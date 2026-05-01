@@ -14,6 +14,7 @@ const IMAGE_DOWNLOAD_DELAY_MS = 1_000;
 const REFRESH_DELAY_MS = 200;
 
 let isProcessing = false;
+let isPaused = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function processGetImgTask(payload: {
@@ -407,14 +408,14 @@ async function processNextTask(): Promise<boolean> {
 }
 
 async function runWorkerLoop() {
-  if (isProcessing) return;
+  if (isProcessing || isPaused) return;
   isProcessing = true;
 
   try {
     let hasMore = true;
-    while (hasMore) {
+    while (hasMore && !isPaused) {
       hasMore = await processNextTask();
-      if (hasMore) {
+      if (hasMore && !isPaused) {
         await new Promise(resolve => setTimeout(resolve, IMAGE_DOWNLOAD_DELAY_MS));
       }
     }
@@ -422,7 +423,7 @@ async function runWorkerLoop() {
     log(`[TaskWorker] Worker loop error: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     isProcessing = false;
-    schedulePoll();
+    if (!isPaused) schedulePoll();
   }
 }
 
@@ -439,7 +440,26 @@ export function startTaskWorker() {
 }
 
 export function triggerTaskWorker() {
-  if (isProcessing) return;
+  if (isProcessing || isPaused) return;
   if (pollTimer) clearTimeout(pollTimer);
   runWorkerLoop();
+}
+
+export function pauseTaskWorker() {
+  isPaused = true;
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+  log("[TaskWorker] Worker paused");
+}
+
+export function resumeTaskWorker() {
+  isPaused = false;
+  log("[TaskWorker] Worker resumed");
+  runWorkerLoop();
+}
+
+export function isTaskWorkerPaused(): boolean {
+  return isPaused;
 }

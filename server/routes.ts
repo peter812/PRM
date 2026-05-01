@@ -25,7 +25,7 @@ import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "./local-storage";
 import { hashPassword } from "./auth";
-import { triggerTaskWorker } from "./task-worker";
+import { triggerTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "./task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import Papa from "papaparse";
@@ -4045,6 +4045,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/tasks/worker-status", (_req, res) => {
+    res.json({ paused: isTaskWorkerPaused() });
+  });
+
   app.get("/api/tasks/:id", async (req, res) => {
     try {
       const task = await storage.getTaskById(req.params.id);
@@ -4107,6 +4111,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error creating mass refresh task:", error);
       res.status(500).json({ error: "Failed to create mass refresh task" });
+    }
+  });
+
+  app.post("/api/tasks/pause", (_req, res) => {
+    pauseTaskWorker();
+    res.json({ paused: true });
+  });
+
+  app.post("/api/tasks/unpause", (_req, res) => {
+    resumeTaskWorker();
+    res.json({ paused: false });
+  });
+
+  app.delete("/api/tasks", async (_req, res) => {
+    try {
+      await storage.deleteAllTasks();
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting all tasks:", error);
+      res.status(500).json({ error: "Failed to delete all tasks" });
     }
   });
 

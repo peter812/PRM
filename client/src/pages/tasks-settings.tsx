@@ -5,7 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap, X, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap, X, Trash2, Pause, CirclePlay } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Task } from "@shared/schema";
@@ -28,6 +39,8 @@ function getTaskLabel(type: string): string {
       return "Transfer Images to Local";
     case "transfer_images_to_s3":
       return "Transfer Images to S3";
+    case "import_instagram":
+      return "Instagram Import";
     default:
       return type;
   }
@@ -101,6 +114,14 @@ function TaskResultDisplay({ task }: { task: Task }) {
         </span>
       );
     }
+    if (task.type === "import_instagram") {
+      return (
+        <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
+          Imported: {result.imported}, Updated: {result.updated}, Total: {result.total}
+          {result.cancelled && " (cancelled)"}
+        </span>
+      );
+    }
     return null;
   } catch {
     if (task.status === "failed") {
@@ -135,6 +156,12 @@ export default function TasksSettingsPage() {
     queryKey: ["/api/tasks", "social-accounts-brief"],
   });
 
+  const { data: workerStatus, refetch: refetchWorkerStatus } = useQuery<{ paused: boolean }>({
+    queryKey: ["/api/tasks/worker-status"],
+    refetchInterval: 5000,
+  });
+
+  const isPaused = workerStatus?.paused ?? false;
   const hasActiveTasks = tasks.some(t => t.status === "pending" || t.status === "in_progress");
 
   const selectedAccount = selectedAccountId
@@ -180,6 +207,49 @@ export default function TasksSettingsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to cancel task", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/tasks/pause");
+      return res.json();
+    },
+    onSuccess: () => {
+      refetchWorkerStatus();
+      toast({ title: "Worker paused", description: "No new tasks will be processed until resumed." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to pause worker", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const unpauseMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/tasks/unpause");
+      return res.json();
+    },
+    onSuccess: () => {
+      refetchWorkerStatus();
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      toast({ title: "Worker resumed", description: "Tasks will now be processed." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to resume worker", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("DELETE", "/api/tasks");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      toast({ title: "All tasks removed", description: "The task list has been cleared." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to remove tasks", description: error.message, variant: "destructive" });
     },
   });
 
@@ -346,15 +416,79 @@ export default function TasksSettingsPage() {
               <div>
                 <CardTitle className="text-lg">Task History</CardTitle>
                 <CardDescription>
-                  {hasActiveTasks ? "Tasks are running - list updates automatically." : "Recent task activity."}
+                  {isPaused
+                    ? "Worker is paused — tasks will not be processed."
+                    : hasActiveTasks
+                    ? "Tasks are running — list updates automatically."
+                    : "Recent task activity."}
                 </CardDescription>
               </div>
-              {hasActiveTasks && (
-                <Badge variant="secondary" data-testid="badge-active-tasks">
-                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                  Active
-                </Badge>
-              )}
+              <div className="flex items-center gap-2 flex-wrap">
+                {hasActiveTasks && !isPaused && (
+                  <Badge variant="secondary" data-testid="badge-active-tasks">
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    Active
+                  </Badge>
+                )}
+                {isPaused && (
+                  <Badge variant="outline" className="text-muted-foreground" data-testid="badge-worker-paused">
+                    <Pause className="h-3 w-3 mr-1" />
+                    Paused
+                  </Badge>
+                )}
+                <Button
+                  size="icon"
+                  variant="outline"
+                  onClick={() => isPaused ? unpauseMutation.mutate() : pauseMutation.mutate()}
+                  disabled={pauseMutation.isPending || unpauseMutation.isPending}
+                  data-testid="button-toggle-pause"
+                  title={isPaused ? "Resume worker" : "Pause worker"}
+                >
+                  {pauseMutation.isPending || unpauseMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : isPaused ? (
+                    <CirclePlay className="h-4 w-4" />
+                  ) : (
+                    <Pause className="h-4 w-4" />
+                  )}
+                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      className="text-destructive"
+                      disabled={tasks.length === 0 || deleteAllMutation.isPending}
+                      data-testid="button-delete-all-tasks"
+                      title="Remove all tasks"
+                    >
+                      {deleteAllMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Remove all tasks?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will permanently delete all {tasks.length} task{tasks.length !== 1 ? "s" : ""} from the history, including any pending or running ones. This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => deleteAllMutation.mutate()}
+                        className="bg-destructive text-destructive-foreground"
+                        data-testid="button-confirm-delete-all"
+                      >
+                        Remove all
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </div>
           </CardHeader>
           <CardContent>

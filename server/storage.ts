@@ -301,6 +301,7 @@ export interface IStorage {
   getTasksByStatus(status: string): Promise<Task[]>;
   getAllTasks(limit?: number): Promise<Task[]>;
   getTaskById(id: string): Promise<Task | undefined>;
+  deleteAllTasks(): Promise<void>;
 
   // Session store
   sessionStore: session.Store;
@@ -2657,6 +2658,10 @@ export class DatabaseStorage implements IStorage {
       .from(tasks)
       .where(eq(tasks.id, id));
     return task || undefined;
+  }
+
+  async deleteAllTasks(): Promise<void> {
+    await db.delete(tasks);
   }
 
   // Social account post operations
