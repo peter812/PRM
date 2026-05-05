@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Trash2, Users2, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -8,9 +8,16 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import { EditRelationshipDialog } from "@/components/edit-relationship-dialog";
-import type { RelationshipWithPerson } from "@shared/schema";
+import type { RelationshipWithPerson, RelationshipType } from "@shared/schema";
 import { useState } from "react";
 import { Link } from "wouter";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface RelationshipsTabProps {
   relationships: RelationshipWithPerson[];
@@ -25,6 +32,11 @@ export function RelationshipsTab({
 }: RelationshipsTabProps) {
   const { toast } = useToast();
   const [editingRelationship, setEditingRelationship] = useState<RelationshipWithPerson | null>(null);
+  const [selectedTypeId, setSelectedTypeId] = useState<string>("all");
+
+  const { data: relationshipTypes = [] } = useQuery<RelationshipType[]>({
+    queryKey: ["/api/relationship-types"],
+  });
 
   const deleteMutation = useMutation({
     mutationFn: async (relationshipId: string) => {
@@ -46,19 +58,46 @@ export function RelationshipsTab({
     },
   });
 
+  const filteredRelationships = selectedTypeId === "all"
+    ? relationships
+    : relationships.filter((r) => r.typeId === selectedTypeId);
+
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold">Relationships</h2>
-        <Button onClick={onAddRelationship} size="sm" data-testid="button-add-relationship">
-          <Plus className="h-4 w-4" />
-          Add Relationship
-        </Button>
+        <div className="flex items-center gap-2">
+          {relationshipTypes.length > 0 && (
+            <Select value={selectedTypeId} onValueChange={setSelectedTypeId}>
+              <SelectTrigger className="w-48" data-testid="select-relationship-type-filter">
+                <SelectValue placeholder="All types" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All types</SelectItem>
+                {relationshipTypes.map((type) => (
+                  <SelectItem key={type.id} value={type.id}>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="w-2.5 h-2.5 rounded-full"
+                        style={{ backgroundColor: type.color }}
+                      />
+                      {type.name}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <Button onClick={onAddRelationship} size="sm" data-testid="button-add-relationship">
+            <Plus className="h-4 w-4" />
+            Add Relationship
+          </Button>
+        </div>
       </div>
 
-      {relationships && relationships.length > 0 ? (
+      {filteredRelationships && filteredRelationships.length > 0 ? (
         <div className="grid grid-cols-1 gap-4">
-          {relationships.map((relationship) => (
+          {filteredRelationships.map((relationship) => (
             <Card
               key={relationship.id}
               className="p-4"
@@ -156,14 +195,25 @@ export function RelationshipsTab({
           <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
             <Users2 className="h-8 w-8 text-muted-foreground" />
           </div>
-          <h3 className="text-lg font-medium mb-2">No relationships yet</h3>
-          <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-            Connect this person with others in your network to track relationships
-          </p>
-          <Button onClick={onAddRelationship} data-testid="button-add-relationship-empty">
-            <Plus className="h-4 w-4" />
-            Add Relationship
-          </Button>
+          {selectedTypeId !== "all" ? (
+            <>
+              <h3 className="text-lg font-medium mb-2">No relationships of this type</h3>
+              <p className="text-sm text-muted-foreground mb-6 max-w-sm">
+                Try selecting a different type or add a new relationship
+              </p>
+            </>
+          ) : (
+            <>
+              <h3 className="text-lg font-medium mb-2">No relationships yet</h3>
+              <p className="text-sm text-muted-foreground mb-6 max-w-sm">
+                Connect this person with others in your network to track relationships
+              </p>
+              <Button onClick={onAddRelationship} data-testid="button-add-relationship-empty">
+                <Plus className="h-4 w-4" />
+                Add Relationship
+              </Button>
+            </>
+          )}
         </div>
       )}
 
