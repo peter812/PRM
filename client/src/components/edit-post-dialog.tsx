@@ -23,13 +23,22 @@ interface MentionEntry {
   accounts: string[];
 }
 
-function parseMentionedAccounts(raw: string | null | undefined): string[] {
-  if (!raw) return [];
+/**
+ * Build a Map<imageIndex, commaSeparatedAccounts> from the stored JSON.
+ * Falls back gracefully for old comma-separated strings or invalid data.
+ */
+function buildMentionMap(raw: string | null | undefined): Map<number, string> {
+  const map = new Map<number, string>();
+  if (!raw) return map;
   const parsed = safeJsonParse<MentionEntry[]>(raw, []);
   if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object" && "imageIndex" in parsed[0]) {
-    return parsed.map(entry => (entry.accounts ?? []).join(", "));
+    for (const entry of parsed) {
+      if (typeof entry.imageIndex === "number" && Array.isArray(entry.accounts)) {
+        map.set(entry.imageIndex, entry.accounts.join(", "));
+      }
+    }
   }
-  return [];
+  return map;
 }
 
 interface EditPostDialogProps {
@@ -44,6 +53,7 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
   const [imageUrls, setImageUrls] = useState<string[]>([""]);
   const [mentionsByImage, setMentionsByImage] = useState<string[]>([""]);
   const [description, setDescription] = useState("");
+  const [comments, setComments] = useState("");
   const [likeCount, setLikeCount] = useState(0);
   const [commentCount, setCommentCount] = useState(0);
   const [isDeleted, setIsDeleted] = useState(false);
@@ -54,12 +64,13 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
       const parsedUrls = Array.isArray(urls) && urls.length > 0 ? urls : [""];
       setImageUrls(parsedUrls);
       setDescription(post.description ?? "");
+      setComments(post.comments ?? "");
       setLikeCount(post.likeCount ?? 0);
       setCommentCount(post.commentCount ?? 0);
       setIsDeleted(post.isDeleted ?? false);
 
-      const parsedMentions = parseMentionedAccounts(post.mentionedAccounts);
-      const mentions: string[] = parsedUrls.map((_, idx) => parsedMentions[idx] ?? "");
+      const mentionMap = buildMentionMap(post.mentionedAccounts);
+      const mentions: string[] = parsedUrls.map((_, idx) => mentionMap.get(idx) ?? "");
       setMentionsByImage(mentions);
     }
   }, [open, post]);
@@ -84,6 +95,7 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
       return await apiRequest("PATCH", `/api/social-account-posts/${post.id}`, {
         content: filteredUrls.length > 0 ? JSON.stringify(filteredUrls) : null,
         description: description || null,
+        comments: comments || null,
         likeCount,
         commentCount,
         mentionedAccounts: buildMentionedAccounts(),
@@ -197,6 +209,19 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
             />
           </div>
 
+          {/* Comments */}
+          <div className="space-y-2">
+            <Label htmlFor="edit-post-comments-json">Comments (JSON or text)</Label>
+            <Textarea
+              id="edit-post-comments-json"
+              placeholder='[{"author":"user1","text":"Great post!"}] or plain text...'
+              value={comments}
+              onChange={(e) => setComments(e.target.value)}
+              className="min-h-20 font-mono text-sm"
+              data-testid="textarea-edit-post-comments"
+            />
+          </div>
+
           {/* Stats */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -211,9 +236,9 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="edit-post-comments">Comment Count</Label>
+              <Label htmlFor="edit-post-comment-count">Comment Count</Label>
               <Input
-                id="edit-post-comments"
+                id="edit-post-comment-count"
                 type="number"
                 min={0}
                 value={commentCount}

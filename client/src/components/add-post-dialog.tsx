@@ -26,6 +26,7 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
   const [imageUrls, setImageUrls] = useState<string[]>([""]);
   const [mentionsByImage, setMentionsByImage] = useState<string[]>([""]);
   const [description, setDescription] = useState("");
+  const [comments, setComments] = useState("");
   const [likeCount, setLikeCount] = useState(0);
   const [commentCount, setCommentCount] = useState(0);
 
@@ -49,6 +50,7 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
       return await apiRequest("POST", `/api/social-accounts/${socialAccountId}/posts`, {
         content: filteredUrls.length > 0 ? JSON.stringify(filteredUrls) : null,
         description: description || null,
+        comments: comments || null,
         likeCount,
         commentCount,
         mentionedAccounts: buildMentionedAccounts(),
@@ -76,6 +78,7 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
     setImageUrls([""]);
     setMentionsByImage([""]);
     setDescription("");
+    setComments("");
     setLikeCount(0);
     setCommentCount(0);
   };
@@ -173,6 +176,19 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
             />
           </div>
 
+          {/* Comments */}
+          <div className="space-y-2">
+            <Label htmlFor="post-comments-json">Comments (JSON or text)</Label>
+            <Textarea
+              id="post-comments-json"
+              placeholder='[{"author":"user1","text":"Great post!"}] or plain text...'
+              value={comments}
+              onChange={(e) => setComments(e.target.value)}
+              className="min-h-20 font-mono text-sm"
+              data-testid="textarea-post-comments"
+            />
+          </div>
+
           {/* Stats */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -187,9 +203,9 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="post-comments">Comment Count</Label>
+              <Label htmlFor="post-comment-count">Comment Count</Label>
               <Input
-                id="post-comments"
+                id="post-comment-count"
                 type="number"
                 min={0}
                 value={commentCount}
