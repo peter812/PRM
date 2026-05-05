@@ -4123,6 +4123,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Task management routes
   app.get("/api/tasks", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
       const status = req.query.status as string | undefined;
@@ -4132,7 +4135,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         taskList = await storage.getAllTasks(limit);
       }
-      res.json(taskList);
+      // Sanitize sensitive fields and filter by ownership for tasks that carry userId in payload
+      const sanitized = taskList.map(t => {
+        let payloadObj: Record<string, unknown> = {};
+        try { payloadObj = JSON.parse(t.payload || "{}"); } catch {}
+        // Skip tasks belonging to another user
+        if (payloadObj.userId !== undefined && payloadObj.userId !== req.user!.id) return null;
+        // Strip raw XML from import payloads
+        if (t.type === "import_xml") {
+          const { xml: _dropped, ...rest } = payloadObj as { xml?: string };
+          return { ...t, payload: JSON.stringify(rest), result: t.status === "completed" ? t.result : null };
+        }
+        // Strip in-progress export result (only serve via download endpoint when complete)
+        if (t.type === "export_xml") {
+          return { ...t, result: t.status === "completed" ? null : null };
+        }
+        return t;
+      }).filter(Boolean);
+      res.json(sanitized);
     } catch (error) {
       console.error("Error fetching tasks:", error);
       res.status(500).json({ error: "Failed to fetch tasks" });
@@ -4167,24 +4187,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!task) {
         return res.status(404).json({ error: "Task not found" });
       }
-      // For tasks that carry a userId in their payload, verify ownership
-      try {
-        const payload = JSON.parse(task.payload || "{}");
-        if (payload.userId !== undefined && payload.userId !== req.user.id) {
-          return res.status(403).json({ error: "Access denied" });
-        }
-      } catch {}
-      // Strip raw XML from payload/result before sending to client
-      const safeTask = { ...task };
+      // Verify ownership for tasks that carry a userId in their payload
+      let payloadObj: Record<string, unknown> = {};
+      try { payloadObj = JSON.parse(task.payload || "{}"); } catch {}
+      if (payloadObj.userId !== undefined && payloadObj.userId !== req.user.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+      // Build a sanitized response — strip raw XML from import payloads and
+      // never expose the full export result via this endpoint (use /download instead)
       if (task.type === "import_xml") {
-        const p = JSON.parse(task.payload || "{}");
-        delete p.xml;
-        (safeTask as any).payload = JSON.stringify(p);
+        const { xml: _dropped, ...safePayload } = payloadObj as { xml?: string };
+        return res.json({ ...task, payload: JSON.stringify(safePayload), result: task.status === "completed" ? task.result : null });
       }
-      if (task.type === "export_xml" && safeTask.result && safeTask.status !== "completed") {
-        (safeTask as any).result = null;
+      if (task.type === "export_xml") {
+        // result is large XML — never send it here; clients use /download
+        return res.json({ ...task, result: null });
       }
-      res.json(safeTask);
+      res.json(task);
     } catch (error) {
       console.error("Error fetching task:", error);
       res.status(500).json({ error: "Failed to fetch task" });

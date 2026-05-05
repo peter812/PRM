@@ -1101,6 +1101,11 @@ async function processNextTask(): Promise<boolean> {
       }
       case "import_xml": {
         const payload = JSON.parse(task.payload);
+        // Scrub the raw XML from the persisted task payload immediately after
+        // parsing to avoid retaining large PII strings in the database.
+        await db.update(tasks).set({
+          payload: JSON.stringify({ userId: payload.userId, xmlCleared: true }),
+        }).where(eq(tasks.id, task.id));
         result = await processImportXmlTask(task.id, payload);
         break;
       }
