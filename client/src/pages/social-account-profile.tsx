@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
@@ -70,19 +70,56 @@ export default function SocialAccountProfile() {
     enabled: !!user?.personId,
   });
 
-  const { data: allSocialAccounts } = useQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts"],
-  });
-
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
   });
 
-  // Query followers (accounts that have this account in their following list)
-  const { data: followers } = useQuery<SocialAccountWithCurrentProfile[]>({
+  type PaginatedAccounts = { items: SocialAccountWithCurrentProfile[]; total: number; page: number; limit: number };
+
+  const {
+    data: followersData,
+    fetchNextPage: fetchNextFollowersPage,
+    hasNextPage: hasMoreFollowers,
+    isFetchingNextPage: isFetchingMoreFollowers,
+  } = useInfiniteQuery<PaginatedAccounts>({
     queryKey: ["/api/social-accounts", uuid, "followers"],
+    queryFn: async ({ pageParam }) => {
+      const res = await fetch(`/api/social-accounts/${uuid}/followers?page=${pageParam}&limit=20`);
+      if (!res.ok) throw new Error("Failed to fetch followers");
+      return res.json();
+    },
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => {
+      const loaded = (lastPage.page - 1) * lastPage.limit + lastPage.items.length;
+      return loaded < lastPage.total ? lastPage.page + 1 : undefined;
+    },
     enabled: !!uuid,
   });
+
+  const {
+    data: followingData,
+    fetchNextPage: fetchNextFollowingPage,
+    hasNextPage: hasMoreFollowing,
+    isFetchingNextPage: isFetchingMoreFollowing,
+  } = useInfiniteQuery<PaginatedAccounts>({
+    queryKey: ["/api/social-accounts", uuid, "following"],
+    queryFn: async ({ pageParam }) => {
+      const res = await fetch(`/api/social-accounts/${uuid}/following?page=${pageParam}&limit=20`);
+      if (!res.ok) throw new Error("Failed to fetch following");
+      return res.json();
+    },
+    initialPageParam: 1,
+    getNextPageParam: (lastPage) => {
+      const loaded = (lastPage.page - 1) * lastPage.limit + lastPage.items.length;
+      return loaded < lastPage.total ? lastPage.page + 1 : undefined;
+    },
+    enabled: !!uuid,
+  });
+
+  const followers = followersData?.pages.flatMap((p) => p.items) ?? [];
+  const followersTotal = followersData?.pages[0]?.total ?? 0;
+  const followingList = followingData?.pages.flatMap((p) => p.items) ?? [];
+  const followingTotal = followingData?.pages[0]?.total ?? 0;
 
   // Query posts for this social account
   const { data: posts } = useQuery<SocialAccountPost[]>({
@@ -553,11 +590,11 @@ export default function SocialAccountProfile() {
                 <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
                   Followers ({account.latestState?.followerCount || 0})
                 </h3>
-                {followers && followers.length > 0 ? (
+                {followers.length > 0 ? (
                   <div className="space-y-2">
                     {followers.map((followerAccount) => (
-                      <div 
-                        key={followerAccount.id} 
+                      <div
+                        key={followerAccount.id}
                         className="flex items-center gap-3 p-2 rounded-md hover-elevate"
                         data-testid={`card-follower-${followerAccount.id}`}
                       >
@@ -569,7 +606,7 @@ export default function SocialAccountProfile() {
                             {getInitials(followerAccount.username)}
                           </AvatarFallback>
                         </Avatar>
-                        <Link 
+                        <Link
                           href={`/social-accounts/${followerAccount.id}`}
                           className="text-sm font-medium hover:underline"
                           data-testid={`link-follower-${followerAccount.id}`}
@@ -578,6 +615,26 @@ export default function SocialAccountProfile() {
                         </Link>
                       </div>
                     ))}
+                    {hasMoreFollowers && (
+                      <div className="pt-2 flex flex-col items-center gap-1">
+                        <p className="text-xs text-muted-foreground" data-testid="text-followers-loaded">
+                          Showing {followers.length} of {followersTotal}
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => fetchNextFollowersPage()}
+                          disabled={isFetchingMoreFollowers}
+                          data-testid="button-load-more-followers"
+                        >
+                          {isFetchingMoreFollowers ? (
+                            <><Loader2 className="h-3 w-3 animate-spin mr-1" />Loading...</>
+                          ) : (
+                            "Load more"
+                          )}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground italic">No followers yet</p>
@@ -599,40 +656,51 @@ export default function SocialAccountProfile() {
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
-                {account.latestState?.following && account.latestState?.following.length > 0 ? (
+                {followingList.length > 0 ? (
                   <div className="space-y-2">
-                    {account.latestState?.following.map((followingId) => {
-                      const followingAccount = allSocialAccounts?.find(a => a.id === followingId);
-                      return (
-                        <div 
-                          key={followingId} 
-                          className="flex items-center justify-between gap-3 p-2 rounded-md hover-elevate"
-                          data-testid={`card-following-${followingId}`}
+                    {followingList.map((followingAccount) => (
+                      <div
+                        key={followingAccount.id}
+                        className="flex items-center gap-3 p-2 rounded-md hover-elevate"
+                        data-testid={`card-following-${followingAccount.id}`}
+                      >
+                        <Avatar className="w-8 h-8">
+                          {followingAccount.currentProfile?.imageUrl && (
+                            <AvatarImage src={followingAccount.currentProfile?.imageUrl} alt={followingAccount.username} />
+                          )}
+                          <AvatarFallback className="text-xs">
+                            {getInitials(followingAccount.username)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <Link
+                          href={`/social-accounts/${followingAccount.id}`}
+                          className="text-sm font-medium hover:underline"
+                          data-testid={`link-following-${followingAccount.id}`}
                         >
-                          <div className="flex items-center gap-3">
-                            <Avatar className="w-8 h-8">
-                              {followingAccount?.currentProfile?.imageUrl && (
-                                <AvatarImage src={followingAccount.currentProfile?.imageUrl} alt={followingAccount.username} />
-                              )}
-                              <AvatarFallback className="text-xs">
-                                {followingAccount ? getInitials(followingAccount.username) : "?"}
-                              </AvatarFallback>
-                            </Avatar>
-                            {followingAccount ? (
-                              <Link 
-                                href={`/social-accounts/${followingAccount.id}`}
-                                className="text-sm font-medium hover:underline"
-                                data-testid={`link-following-${followingId}`}
-                              >
-                                {followingAccount.username}
-                              </Link>
-                            ) : (
-                              <span className="text-sm text-muted-foreground">{followingId}</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+                          {followingAccount.username}
+                        </Link>
+                      </div>
+                    ))}
+                    {hasMoreFollowing && (
+                      <div className="pt-2 flex flex-col items-center gap-1">
+                        <p className="text-xs text-muted-foreground" data-testid="text-following-loaded">
+                          Showing {followingList.length} of {followingTotal}
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => fetchNextFollowingPage()}
+                          disabled={isFetchingMoreFollowing}
+                          data-testid="button-load-more-following"
+                        >
+                          {isFetchingMoreFollowing ? (
+                            <><Loader2 className="h-3 w-3 animate-spin mr-1" />Loading...</>
+                          ) : (
+                            "Load more"
+                          )}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="text-sm text-muted-foreground italic">Not following anyone yet</p>

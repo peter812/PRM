@@ -3446,24 +3446,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/social-accounts/:id/followers", async (req, res) => {
     try {
       const { id } = req.params;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
       const state = await storage.getNetworkState(id);
-      
+
       if (!state || !state.followers || state.followers.length === 0) {
-        return res.json([]);
+        return res.json({ items: [], total: 0, page, limit });
       }
 
+      const total = state.followers.length;
+      const start = (page - 1) * limit;
+      const pageIds = state.followers.slice(start, start + limit);
+
       const followerAccounts = [];
-      for (const followerId of state.followers) {
+      for (const followerId of pageIds) {
         const account = await storage.getSocialAccountById(followerId);
         if (account) {
           followerAccounts.push(account);
         }
       }
-      
-      res.json(followerAccounts);
+
+      res.json({ items: followerAccounts, total, page, limit });
     } catch (error) {
       console.error("Error fetching followers:", error);
       res.status(500).json({ error: "Failed to fetch followers" });
+    }
+  });
+
+  app.get("/api/social-accounts/:id/following", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const state = await storage.getNetworkState(id);
+
+      if (!state || !state.following || state.following.length === 0) {
+        return res.json({ items: [], total: 0, page, limit });
+      }
+
+      const total = state.following.length;
+      const start = (page - 1) * limit;
+      const pageIds = state.following.slice(start, start + limit);
+
+      const followingAccounts = [];
+      for (const followingId of pageIds) {
+        const account = await storage.getSocialAccountById(followingId);
+        if (account) {
+          followingAccounts.push(account);
+        }
+      }
+
+      res.json({ items: followingAccounts, total, page, limit });
+    } catch (error) {
+      console.error("Error fetching following:", error);
+      res.status(500).json({ error: "Failed to fetch following" });
     }
   });
 
