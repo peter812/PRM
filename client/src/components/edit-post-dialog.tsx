@@ -75,14 +75,18 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
     }
   }, [open, post]);
 
-  const buildMentionedAccounts = (): string | null => {
+  /**
+   * Build the mentionedAccounts JSON reindexed against the filtered URL list.
+   * originalIndices[i] = the original row index in imageUrls for filtered position i.
+   */
+  const buildMentionedAccounts = (originalIndices: number[]): string | null => {
     const result: MentionEntry[] = [];
-    mentionsByImage.forEach((raw, idx) => {
-      const trimmed = raw.trim();
-      if (trimmed) {
-        const accounts = trimmed.split(",").map(a => a.trim()).filter(Boolean);
+    originalIndices.forEach((origIdx, newIdx) => {
+      const raw = (mentionsByImage[origIdx] ?? "").trim();
+      if (raw) {
+        const accounts = raw.split(",").map(a => a.trim()).filter(Boolean);
         if (accounts.length > 0) {
-          result.push({ imageIndex: idx, accounts });
+          result.push({ imageIndex: newIdx, accounts });
         }
       }
     });
@@ -91,14 +95,21 @@ export function EditPostDialog({ open, onOpenChange, post, socialAccountId }: Ed
 
   const updatePostMutation = useMutation({
     mutationFn: async () => {
-      const filteredUrls = imageUrls.filter(url => url.trim() !== "");
+      const originalIndices: number[] = [];
+      const filteredUrls: string[] = [];
+      imageUrls.forEach((url, i) => {
+        if (url.trim() !== "") {
+          filteredUrls.push(url);
+          originalIndices.push(i);
+        }
+      });
       return await apiRequest("PATCH", `/api/social-account-posts/${post.id}`, {
         content: filteredUrls.length > 0 ? JSON.stringify(filteredUrls) : null,
         description: description || null,
         comments: comments || null,
         likeCount,
         commentCount,
-        mentionedAccounts: buildMentionedAccounts(),
+        mentionedAccounts: buildMentionedAccounts(originalIndices),
         isDeleted,
       });
     },
