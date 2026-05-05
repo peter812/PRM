@@ -299,6 +299,7 @@ export interface IStorage {
   createTask(task: InsertTask): Promise<Task>;
   getNextPendingTask(): Promise<Task | undefined>;
   updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined>;
+  updateTaskProgress(id: string, progress: number, message?: string): Promise<void>;
   getTasksByStatus(status: string): Promise<Task[]>;
   getAllTasks(limit?: number): Promise<Task[]>;
   getTaskById(id: string): Promise<Task | undefined>;
@@ -2619,12 +2620,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined> {
-    const updates: any = { status };
+    const updates: Partial<typeof tasks.$inferInsert> & { startedAt?: Date; completedAt?: Date } = { status };
     if (status === "in_progress") {
       updates.startedAt = new Date();
     }
     if (status === "completed" || status === "failed") {
       updates.completedAt = new Date();
+      updates.progress = 100;
     }
     if (result !== undefined) {
       updates.result = result;
@@ -2635,6 +2637,14 @@ export class DatabaseStorage implements IStorage {
       .where(eq(tasks.id, id))
       .returning();
     return task || undefined;
+  }
+
+  async updateTaskProgress(id: string, progress: number, message?: string): Promise<void> {
+    const updates: Partial<typeof tasks.$inferInsert> = { progress };
+    if (message !== undefined) {
+      updates.progressMessage = message;
+    }
+    await db.update(tasks).set(updates).where(eq(tasks.id, id));
   }
 
   async getTasksByStatus(status: string): Promise<Task[]> {

@@ -235,6 +235,8 @@ export const tasks = pgTable("tasks", {
   status: text("status").notNull().default("pending"), // 'pending', 'in_progress', 'completed', 'failed'
   payload: text("payload").notNull(), // JSON string with task-specific data
   result: text("result"), // JSON string with task result or error message
+  progress: integer("progress").notNull().default(0), // 0-100 percent complete
+  progressMessage: text("progress_message"), // human-readable progress description
   createdAt: timestamp("created_at").notNull().defaultNow(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),

@@ -4223,6 +4223,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // POST /api/tasks/export-xml — creates a background export_xml task
+  app.post("/api/tasks/export-xml", async (req, res) => {
+    try {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const includeHistory = req.body.includeHistory === true || req.body.includeHistory === "true";
+      const task = await storage.createTask({
+        type: "export_xml",
+        status: "pending",
+        payload: JSON.stringify({ includeHistory, userId: req.user.id }),
+      });
+      triggerTaskWorker();
+      res.json(task);
+    } catch (error) {
+      console.error("Error creating export_xml task:", error);
+      res.status(500).json({ error: "Failed to create export task" });
+    }
+  });
+
+  // POST /api/tasks/import-xml — creates a background import_xml task
+  app.post("/api/tasks/import-xml", upload.single("xml"), async (req, res) => {
+    try {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      if (!req.file) {
+        return res.status(400).json({ error: "No XML file provided" });
+      }
+      const xmlText = req.file.buffer.toString("utf-8");
+      const task = await storage.createTask({
+        type: "import_xml",
+        status: "pending",
+        payload: JSON.stringify({ xml: xmlText, userId: req.user.id }),
+      });
+      triggerTaskWorker();
+      res.json(task);
+    } catch (error) {
+      console.error("Error creating import_xml task:", error);
+      res.status(500).json({ error: "Failed to create import task" });
+    }
+  });
+
+  // GET /api/tasks/:id/download — streams the XML result of a completed export_xml task
+  app.get("/api/tasks/:id/download", async (req, res) => {
+    try {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const task = await storage.getTaskById(req.params.id);
+      if (!task) return res.status(404).json({ error: "Task not found" });
+      if (task.type !== "export_xml") return res.status(400).json({ error: "Not an export task" });
+      if (task.status !== "completed") return res.status(400).json({ error: "Export not yet completed" });
+      if (!task.result) return res.status(400).json({ error: "No export data available" });
+      const date = new Date().toISOString().split("T")[0];
+      res.setHeader("Content-Type", "application/xml");
+      res.setHeader("Content-Disposition", `attachment; filename="crm-export-${date}.xml"`);
+      res.send(task.result);
+    } catch (error) {
+      console.error("Error downloading export:", error);
+      res.status(500).json({ error: "Failed to download export" });
+    }
+  });
+
   app.post("/api/tasks/pause", (_req, res) => {
     pauseTaskWorker();
     res.json({ paused: true });
