@@ -1337,6 +1337,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const comments = unescapeXml(parseXmlTag("comments", block));
           const mentionedAccounts = unescapeXml(parseXmlTag("mentioned_accounts", block));
           const postedAtStr = unescapeXml(parseXmlTag("posted_at", block));
+          const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
 
           if (!id || !postSocialAccountId) continue;
           if (existingPostIds.has(id)) continue;
@@ -1353,6 +1354,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             comments: comments || null,
             mentionedAccounts: mentionedAccounts || null,
             postedAt: postedAtStr ? new Date(postedAtStr) : null,
+            createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
           }).onConflictDoNothing();
           existingPostIds.add(id);
           importedCounts.posts++;
