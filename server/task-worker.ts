@@ -161,33 +161,28 @@ async function processExportXmlTask(taskId: string, payload: {
 
   await storage.updateTaskProgress(taskId, 2, "Fetching data…");
 
-  const [
-    allUsers,
-    allPeople,
-    allRelationshipTypes,
-    allRelationships,
-    allInteractionTypes,
-    allInteractions,
-    allGroups,
-    allNotes,
-    allGroupNotes,
-    allSocialAccounts,
-    allSocialAccountTypes,
-    allProfileVersions,
-    allNetworkStates,
-    mePersonResult,
-  ] = await Promise.all([
+  // Run queries in small sequential batches to avoid exhausting the DB connection pool
+  const [allUsers, allPeople, allRelationshipTypes, allRelationships] = await Promise.all([
     storage.getAllUsers(),
     storage.getAllPeople(),
     storage.getAllRelationshipTypes(),
     storage.getAllRelationships(),
+  ]);
+
+  const [allInteractionTypes, allInteractions, allGroups, allNotes] = await Promise.all([
     storage.getAllInteractionTypes(),
     storage.getAllInteractions(),
     storage.getAllGroups(),
     storage.getAllNotes(),
+  ]);
+
+  const [allGroupNotes, allSocialAccounts, allSocialAccountTypes] = await Promise.all([
     storage.getAllGroupNotes(),
     storage.getAllSocialAccounts(),
     storage.getAllSocialAccountTypes(),
+  ]);
+
+  const [allProfileVersions, allNetworkStates, mePersonResult] = await Promise.all([
     storage.getAllProfileVersions(),
     storage.getAllNetworkStates(),
     db.select().from(people).where(isNotNull(people.userId)).limit(1),
