@@ -4159,12 +4159,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/tasks/:id", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
     try {
       const task = await storage.getTaskById(req.params.id);
       if (!task) {
         return res.status(404).json({ error: "Task not found" });
       }
-      res.json(task);
+      // For tasks that carry a userId in their payload, verify ownership
+      try {
+        const payload = JSON.parse(task.payload || "{}");
+        if (payload.userId !== undefined && payload.userId !== req.user.id) {
+          return res.status(403).json({ error: "Access denied" });
+        }
+      } catch {}
+      // Strip raw XML from payload/result before sending to client
+      const safeTask = { ...task };
+      if (task.type === "import_xml") {
+        const p = JSON.parse(task.payload || "{}");
+        delete p.xml;
+        (safeTask as any).payload = JSON.stringify(p);
+      }
+      if (task.type === "export_xml" && safeTask.result && safeTask.status !== "completed") {
+        (safeTask as any).result = null;
+      }
+      res.json(safeTask);
     } catch (error) {
       console.error("Error fetching task:", error);
       res.status(500).json({ error: "Failed to fetch task" });
@@ -4172,11 +4192,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.delete("/api/tasks/:id", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
     try {
       const task = await storage.getTaskById(req.params.id);
       if (!task) {
         return res.status(404).json({ error: "Task not found" });
       }
+      // Verify ownership for tasks with userId in payload
+      try {
+        const payload = JSON.parse(task.payload || "{}");
+        if (payload.userId !== undefined && payload.userId !== req.user.id) {
+          return res.status(403).json({ error: "Access denied" });
+        }
+      } catch {}
       if (task.status !== "pending" && task.status !== "in_progress") {
         return res.status(400).json({ error: "Can only cancel pending or running tasks" });
       }
@@ -4275,6 +4305,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const task = await storage.getTaskById(req.params.id);
       if (!task) return res.status(404).json({ error: "Task not found" });
       if (task.type !== "export_xml") return res.status(400).json({ error: "Not an export task" });
+      // Verify ownership
+      try {
+        const payload = JSON.parse(task.payload || "{}");
+        if (payload.userId !== undefined && payload.userId !== req.user.id) {
+          return res.status(403).json({ error: "Access denied" });
+        }
+      } catch {}
       if (task.status !== "completed") return res.status(400).json({ error: "Export not yet completed" });
       if (!task.result) return res.status(400).json({ error: "No export data available" });
       const date = new Date().toISOString().split("T")[0];

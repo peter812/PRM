@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Upload, FileText, AlertCircle, CheckCircle2, Download, Database, X } from "lucide-react";
+import { Upload, FileText, AlertCircle, CheckCircle2, Download, Database, X, TriangleAlert } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -35,7 +35,20 @@ function ProgressBar({ value, message }: { value: number; message?: string | nul
   );
 }
 
-function useTaskPoller(taskId: string | null, onComplete: (task: TaskStatus) => void, onError: (task: TaskStatus) => void) {
+interface TaskState {
+  taskId: string | null;
+  task: TaskStatus | null;
+  error: string | null;
+  done: boolean;
+}
+
+const initialTaskState: TaskState = { taskId: null, task: null, error: null, done: false };
+
+function useTaskPoller(
+  taskId: string | null,
+  onComplete: (task: TaskStatus) => void,
+  onFail: (task: TaskStatus) => void,
+) {
   const [task, setTask] = useState<TaskStatus | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -54,9 +67,9 @@ function useTaskPoller(taskId: string | null, onComplete: (task: TaskStatus) => 
         if (data.status === "completed") {
           if (intervalRef.current) clearInterval(intervalRef.current);
           onComplete(data);
-        } else if (data.status === "failed") {
+        } else if (data.status === "failed" || data.status === "cancelled") {
           if (intervalRef.current) clearInterval(intervalRef.current);
-          onError(data);
+          onFail(data);
         }
       } catch {}
     };
@@ -73,18 +86,16 @@ export default function ImportExportApplicationPage() {
   const [selectedXmlFile, setSelectedXmlFile] = useState<File | null>(null);
   const [includeHistory, setIncludeHistory] = useState(false);
 
-  const [exportTaskId, setExportTaskId] = useState<string | null>(null);
-  const [importTaskId, setImportTaskId] = useState<string | null>(null);
-  const [importResult, setImportResult] = useState<{ imported: Record<string, number>; skipped: Record<string, number> } | null>(null);
-  const [exportDone, setExportDone] = useState(false);
+  const [exportState, setExportState] = useState<TaskState>(initialTaskState);
+  const [importState, setImportState] = useState<TaskState & { result?: { imported: Record<string, number>; skipped: Record<string, number> } | null }>(initialTaskState);
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   const exportTask = useTaskPoller(
-    exportTaskId,
+    exportState.taskId,
     (task) => {
-      setExportDone(true);
+      setExportState(s => ({ ...s, task, done: true }));
       const date = new Date().toISOString().split("T")[0];
       const a = document.createElement("a");
       a.href = `/api/tasks/${task.id}/download`;
@@ -92,32 +103,27 @@ export default function ImportExportApplicationPage() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      toast({ title: "Export Complete", description: "Your XML file is downloading." });
     },
     (task) => {
-      toast({ title: "Export Failed", description: task.result || "Unknown error", variant: "destructive" });
-      setExportTaskId(null);
+      const errMsg = task.result || "The export failed unexpectedly. Please try again.";
+      setExportState(s => ({ ...s, task, error: errMsg, done: false }));
     }
   );
 
   const importTask = useTaskPoller(
-    importTaskId,
+    importState.taskId,
     (task) => {
-      try {
-        const parsed = JSON.parse(task.result || "{}");
-        setImportResult(parsed);
-      } catch {
-        setImportResult(null);
-      }
+      let parsed: { imported: Record<string, number>; skipped: Record<string, number> } | null = null;
+      try { parsed = JSON.parse(task.result || "{}"); } catch {}
+      setImportState(s => ({ ...s, task, done: true, result: parsed }));
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
-      toast({ title: "Import Complete", description: "Your data has been imported." });
     },
     (task) => {
-      toast({ title: "Import Failed", description: task.result || "Unknown error", variant: "destructive" });
-      setImportTaskId(null);
+      const errMsg = task.result || "The import failed unexpectedly. Please try again.";
+      setImportState(s => ({ ...s, task, error: errMsg, done: false }));
     }
   );
 
@@ -127,10 +133,10 @@ export default function ImportExportApplicationPage() {
       return res.json();
     },
     onSuccess: (task) => {
-      setExportTaskId(task.id);
-      setExportDone(false);
+      setExportState({ taskId: task.id, task: null, error: null, done: false });
     },
     onError: (error: Error) => {
+      setExportState(s => ({ ...s, error: error.message }));
       toast({ title: "Export Failed", description: error.message, variant: "destructive" });
     },
   });
@@ -147,11 +153,10 @@ export default function ImportExportApplicationPage() {
       return response.json();
     },
     onSuccess: (task) => {
-      setImportTaskId(task.id);
-      setImportResult(null);
+      setImportState({ taskId: task.id, task: null, error: null, done: false, result: null });
     },
     onError: (error: Error) => {
-      toast({ title: "Import Failed", description: error.message, variant: "destructive" });
+      setImportState(s => ({ ...s, error: error.message }));
     },
   });
 
@@ -168,19 +173,17 @@ export default function ImportExportApplicationPage() {
 
   const clearImport = () => {
     setSelectedXmlFile(null);
-    setImportTaskId(null);
-    setImportResult(null);
+    setImportState(initialTaskState);
     const fileInput = document.getElementById("xml-file-input") as HTMLInputElement;
     if (fileInput) fileInput.value = "";
   };
 
-  const clearExport = () => {
-    setExportTaskId(null);
-    setExportDone(false);
-  };
+  const clearExport = () => setExportState(initialTaskState);
 
-  const isExporting = exportTaskId !== null && !exportDone && exportTask?.status !== "failed";
-  const isImporting = importTaskId !== null && importTask?.status !== "completed" && importTask?.status !== "failed";
+  const isExporting = !!exportState.taskId && !exportState.done && !exportState.error;
+  const isImporting = !!importState.taskId && !importState.done && !importState.error;
+  const exportTaskSnapshot = exportState.task ?? exportTask;
+  const importTaskSnapshot = importState.task ?? importTask;
 
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
@@ -194,7 +197,7 @@ export default function ImportExportApplicationPage() {
         </CardHeader>
         <CardContent className="space-y-6">
 
-          {/* Export section */}
+          {/* ── Export section ── */}
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Export All Data</Label>
@@ -221,13 +224,29 @@ export default function ImportExportApplicationPage() {
               />
             </div>
 
-            {isExporting && exportTask && (
-              <div className="space-y-2 rounded-md border p-4">
-                <ProgressBar value={exportTask.progress} message={exportTask.progressMessage} />
+            {/* Export progress */}
+            {isExporting && exportTaskSnapshot && (
+              <div className="rounded-md border p-4 space-y-2">
+                <ProgressBar value={exportTaskSnapshot.progress} message={exportTaskSnapshot.progressMessage} />
               </div>
             )}
 
-            {exportDone && (
+            {/* Export error */}
+            {exportState.error && (
+              <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-4" data-testid="panel-export-error">
+                <TriangleAlert className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                <div className="flex-1 space-y-1">
+                  <p className="text-sm font-medium text-destructive">Export Failed</p>
+                  <p className="text-sm text-muted-foreground" data-testid="text-export-error-message">{exportState.error}</p>
+                </div>
+                <Button size="icon" variant="ghost" onClick={clearExport} data-testid="button-dismiss-export-error">
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+
+            {/* Export success */}
+            {exportState.done && (
               <div className="flex items-center gap-3 rounded-md bg-primary/10 border border-primary/20 p-3">
                 <CheckCircle2 className="h-5 w-5 text-primary shrink-0" />
                 <span className="text-sm flex-1" data-testid="text-export-done">Export complete — file downloading.</span>
@@ -256,14 +275,14 @@ export default function ImportExportApplicationPage() {
                   </>
                 )}
               </Button>
-              {exportDone && exportTask && (
+              {exportState.done && exportState.taskId && (
                 <Button
                   variant="outline"
                   className="gap-2"
                   onClick={() => {
                     const date = new Date().toISOString().split("T")[0];
                     const a = document.createElement("a");
-                    a.href = `/api/tasks/${exportTask.id}/download`;
+                    a.href = `/api/tasks/${exportState.taskId}/download`;
                     a.download = `crm-export-${date}.xml`;
                     document.body.appendChild(a);
                     a.click();
@@ -278,7 +297,7 @@ export default function ImportExportApplicationPage() {
             </div>
           </div>
 
-          {/* Import section */}
+          {/* ── Import section ── */}
           <div className="border-t pt-6 space-y-4">
             <div className="space-y-2">
               <Label htmlFor="xml-file-input">Import from XML</Label>
@@ -317,9 +336,24 @@ export default function ImportExportApplicationPage() {
               </div>
             </div>
 
-            {isImporting && importTask && (
-              <div className="space-y-2 rounded-md border p-4">
-                <ProgressBar value={importTask.progress} message={importTask.progressMessage} />
+            {/* Import progress */}
+            {isImporting && importTaskSnapshot && (
+              <div className="rounded-md border p-4 space-y-2">
+                <ProgressBar value={importTaskSnapshot.progress} message={importTaskSnapshot.progressMessage} />
+              </div>
+            )}
+
+            {/* Import error */}
+            {importState.error && (
+              <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/10 p-4" data-testid="panel-import-error">
+                <TriangleAlert className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                <div className="flex-1 space-y-1">
+                  <p className="text-sm font-medium text-destructive">Import Failed</p>
+                  <p className="text-sm text-muted-foreground" data-testid="text-import-error-message">{importState.error}</p>
+                </div>
+                <Button size="icon" variant="ghost" onClick={clearImport} data-testid="button-dismiss-import-error">
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
             )}
 
@@ -343,7 +377,7 @@ export default function ImportExportApplicationPage() {
                 )}
               </Button>
 
-              {(selectedXmlFile || importResult) && !isImporting && (
+              {(selectedXmlFile || importState.result) && !isImporting && (
                 <Button
                   variant="outline"
                   onClick={clearImport}
@@ -354,7 +388,8 @@ export default function ImportExportApplicationPage() {
               )}
             </div>
 
-            {importResult && (
+            {/* Import success summary */}
+            {importState.result && (
               <div className="rounded-md bg-primary/10 border border-primary/20 p-4">
                 <div className="flex items-start gap-3">
                   <CheckCircle2 className="h-5 w-5 text-primary mt-0.5 shrink-0" />
@@ -362,19 +397,19 @@ export default function ImportExportApplicationPage() {
                     <p className="font-medium" data-testid="text-xml-import-success">Import Complete</p>
                     <p className="text-sm text-muted-foreground">
                       Imported:{" "}
-                      {importResult.imported.people} people,{" "}
-                      {importResult.imported.groups} groups,{" "}
-                      {importResult.imported.relationships} relationships,{" "}
-                      {importResult.imported.interactions} interactions,{" "}
-                      {importResult.imported.notes} notes,{" "}
-                      {importResult.imported.socialAccounts || 0} social accounts,{" "}
-                      {importResult.imported.socialAccountTypes || 0} social account types,{" "}
-                      {importResult.imported.posts || 0} posts
+                      {importState.result.imported.people ?? 0} people,{" "}
+                      {importState.result.imported.groups ?? 0} groups,{" "}
+                      {importState.result.imported.relationships ?? 0} relationships,{" "}
+                      {importState.result.imported.interactions ?? 0} interactions,{" "}
+                      {importState.result.imported.notes ?? 0} notes,{" "}
+                      {importState.result.imported.socialAccounts ?? 0} social accounts,{" "}
+                      {importState.result.imported.socialAccountTypes ?? 0} social account types,{" "}
+                      {importState.result.imported.posts ?? 0} posts
                     </p>
-                    {importResult.skipped && Object.values(importResult.skipped).some(v => v > 0) && (
+                    {importState.result.skipped && Object.values(importState.result.skipped).some(v => v > 0) && (
                       <p className="text-sm text-muted-foreground">
                         Skipped duplicates:{" "}
-                        {Object.entries(importResult.skipped)
+                        {Object.entries(importState.result.skipped)
                           .filter(([, v]) => v > 0)
                           .map(([k, v]) => `${v} ${k}`)
                           .join(", ")}
