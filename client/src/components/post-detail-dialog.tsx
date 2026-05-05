@@ -9,6 +9,21 @@ import {
   DialogContent,
 } from "@/components/ui/dialog";
 
+interface MentionEntry {
+  imageIndex: number;
+  accounts: string[];
+}
+
+function getMentionsForImage(raw: string | null | undefined, imageIndex: number): string[] {
+  if (!raw) return [];
+  const parsed = safeJsonParse<MentionEntry[]>(raw, []);
+  if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === "object" && "imageIndex" in parsed[0]) {
+    const entry = parsed.find(e => e.imageIndex === imageIndex);
+    return entry?.accounts ?? [];
+  }
+  return [];
+}
+
 interface PostDetailDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -38,6 +53,8 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
     if (e.key === "ArrowLeft") prevImage();
     if (e.key === "ArrowRight") nextImage();
   };
+
+  const mentionsForCurrentImage = getMentionsForImage(post.mentionedAccounts, currentImageIndex);
 
   return (
     <Dialog open={open} onOpenChange={(o) => {
@@ -78,7 +95,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/70 text-white rounded-full"
+                        className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 text-white rounded-full"
                         onClick={prevImage}
                         data-testid="button-prev-image"
                       >
@@ -89,7 +106,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/70 text-white rounded-full"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/50 text-white rounded-full"
                         onClick={nextImage}
                         data-testid="button-next-image"
                       >
@@ -144,14 +161,16 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                 </div>
               </div>
 
-              {/* Mentioned Accounts */}
-              {post.mentionedAccounts && (
+              {/* Per-image Mentioned Accounts */}
+              {mentionsForCurrentImage.length > 0 && (
                 <div>
-                  <p className="text-xs text-muted-foreground mb-1">Mentioned</p>
+                  <p className="text-xs text-muted-foreground mb-1">
+                    Mentioned in image {currentImageIndex + 1}
+                  </p>
                   <div className="flex flex-wrap gap-1">
-                    {post.mentionedAccounts.split(",").map((account, idx) => (
+                    {mentionsForCurrentImage.map((account, idx) => (
                       <Badge key={idx} variant="secondary" className="text-xs">
-                        @{account.trim()}
+                        @{account}
                       </Badge>
                     ))}
                   </div>

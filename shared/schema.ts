@@ -202,7 +202,7 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   likeCount: integer("like_count").notNull().default(0),
   commentCount: integer("comment_count").notNull().default(0),
   comments: text("comments"), // JSON string with post comments data
-  mentionedAccounts: text("mentioned_accounts"), // Comma-separated list of mentioned account usernames
+  mentionedAccounts: text("mentioned_accounts"), // JSON array of {imageIndex: number, accounts: string[]} objects, e.g. '[{"imageIndex":0,"accounts":["user1"]}]'
   isDeleted: boolean("is_deleted").notNull().default(false),
   postedAt: timestamp("posted_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

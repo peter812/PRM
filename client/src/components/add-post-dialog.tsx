@@ -24,10 +24,24 @@ interface AddPostDialogProps {
 export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDialogProps) {
   const { toast } = useToast();
   const [imageUrls, setImageUrls] = useState<string[]>([""]);
+  const [mentionsByImage, setMentionsByImage] = useState<string[]>([""]);
   const [description, setDescription] = useState("");
   const [likeCount, setLikeCount] = useState(0);
   const [commentCount, setCommentCount] = useState(0);
-  const [mentionedAccounts, setMentionedAccounts] = useState("");
+
+  const buildMentionedAccounts = (): string | null => {
+    const result: { imageIndex: number; accounts: string[] }[] = [];
+    mentionsByImage.forEach((raw, idx) => {
+      const trimmed = raw.trim();
+      if (trimmed) {
+        const accounts = trimmed.split(",").map(a => a.trim()).filter(Boolean);
+        if (accounts.length > 0) {
+          result.push({ imageIndex: idx, accounts });
+        }
+      }
+    });
+    return result.length > 0 ? JSON.stringify(result) : null;
+  };
 
   const createPostMutation = useMutation({
     mutationFn: async () => {
@@ -37,7 +51,7 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
         description: description || null,
         likeCount,
         commentCount,
-        mentionedAccounts: mentionedAccounts.trim() ? mentionedAccounts : null,
+        mentionedAccounts: buildMentionedAccounts(),
       });
     },
     onSuccess: () => {
@@ -60,24 +74,32 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
 
   const resetForm = () => {
     setImageUrls([""]);
+    setMentionsByImage([""]);
     setDescription("");
     setLikeCount(0);
     setCommentCount(0);
-    setMentionedAccounts("");
   };
 
   const addImageUrl = () => {
     setImageUrls([...imageUrls, ""]);
+    setMentionsByImage([...mentionsByImage, ""]);
   };
 
   const removeImageUrl = (index: number) => {
     setImageUrls(imageUrls.filter((_, i) => i !== index));
+    setMentionsByImage(mentionsByImage.filter((_, i) => i !== index));
   };
 
   const updateImageUrl = (index: number, value: string) => {
     const updated = [...imageUrls];
     updated[index] = value;
     setImageUrls(updated);
+  };
+
+  const updateMentions = (index: number, value: string) => {
+    const updated = [...mentionsByImage];
+    updated[index] = value;
+    setMentionsByImage(updated);
   };
 
   return (
@@ -97,27 +119,39 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Image URLs */}
-          <div className="space-y-2">
-            <Label>Image URLs</Label>
+          {/* Image URLs with per-image mentions */}
+          <div className="space-y-3">
+            <Label>Images</Label>
             {imageUrls.map((url, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <Input
-                  placeholder="https://cdn.example.com/image.jpg"
-                  value={url}
-                  onChange={(e) => updateImageUrl(index, e.target.value)}
-                  data-testid={`input-image-url-${index}`}
-                />
-                {imageUrls.length > 1 && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => removeImageUrl(index)}
-                    data-testid={`button-remove-image-${index}`}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                )}
+              <div key={index} className="space-y-1.5 rounded-md border p-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground min-w-[3rem]">Image {index + 1}</span>
+                  <Input
+                    placeholder="https://cdn.example.com/image.jpg"
+                    value={url}
+                    onChange={(e) => updateImageUrl(index, e.target.value)}
+                    data-testid={`input-image-url-${index}`}
+                  />
+                  {imageUrls.length > 1 && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => removeImageUrl(index)}
+                      data-testid={`button-remove-image-${index}`}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 pl-[3.5rem]">
+                  <Input
+                    placeholder="Mentioned accounts (comma-separated)"
+                    value={mentionsByImage[index] ?? ""}
+                    onChange={(e) => updateMentions(index, e.target.value)}
+                    className="text-sm"
+                    data-testid={`input-mentions-image-${index}`}
+                  />
+                </div>
               </div>
             ))}
             <Button variant="outline" size="sm" onClick={addImageUrl} data-testid="button-add-image-url">
@@ -163,21 +197,6 @@ export function AddPostDialog({ open, onOpenChange, socialAccountId }: AddPostDi
                 data-testid="input-comment-count"
               />
             </div>
-          </div>
-
-          {/* Mentioned Accounts */}
-          <div className="space-y-2">
-            <Label htmlFor="post-mentions">Mentioned Accounts</Label>
-            <Input
-              id="post-mentions"
-              placeholder="Comma-separated account names..."
-              value={mentionedAccounts}
-              onChange={(e) => setMentionedAccounts(e.target.value)}
-              data-testid="input-mentioned-accounts"
-            />
-            <p className="text-xs text-muted-foreground">
-              Comma-separated list of mentioned account usernames
-            </p>
           </div>
 
           {/* Submit */}

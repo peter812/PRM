@@ -566,13 +566,6 @@ export default function SocialAccountProfile() {
                 Follow
               </TabsTrigger>
               <TabsTrigger
-                value="notes"
-                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-                data-testid="tab-notes"
-              >
-                Notes
-              </TabsTrigger>
-              <TabsTrigger
                 value="posts"
                 className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
                 data-testid="tab-posts"
@@ -584,7 +577,8 @@ export default function SocialAccountProfile() {
 
           {/* Follow Tab */}
           <TabsContent value="follow" className="mt-0">
-            <div className="px-6 py-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="px-6 py-6 space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Followers Column */}
               <Card className="p-4">
                 <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
@@ -707,11 +701,9 @@ export default function SocialAccountProfile() {
                 )}
               </Card>
             </div>
-          </TabsContent>
 
-          {/* Notes Tab */}
-          <TabsContent value="notes" className="mt-0">
-            <div className="px-6 py-6">
+            {/* Notes Section */}
+            <div>
               <div className="flex items-start justify-between gap-4 mb-3">
                 <h2 className="text-lg font-semibold" data-testid="text-notes-header">
                   Notes
@@ -773,6 +765,7 @@ export default function SocialAccountProfile() {
                   )}
                 </div>
               )}
+            </div>
             </div>
           </TabsContent>
 
