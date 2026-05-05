@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull } from "drizzle-orm";
@@ -627,6 +627,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <social_account_uuids>${arrayToXml(person.socialAccountUuids || [], "social_account_uuid")}</social_account_uuids>\n`;
         xml += `      <is_starred>${escapeXml(person.isStarred)}</is_starred>\n`;
         xml += `      <elo_score>${escapeXml(person.eloScore)}</elo_score>\n`;
+        xml += `      <no_social_media>${escapeXml(person.noSocialMedia ?? 0)}</no_social_media>\n`;
         xml += `      <created_at>${escapeXml(person.createdAt)}</created_at>\n`;
         xml += '    </person>\n';
       }
@@ -734,6 +735,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <notes></notes>\n`;
         xml += `      <following>${arrayToXml(accountState?.following || [], "account_id")}</following>\n`;
         xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
+        xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
+        xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }
@@ -750,6 +753,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += '    </social_account_type>\n';
       }
       xml += '  </social_account_types>\n';
+
+      // Export social account posts (non-deleted)
+      const allPosts = await storage.getAllPosts();
+      xml += '  <social_account_posts>\n';
+      for (const post of allPosts) {
+        xml += '    <social_account_post>\n';
+        xml += `      <id>${escapeXml(post.id)}</id>\n`;
+        xml += `      <social_account_id>${escapeXml(post.socialAccountId)}</social_account_id>\n`;
+        xml += `      <post_type>${escapeXml(post.postType)}</post_type>\n`;
+        xml += `      <content>${escapeXml(post.content || "")}</content>\n`;
+        xml += `      <description>${escapeXml(post.description || "")}</description>\n`;
+        xml += `      <like_count>${escapeXml(post.likeCount)}</like_count>\n`;
+        xml += `      <comment_count>${escapeXml(post.commentCount)}</comment_count>\n`;
+        xml += `      <comments>${escapeXml(post.comments || "")}</comments>\n`;
+        xml += `      <mentioned_accounts>${escapeXml(post.mentionedAccounts || "")}</mentioned_accounts>\n`;
+        xml += `      <posted_at>${escapeXml(post.postedAt || "")}</posted_at>\n`;
+        xml += `      <created_at>${escapeXml(post.createdAt)}</created_at>\n`;
+        xml += '    </social_account_post>\n';
+      }
+      xml += '  </social_account_posts>\n';
 
       if (includeHistory) {
         // Export social profile versions
@@ -878,6 +901,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         groupNotes: 0,
         socialAccounts: 0,
         socialAccountTypes: 0,
+        posts: 0,
         messages: 0,
         networkChanges: 0,
       };
@@ -976,6 +1000,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const socialAccountUuids = parseXmlArray("social_account_uuids", "social_account_uuid", block);
         const isStarred = parseInt(parseXmlTag("is_starred", block)) || 0;
         const eloScore = parseInt(parseXmlTag("elo_score", block)) || 1200;
+        const noSocialMedia = parseInt(parseXmlTag("no_social_media", block)) || 0;
 
         // Check for duplicate by First Name AND UUID
         const lookupKey = `${firstName.toLowerCase()}:${id}`;
@@ -998,6 +1023,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             socialAccountUuids: socialAccountUuids.length > 0 ? socialAccountUuids : [],
             isStarred: isStarred,
             eloScore: eloScore,
+            noSocialMedia: noSocialMedia,
           });
           importedCounts.people++;
           existingPeopleMap.set(lookupKey, true);
@@ -1168,6 +1194,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const imageUrl = unescapeXml(parseXmlTag("image_url", block));
         const following = parseXmlArray("following", "account_id", block);
         const followers = parseXmlArray("followers", "account_id", block);
+        const internalAccountCreationDateStr = unescapeXml(parseXmlTag("internal_account_creation_date", block));
+        const internalAccountCreationType = unescapeXml(parseXmlTag("internal_account_creation_type", block));
 
         if (existingSocialAccountUuids.has(id)) {
           skippedCounts.socialAccounts++;
@@ -1182,7 +1210,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             username,
             ownerUuid: processedOwnerUuid || null,
             typeId: typeId || null,
-          });
+            internalAccountCreationType: internalAccountCreationType || "Import",
+            ...(internalAccountCreationDateStr ? { internalAccountCreationDate: new Date(internalAccountCreationDateStr) } : {}),
+          } as any);
 
           if (nickname || accountUrl || imageUrl) {
             if (created.currentProfile) {
@@ -1289,6 +1319,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
           importedCounts.networkChanges = (importedCounts.networkChanges || 0) + 1;
         } catch (error) {
           console.error("Error importing network change:", error);
+        }
+      }
+
+      // Parse and import social account posts
+      const postBlocks = parseAllTags("social_account_post", xmlText);
+      const existingPostIds = new Set((await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts)).map(p => p.id));
+      for (const block of postBlocks) {
+        try {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const postSocialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+          const postType = unescapeXml(parseXmlTag("post_type", block)) || "post";
+          const content = unescapeXml(parseXmlTag("content", block));
+          const description = unescapeXml(parseXmlTag("description", block));
+          const likeCount = parseInt(parseXmlTag("like_count", block)) || 0;
+          const commentCount = parseInt(parseXmlTag("comment_count", block)) || 0;
+          const comments = unescapeXml(parseXmlTag("comments", block));
+          const mentionedAccounts = unescapeXml(parseXmlTag("mentioned_accounts", block));
+          const postedAtStr = unescapeXml(parseXmlTag("posted_at", block));
+
+          if (!id || !postSocialAccountId) continue;
+          if (existingPostIds.has(id)) continue;
+          if (!existingSocialAccountUuids.has(postSocialAccountId)) continue;
+
+          await db.insert(socialAccountPosts).values({
+            id,
+            socialAccountId: postSocialAccountId,
+            postType,
+            content: content || null,
+            description: description || null,
+            likeCount,
+            commentCount,
+            comments: comments || null,
+            mentionedAccounts: mentionedAccounts || null,
+            postedAt: postedAtStr ? new Date(postedAtStr) : null,
+          }).onConflictDoNothing();
+          existingPostIds.add(id);
+          importedCounts.posts++;
+        } catch (error) {
+          console.error("Error importing social account post:", error);
         }
       }
 
@@ -3054,6 +3123,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <notes></notes>\n`;
         xml += `      <following>${arrayToXml(accountState?.following || [], "account_id")}</following>\n`;
         xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
+        xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
+        xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
         xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
         xml += '    </social_account>\n';
       }

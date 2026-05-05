@@ -49,6 +49,7 @@ export default function ImportExportApplicationPage() {
         `${imported.notes} notes`,
         `${imported.socialAccounts || 0} social accounts`,
         `${imported.socialAccountTypes || 0} social account types`,
+        `${imported.posts || 0} posts`,
       ].join(', ');
 
       toast({
@@ -268,7 +269,8 @@ export default function ImportExportApplicationPage() {
                     {" "}{importXmlMutation.data.imported.interactions} interactions,
                     {" "}{importXmlMutation.data.imported.notes} notes,
                     {" "}{importXmlMutation.data.imported.socialAccounts || 0} social accounts,
-                    {" "}{importXmlMutation.data.imported.socialAccountTypes || 0} social account types
+                    {" "}{importXmlMutation.data.imported.socialAccountTypes || 0} social account types,
+                    {" "}{importXmlMutation.data.imported.posts || 0} posts
                   </p>
                 </div>
               </div>

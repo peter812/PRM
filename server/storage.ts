@@ -277,6 +277,7 @@ export interface IStorage {
 
   // Social account post operations
   getPostsBySocialAccountId(socialAccountId: string, includeDeleted?: boolean): Promise<SocialAccountPost[]>;
+  getAllPosts(): Promise<SocialAccountPost[]>;
   getPostById(id: string): Promise<SocialAccountPost | undefined>;
   createPost(post: InsertSocialAccountPost): Promise<SocialAccountPost>;
   updatePost(id: string, post: Partial<InsertSocialAccountPost>): Promise<SocialAccountPost | undefined>;
@@ -2392,7 +2393,7 @@ export class DatabaseStorage implements IStorage {
   async createSocialAccountWithId(account: InsertSocialAccount & { id: string }): Promise<SocialAccountWithCurrentProfile> {
     const [newAccount] = await db.insert(socialAccounts).values({
       ...account,
-      internalAccountCreationDate: new Date(),
+      internalAccountCreationDate: (account as any).internalAccountCreationDate || new Date(),
       internalAccountCreationType: account.internalAccountCreationType || "User",
     }).returning();
 
@@ -2674,6 +2675,14 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(socialAccountPosts)
       .where(and(...conditions))
+      .orderBy(desc(socialAccountPosts.createdAt));
+  }
+
+  async getAllPosts(): Promise<SocialAccountPost[]> {
+    return await db
+      .select()
+      .from(socialAccountPosts)
+      .where(eq(socialAccountPosts.isDeleted, false))
       .orderBy(desc(socialAccountPosts.createdAt));
   }
 
