@@ -2648,19 +2648,43 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getTasksByStatus(status: string): Promise<Task[]> {
-    return await db
-      .select()
+    const rows = await db
+      .select({
+        id: tasks.id,
+        type: tasks.type,
+        status: tasks.status,
+        payload: tasks.payload,
+        result: sql<string | null>`LEFT(${tasks.result}, 2000)`,
+        progress: tasks.progress,
+        progressMessage: tasks.progressMessage,
+        createdAt: tasks.createdAt,
+        startedAt: tasks.startedAt,
+        completedAt: tasks.completedAt,
+      })
       .from(tasks)
       .where(eq(tasks.status, status))
       .orderBy(tasks.createdAt);
+    return rows as Task[];
   }
 
   async getAllTasks(limit: number = 100): Promise<Task[]> {
-    return await db
-      .select()
+    const rows = await db
+      .select({
+        id: tasks.id,
+        type: tasks.type,
+        status: tasks.status,
+        payload: tasks.payload,
+        result: sql<string | null>`LEFT(${tasks.result}, 2000)`,
+        progress: tasks.progress,
+        progressMessage: tasks.progressMessage,
+        createdAt: tasks.createdAt,
+        startedAt: tasks.startedAt,
+        completedAt: tasks.completedAt,
+      })
       .from(tasks)
       .orderBy(desc(tasks.createdAt))
       .limit(limit);
+    return rows as Task[];
   }
 
   async getTaskById(id: string): Promise<Task | undefined> {
