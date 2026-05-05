@@ -2393,7 +2393,7 @@ export class DatabaseStorage implements IStorage {
   async createSocialAccountWithId(account: InsertSocialAccount & { id: string }): Promise<SocialAccountWithCurrentProfile> {
     const [newAccount] = await db.insert(socialAccounts).values({
       ...account,
-      internalAccountCreationDate: (account as any).internalAccountCreationDate || new Date(),
+      internalAccountCreationDate: account.internalAccountCreationDate || new Date(),
       internalAccountCreationType: account.internalAccountCreationType || "User",
     }).returning();
 

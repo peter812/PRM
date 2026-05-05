@@ -1211,8 +1211,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ownerUuid: processedOwnerUuid || null,
             typeId: typeId || null,
             internalAccountCreationType: internalAccountCreationType || "Import",
-            ...(internalAccountCreationDateStr ? { internalAccountCreationDate: new Date(internalAccountCreationDateStr) } : {}),
-          } as any);
+            internalAccountCreationDate: internalAccountCreationDateStr ? new Date(internalAccountCreationDateStr) : undefined,
+          });
 
           if (nickname || accountUrl || imageUrl) {
             if (created.currentProfile) {
