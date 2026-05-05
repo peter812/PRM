@@ -4141,14 +4141,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try { payloadObj = JSON.parse(t.payload || "{}"); } catch {}
         // Skip tasks belonging to another user
         if (payloadObj.userId !== undefined && payloadObj.userId !== req.user!.id) return null;
-        // Strip raw XML from import payloads
+        // Strip raw XML from import payloads; expose result on completed/failed/cancelled
         if (t.type === "import_xml") {
           const { xml: _dropped, ...rest } = payloadObj as { xml?: string };
-          return { ...t, payload: JSON.stringify(rest), result: t.status === "completed" ? t.result : null };
+          const exposeResult = t.status === "completed" || t.status === "failed" || t.status === "cancelled";
+          return { ...t, payload: JSON.stringify(rest), result: exposeResult ? t.result : null };
         }
-        // Strip in-progress export result (only serve via download endpoint when complete)
+        // Export: never send large XML in list; expose result on failure for error display
         if (t.type === "export_xml") {
-          return { ...t, result: t.status === "completed" ? null : null };
+          const exposeResult = t.status === "failed" || t.status === "cancelled";
+          return { ...t, result: exposeResult ? t.result : null };
         }
         return t;
       }).filter(Boolean);
@@ -4193,15 +4195,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (payloadObj.userId !== undefined && payloadObj.userId !== req.user.id) {
         return res.status(403).json({ error: "Access denied" });
       }
-      // Build a sanitized response — strip raw XML from import payloads and
-      // never expose the full export result via this endpoint (use /download instead)
+      // Build a sanitized response:
+      //   import_xml  — strip raw XML from payload; expose result only on completed/failed
+      //   export_xml  — never send large XML result inline; clients fetch via /download
       if (task.type === "import_xml") {
         const { xml: _dropped, ...safePayload } = payloadObj as { xml?: string };
-        return res.json({ ...task, payload: JSON.stringify(safePayload), result: task.status === "completed" ? task.result : null });
+        const exposeResult = task.status === "completed" || task.status === "failed" || task.status === "cancelled";
+        return res.json({ ...task, payload: JSON.stringify(safePayload), result: exposeResult ? task.result : null });
       }
       if (task.type === "export_xml") {
-        // result is large XML — never send it here; clients use /download
-        return res.json({ ...task, result: null });
+        // Expose result on failure so the client can display the error inline
+        const exposeResult = task.status === "failed" || task.status === "cancelled";
+        return res.json({ ...task, result: exposeResult ? task.result : null });
       }
       res.json(task);
     } catch (error) {

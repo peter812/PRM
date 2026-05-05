@@ -9,6 +9,7 @@ import os from "os";
 import { eq, isNotNull } from "drizzle-orm";
 import {
   people,
+  tasks,
   relationshipTypes,
   interactionTypes,
   socialNetworkChanges,
