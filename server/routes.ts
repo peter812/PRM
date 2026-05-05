@@ -2,10 +2,10 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull } from "drizzle-orm";
+import { eq, sql, isNotNull, and } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -4163,13 +4163,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get("/api/tasks/social-accounts-brief", async (req, res) => {
     try {
-      const accounts = await storage.getAllSocialAccounts();
-      const brief = accounts.map(a => ({
-        id: a.id,
-        username: a.username,
-        nickname: a.currentProfile?.nickname || null,
-      }));
-      res.json(brief);
+      // Lean query: only fetch the three fields needed, avoiding the heavy full join
+      const rows = await db
+        .select({
+          id: socialAccounts.id,
+          username: socialAccounts.username,
+          nickname: socialProfileVersions.nickname,
+        })
+        .from(socialAccounts)
+        .leftJoin(
+          socialProfileVersions,
+          and(
+            eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+            eq(socialProfileVersions.isCurrent, true)
+          )
+        )
+        .orderBy(socialAccounts.username);
+      res.json(rows.map(r => ({ id: r.id, username: r.username, nickname: r.nickname ?? null })));
     } catch (error) {
       console.error("Error fetching brief accounts:", error);
       res.status(500).json({ error: "Failed to fetch accounts" });
