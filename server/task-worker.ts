@@ -439,8 +439,17 @@ async function processExportXmlTask(taskId: string, payload: {
 
   xml += '</crm_data>';
 
-  await storage.updateTaskProgress(taskId, 99, "Finalizing…");
-  return xml;
+  await storage.updateTaskProgress(taskId, 99, "Saving file…");
+
+  const exportsDir = path.join(process.cwd(), "exports");
+  if (!fs.existsSync(exportsDir)) {
+    fs.mkdirSync(exportsDir, { recursive: true });
+  }
+  const fileName = `crm-export-${taskId}.xml`;
+  const filePath = path.join(exportsDir, fileName);
+  fs.writeFileSync(filePath, xml, "utf8");
+
+  return `exports/${fileName}`;
 }
 
 // ── Import XML task ──────────────────────────────────────────────────────────

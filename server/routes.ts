@@ -28,6 +28,8 @@ import { hashPassword } from "./auth";
 import { triggerTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "./task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
+import fs from "fs";
+import path from "path";
 import Papa from "papaparse";
 import { sendApiError, ErrorCodes } from "./middleware/error-handler";
 import { sseManager } from "./middleware/sse";
@@ -4351,6 +4353,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const date = new Date().toISOString().split("T")[0];
       res.setHeader("Content-Type", "application/xml");
       res.setHeader("Content-Disposition", `attachment; filename="crm-export-${date}.xml"`);
+      // New path: task.result is a relative file path like "exports/crm-export-<id>.xml"
+      if (task.result.startsWith("exports/")) {
+        const absPath = path.join(process.cwd(), task.result);
+        if (fs.existsSync(absPath)) {
+          return fs.createReadStream(absPath).pipe(res);
+        }
+      }
+      // Legacy fallback: task.result holds the raw XML blob
       res.send(task.result);
     } catch (error) {
       console.error("Error downloading export:", error);

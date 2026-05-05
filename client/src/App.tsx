@@ -7,7 +7,8 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/lib/protected-route";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { toast } from "@/hooks/use-toast";
 import { GlobalSearch } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
 import { AddPersonDialog } from "@/components/add-person-dialog";
@@ -30,6 +31,48 @@ import DummyAuth from "@/pages/dummy-auth";
 import EloRanking from "@/pages/elo-ranking";
 import AccountMatching from "@/pages/account-matching";
 import NotFound from "@/pages/not-found";
+
+const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
+
+function useExportNotifier() {
+  const { user } = useAuth();
+  const seenRef = useRef<Set<string>>(new Set());
+
+  // Seed from localStorage on mount so we don't re-notify after a page reload
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SEEN_EXPORTS_KEY) || "[]");
+      if (Array.isArray(stored)) seenRef.current = new Set(stored);
+    } catch {}
+  }, []);
+
+  const { data: tasks } = useQuery<{ id: string; type: string; status: string }[]>({
+    queryKey: ["/api/tasks"],
+    enabled: !!user,
+    refetchInterval: 5000,
+    select: (data) => data.map(t => ({ id: t.id, type: t.type, status: t.status })),
+  });
+
+  useEffect(() => {
+    if (!tasks) return;
+    const newlySeen: string[] = [];
+    for (const task of tasks) {
+      if (task.type === "export_xml" && task.status === "completed" && !seenRef.current.has(task.id)) {
+        seenRef.current.add(task.id);
+        newlySeen.push(task.id);
+        toast({
+          title: "Export ready",
+          description: "Your XML export is complete. Find the download button in the Tasks list.",
+        });
+      }
+    }
+    if (newlySeen.length > 0) {
+      try {
+        localStorage.setItem(SEEN_EXPORTS_KEY, JSON.stringify([...seenRef.current]));
+      } catch {}
+    }
+  }, [tasks]);
+}
 
 function GraphRedirect() {
   const params = new URLSearchParams(window.location.search);
@@ -73,6 +116,7 @@ function AppLayout() {
   const [location] = useLocation();
   const { user } = useAuth();
   const [isAddPersonDialogOpen, setIsAddPersonDialogOpen] = useState(false);
+  useExportNotifier();
   const isAuthPage = location === "/auth" || location === "/auth-direct";
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");

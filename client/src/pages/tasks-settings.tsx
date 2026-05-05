@@ -16,7 +16,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap, X, Trash2, Pause, CirclePlay } from "lucide-react";
+import { RefreshCw, Play, Loader2, CheckCircle2, XCircle, Clock, Zap, X, Trash2, Pause, CirclePlay, Download } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Task } from "@shared/schema";
@@ -41,6 +41,10 @@ function getTaskLabel(type: string): string {
       return "Transfer Images to S3";
     case "import_instagram":
       return "Instagram Import";
+    case "export_xml":
+      return "XML Export";
+    case "import_xml":
+      return "XML Import";
     default:
       return type;
   }
@@ -520,18 +524,31 @@ export default function TasksSettingsPage() {
                         {task.createdAt ? new Date(task.createdAt).toLocaleString() : ""}
                       </span>
                     </div>
-                    {(task.status === "pending" || task.status === "in_progress") && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="text-destructive"
-                        onClick={() => cancelTaskMutation.mutate(task.id)}
-                        disabled={cancelTaskMutation.isPending}
-                        data-testid={`button-cancel-task-${task.id}`}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {task.type === "export_xml" && task.status === "completed" && (
+                        <a
+                          href={`/api/tasks/${task.id}/download`}
+                          download
+                          data-testid={`link-download-export-${task.id}`}
+                        >
+                          <Button size="icon" variant="ghost" title="Download XML export">
+                            <Download className="h-4 w-4" />
+                          </Button>
+                        </a>
+                      )}
+                      {(task.status === "pending" || task.status === "in_progress") && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="text-destructive"
+                          onClick={() => cancelTaskMutation.mutate(task.id)}
+                          disabled={cancelTaskMutation.isPending}
+                          data-testid={`button-cancel-task-${task.id}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
