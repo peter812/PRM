@@ -415,6 +415,19 @@ async function validateAndSyncSchema(): Promise<void> {
       log("Tasks table created successfully");
     }
 
+    // Ensure app_settings table exists
+    const appSettingsExists = await tableExists("app_settings");
+    if (!appSettingsExists) {
+      log("Creating app_settings table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
+      log("app_settings table created successfully");
+    }
+
     // Migrate social_accounts to historical model (v2)
     await migrateSocialAccountsToHistorical();
 

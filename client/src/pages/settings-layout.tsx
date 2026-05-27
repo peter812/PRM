@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -37,6 +37,7 @@ import ImagePassInPage from "@/pages/image-pass-in";
 import InstagramSettingsPage from "@/pages/instagram-settings";
 import TasksSettingsPage from "@/pages/tasks-settings";
 import ImageStorageSettingsPage from "@/pages/image-storage-settings";
+import RecognitionSettingsPage from "@/pages/recognition-settings";
 import NotFound from "@/pages/not-found";
 
 interface MenuItem {
@@ -97,6 +98,11 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Application Data", url: "/import-export/application", icon: Database },
       { title: "Image Pass In", url: "/import-export/image-pass-in", icon: ImageIcon },
     ],
+  },
+  {
+    title: "Recognition",
+    url: "/recognition",
+    icon: Scan,
   },
   {
     title: "API Settings",
@@ -222,6 +228,7 @@ export default function SettingsLayout() {
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
+              <Route path="/recognition" component={RecognitionSettingsPage} />
               <Route path="/import-export/contacts" component={ImportContactsPage} />
               <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
               <Route path="/import-export/application" component={ImportExportApplicationPage} />

@@ -228,6 +228,12 @@ export const extensionAuthCodes = pgTable("extension_auth_codes", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// App settings table - key-value store for application configuration
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+});
+
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -459,6 +465,8 @@ export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPos
   updatedAt: true,
 });
 
+export const insertAppSettingSchema = createInsertSchema(appSettings);
+
 export const insertTaskSchema = createInsertSchema(tasks).omit({
   id: true,
   createdAt: true,
@@ -530,6 +538,9 @@ export type SocialAccountWithCurrentProfile = SocialAccount & {
   currentProfile: SocialProfileVersion | null;
   latestState: SocialNetworkState | null;
 };
+
+export type AppSetting = typeof appSettings.$inferSelect;
+export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
 
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema>;

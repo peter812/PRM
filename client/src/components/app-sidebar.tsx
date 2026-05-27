@@ -11,6 +11,7 @@ import {
   LogOut,
   Moon,
   Sun,
+  Scan,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
@@ -73,6 +74,11 @@ const menuItems = [
     title: "API Playground",
     url: "/api-playground",
     icon: Code,
+  },
+  {
+    title: "PRM-Face Demo",
+    url: "/prm-face-demo",
+    icon: Scan,
   },
 ];
 
