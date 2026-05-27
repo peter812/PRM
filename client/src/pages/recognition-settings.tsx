@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,11 +26,13 @@ export default function RecognitionSettingsPage() {
 
   const { data: settings, isLoading } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
-    select: (data) => {
-      setApiUrl(data.apiUrl || "");
-      return data;
-    },
   });
+
+  useEffect(() => {
+    if (settings?.apiUrl !== undefined) {
+      setApiUrl(settings.apiUrl);
+    }
+  }, [settings?.apiUrl]);
 
   const saveUrlMutation = useMutation({
     mutationFn: async () => {
