@@ -4652,6 +4652,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     );
   }
 
+  /** Strip any trailing slashes so URL + "/path" never produces a double-slash. */
+  function prmBase(url: string) {
+    return url.replace(/\/+$/, "");
+  }
+
   app.get("/api/prm-face/settings", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     try {
@@ -4688,13 +4693,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!apiUrl) return res.status(400).json({ error: "API URL is not configured" });
 
     try {
-      const formData = new FormData();
-      formData.append("setup_code", setupCode);
-      formData.append("label", label || "prm-app");
+      const params = new URLSearchParams();
+      params.append("setup_code", setupCode);
+      params.append("label", label || "prm-app");
 
-      const response = await fetch(`${apiUrl}/api/get-api-key`, {
+      const response = await fetch(`${prmBase(apiUrl)}/api/get-api-key`, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
       });
 
       if (!response.ok) {
@@ -4720,7 +4726,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!apiUrl) return res.json({ ok: false, message: "API URL is not configured." });
 
     try {
-      const response = await fetch(`${apiUrl}/api/setup-status`, {
+      const response = await fetch(`${prmBase(apiUrl)}/api/setup-status`, {
         signal: AbortSignal.timeout(8000),
       });
       if (!response.ok) {
@@ -4751,7 +4757,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
       formData.append("image", blob, req.file.originalname || "image.jpg");
 
-      const response = await fetch(`${apiUrl}/faces/pickout-temp`, {
+      const response = await fetch(`${prmBase(apiUrl)}/faces/pickout-temp`, {
         method: "POST",
         headers: { "X-API-Key": apiKey },
         body: formData,
