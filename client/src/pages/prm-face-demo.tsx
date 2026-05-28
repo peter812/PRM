@@ -20,7 +20,6 @@ export default function PrmFaceDemoPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
-  const [renderedSize, setRenderedSize] = useState<{ w: number; h: number } | null>(null);
   const [faces, setFaces] = useState<FaceResult[]>([]);
   const [rawResponse, setRawResponse] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -45,7 +44,6 @@ export default function PrmFaceDemoPage() {
         setImageDataUrl(dataUrl);
         setFaces([]);
         setRawResponse(null);
-        setRenderedSize(null);
         setNaturalSize(null);
 
         setIsProcessing(true);
@@ -96,20 +94,16 @@ export default function PrmFaceDemoPage() {
   const handleImageLoad = () => {
     if (!imgRef.current) return;
     setNaturalSize({ w: imgRef.current.naturalWidth, h: imgRef.current.naturalHeight });
-    setRenderedSize({ w: imgRef.current.offsetWidth, h: imgRef.current.offsetHeight });
   };
 
-  const scaleBox = (box: FaceBox) => {
-    if (!naturalSize || !renderedSize) return { left: 0, top: 0, width: 0, height: 0 };
-    const sx = renderedSize.w / naturalSize.w;
-    const sy = renderedSize.h / naturalSize.h;
-    return {
-      left: box.x * sx,
-      top: box.y * sy,
-      width: box.w * sx,
-      height: box.h * sy,
-    };
-  };
+  // Returns percentage strings — works regardless of rendered size
+  // because the container is inline-block and shrink-wraps the image exactly.
+  const pctBox = (box: FaceBox, nat: { w: number; h: number }) => ({
+    left: `${(box.x / nat.w) * 100}%`,
+    top: `${(box.y / nat.h) * 100}%`,
+    width: `${(box.w / nat.w) * 100}%`,
+    height: `${(box.h / nat.h) * 100}%`,
+  });
 
   return (
     <div className="h-full overflow-auto">
@@ -213,18 +207,18 @@ export default function PrmFaceDemoPage() {
                   data-testid="img-uploaded"
                   style={{ display: "block" }}
                 />
-                {renderedSize && faces.map((face, i) => {
+                {naturalSize && faces.map((face, i) => {
                   if (!face.box) return null;
-                  const scaled = scaleBox(face.box);
+                  const pos = pctBox(face.box, naturalSize);
                   return (
                     <div
                       key={face.face_uuid ?? face.face_index ?? i}
                       style={{
                         position: "absolute",
-                        left: scaled.left,
-                        top: scaled.top,
-                        width: scaled.width,
-                        height: scaled.height,
+                        left: pos.left,
+                        top: pos.top,
+                        width: pos.width,
+                        height: pos.height,
                         border: "2.5px solid #3b82f6",
                         borderRadius: 3,
                         boxSizing: "border-box",
