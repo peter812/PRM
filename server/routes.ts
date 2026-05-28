@@ -4778,6 +4778,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/prm-face/face/list", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+    if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+    const apiKey = await getPrmFaceSetting("prm_face_api_key");
+    if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+    const { page = "1", page_size = "24" } = req.query as Record<string, string>;
+    try {
+      const response = await fetch(
+        `${prmBase(apiUrl)}/api/face/list?page=${page}&page_size=${page_size}`,
+        { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15000) }
+      );
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 404 || response.status === 405) {
+          return res.status(401).json({ error: "API_KEY_INVALID" });
+        }
+        const body = await response.text();
+        return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+      }
+      res.json(await response.json());
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+    }
+  });
+
   app.post("/api/prm-face/img/add", upload.single("image"), async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     if (!req.file) return res.status(400).json({ error: "No image provided." });
