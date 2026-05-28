@@ -4669,6 +4669,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/prm-face/reveal-key", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(404).json({ error: "No API key configured." });
+      res.json({ apiKey });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to retrieve API key" });
+    }
+  });
+
   app.post("/api/prm-face/settings", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     const { apiUrl } = req.body;

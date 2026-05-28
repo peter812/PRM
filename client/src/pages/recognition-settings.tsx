@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -23,6 +23,10 @@ export default function RecognitionSettingsPage() {
   const [apiUrl, setApiUrl] = useState("");
   const [setupCode, setSetupCode] = useState("");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [revealedKey, setRevealedKey] = useState<string | null>(null);
+  const [keyVisible, setKeyVisible] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [isRevealing, setIsRevealing] = useState(false);
 
   const { data: settings, isLoading } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
@@ -62,6 +66,32 @@ export default function RecognitionSettingsPage() {
       toast({ title: "Failed to generate API key", description: error.message, variant: "destructive" });
     },
   });
+
+  const handleRevealKey = async () => {
+    if (revealedKey) {
+      setKeyVisible((v) => !v);
+      return;
+    }
+    setIsRevealing(true);
+    try {
+      const res = await fetch("/api/prm-face/reveal-key", { credentials: "include" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to retrieve key");
+      setRevealedKey(data.apiKey);
+      setKeyVisible(true);
+    } catch (err: any) {
+      toast({ title: "Could not retrieve key", description: err.message, variant: "destructive" });
+    } finally {
+      setIsRevealing(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    if (!revealedKey) return;
+    await navigator.clipboard.writeText(revealedKey);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const testMutation = useMutation({
     mutationFn: async () => {
@@ -151,9 +181,57 @@ export default function RecognitionSettingsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {hasApiKey && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground rounded-md bg-muted p-3" data-testid="text-key-status">
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600 dark:text-green-500" />
-                <span>An API key is configured. Enter a new setup code below to replace it.</span>
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground rounded-md bg-muted p-3" data-testid="text-key-status">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600 dark:text-green-500" />
+                  <span>An API key is configured. Enter a new setup code below to replace it.</span>
+                </div>
+                <div className="flex gap-2" data-testid="row-reveal-key">
+                  <div className="relative flex-1">
+                    <Input
+                      readOnly
+                      value={revealedKey ?? ""}
+                      type={keyVisible ? "text" : "password"}
+                      placeholder="••••••••••••••••••••••••••••••••"
+                      className="pr-10 font-mono text-sm"
+                      data-testid="input-revealed-key"
+                    />
+                    {revealedKey && (
+                      <button
+                        type="button"
+                        onClick={() => setKeyVisible((v) => !v)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        data-testid="button-toggle-key-visibility"
+                      >
+                        {keyVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    )}
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={handleRevealKey}
+                    disabled={isRevealing}
+                    data-testid="button-reveal-key"
+                  >
+                    {isRevealing ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : revealedKey ? (
+                      keyVisible ? <><EyeOff className="h-4 w-4 mr-2" />Hide</> : <><Eye className="h-4 w-4 mr-2" />Show</>
+                    ) : (
+                      <><Eye className="h-4 w-4 mr-2" />Show API Key</>
+                    )}
+                  </Button>
+                  {revealedKey && (
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={handleCopy}
+                      data-testid="button-copy-key"
+                    >
+                      {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
             <div className="space-y-2">
