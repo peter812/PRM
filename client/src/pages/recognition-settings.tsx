@@ -152,8 +152,8 @@ export default function RecognitionSettingsPage() {
           <CardContent className="space-y-4">
             {hasApiKey && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground rounded-md bg-muted p-3" data-testid="text-key-status">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <span>An API key is already configured. Generate a new one only if the current key has been revoked.</span>
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600 dark:text-green-500" />
+                <span>An API key is configured. Enter a new setup code below to replace it.</span>
               </div>
             )}
             <div className="space-y-2">
@@ -170,18 +170,18 @@ export default function RecognitionSettingsPage() {
             <div className="flex gap-3 flex-wrap">
               <Button
                 onClick={() => generateKeyMutation.mutate()}
-                disabled={generateKeyMutation.isPending || hasApiKey || !setupCode.trim() || !apiUrl.trim()}
+                disabled={generateKeyMutation.isPending || !setupCode.trim() || !apiUrl.trim()}
                 data-testid="button-generate-api-key"
               >
                 {generateKeyMutation.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Generating…
+                    {hasApiKey ? "Regenerating…" : "Generating…"}
                   </>
                 ) : (
                   <>
                     <Key className="h-4 w-4 mr-2" />
-                    Generate API Key
+                    {hasApiKey ? "Regenerate API Key" : "Generate API Key"}
                   </>
                 )}
               </Button>
