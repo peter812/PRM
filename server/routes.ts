@@ -4755,6 +4755,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15000) }
       );
       if (!response.ok) {
+        if (response.status === 404 || response.status === 405) {
+          return res.status(401).json({ error: "API_KEY_INVALID" });
+        }
         const body = await response.text();
         return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
       }
@@ -4782,6 +4785,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         signal: AbortSignal.timeout(30000),
       });
       if (!response.ok) {
+        if (response.status === 404 || response.status === 405) {
+          return res.status(401).json({ error: "API_KEY_INVALID" });
+        }
         const body = await response.text();
         return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
       }

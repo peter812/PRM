@@ -3,8 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { ImageIcon, Plus, ChevronLeft, ChevronRight, Upload, Loader2, AlertCircle } from "lucide-react";
+import { ImageIcon, Plus, ChevronLeft, ChevronRight, Upload, Loader2, AlertCircle, KeyRound } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
 
 const PAGE_SIZE = 24;
 
@@ -52,7 +53,10 @@ export default function RecognitionImagesPage() {
       }
       return res.json();
     },
+    retry: false,
   });
+
+  const isKeyInvalid = isError && (error as Error).message === "API_KEY_INVALID";
 
   const items: ImageItem[] = data?.items ?? data?.images ?? (data?.data as ImageItem[]) ?? [];
   const total = data?.total ?? items.length;
@@ -89,7 +93,10 @@ export default function RecognitionImagesPage() {
       setSelectedFile(null);
       queryClient.invalidateQueries({ queryKey: ["/api/prm-face/img/list"] });
     } catch (err: any) {
-      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+      const msg = err.message === "API_KEY_INVALID"
+        ? "Invalid API key — please regenerate it in Recognition Settings."
+        : err.message;
+      toast({ title: "Upload failed", description: msg, variant: "destructive" });
     } finally {
       setIsUploading(false);
     }
@@ -149,7 +156,23 @@ export default function RecognitionImagesPage() {
           </div>
         )}
 
-        {isError && (
+        {isKeyInvalid && (
+          <div className="flex items-start gap-3 rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm" data-testid="error-api-key">
+            <KeyRound className="h-4 w-4 shrink-0 mt-0.5 text-destructive" />
+            <div className="space-y-1">
+              <p className="text-destructive font-medium">Invalid or missing API key</p>
+              <p className="text-muted-foreground">
+                PRM-Face rejected the request. Please{" "}
+                <Link href="/settings/recognition" className="underline text-foreground hover:text-foreground/80">
+                  regenerate your API key
+                </Link>{" "}
+                in Recognition Settings.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {isError && !isKeyInvalid && (
           <div className="flex items-start gap-3 rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm" data-testid="error-images">
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-destructive" />
             <span className="text-destructive">{(error as Error).message}</span>
