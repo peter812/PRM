@@ -22,6 +22,7 @@ export default function PrmFaceDemoPage() {
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
   const [renderedSize, setRenderedSize] = useState<{ w: number; h: number } | null>(null);
   const [faces, setFaces] = useState<FaceResult[]>([]);
+  const [rawResponse, setRawResponse] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -43,6 +44,7 @@ export default function PrmFaceDemoPage() {
         const dataUrl = e.target?.result as string;
         setImageDataUrl(dataUrl);
         setFaces([]);
+        setRawResponse(null);
         setRenderedSize(null);
         setNaturalSize(null);
 
@@ -63,6 +65,7 @@ export default function PrmFaceDemoPage() {
           }
 
           const data: PickoutResult = await res.json();
+          setRawResponse(JSON.stringify(data, null, 2));
           setFaces(data.faces || []);
 
           if ((data.faces || []).length === 0) {
@@ -185,6 +188,23 @@ export default function PrmFaceDemoPage() {
             </div>
           </CardContent>
         </Card>
+
+        {rawResponse !== null && (
+          <Card data-testid="card-raw-response">
+            <CardHeader>
+              <CardTitle className="text-lg">Raw API Response</CardTitle>
+              <CardDescription>Full JSON response from the PRM-Face server</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <pre
+                className="text-xs bg-muted rounded-md p-4 overflow-auto max-h-72 whitespace-pre-wrap break-all"
+                data-testid="text-raw-response"
+              >
+                {rawResponse}
+              </pre>
+            </CardContent>
+          </Card>
+        )}
 
         {imageDataUrl && (
           <Card data-testid="card-result">
