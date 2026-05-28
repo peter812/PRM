@@ -4762,7 +4762,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const { page = "1", page_size = "24" } = req.query as Record<string, string>;
     try {
       const response = await fetch(
-        `${prmBase(apiUrl)}/img/list?page=${page}&page_size=${page_size}`,
+        `${prmBase(apiUrl)}/api/img/list?page=${page}&page_size=${page_size}`,
         { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15000) }
       );
       if (!response.ok) {
@@ -4789,7 +4789,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const formData = new FormData();
       formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
       if (req.body.max_faces) formData.append("max_faces", String(req.body.max_faces));
-      const response = await fetch(`${prmBase(apiUrl)}/img/add`, {
+      const response = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
         method: "POST",
         headers: { "x-api-key": apiKey },
         body: formData,
@@ -4823,7 +4823,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
       formData.append("image", blob, req.file.originalname || "image.jpg");
 
-      const response = await fetch(`${prmBase(apiUrl)}/faces/pickout-temp`, {
+      const response = await fetch(`${prmBase(apiUrl)}/api/img/temp-lookup`, {
         method: "POST",
         headers: { "X-API-Key": apiKey },
         body: formData,
