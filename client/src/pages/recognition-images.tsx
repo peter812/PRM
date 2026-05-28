@@ -123,7 +123,12 @@ export default function RecognitionImagesPage() {
       try { payload = JSON.parse(text); } catch { payload = null; }
       if (!res.ok) throw new Error(payload?.error ?? `Server error ${res.status}`);
       toast({ title: "Image deleted", description: item.original_filename });
-      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/img/list"] });
+      // If this was the only item on the current page, go back one page first
+      if (images.length === 1 && page > 1) {
+        setPage((p) => p - 1);
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["/api/prm-face/img/list", page] });
+      }
     } catch (err: any) {
       toast({ title: "Delete failed", description: err.message, variant: "destructive" });
     }
