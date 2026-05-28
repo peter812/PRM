@@ -6,8 +6,8 @@ import { Scan, Upload, AlertCircle, Loader2, ImageIcon } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 type FaceBox = { x: number; y: number; w: number; h: number };
-type FaceResult = { face_uuid?: string; face_box?: FaceBox };
-type PickoutResult = { faces: FaceResult[] };
+type FaceResult = { face_uuid?: string; face_index?: number; box?: FaceBox };
+type PickoutResult = { faces_detected?: number; faces: FaceResult[] };
 type PrmFaceSettings = { apiUrl: string; hasApiKey: boolean };
 
 const COLORS = [
@@ -99,7 +99,7 @@ export default function PrmFaceDemoPage() {
     setRenderedSize({ w: imgRef.current.offsetWidth, h: imgRef.current.offsetHeight });
   };
 
-  const scaleBox = (box: FaceBox): { left: number; top: number; width: number; height: number } => {
+  const scaleBox = (box: FaceBox) => {
     if (!naturalSize || !renderedSize) return { left: 0, top: 0, width: 0, height: 0 };
     const sx = renderedSize.w / naturalSize.w;
     const sy = renderedSize.h / naturalSize.h;
@@ -214,19 +214,19 @@ export default function PrmFaceDemoPage() {
                   style={{ display: "block" }}
                 />
                 {renderedSize && faces.map((face, i) => {
-                  if (!face.face_box) return null;
-                  const scaled = scaleBox(face.face_box);
-                  const color = COLORS[i % COLORS.length];
+                  if (!face.box) return null;
+                  const scaled = scaleBox(face.box);
                   return (
                     <div
-                      key={face.face_uuid || i}
+                      key={face.face_uuid ?? face.face_index ?? i}
                       style={{
                         position: "absolute",
                         left: scaled.left,
                         top: scaled.top,
                         width: scaled.width,
                         height: scaled.height,
-                        border: `3px solid ${color}`,
+                        border: "2.5px solid #3b82f6",
+                        borderRadius: 3,
                         boxSizing: "border-box",
                         pointerEvents: "none",
                       }}
@@ -237,7 +237,7 @@ export default function PrmFaceDemoPage() {
                           position: "absolute",
                           top: -22,
                           left: 0,
-                          background: color,
+                          background: "#3b82f6",
                           color: "#fff",
                           fontSize: 11,
                           padding: "1px 5px",
