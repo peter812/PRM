@@ -279,6 +279,31 @@ export async function matchAndSave(imageFile: File, maxFaces: number = 10, limit
 }
 ```
 
+### 4.4 Delete Image (Delete full image and face crops)
+Removes an image record from the database (which cascade deletes all associated Face records) and deletes the physical files for the full image and its face crops from disk.
+* **Endpoint**: `DELETE /api/img/delete`
+* **Query Parameters**:
+  - `image_uuid` (string, required)
+**React Server/Action Implementation:**
+```typescript
+export async function deleteImage(imageUuid: string) {
+  const url = new URL(`${process.env.PRMFACE_API_URL}/api/img/delete`);
+  url.searchParams.append('image_uuid', imageUuid);
+  const resp = await fetch(url.toString(), {
+    method: 'DELETE',
+    headers: {
+      'X-API-Key': process.env.PRMFACE_API_KEY || '',
+    },
+  });
+  if (!resp.ok) {
+    const err = await resp.json();
+    throw new Error(err.detail || 'Failed to delete image');
+  }
+  return resp.json(); // returns { deleted: true, image_uuid: "...", faces_deleted: string[] }
+}
+```
+
+
 ---
 
 ## 5. Person & Identity Management
