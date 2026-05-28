@@ -84,9 +84,12 @@ export default function RecognitionImagesPage() {
         body: formData,
         credentials: "include",
       });
+      const text = await res.text();
+      let payload: any;
+      try { payload = JSON.parse(text); } catch { payload = null; }
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Unknown error" }));
-        throw new Error(err.error || `Server error ${res.status}`);
+        const msg = payload?.error ?? (text.startsWith("<") ? "Session may have expired — please refresh the page." : `Server error ${res.status}`);
+        throw new Error(msg);
       }
       toast({ title: "Image added", description: "The image has been stored and faces extracted." });
       setIsAddOpen(false);

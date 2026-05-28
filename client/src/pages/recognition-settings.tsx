@@ -75,7 +75,13 @@ export default function RecognitionSettingsPage() {
     setIsRevealing(true);
     try {
       const res = await fetch("/api/prm-face/reveal-key", { credentials: "include" });
-      const data = await res.json();
+      const text = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error("Unexpected response from server — your session may have expired. Please refresh the page.");
+      }
       if (!res.ok) throw new Error(data.error || "Failed to retrieve key");
       setRevealedKey(data.apiKey);
       setKeyVisible(true);
