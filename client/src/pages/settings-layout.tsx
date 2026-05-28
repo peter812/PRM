@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -38,6 +38,8 @@ import InstagramSettingsPage from "@/pages/instagram-settings";
 import TasksSettingsPage from "@/pages/tasks-settings";
 import ImageStorageSettingsPage from "@/pages/image-storage-settings";
 import RecognitionSettingsPage from "@/pages/recognition-settings";
+import RecognitionImagesPage from "@/pages/recognition-images";
+import RecognitionFacesPage from "@/pages/recognition-faces";
 import NotFound from "@/pages/not-found";
 
 interface MenuItem {
@@ -103,6 +105,10 @@ const settingsMenuItems: MenuItem[] = [
     title: "Recognition",
     url: "/recognition",
     icon: Scan,
+    subItems: [
+      { title: "Images", url: "/recognition/images", icon: ImageIcon },
+      { title: "Faces", url: "/recognition/faces", icon: ScanFace },
+    ],
   },
   {
     title: "API Settings",
@@ -131,6 +137,7 @@ function SettingsSidebar() {
 
   const isDataTypesActive = location.startsWith("/data-types");
   const isImportExportActive = location.startsWith("/import-export");
+  const isRecognitionActive = location.startsWith("/recognition");
 
   return (
     <Sidebar>
@@ -141,7 +148,7 @@ function SettingsSidebar() {
             <SidebarMenu>
               {settingsMenuItems.map((item) => {
                 if (item.subItems) {
-                  const isActive = item.url === "/data-types" ? isDataTypesActive : isImportExportActive;
+                  const isActive = item.url === "/data-types" ? isDataTypesActive : item.url === "/recognition" ? isRecognitionActive : isImportExportActive;
                   return (
                     <Collapsible
                       key={item.title}
@@ -228,6 +235,8 @@ export default function SettingsLayout() {
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
+              <Route path="/recognition/images" component={RecognitionImagesPage} />
+              <Route path="/recognition/faces" component={RecognitionFacesPage} />
               <Route path="/recognition" component={RecognitionSettingsPage} />
               <Route path="/import-export/contacts" component={ImportContactsPage} />
               <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
