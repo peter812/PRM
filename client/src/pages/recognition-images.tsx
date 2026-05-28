@@ -3,7 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { ImageIcon, Plus, ChevronLeft, ChevronRight, Upload, Loader2, AlertCircle, KeyRound } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { ImageIcon, Plus, ChevronLeft, ChevronRight, Upload, Loader2, AlertCircle, KeyRound, MoreVertical, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 
@@ -111,6 +112,26 @@ export default function RecognitionImagesPage() {
     }
   };
 
+  const handleDelete = async (item: ImageItem) => {
+    const fullUrl = apiUrl ? buildUrl(apiUrl, item.image_url) : item.image_url;
+    try {
+      const res = await fetch("/api/delete-image", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ imageUrl: fullUrl }),
+      });
+      const text = await res.text();
+      let payload: any;
+      try { payload = JSON.parse(text); } catch { payload = null; }
+      if (!res.ok) throw new Error(payload?.error ?? `Server error ${res.status}`);
+      toast({ title: "Image deleted", description: item.original_filename });
+      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/img/list"] });
+    } catch (err: any) {
+      toast({ title: "Delete failed", description: err.message, variant: "destructive" });
+    }
+  };
+
   const handleDialogOpenChange = (open: boolean) => {
     if (!open) {
       setSelectedFile(null);
@@ -204,9 +225,33 @@ export default function RecognitionImagesPage() {
                       )}
                     </div>
                     <div className="p-2 space-y-0.5">
-                      <p className="text-xs font-medium truncate" title={item.original_filename}>
-                        {item.original_filename}
-                      </p>
+                      <div className="flex items-start justify-between gap-1">
+                        <p className="text-xs font-medium truncate" title={item.original_filename}>
+                          {item.original_filename}
+                        </p>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-5 w-5 shrink-0 -mt-0.5 -mr-0.5"
+                              data-testid={`button-image-menu-${item.image_uuid}`}
+                            >
+                              <MoreVertical className="h-3 w-3" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              className="text-destructive focus:text-destructive"
+                              onClick={() => handleDelete(item)}
+                              data-testid={`menu-delete-image-${item.image_uuid}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
                       <p className="text-xs text-muted-foreground">
                         {item.face_count} face{item.face_count !== 1 ? "s" : ""}
                       </p>
