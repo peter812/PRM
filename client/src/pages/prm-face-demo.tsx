@@ -6,7 +6,7 @@ import { Scan, Upload, AlertCircle, Loader2, ImageIcon } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 type FaceBox = { x: number; y: number; w: number; h: number };
-type FaceResult = { face_uuid?: string; face_box: FaceBox };
+type FaceResult = { face_uuid?: string; face_box?: FaceBox };
 type PickoutResult = { faces: FaceResult[] };
 type PrmFaceSettings = { apiUrl: string; hasApiKey: boolean };
 
@@ -231,6 +231,7 @@ export default function PrmFaceDemoPage() {
                   style={{ display: "block" }}
                 />
                 {renderedSize && faces.map((face, i) => {
+                  if (!face.face_box) return null;
                   const scaled = scaleBox(face.face_box);
                   const color = COLORS[i % COLORS.length];
                   return (
