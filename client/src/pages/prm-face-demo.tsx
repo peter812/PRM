@@ -189,23 +189,6 @@ export default function PrmFaceDemoPage() {
           </CardContent>
         </Card>
 
-        {rawResponse !== null && (
-          <Card data-testid="card-raw-response">
-            <CardHeader>
-              <CardTitle className="text-lg">Raw API Response</CardTitle>
-              <CardDescription>Full JSON response from the PRM-Face server</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <pre
-                className="text-xs bg-muted rounded-md p-4 overflow-auto max-h-72 whitespace-pre-wrap break-all"
-                data-testid="text-raw-response"
-              >
-                {rawResponse}
-              </pre>
-            </CardContent>
-          </Card>
-        )}
-
         {imageDataUrl && (
           <Card data-testid="card-result">
             <CardHeader>
@@ -274,6 +257,23 @@ export default function PrmFaceDemoPage() {
                   </div>
                 )}
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {rawResponse !== null && (
+          <Card data-testid="card-raw-response">
+            <CardHeader>
+              <CardTitle className="text-lg">Raw API Response</CardTitle>
+              <CardDescription>Full JSON response from the PRM-Face server</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <pre
+                className="text-xs bg-muted rounded-md p-4 overflow-auto max-h-72 whitespace-pre-wrap break-all"
+                data-testid="text-raw-response"
+              >
+                {rawResponse}
+              </pre>
             </CardContent>
           </Card>
         )}
