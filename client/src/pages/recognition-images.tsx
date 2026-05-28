@@ -113,13 +113,10 @@ export default function RecognitionImagesPage() {
   };
 
   const handleDelete = async (item: ImageItem) => {
-    const fullUrl = apiUrl ? buildUrl(apiUrl, item.image_url) : item.image_url;
     try {
-      const res = await fetch("/api/delete-image", {
+      const res = await fetch(`/api/prm-face/img/delete?image_uuid=${encodeURIComponent(item.image_uuid)}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ imageUrl: fullUrl }),
       });
       const text = await res.text();
       let payload: any;
