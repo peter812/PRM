@@ -2806,7 +2806,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }> {
-    const igPattern = '\\.cdninstagram\\.com';
+    const igPattern = '(cdninstagram|fbcdn)\\.com';
 
     const [imgUrlResult, extImgUrlResult, postsResult, photosResult] = await Promise.all([
       db
