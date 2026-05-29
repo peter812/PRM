@@ -2822,7 +2822,7 @@ export class DatabaseStorage implements IStorage {
       db
         .update(socialAccountPosts)
         .set({ content: null })
-        .where(sql`${socialAccountPosts.content} LIKE '%cdninstagram.com%'`)
+        .where(sql`${socialAccountPosts.content} ~ ${igPattern}`)
         .returning({ id: socialAccountPosts.id }),
       db
         .delete(photos)

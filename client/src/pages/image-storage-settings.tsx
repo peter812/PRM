@@ -114,7 +114,7 @@ export default function ImageStorageSettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
       toast({
         title: "Instagram URLs removed",
-        description: `${data.profileVersionsCleared} profile image${data.profileVersionsCleared !== 1 ? "s" : ""}, ${data.postsCleared} post${data.postsCleared !== 1 ? "s" : ""}, and ${data.photosDeleted} photo record${data.photosDeleted !== 1 ? "s" : ""} cleared.`,
+        description: `${data.profileVersionsCleared} profile image${data.profileVersionsCleared !== 1 ? "s" : ""}, ${data.postsCleared} post${data.postsCleared !== 1 ? "s" : ""}, ${data.photosDeleted} photo record${data.photosDeleted !== 1 ? "s" : ""} cleared.`,
       });
     },
     onError: (error: Error) => {
@@ -342,7 +342,7 @@ export default function ImageStorageSettingsPage() {
               Delete All Instagram Image URLs
             </CardTitle>
             <CardDescription>
-              Remove all cdninstagram.com URLs from the database. These are temporary URLs (72hr) added during Instagram imports and should not be stored permanently.
+              This will remove all cdninstagram.com URLs from images. These are temporary URLs (72hr) added when we do imports from Instagram — these should not be stored permanently.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -351,7 +351,7 @@ export default function ImageStorageSettingsPage() {
               <div className="space-y-1">
                 <p className="text-sm font-medium text-destructive">Danger — this is destructive and cannot be undone</p>
                 <p className="text-xs text-muted-foreground">
-                  Removes all image URLs from social media posts and social profile photos where the URL contains cdninstagram.com. Also deletes all photo DB table entries with cdninstagram.com image URLs. Affected profile versions and posts will have their image fields set to null.
+                  Removes all image URLs from social media posts and social profile photos, and removes all photo DB table entries that have cdninstagram.com as their image URL.
                 </p>
               </div>
             </div>
