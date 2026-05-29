@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { HardDrive, Cloud, ArrowRightLeft, Loader2, ImageIcon, TriangleAlert, Database } from "lucide-react";
+import { HardDrive, Cloud, ArrowRightLeft, Loader2, ImageIcon, TriangleAlert, Database, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -26,9 +26,15 @@ type BackfillResult = {
   total: number;
 };
 
+type DeleteInstagramResult = {
+  profileVersionsCleared: number;
+  postsCleared: number;
+  photosDeleted: number;
+};
+
 export default function ImageStorageSettingsPage() {
   const { toast } = useToast();
-  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | "backfill" | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | "backfill" | "delete-instagram" | null>(null);
 
   const { data: storageData, isLoading: modeLoading } = useQuery<StorageModeResponse>({
     queryKey: ["/api/image-storage/mode"],
@@ -95,6 +101,24 @@ export default function ImageStorageSettingsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Backfill failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteInstagramMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/image-storage/delete-instagram-urls");
+      return res.json() as Promise<DeleteInstagramResult>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
+      toast({
+        title: "Instagram URLs removed",
+        description: `${data.profileVersionsCleared} profile image${data.profileVersionsCleared !== 1 ? "s" : ""}, ${data.postsCleared} post${data.postsCleared !== 1 ? "s" : ""}, and ${data.photosDeleted} photo record${data.photosDeleted !== 1 ? "s" : ""} cleared.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -310,6 +334,42 @@ export default function ImageStorageSettingsPage() {
             </Button>
           </CardContent>
         </Card>
+
+        <Card data-testid="card-delete-instagram-urls">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              Delete All Instagram Image URLs
+            </CardTitle>
+            <CardDescription>
+              Remove all cdninstagram.com URLs from the database. These are temporary URLs (72hr) added during Instagram imports and should not be stored permanently.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-instagram-danger">
+              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-destructive">Danger — this is destructive and cannot be undone</p>
+                <p className="text-xs text-muted-foreground">
+                  Removes all image URLs from social media posts and social profile photos where the URL contains cdninstagram.com. Also deletes all photo DB table entries with cdninstagram.com image URLs. Affected profile versions and posts will have their image fields set to null.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDialog("delete-instagram")}
+              disabled={deleteInstagramMutation.isPending}
+              data-testid="button-delete-instagram-urls"
+            >
+              {deleteInstagramMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-2" />
+              )}
+              Delete Instagram Image URLs
+            </Button>
+          </CardContent>
+        </Card>
       </div>
 
       <AlertDialog open={confirmDialog === "to-local"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
@@ -401,6 +461,26 @@ export default function ImageStorageSettingsPage() {
               data-testid="button-confirm-backfill"
             >
               Register Photos
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === "delete-instagram"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete All Instagram Image URLs?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove all cdninstagram.com URLs from social profile versions and post content, and delete matching rows from the photos table. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete-instagram">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { deleteInstagramMutation.mutate(); setConfirmDialog(null); }}
+              data-testid="button-confirm-delete-instagram"
+            >
+              Delete Instagram URLs
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

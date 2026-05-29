@@ -4607,6 +4607,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/image-storage/delete-instagram-urls", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const result = await storage.deleteInstagramImageUrls();
+      res.json(result);
+    } catch (error) {
+      console.error("Error deleting Instagram image URLs:", error);
+      res.status(500).json({ error: "Failed to delete Instagram image URLs" });
+    }
+  });
+
   // ========================
   // V1 API Endpoints
   // ========================

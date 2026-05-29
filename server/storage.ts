@@ -314,6 +314,7 @@ export interface IStorage {
   getPhotoByLocation(location: string): Promise<Photo | undefined>;
   listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<{ items: Photo[]; total: number }>;
   updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
+  deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }>;
 
   // Session store
   sessionStore: session.Store;
@@ -2802,6 +2803,43 @@ export class DatabaseStorage implements IStorage {
       .update(photos)
       .set({ location: newLocation })
       .where(eq(photos.location, oldLocation));
+  }
+
+  async deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }> {
+    const igPattern = '\\.cdninstagram\\.com';
+
+    const [imgUrlResult, extImgUrlResult, postsResult, photosResult] = await Promise.all([
+      db
+        .update(socialProfileVersions)
+        .set({ imageUrl: null })
+        .where(sql`${socialProfileVersions.imageUrl} ~ ${igPattern}`)
+        .returning({ id: socialProfileVersions.id }),
+      db
+        .update(socialProfileVersions)
+        .set({ externalImageUrl: null })
+        .where(sql`${socialProfileVersions.externalImageUrl} ~ ${igPattern}`)
+        .returning({ id: socialProfileVersions.id }),
+      db
+        .update(socialAccountPosts)
+        .set({ content: null })
+        .where(sql`${socialAccountPosts.content} LIKE '%cdninstagram.com%'`)
+        .returning({ id: socialAccountPosts.id }),
+      db
+        .delete(photos)
+        .where(sql`${photos.location} ~ ${igPattern}`)
+        .returning({ id: photos.id }),
+    ]);
+
+    const clearedProfileVersionIds = new Set([
+      ...imgUrlResult.map((r) => r.id),
+      ...extImgUrlResult.map((r) => r.id),
+    ]);
+
+    return {
+      profileVersionsCleared: clearedProfileVersionIds.size,
+      postsCleared: postsResult.length,
+      photosDeleted: photosResult.length,
+    };
   }
 }
 
