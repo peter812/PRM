@@ -375,7 +375,7 @@ function IdentificationModal({
           <div className="space-y-3">
             {faces.map((face, i) => {
               const color = COLORS[i % COLORS.length];
-              const state = faceStates[i];
+              const state = faceStates[i] ?? { isSocial: false, person: null, social: null };
               return (
                 <Card key={face.face_uuid ?? face.face_index ?? i} data-testid={`card-face-${i}`}>
                   <CardContent className="pt-4 pb-4 space-y-3">
