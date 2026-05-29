@@ -5157,6 +5157,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Facial Intelligence feature flag ─────────────────────────────────────
+
+  app.get("/api/prm-face/facial-intelligence", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const val = await getPrmFaceSetting("facial_intelligence_enabled");
+      res.json({ enabled: val === "true" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch setting" });
+    }
+  });
+
+  app.post("/api/prm-face/facial-intelligence", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const { enabled } = req.body;
+    if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be a boolean" });
+    try {
+      await setPrmFaceSetting("facial_intelligence_enabled", enabled ? "true" : "false");
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to save setting" });
+    }
+  });
+
+  // ── Person photos (gated by facial intelligence flag) ─────────────────────
+
+  app.get("/api/prm-face/person-photos/:personUuid", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+
+    const enabled = await getPrmFaceSetting("facial_intelligence_enabled");
+    if (enabled !== "true") return res.status(403).json({ error: "Facial intelligence features are disabled." });
+
+    const { personUuid } = req.params;
+    const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+    if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+    const apiKey = await getPrmFaceSetting("prm_face_api_key");
+    if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+
+    const page = parseInt((req.query.page as string) ?? "1", 10);
+    const pageSize = parseInt((req.query.page_size as string) ?? "24", 10);
+
+    try {
+      const response = await fetch(
+        `${prmBase(apiUrl)}/api/face/list?page=${page}&page_size=${pageSize}&person_uuid=${encodeURIComponent(personUuid)}`,
+        { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15000) }
+      );
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 404 || response.status === 405) {
+          return res.status(401).json({ error: "API_KEY_INVALID" });
+        }
+        const body = await response.text();
+        return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+      }
+
+      const data = await response.json() as {
+        total?: number; page?: number; page_size?: number; total_pages?: number; faces?: any[];
+      };
+      const faces: any[] = data.faces ?? [];
+
+      // Group faces by image_uuid so we return one entry per image
+      const imageMap = new Map<string, { image_uuid: string; faceUuids: string[] }>();
+      for (const face of faces) {
+        if (!face.image_uuid) continue;
+        if (!imageMap.has(face.image_uuid)) {
+          imageMap.set(face.image_uuid, { image_uuid: face.image_uuid, faceUuids: [] });
+        }
+        if (face.face_uuid) imageMap.get(face.image_uuid)!.faceUuids.push(face.face_uuid);
+      }
+
+      const base = prmBase(apiUrl);
+      const images = [...imageMap.values()].map(img => ({
+        image_uuid: img.image_uuid,
+        image_url: `${base}/img/${img.image_uuid}.jpg`,
+        thumb_url: `${base}/img-sml/${img.image_uuid}.webp`,
+        face_count: img.faceUuids.length,
+      }));
+
+      res.json({
+        total: data.total ?? faces.length,
+        page: data.page ?? page,
+        page_size: data.page_size ?? pageSize,
+        total_pages: data.total_pages ?? 1,
+        images,
+        api_url: base,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+    }
+  });
+
   // --- Upgrade #7: SSE for Real-Time Updates ---
   app.get("/api/v1/events/stream", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");

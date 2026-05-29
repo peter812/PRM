@@ -19,6 +19,7 @@ import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
+import { PersonPhotosTab } from "@/components/person-photos-tab";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
 import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -32,6 +33,11 @@ export default function PersonProfile() {
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
   const [isAddSocialAccountOpen, setIsAddSocialAccountOpen] = useState(false);
+
+  const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
+    queryKey: ["/api/prm-face/facial-intelligence"],
+  });
+  const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
 
   const params = new URLSearchParams(window.location.search);
   const from = params.get('from');
@@ -267,6 +273,15 @@ export default function PersonProfile() {
             >
               Groups
             </TabsTrigger>
+            {facialIntelligenceEnabled && (
+              <TabsTrigger
+                value="photos"
+                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                data-testid="tab-photos"
+              >
+                Photos
+              </TabsTrigger>
+            )}
           </TabsList>
         </div>
 
@@ -295,6 +310,12 @@ export default function PersonProfile() {
               personGroups={person.groups}
             />
           </TabsContent>
+
+          {facialIntelligenceEnabled && (
+            <TabsContent value="photos" className="mt-0 h-full">
+              <PersonPhotosTab personId={person.id} />
+            </TabsContent>
+          )}
         </div>
       </Tabs>
 

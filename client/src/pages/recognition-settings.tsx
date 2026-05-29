@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2 } from "lucide-react";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -41,6 +42,25 @@ export default function RecognitionSettingsPage() {
 
   const { data: settings, isLoading } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
+  });
+
+  const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
+    queryKey: ["/api/prm-face/facial-intelligence"],
+  });
+  const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
+
+  const facialIntelligenceMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const res = await apiRequest("POST", "/api/prm-face/facial-intelligence", { enabled });
+      return res.json();
+    },
+    onSuccess: (_data, enabled) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/facial-intelligence"] });
+      toast({ title: enabled ? "Facial intelligence features enabled" : "Facial intelligence features disabled" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update setting", description: error.message, variant: "destructive" });
+    },
   });
 
   useEffect(() => {
@@ -330,6 +350,42 @@ export default function RecognitionSettingsPage() {
             )}
           </CardContent>
         </Card>
+        <Card data-testid="card-facial-intelligence">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <BrainCircuit className="h-4 w-4" />
+              Facial Intelligence Features
+            </CardTitle>
+            <CardDescription>
+              Enable advanced facial intelligence features across the application. When enabled, a
+              dedicated <strong>Photos</strong> tab appears on every person profile, showing all images
+              in which that person has been identified. Disabling this hides those features and stops
+              sending any facial recognition data to the client.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="facial-intelligence-switch" className="text-sm font-medium">
+                  Enable facial intelligence features
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  {facialIntelligenceEnabled
+                    ? "Features are active. Person profiles show a Photos tab."
+                    : "Features are disabled. No recognition data is sent to the client."}
+                </p>
+              </div>
+              <Switch
+                id="facial-intelligence-switch"
+                checked={facialIntelligenceEnabled}
+                onCheckedChange={(checked) => facialIntelligenceMutation.mutate(checked)}
+                disabled={facialIntelligenceMutation.isPending}
+                data-testid="switch-facial-intelligence"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
         <Card className="border-destructive/40" data-testid="card-danger-zone">
           <CardHeader>
             <CardTitle className="text-lg text-destructive flex items-center gap-2">
