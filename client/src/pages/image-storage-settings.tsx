@@ -342,7 +342,7 @@ export default function ImageStorageSettingsPage() {
               Delete Instagram &amp; Facebook CDN Image URLs
             </CardTitle>
             <CardDescription>
-              This will remove all cdninstagram.com and fbcdn.com URLs from images. These are temporary URLs (72hr) added when we do imports from Instagram — these should not be stored permanently.
+              This will remove all cdninstagram.com and fbcdn.net URLs from images. These are temporary URLs (72hr) added when we do imports from Instagram — these should not be stored permanently.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -351,7 +351,7 @@ export default function ImageStorageSettingsPage() {
               <div className="space-y-1">
                 <p className="text-sm font-medium text-destructive">Danger — this is destructive and cannot be undone</p>
                 <p className="text-xs text-muted-foreground">
-                  Removes all image URLs from social media posts and social profile photos, and removes all photo DB table entries that have cdninstagram.com or fbcdn.com as their image URL.
+                  Removes all image URLs from social media posts and social profile photos, and removes all photo DB table entries that have cdninstagram.com or fbcdn.net as their image URL.
                 </p>
               </div>
             </div>
@@ -471,7 +471,7 @@ export default function ImageStorageSettingsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete CDN Image URLs?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove all cdninstagram.com and fbcdn.com URLs from social profile versions and post content, and delete matching rows from the photos table. This cannot be undone.
+              This will permanently remove all cdninstagram.com and fbcdn.net URLs from social profile versions and post content, and delete matching rows from the photos table. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
