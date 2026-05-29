@@ -5216,10 +5216,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
       const faces: any[] = data.faces ?? [];
 
-      // Group faces by image_uuid so we return one entry per image
+      // Collect only images that contain at least one face belonging to the requested person
+      const matchingImageUuids = new Set<string>(
+        faces
+          .filter(f => f.image_uuid && f.person_uuid === personUuid)
+          .map(f => f.image_uuid)
+      );
+
+      // Group ALL faces on those images (so face_count is accurate), but skip images
+      // that have no face linked to the requested person
       const imageMap = new Map<string, { image_uuid: string; faceUuids: string[] }>();
       for (const face of faces) {
-        if (!face.image_uuid) continue;
+        if (!face.image_uuid || !matchingImageUuids.has(face.image_uuid)) continue;
         if (!imageMap.has(face.image_uuid)) {
           imageMap.set(face.image_uuid, { image_uuid: face.image_uuid, faceUuids: [] });
         }
