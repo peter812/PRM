@@ -360,14 +360,19 @@ export default function AiDescriptionSettingsPage() {
               data-testid="textarea-ollama-prompt"
             />
             <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
-                onClick={() => setPrompt(DEFAULT_PROMPT)}
-                data-testid="button-reset-prompt"
-              >
-                Reset to default
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                  onClick={() => setPrompt(DEFAULT_PROMPT)}
+                  data-testid="button-reset-prompt"
+                >
+                  Reset to default
+                </button>
+                <span className="text-xs text-muted-foreground" data-testid="text-prompt-char-count">
+                  {prompt.length} characters
+                </span>
+              </div>
               <Button
                 onClick={handleSavePrompt}
                 disabled={!prompt.trim() || saveMutation.isPending}
