@@ -79,6 +79,13 @@ const menuItems = [
     title: "PRM-Face Demo",
     url: "/prm-face-demo",
     icon: Scan,
+    subItems: [
+      {
+        title: "PRM-Face Save Demo",
+        url: "/prm-face-save-demo",
+        icon: Scan,
+      },
+    ],
   },
 ];
 

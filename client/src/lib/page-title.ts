@@ -12,6 +12,7 @@ export function getPageTitle(location: string): string {
   if (location === "/elo-ranking") return "ELO Ranking";
   if (location === "/api-playground") return "API Playground";
   if (location === "/prm-face-demo") return "PRM-Face Demo";
+  if (location === "/prm-face-save-demo") return "PRM-Face Save Demo";
   if (location.startsWith("/settings")) return "Settings";
   return "";
 }

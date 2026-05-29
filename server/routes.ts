@@ -4894,6 +4894,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/prm-face/save-with-assignments", upload.single("image"), async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    if (!req.file) return res.status(400).json({ error: "No image provided." });
+
+    const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+    if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+    const apiKey = await getPrmFaceSetting("prm_face_api_key");
+    if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+
+    let assignments: Array<{ face_index: number; person_uuid?: string; social_account_id?: string; is_social_account: boolean }> = [];
+    if (req.body.assignments) {
+      try {
+        assignments = JSON.parse(req.body.assignments);
+      } catch {
+        return res.status(400).json({ error: "Invalid assignments JSON." });
+      }
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
+      const response = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey },
+        body: formData,
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 405) {
+          return res.status(401).json({ error: "API_KEY_INVALID" });
+        }
+        const body = await response.text();
+        return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+      }
+      const prmData = await response.json();
+      res.json({ ...prmData, assignments });
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+    }
+  });
+
   // --- Upgrade #7: SSE for Real-Time Updates ---
   app.get("/api/v1/events/stream", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");

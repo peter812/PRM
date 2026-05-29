@@ -31,6 +31,7 @@ import DummyAuth from "@/pages/dummy-auth";
 import EloRanking from "@/pages/elo-ranking";
 import AccountMatching from "@/pages/account-matching";
 import PrmFaceDemo from "@/pages/prm-face-demo";
+import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
 import NotFound from "@/pages/not-found";
 
 const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
@@ -107,6 +108,7 @@ function Router() {
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
       <ProtectedRoute path="/api-playground" component={ApiPlayground} />
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
+      <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
       <ProtectedRoute path="/dummy-auth" component={DummyAuth} />
       <Route component={NotFound} />
