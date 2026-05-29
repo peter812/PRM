@@ -5415,7 +5415,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const authRequired = (await getOllamaSetting("ollama_auth_required")) ?? "false";
       const username = (await getOllamaSetting("ollama_username")) ?? "";
       const hasPassword = !!((await getOllamaSetting("ollama_password")));
-      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword });
+      const model = (await getOllamaSetting("ollama_model")) ?? "";
+      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch Ollama settings" });
     }
@@ -5423,16 +5424,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/ollama/settings", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-    const { enabled, apiUrl, authRequired, username, password } = req.body;
+    const { enabled, apiUrl, authRequired, username, password, model } = req.body;
     try {
       if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
       if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
       if (typeof authRequired === "boolean") await setOllamaSetting("ollama_auth_required", String(authRequired));
       if (typeof username === "string") await setOllamaSetting("ollama_username", username);
       if (typeof password === "string" && password.length > 0) await setOllamaSetting("ollama_password", password);
+      if (typeof model === "string") await setOllamaSetting("ollama_model", model);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to save Ollama settings" });
+    }
+  });
+
+  app.get("/api/ollama/models", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+      if (!apiUrl.trim()) return res.json({ models: [] });
+      const base = apiUrl.replace(/\/+$/, "");
+      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+      const headers: Record<string, string> = {};
+      if (authRequired) {
+        const username = (await getOllamaSetting("ollama_username")) ?? "";
+        const password = (await getOllamaSetting("ollama_password")) ?? "";
+        headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const resp = await fetch(`${base}/api/tags`, { headers, signal: controller.signal });
+        clearTimeout(timeout);
+        if (!resp.ok) return res.json({ models: [] });
+        const data = await resp.json() as { models?: { name: string; size: number; details?: { parameter_size?: string } }[] };
+        const models = (data.models ?? []).map((m) => ({
+          name: m.name,
+          parameterSize: m.details?.parameter_size ?? null,
+        }));
+        res.json({ models });
+      } catch {
+        clearTimeout(timeout);
+        res.json({ models: [] });
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   });
 
@@ -5489,7 +5525,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       if (!req.file) return res.status(400).json({ error: "No image provided." });
       const imageBase64 = req.file.buffer.toString("base64");
-      const model = (req.body.model as string | undefined) || "llava";
+      const savedModel = (await getOllamaSetting("ollama_model")) ?? "";
+      const model = (req.body.model as string | undefined) || savedModel || "llava";
       const prompt = (req.body.prompt as string | undefined) || "Describe this image in detail.";
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 60000);
