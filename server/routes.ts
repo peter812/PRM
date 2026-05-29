@@ -20,6 +20,7 @@ import {
   insertSocialAccountSchema,
   insertSocialAccountTypeSchema,
   insertSocialAccountPostSchema,
+  insertPhotoSchema,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -81,6 +82,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           req.file.originalname,
           req.file.mimetype
         );
+      }
+
+      // Register in photos table
+      // TODO: callers should pass prmLocation in the request body to identify where this image is used
+      const prmLocation = (req.body?.prmLocation as string) || "unknown";
+      try {
+        await storage.insertPhoto({ location: imageUrl, prmLocation, isSubImage: false });
+      } catch (photoErr) {
+        console.error("Warning: failed to register photo in photos table:", photoErr);
       }
 
       res.json({ imageUrl });
@@ -4515,6 +4525,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error getting image stats:", error);
       res.status(500).json({ error: "Failed to get image stats" });
+    }
+  });
+
+  // ========================
+  // Photos API
+  // ========================
+
+  app.get("/api/photos", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string) || 100));
+      const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+      const prmLocationPrefix = req.query.prmLocation as string | undefined;
+      const photoList = await storage.listPhotos({ prmLocationPrefix, limit, offset });
+      res.json(photoList);
+    } catch (error) {
+      console.error("Error listing photos:", error);
+      res.status(500).json({ error: "Failed to list photos" });
+    }
+  });
+
+  app.get("/api/photos/:id", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const photo = await storage.getPhotoById(req.params.id);
+      if (!photo) {
+        return res.status(404).json({ error: "Photo not found" });
+      }
+      res.json(photo);
+    } catch (error) {
+      console.error("Error fetching photo:", error);
+      res.status(500).json({ error: "Failed to fetch photo" });
+    }
+  });
+
+  app.post("/api/photos/backfill", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const allUrls = await storage.getAllImageUrls();
+      let inserted = 0;
+      let skipped = 0;
+
+      // Derive a sensible prmLocation from the table/column context
+      const derivePrmLocation = (table: string, column: string, id: string): string => {
+        const tableMap: Record<string, string> = {
+          people: "profile_image",
+          notes: "note",
+          interactions: "interaction",
+          groups: "group_image",
+          social_profile_versions: "social_profile_image",
+        };
+        const prefix = tableMap[table] || table;
+        return `${prefix}:${id}`;
+      };
+
+      for (const entry of allUrls) {
+        const existing = await storage.getPhotoByLocation(entry.url);
+        if (existing) {
+          skipped++;
+          continue;
+        }
+        await storage.insertPhoto({
+          location: entry.url,
+          prmLocation: derivePrmLocation(entry.table, entry.column, entry.id),
+          isSubImage: false,
+        });
+        inserted++;
+      }
+
+      res.json({ inserted, skipped, total: allUrls.length });
+    } catch (error) {
+      console.error("Error backfilling photos:", error);
+      res.status(500).json({ error: "Failed to backfill photos" });
     }
   });
 

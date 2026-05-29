@@ -17,6 +17,7 @@ import {
   socialNetworkState,
   socialNetworkChanges,
   socialAccountPosts,
+  photos,
   type Person,
   type InsertPerson,
   type Note,
@@ -73,6 +74,8 @@ import {
   type SocialGraphLink,
   type PersonGraphData,
   type PersonGraphPerson,
+  type Photo,
+  type InsertPhoto,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt } from "drizzle-orm";
@@ -304,6 +307,13 @@ export interface IStorage {
   getAllTasks(limit?: number): Promise<Task[]>;
   getTaskById(id: string): Promise<Task | undefined>;
   deleteAllTasks(): Promise<void>;
+
+  // Photo operations
+  insertPhoto(photo: InsertPhoto): Promise<Photo>;
+  getPhotoById(id: string): Promise<Photo | undefined>;
+  getPhotoByLocation(location: string): Promise<Photo | undefined>;
+  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<Photo[]>;
+  updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
 
   // Session store
   sessionStore: session.Store;
@@ -2742,6 +2752,50 @@ export class DatabaseStorage implements IStorage {
 
   async deletePost(id: string): Promise<void> {
     await db.delete(socialAccountPosts).where(eq(socialAccountPosts.id, id));
+  }
+
+  // Photo operations
+  async insertPhoto(photo: InsertPhoto): Promise<Photo> {
+    const [created] = await db
+      .insert(photos)
+      .values(photo)
+      .returning();
+    return created;
+  }
+
+  async getPhotoById(id: string): Promise<Photo | undefined> {
+    const [photo] = await db
+      .select()
+      .from(photos)
+      .where(eq(photos.id, id));
+    return photo || undefined;
+  }
+
+  async getPhotoByLocation(location: string): Promise<Photo | undefined> {
+    const [photo] = await db
+      .select()
+      .from(photos)
+      .where(eq(photos.location, location));
+    return photo || undefined;
+  }
+
+  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number } = {}): Promise<Photo[]> {
+    const { prmLocationPrefix, limit = 100, offset = 0 } = options;
+    let query = db.select().from(photos).$dynamic();
+    if (prmLocationPrefix) {
+      query = query.where(sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`);
+    }
+    return await query
+      .orderBy(desc(photos.uploadedAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void> {
+    await db
+      .update(photos)
+      .set({ location: newLocation })
+      .where(eq(photos.location, oldLocation));
   }
 }
 

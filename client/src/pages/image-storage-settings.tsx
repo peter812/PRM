@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { HardDrive, Cloud, ArrowRightLeft, Loader2, ImageIcon } from "lucide-react";
+import { HardDrive, Cloud, ArrowRightLeft, Loader2, ImageIcon, TriangleAlert, Database } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -20,9 +20,15 @@ type ImageStats = {
   s3: number;
 };
 
+type BackfillResult = {
+  inserted: number;
+  skipped: number;
+  total: number;
+};
+
 export default function ImageStorageSettingsPage() {
   const { toast } = useToast();
-  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | "backfill" | null>(null);
 
   const { data: storageData, isLoading: modeLoading } = useQuery<StorageModeResponse>({
     queryKey: ["/api/image-storage/mode"],
@@ -73,6 +79,22 @@ export default function ImageStorageSettingsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to start transfer", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const backfillMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/photos/backfill");
+      return res.json() as Promise<BackfillResult>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Photos registered",
+        description: `${data.inserted} new photo${data.inserted !== 1 ? "s" : ""} added to the database. ${data.skipped} already registered.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Backfill failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -254,6 +276,40 @@ export default function ImageStorageSettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        <Card data-testid="card-add-photos-to-db">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Database className="h-5 w-5" />
+              Add Photos to DB
+            </CardTitle>
+            <CardDescription>Register existing image URLs in the photos table.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-backfill-danger">
+              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-destructive">Danger — do at your own risk</p>
+                <p className="text-xs text-muted-foreground">
+                  This scans every image URL in the database and registers it in the photos table. It is safe to run multiple times (duplicates are skipped), but may be slow on large datasets. New uploads are registered automatically going forward.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDialog("backfill")}
+              disabled={backfillMutation.isPending}
+              data-testid="button-add-photos-to-db"
+            >
+              {backfillMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Database className="h-4 w-4 mr-2" />
+              )}
+              Scan and Register Photos
+            </Button>
+          </CardContent>
+        </Card>
       </div>
 
       <AlertDialog open={confirmDialog === "to-local"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
@@ -325,6 +381,26 @@ export default function ImageStorageSettingsPage() {
             </Button>
             <AlertDialogAction onClick={() => handleConfirmSwitch(true)} data-testid="button-switch-and-transfer-s3">
               Switch and Transfer Images
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === "backfill"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Scan and Register Photos?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will scan all image URLs in the database and create a row in the photos table for each one that is not already registered. Already-registered photos are skipped. This process may be slow on large datasets.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-backfill">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { backfillMutation.mutate(); setConfirmDialog(null); }}
+              data-testid="button-confirm-backfill"
+            >
+              Register Photos
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -237,6 +237,20 @@ export const appSettings = pgTable("app_settings", {
   value: text("value").notNull(),
 });
 
+// Photos table - central registry for every image in the system
+export const photos = pgTable("photos", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  location: text("location").notNull(), // current CDN or local URL/path
+  uploadedAt: timestamp("uploaded_at").notNull().defaultNow(),
+  isSubImage: boolean("is_sub_image").notNull().default(false),
+  processedAt: timestamp("processed_at"),
+  imageDescriptionAt: timestamp("image_description_at"),
+  imageDescription: text("image_description"),
+  faceIdAt: timestamp("face_id_at"),
+  faceUuids: jsonb("face_uuids"), // Array of { faceUuid: string, subImagePhotoId: string }
+  prmLocation: text("prm_location").notNull(), // e.g. "post:UUID", "interaction:UUID", "profile_image:UUID"
+});
+
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -470,6 +484,11 @@ export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPos
 
 export const insertAppSettingSchema = createInsertSchema(appSettings);
 
+export const insertPhotoSchema = createInsertSchema(photos).omit({
+  id: true,
+  uploadedAt: true,
+});
+
 export const insertTaskSchema = createInsertSchema(tasks).omit({
   id: true,
   createdAt: true,
@@ -544,6 +563,9 @@ export type SocialAccountWithCurrentProfile = SocialAccount & {
 
 export type AppSetting = typeof appSettings.$inferSelect;
 export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
+
+export type Photo = typeof photos.$inferSelect;
+export type InsertPhoto = z.infer<typeof insertPhotoSchema>;
 
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema>;

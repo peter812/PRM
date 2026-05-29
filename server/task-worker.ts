@@ -858,6 +858,7 @@ async function processTransferImagesToLocal(taskId: string): Promise<string> {
 
       const localUrl = await uploadImageLocally(buffer, `transferred.${ext}`, contentType);
       await storage.updateImageUrl(entry.table, entry.id, entry.column, entry.url, localUrl);
+      await storage.updatePhotoLocation(entry.url, localUrl).catch(() => {});
 
       try {
         await deleteImageFromS3(entry.url);
@@ -908,6 +909,7 @@ async function processTransferImagesToS3(taskId: string): Promise<string> {
 
       const s3Url = await uploadImageToS3(buffer, `transferred.${ext}`, mimeType);
       await storage.updateImageUrl(entry.table, entry.id, entry.column, entry.url, s3Url);
+      await storage.updatePhotoLocation(entry.url, s3Url).catch(() => {});
 
       try {
         await deleteImageLocally(entry.url);
