@@ -268,8 +268,26 @@ function SocialGraphContent({
   const [singleLinkYouFollowColor, setSingleLinkYouFollowColor] = useState('#ef4444');
   const [singleNodeColorScheme, setSingleNodeColorScheme] = useState<'follow-status' | 'type'>('follow-status');
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
-  const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>('default');
-  const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(null);
+  const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>(() => {
+    try {
+      const saved = localStorage.getItem('socialGraphDefaults');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.defaultMode) return parsed.defaultMode as 'default' | 'blob' | 'single-highlight' | 'multi-highlight';
+      }
+    } catch {}
+    return 'single-highlight';
+  });
+  const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(() => {
+    try {
+      const saved = localStorage.getItem('socialGraphDefaults');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.defaultSingleAccountId) return parsed.defaultSingleAccountId as string;
+      }
+    } catch {}
+    return null;
+  });
   const [singleHighlightSearchOpen, setSingleHighlightSearchOpen] = useState(false);
   const [singleHighlightSearchQuery, setSingleHighlightSearchQuery] = useState('');
   const [singleShowFriendLinks, setSingleShowFriendLinks] = useState(true);

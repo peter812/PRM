@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { FolderSync, ChevronRight } from "lucide-react";
+import { FolderSync, ChevronRight, Network } from "lucide-react";
 
 export default function AppOptionsPage() {
   return (
@@ -12,20 +12,37 @@ export default function AppOptionsPage() {
         </p>
       </div>
 
-      <Link href="/import-export">
-        <Card className="hover-elevate cursor-pointer" data-testid="card-import-export-link">
-          <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
-            <div className="flex items-center gap-3">
-              <FolderSync className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <CardTitle className="text-lg">Import & Export</CardTitle>
-                <CardDescription className="mt-1">Import contacts, messages, social media data, or export your full application backup</CardDescription>
+      <div className="space-y-3">
+        <Link href="/social-graph">
+          <Card className="hover-elevate cursor-pointer" data-testid="card-social-graph-link">
+            <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
+              <div className="flex items-center gap-3">
+                <Network className="h-5 w-5 text-muted-foreground" />
+                <div>
+                  <CardTitle className="text-lg">Social Graph</CardTitle>
+                  <CardDescription className="mt-1">Set the default mode and account for the social account graph view</CardDescription>
+                </div>
               </div>
-            </div>
-            <ChevronRight className="h-5 w-5 text-muted-foreground" />
-          </CardHeader>
-        </Card>
-      </Link>
+              <ChevronRight className="h-5 w-5 text-muted-foreground" />
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/import-export">
+          <Card className="hover-elevate cursor-pointer" data-testid="card-import-export-link">
+            <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
+              <div className="flex items-center gap-3">
+                <FolderSync className="h-5 w-5 text-muted-foreground" />
+                <div>
+                  <CardTitle className="text-lg">Import & Export</CardTitle>
+                  <CardDescription className="mt-1">Import contacts, messages, social media data, or export your full application backup</CardDescription>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-muted-foreground" />
+            </CardHeader>
+          </Card>
+        </Link>
+      </div>
     </div>
   );
 }
