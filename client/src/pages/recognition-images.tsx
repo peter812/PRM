@@ -234,7 +234,7 @@ function MatchModal({ item, apiUrl, onClose }: { item: ImageItem | null; apiUrl:
   const imgRef = useRef<HTMLImageElement>(null);
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
 
-  const { data: detail, isLoading, isError } = useQuery<ImageDetail>({
+  const { data: detail, isLoading, isError, error } = useQuery<ImageDetail>({
     queryKey: ["/api/prm-face/img/detail-enriched", item?.image_uuid],
     queryFn: async () => {
       const res = await fetch(`/api/prm-face/img/detail-enriched?uuid=${encodeURIComponent(item!.image_uuid)}`, { credentials: "include" });
@@ -350,7 +350,10 @@ function MatchModal({ item, apiUrl, onClose }: { item: ImageItem | null; apiUrl:
           {isError && (
             <div className="flex items-start gap-3 rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-destructive" />
-              <span className="text-destructive">Failed to load image details from PRM-Face.</span>
+              <div className="text-destructive space-y-1">
+                <p className="font-medium">Failed to load image details from PRM-Face.</p>
+                {error instanceof Error && <p className="text-xs opacity-80">{error.message}</p>}
+              </div>
             </div>
           )}
 
