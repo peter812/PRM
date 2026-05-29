@@ -13,15 +13,33 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Upload, FileText, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Upload, FileText, AlertCircle, CheckCircle2, UserCheck } from "lucide-react";
 import { SiInstagram } from "react-icons/si";
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import type { SocialAccount } from "@shared/schema";
 
+const FILENAME_REGEX = /^(.+?)_(followers|following)\.csv$/i;
+
+function parseInstagramFilename(filename: string): { username: string; type: "followers" | "following" } | null {
+  const match = filename.match(FILENAME_REGEX);
+  if (!match) return null;
+  return {
+    username: match[1],
+    type: match[2].toLowerCase() as "followers" | "following",
+  };
+}
+
 export default function ImportSocialMediaPage() {
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
+  const [filenameError, setFilenameError] = useState<string | null>(null);
+  const [detectedUsername, setDetectedUsername] = useState<string | null>(null);
+  const [detectedType, setDetectedType] = useState<"followers" | "following" | null>(null);
+
+  const [manualTypeEnabled, setManualTypeEnabled] = useState(false);
+  const [manualAccountEnabled, setManualAccountEnabled] = useState(false);
+
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
   const [forceUpdateImages, setForceUpdateImages] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
@@ -86,6 +104,9 @@ export default function ImportSocialMediaPage() {
             description: `Imported ${result.imported} accounts${result.updated > 0 ? `, updated ${result.updated}` : ""}${result.skippedRows > 0 ? ` (${result.skippedRows} rows skipped)` : ""}`,
           });
           setSelectedInstagramFile(null);
+          setDetectedUsername(null);
+          setDetectedType(null);
+          setFilenameError(null);
           setSelectedAccountId("");
           setSelectedAccountLabel("");
           const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
@@ -115,10 +136,23 @@ export default function ImportSocialMediaPage() {
   }, [activeTaskId]);
 
   const importInstagramMutation = useMutation({
-    mutationFn: async ({ file, accountId, importType, forceImages }: { file: File; accountId: string; importType: "followers" | "following"; forceImages: boolean }) => {
+    mutationFn: async ({
+      file,
+      username,
+      accountId,
+      importType,
+      forceImages,
+    }: {
+      file: File;
+      username: string;
+      accountId: string;
+      importType: "followers" | "following";
+      forceImages: boolean;
+    }) => {
       const formData = new FormData();
       formData.append("csv", file);
-      formData.append("accountId", accountId);
+      formData.append("username", username);
+      if (accountId) formData.append("accountId", accountId);
       formData.append("importType", importType);
       if (forceImages) formData.append("forceUpdateImages", "true");
 
@@ -149,31 +183,66 @@ export default function ImportSocialMediaPage() {
 
   const isPending = importInstagramMutation.isPending || isPolling;
 
+  const effectiveImportType = manualTypeEnabled ? instagramImportType : (detectedType ?? "followers");
+  const effectiveUsername = detectedUsername ?? "";
+
+  const canSubmit =
+    selectedInstagramFile &&
+    !filenameError &&
+    detectedUsername !== null &&
+    !isPending;
+
   const handleInstagramFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      if (!file.name.endsWith(".csv")) {
-        toast({
-          title: "Invalid File",
-          description: "Please select a CSV file",
-          variant: "destructive",
-        });
-        return;
-      }
-      setSelectedInstagramFile(file);
+    if (!file) return;
+
+    if (!file.name.endsWith(".csv")) {
+      setFilenameError("Please select a CSV file (.csv)");
+      setSelectedInstagramFile(null);
+      setDetectedUsername(null);
+      setDetectedType(null);
+      return;
+    }
+
+    const parsed = parseInstagramFilename(file.name);
+    if (!parsed) {
+      setFilenameError(
+        `Filename must follow the pattern: {username}_followers.csv or {username}_following.csv — got "${file.name}"`
+      );
+      setSelectedInstagramFile(null);
+      setDetectedUsername(null);
+      setDetectedType(null);
+      return;
+    }
+
+    setFilenameError(null);
+    setSelectedInstagramFile(file);
+    setDetectedUsername(parsed.username);
+    setDetectedType(parsed.type);
+    if (!manualTypeEnabled) {
+      setInstagramImportType(parsed.type);
     }
   };
 
   const handleInstagramImport = () => {
-    if (selectedInstagramFile && selectedAccountId) {
-      setTaskResult(null);
-      importInstagramMutation.mutate({
-        file: selectedInstagramFile,
-        accountId: selectedAccountId,
-        importType: instagramImportType,
-        forceImages: forceUpdateImages,
-      });
-    }
+    if (!canSubmit) return;
+    setTaskResult(null);
+    importInstagramMutation.mutate({
+      file: selectedInstagramFile!,
+      username: effectiveUsername,
+      accountId: manualAccountEnabled ? selectedAccountId : "",
+      importType: effectiveImportType,
+      forceImages: forceUpdateImages,
+    });
+  };
+
+  const clearFile = () => {
+    setSelectedInstagramFile(null);
+    setDetectedUsername(null);
+    setDetectedType(null);
+    setFilenameError(null);
+    const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
+    if (fileInput) fileInput.value = "";
   };
 
   return (
@@ -188,101 +257,13 @@ export default function ImportSocialMediaPage() {
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-4">
-            <div className="flex items-center justify-between rounded-md border p-4">
-              <div className="space-y-0.5">
-                <Label htmlFor="import-type-toggle" className="text-base font-medium">
-                  Import Type
-                </Label>
-                <p className="text-sm text-muted-foreground">
-                  {instagramImportType === "followers" ? "Import accounts that follow you" : "Import accounts you follow"}
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={instagramImportType === "followers" ? "text-foreground font-medium" : "text-muted-foreground"}>
-                  Followers
-                </span>
-                <Switch
-                  id="import-type-toggle"
-                  checked={instagramImportType === "following"}
-                  onCheckedChange={(checked) => setInstagramImportType(checked ? "following" : "followers")}
-                  data-testid="switch-import-type"
-                />
-                <span className={instagramImportType === "following" ? "text-foreground font-medium" : "text-muted-foreground"}>
-                  Following
-                </span>
-              </div>
-            </div>
 
+            {/* File picker */}
             <div className="space-y-2">
-              <Label>Select Your Account</Label>
-              <Popover open={accountSearchOpen} onOpenChange={(open) => { setAccountSearchOpen(open); if (!open) setAccountSearchQuery(''); }}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start text-left font-normal"
-                    data-testid="select-instagram-account"
-                  >
-                    {selectedAccountLabel || "Search for an account..."}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-80 p-0" align="start">
-                  <Command shouldFilter={false}>
-                    <CommandInput
-                      placeholder="Type 3+ characters to search..."
-                      value={accountSearchQuery}
-                      onValueChange={setAccountSearchQuery}
-                      data-testid="input-account-search"
-                    />
-                    <CommandList>
-                      {accountSearchQuery.length > 0 && accountSearchQuery.length < 3 && (
-                        <div className="p-3 text-sm text-muted-foreground text-center">
-                          Type {3 - accountSearchQuery.length} more character{3 - accountSearchQuery.length > 1 ? 's' : ''} to search...
-                        </div>
-                      )}
-                      {accountSearchQuery.length >= 3 && isSearching && (
-                        <div className="p-3 text-sm text-muted-foreground text-center">
-                          Searching...
-                        </div>
-                      )}
-                      {accountSearchQuery.length >= 3 && !isSearching && searchResults.length === 0 && (
-                        <CommandEmpty>No account found.</CommandEmpty>
-                      )}
-                      {accountSearchQuery.length >= 3 && !isSearching && searchResults.length > 0 && (
-                        <CommandGroup>
-                          {searchResults.map((account) => (
-                            <CommandItem
-                              key={account.id}
-                              value={account.id}
-                              onSelect={() => {
-                                setSelectedAccountId(account.id);
-                                const label = account.currentProfile?.nickname
-                                  ? `${account.currentProfile?.nickname} (@${account.username})`
-                                  : account.username;
-                                setSelectedAccountLabel(label);
-                                setAccountSearchOpen(false);
-                                setAccountSearchQuery('');
-                              }}
-                              data-testid={`option-account-${account.id}`}
-                            >
-                              {account.username}
-                              {account.currentProfile?.nickname && (
-                                <span className="ml-1 text-muted-foreground">({account.currentProfile?.nickname})</span>
-                              )}
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
-                      )}
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
+              <Label htmlFor="instagram-file-input">CSV File</Label>
               <p className="text-xs text-muted-foreground">
-                Select the account that the import data belongs to (your account)
+                Name your file <code className="bg-muted px-1 py-0.5 rounded text-xs">username_followers.csv</code> or <code className="bg-muted px-1 py-0.5 rounded text-xs">username_following.csv</code> — the account and import type are detected automatically.
               </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="instagram-file-input">Select CSV File</Label>
               <div className="flex items-center gap-3">
                 <Input
                   id="instagram-file-input"
@@ -294,14 +275,140 @@ export default function ImportSocialMediaPage() {
                   className="cursor-pointer"
                 />
               </div>
-              {selectedInstagramFile && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <FileText className="h-4 w-4" />
+
+              {/* Filename error */}
+              {filenameError && (
+                <div className="flex items-start gap-2 text-sm text-destructive" data-testid="error-filename-format">
+                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                  <span>{filenameError}</span>
+                </div>
+              )}
+
+              {/* Auto-detected confirmation */}
+              {selectedInstagramFile && detectedUsername && detectedType && (
+                <div className="flex items-center gap-2 text-sm" data-testid="text-filename-detected">
+                  <UserCheck className="h-4 w-4 text-primary shrink-0" />
+                  <span>
+                    Detected: <span className="font-medium">@{detectedUsername}</span>
+                    {" · "}
+                    <span className="font-medium capitalize">{detectedType}</span>
+                    {!manualAccountEnabled && (
+                      <span className="text-muted-foreground ml-1">
+                        (account will be created if it doesn&apos;t exist)
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
+
+              {selectedInstagramFile && !filenameError && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <FileText className="h-3.5 w-3.5" />
                   <span data-testid="text-selected-instagram-filename">{selectedInstagramFile.name}</span>
                 </div>
               )}
             </div>
 
+            {/* Manual import type (revealed by checkbox) */}
+            {manualTypeEnabled && (
+              <div className="flex items-center justify-between rounded-md border p-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="import-type-toggle" className="text-base font-medium">
+                    Import Type
+                  </Label>
+                  <p className="text-sm text-muted-foreground">
+                    {instagramImportType === "followers" ? "Import accounts that follow you" : "Import accounts you follow"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={instagramImportType === "followers" ? "text-foreground font-medium" : "text-muted-foreground"}>
+                    Followers
+                  </span>
+                  <Switch
+                    id="import-type-toggle"
+                    checked={instagramImportType === "following"}
+                    onCheckedChange={(checked) => setInstagramImportType(checked ? "following" : "followers")}
+                    data-testid="switch-import-type"
+                  />
+                  <span className={instagramImportType === "following" ? "text-foreground font-medium" : "text-muted-foreground"}>
+                    Following
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Manual account picker (revealed by checkbox) */}
+            {manualAccountEnabled && (
+              <div className="space-y-2">
+                <Label>Override Account</Label>
+                <Popover open={accountSearchOpen} onOpenChange={(open) => { setAccountSearchOpen(open); if (!open) setAccountSearchQuery(''); }}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start text-left font-normal"
+                      data-testid="select-instagram-account"
+                    >
+                      {selectedAccountLabel || "Search for an account..."}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80 p-0" align="start">
+                    <Command shouldFilter={false}>
+                      <CommandInput
+                        placeholder="Type 3+ characters to search..."
+                        value={accountSearchQuery}
+                        onValueChange={setAccountSearchQuery}
+                        data-testid="input-account-search"
+                      />
+                      <CommandList>
+                        {accountSearchQuery.length > 0 && accountSearchQuery.length < 3 && (
+                          <div className="p-3 text-sm text-muted-foreground text-center">
+                            Type {3 - accountSearchQuery.length} more character{3 - accountSearchQuery.length > 1 ? 's' : ''} to search...
+                          </div>
+                        )}
+                        {accountSearchQuery.length >= 3 && isSearching && (
+                          <div className="p-3 text-sm text-muted-foreground text-center">
+                            Searching...
+                          </div>
+                        )}
+                        {accountSearchQuery.length >= 3 && !isSearching && searchResults.length === 0 && (
+                          <CommandEmpty>No account found.</CommandEmpty>
+                        )}
+                        {accountSearchQuery.length >= 3 && !isSearching && searchResults.length > 0 && (
+                          <CommandGroup>
+                            {searchResults.map((account) => (
+                              <CommandItem
+                                key={account.id}
+                                value={account.id}
+                                onSelect={() => {
+                                  setSelectedAccountId(account.id);
+                                  const label = account.currentProfile?.nickname
+                                    ? `${account.currentProfile?.nickname} (@${account.username})`
+                                    : account.username;
+                                  setSelectedAccountLabel(label);
+                                  setAccountSearchOpen(false);
+                                  setAccountSearchQuery('');
+                                }}
+                                data-testid={`option-account-${account.id}`}
+                              >
+                                {account.username}
+                                {account.currentProfile?.nickname && (
+                                  <span className="ml-1 text-muted-foreground">({account.currentProfile?.nickname})</span>
+                                )}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        )}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                <p className="text-xs text-muted-foreground">
+                  Overrides the account detected from the filename
+                </p>
+              </div>
+            )}
+
+            {/* Force update images */}
             <div className="flex items-center gap-3 rounded-md border p-4">
               <Checkbox
                 id="force-update-images"
@@ -319,6 +426,7 @@ export default function ImportSocialMediaPage() {
               </div>
             </div>
 
+            {/* CSV format notes */}
             <div className="rounded-md bg-muted p-4 space-y-2">
               <div className="flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 mt-0.5 text-muted-foreground" />
@@ -328,16 +436,55 @@ export default function ImportSocialMediaPage() {
                     <li>Expected CSV format: "followed_by_viewer";"full_name";"id";"is_verified";"profile_pic_url";"requested_by_viewer";"username"</li>
                     <li>New accounts will be created if username doesn't exist</li>
                     <li>Existing accounts will be updated with nickname and profile picture</li>
-                    <li>Follower/following relationships will be updated for your selected account</li>
+                    <li>Follower/following relationships will be updated for the detected account</li>
                   </ul>
                 </div>
               </div>
             </div>
 
+            {/* Manual override checkboxes */}
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Manual Overrides</p>
+              <div className="flex items-center gap-3">
+                <Checkbox
+                  id="manual-type"
+                  checked={manualTypeEnabled}
+                  onCheckedChange={(checked) => {
+                    const enabled = checked === true;
+                    setManualTypeEnabled(enabled);
+                    if (!enabled && detectedType) setInstagramImportType(detectedType);
+                  }}
+                  data-testid="checkbox-manual-type"
+                />
+                <Label htmlFor="manual-type" className="cursor-pointer text-sm">
+                  Manually select followers / following
+                </Label>
+              </div>
+              <div className="flex items-center gap-3">
+                <Checkbox
+                  id="manual-account"
+                  checked={manualAccountEnabled}
+                  onCheckedChange={(checked) => {
+                    const enabled = checked === true;
+                    setManualAccountEnabled(enabled);
+                    if (!enabled) {
+                      setSelectedAccountId("");
+                      setSelectedAccountLabel("");
+                    }
+                  }}
+                  data-testid="checkbox-manual-account"
+                />
+                <Label htmlFor="manual-account" className="cursor-pointer text-sm">
+                  Manually select social account
+                </Label>
+              </div>
+            </div>
+
+            {/* Action buttons */}
             <div className="flex items-center gap-3">
               <Button
                 onClick={handleInstagramImport}
-                disabled={!selectedInstagramFile || !selectedAccountId || isPending}
+                disabled={!canSubmit}
                 data-testid="button-import-instagram"
                 className="gap-2"
               >
@@ -349,7 +496,7 @@ export default function ImportSocialMediaPage() {
                 ) : (
                   <>
                     <Upload className="h-4 w-4" />
-                    Import {instagramImportType === "followers" ? "Followers" : "Following"}
+                    Import {effectiveImportType === "followers" ? "Followers" : "Following"}
                   </>
                 )}
               </Button>
@@ -357,13 +504,7 @@ export default function ImportSocialMediaPage() {
               {selectedInstagramFile && !isPending && (
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    setSelectedInstagramFile(null);
-                    const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
-                    if (fileInput) {
-                      fileInput.value = "";
-                    }
-                  }}
+                  onClick={clearFile}
                   data-testid="button-clear-instagram-file"
                 >
                   Clear

@@ -1383,21 +1383,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "No CSV file provided" });
       }
 
-      const accountId = req.body.accountId as string;
       const importType = req.body.importType as "followers" | "following";
       const forceUpdateImages = req.body.forceUpdateImages === "true";
-
-      if (!accountId) {
-        return res.status(400).json({ error: "Account ID is required" });
-      }
+      const usernameFromFilename = (req.body.username as string || "").trim();
+      const explicitAccountId = (req.body.accountId as string || "").trim();
 
       if (!importType || !["followers", "following"].includes(importType)) {
         return res.status(400).json({ error: "Import type must be 'followers' or 'following'" });
       }
 
-      const targetAccount = await storage.getSocialAccountById(accountId);
+      if (!usernameFromFilename && !explicitAccountId) {
+        return res.status(400).json({ error: "Could not determine target account: no username or account ID provided" });
+      }
+
+      let targetAccount: SocialAccountWithCurrentProfile | undefined;
+
+      // Explicit accountId takes priority (manual override)
+      if (explicitAccountId) {
+        targetAccount = await storage.getSocialAccountById(explicitAccountId);
+        if (!targetAccount) {
+          return res.status(404).json({ error: "Selected account not found" });
+        }
+      } else {
+        // Look up by username derived from filename
+        const [existing] = await db
+          .select()
+          .from(socialAccounts)
+          .where(eq(socialAccounts.username, usernameFromFilename))
+          .limit(1);
+
+        if (existing) {
+          targetAccount = await storage.getSocialAccountById(existing.id);
+        } else {
+          // Auto-create the account (Instagram type)
+          const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
+          targetAccount = await storage.createSocialAccount({
+            username: usernameFromFilename,
+            typeId: INSTAGRAM_TYPE_ID,
+            internalAccountCreationType: "auto-import",
+          });
+        }
+      }
+
       if (!targetAccount) {
-        return res.status(404).json({ error: "Target social account not found" });
+        return res.status(500).json({ error: "Failed to resolve target account" });
       }
 
       const csvText = req.file.buffer.toString("utf-8");
@@ -1417,7 +1446,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         type: "import_instagram",
         status: "pending",
         payload: JSON.stringify({
-          accountId,
+          accountId: targetAccount.id,
           targetAccountUsername: targetAccount.username,
           importType,
           forceUpdateImages,
@@ -1428,7 +1457,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       triggerTaskWorker();
 
-      res.json({ taskId: task.id, total: rows.length });
+      res.json({ taskId: task.id, total: rows.length, accountUsername: targetAccount.username });
     } catch (error) {
       console.error("Error queuing Instagram import:", error);
       res.status(500).json({ error: "Failed to start Instagram import" });
@@ -5215,13 +5244,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
         total?: number; page?: number; page_size?: number; total_pages?: number; faces?: any[];
       };
       const faces: any[] = data.faces ?? [];
-
-      // DEBUG: log first face to inspect field names
-      if (faces.length > 0) {
-        console.log("[person-photos DEBUG] sample face keys:", Object.keys(faces[0]));
-        console.log("[person-photos DEBUG] sample face:", JSON.stringify(faces[0]));
-        console.log("[person-photos DEBUG] personUuid requested:", personUuid);
-      }
 
       // Collect only images that contain at least one face belonging to the requested person
       const matchingImageUuids = new Set<string>(
