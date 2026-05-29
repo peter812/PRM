@@ -5416,7 +5416,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const username = (await getOllamaSetting("ollama_username")) ?? "";
       const hasPassword = !!((await getOllamaSetting("ollama_password")));
       const model = (await getOllamaSetting("ollama_model")) ?? "";
-      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model });
+      const prompt = (await getOllamaSetting("ollama_prompt")) ?? "";
+      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, prompt });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch Ollama settings" });
     }
@@ -5432,6 +5433,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof username === "string") await setOllamaSetting("ollama_username", username);
       if (typeof password === "string" && password.length > 0) await setOllamaSetting("ollama_password", password);
       if (typeof model === "string") await setOllamaSetting("ollama_model", model);
+      if (typeof prompt === "string") await setOllamaSetting("ollama_prompt", prompt);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to save Ollama settings" });
@@ -5527,7 +5529,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const imageBase64 = req.file.buffer.toString("base64");
       const savedModel = (await getOllamaSetting("ollama_model")) ?? "";
       const model = (req.body.model as string | undefined) || savedModel || "llava";
-      const prompt = (req.body.prompt as string | undefined) || "Describe this image in detail.";
+      const savedPrompt = (await getOllamaSetting("ollama_prompt")) ?? "";
+      const prompt = (req.body.prompt as string | undefined) || savedPrompt || "Return 2 sentences explaining what is happening in this image.";
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 60000);
       try {

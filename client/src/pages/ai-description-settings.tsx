@@ -6,9 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, Cpu } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, Cpu, MessageSquare } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+
+const DEFAULT_PROMPT = "Return 2 sentences explaining what is happening in this image.";
 
 type OllamaSettings = {
   enabled: boolean;
@@ -17,6 +20,7 @@ type OllamaSettings = {
   username: string;
   hasPassword: boolean;
   model: string;
+  prompt: string;
 };
 
 type TestResult = {
@@ -38,6 +42,7 @@ export default function AiDescriptionSettingsPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data: settings, isLoading } = useQuery<OllamaSettings>({
@@ -57,6 +62,7 @@ export default function AiDescriptionSettingsPage() {
     setAuthRequired(settings.authRequired);
     setUsername(settings.username);
     setSelectedModel(settings.model ?? "");
+    setPrompt(settings.prompt || DEFAULT_PROMPT);
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -98,6 +104,10 @@ export default function AiDescriptionSettingsPage() {
 
   const handleSaveModel = () => {
     saveMutation.mutate({ model: selectedModel });
+  };
+
+  const handleSavePrompt = () => {
+    saveMutation.mutate({ prompt });
   };
 
   const models = modelsData?.models ?? [];
@@ -328,6 +338,44 @@ export default function AiDescriptionSettingsPage() {
                 Currently saved: <span className="font-mono">{settings.model}</span>
               </p>
             )}
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-ollama-prompt">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <MessageSquare className="h-4 w-4" />
+              Prompt
+            </CardTitle>
+            <CardDescription>
+              The instruction sent to the model along with each image. Edit this to change what kind of description the AI produces.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={3}
+              className="resize-y"
+              data-testid="textarea-ollama-prompt"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                onClick={() => setPrompt(DEFAULT_PROMPT)}
+                data-testid="button-reset-prompt"
+              >
+                Reset to default
+              </button>
+              <Button
+                onClick={handleSavePrompt}
+                disabled={!prompt.trim() || saveMutation.isPending}
+                data-testid="button-save-prompt"
+              >
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
