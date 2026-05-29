@@ -312,7 +312,7 @@ export interface IStorage {
   insertPhoto(photo: InsertPhoto): Promise<Photo>;
   getPhotoById(id: string): Promise<Photo | undefined>;
   getPhotoByLocation(location: string): Promise<Photo | undefined>;
-  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<Photo[]>;
+  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<{ items: Photo[]; total: number }>;
   updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
 
   // Session store
@@ -2779,16 +2779,22 @@ export class DatabaseStorage implements IStorage {
     return photo || undefined;
   }
 
-  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number } = {}): Promise<Photo[]> {
+  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number } = {}): Promise<{ items: Photo[]; total: number }> {
     const { prmLocationPrefix, limit = 100, offset = 0 } = options;
-    let query = db.select().from(photos).$dynamic();
-    if (prmLocationPrefix) {
-      query = query.where(sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`);
-    }
-    return await query
-      .orderBy(desc(photos.uploadedAt))
-      .limit(limit)
-      .offset(offset);
+    const whereCondition = prmLocationPrefix
+      ? sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`
+      : undefined;
+
+    const [items, countResult] = await Promise.all([
+      whereCondition
+        ? db.select().from(photos).where(whereCondition).orderBy(desc(photos.uploadedAt)).limit(limit).offset(offset)
+        : db.select().from(photos).orderBy(desc(photos.uploadedAt)).limit(limit).offset(offset),
+      whereCondition
+        ? db.select({ count: sql<number>`count(*)::int` }).from(photos).where(whereCondition)
+        : db.select({ count: sql<number>`count(*)::int` }).from(photos),
+    ]);
+
+    return { items, total: countResult[0]?.count ?? 0 };
   }
 
   async updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void> {

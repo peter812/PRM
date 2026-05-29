@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2 } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -37,6 +37,7 @@ import ImagePassInPage from "@/pages/image-pass-in";
 import InstagramSettingsPage from "@/pages/instagram-settings";
 import TasksSettingsPage from "@/pages/tasks-settings";
 import ImageStorageSettingsPage from "@/pages/image-storage-settings";
+import ImageTablePage from "@/pages/image-table-page";
 import RecognitionSettingsPage from "@/pages/recognition-settings";
 import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
@@ -83,6 +84,10 @@ const settingsMenuItems: MenuItem[] = [
     title: "Image Storage",
     url: "/image-storage",
     icon: HardDrive,
+    subItems: [
+      { title: "Storage", url: "/image-storage", icon: HardDrive },
+      { title: "Image Table", url: "/image-storage/table", icon: Table2 },
+    ],
   },
   {
     title: "Instagram Settings",
@@ -143,6 +148,7 @@ function SettingsSidebar() {
   const isImportExportActive = location.startsWith("/import-export");
   const isRecognitionActive = location.startsWith("/recognition");
   const isAppOptionsActive = location.startsWith("/app") || location.startsWith("/social-graph");
+  const isImageStorageActive = location.startsWith("/image-storage");
 
   return (
     <Sidebar>
@@ -153,7 +159,7 @@ function SettingsSidebar() {
             <SidebarMenu>
               {settingsMenuItems.map((item) => {
                 if (item.subItems) {
-                  const isActive = item.url === "/data-types" ? isDataTypesActive : item.url === "/recognition" ? isRecognitionActive : item.url === "/app" ? isAppOptionsActive : isImportExportActive;
+                  const isActive = item.url === "/data-types" ? isDataTypesActive : item.url === "/recognition" ? isRecognitionActive : item.url === "/app" ? isAppOptionsActive : item.url === "/image-storage" ? isImageStorageActive : isImportExportActive;
                   return (
                     <Collapsible
                       key={item.title}
@@ -237,6 +243,7 @@ export default function SettingsLayout() {
               <Route path="/data-types/relationship-types" component={RelationshipTypesList} />
               <Route path="/data-types/interaction-types" component={InteractionTypesList} />
               <Route path="/data-types/social-account-types" component={SocialAccountTypesList} />
+              <Route path="/image-storage/table" component={ImageTablePage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
