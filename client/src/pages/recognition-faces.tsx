@@ -25,8 +25,8 @@ type FaceListResponse = {
 
 type Settings = { apiUrl: string; hasApiKey: boolean };
 
-function buildUrl(apiUrl: string, relativePath: string): string {
-  return `${apiUrl.replace(/\/+$/, "")}${relativePath}`;
+function buildFaceImgUrl(apiUrl: string, faceUuid: string): string {
+  return `${apiUrl.replace(/\/+$/, "")}/face-img/${faceUuid}.webp`;
 }
 
 export default function RecognitionFacesPage() {
@@ -115,7 +115,7 @@ export default function RecognitionFacesPage() {
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4" data-testid="grid-faces">
               {faces.map((face) => {
-                const fullUrl = apiUrl && face.face_url ? buildUrl(apiUrl, face.face_url) : null;
+                const fullUrl = apiUrl && face.face_uuid ? buildFaceImgUrl(apiUrl, face.face_uuid) : null;
                 const date = formatDate(face.created_at);
                 const hasName = !!face.person_name;
                 return (

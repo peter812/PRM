@@ -32,6 +32,14 @@ function buildUrl(apiUrl: string, relativePath: string): string {
   return `${apiUrl.replace(/\/+$/, "")}${relativePath}`;
 }
 
+function buildListThumbUrl(apiUrl: string, item: ImageItem): string {
+  const base = apiUrl.replace(/\/+$/, "");
+  if (item.face_count > 0) {
+    return `${base}/img-sml/${item.image_uuid}.webp`;
+  }
+  return `${base}/img/${item.image_uuid}.jpg`;
+}
+
 export default function RecognitionImagesPage() {
   const { toast } = useToast();
   const [page, setPage] = useState(1);
@@ -206,7 +214,7 @@ export default function RecognitionImagesPage() {
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4" data-testid="grid-images">
               {images.map((item) => {
-                const fullUrl = apiUrl ? buildUrl(apiUrl, item.image_url) : null;
+                const thumbUrl = apiUrl ? buildListThumbUrl(apiUrl, item) : null;
                 const date = formatDate(item.created_at);
                 return (
                   <div
@@ -215,9 +223,9 @@ export default function RecognitionImagesPage() {
                     data-testid={`card-image-${item.image_uuid}`}
                   >
                     <div className="aspect-square bg-muted flex items-center justify-center overflow-hidden">
-                      {fullUrl ? (
+                      {thumbUrl ? (
                         <img
-                          src={fullUrl}
+                          src={thumbUrl}
                           alt={item.original_filename}
                           className="w-full h-full object-cover"
                           loading="lazy"
