@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { ScanFace, ChevronLeft, ChevronRight, Loader2, AlertCircle, KeyRound, User } from "lucide-react";
 import { Link } from "wouter";
@@ -31,6 +32,10 @@ function buildFaceImgUrl(apiUrl: string, faceUuid: string): string {
 
 export default function RecognitionFacesPage() {
   const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: ["/api/prm-face/face/list"] });
+  }, []);
 
   const { data: settings } = useQuery<Settings>({
     queryKey: ["/api/prm-face/settings"],

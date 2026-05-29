@@ -466,6 +466,10 @@ export default function RecognitionImagesPage() {
   const [matchItem, setMatchItem] = useState<ImageItem | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    queryClient.invalidateQueries({ queryKey: ["/api/prm-face/img/list"] });
+  }, []);
+
   const { data: settings } = useQuery<Settings>({
     queryKey: ["/api/prm-face/settings"],
   });
