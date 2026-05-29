@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "IPClEjiyZyzI9m5SWLMCZ"
+uri = "file://PRM-face-API-request.md"
+type = "text"
+title = "PRM-Face API Feature Request Guide"
