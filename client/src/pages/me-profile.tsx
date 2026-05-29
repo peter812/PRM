@@ -1,12 +1,14 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit } from "lucide-react";
-import { useState } from "react";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon } from "lucide-react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
 import { queryClient } from "@/lib/queryClient";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useToast } from "@/hooks/use-toast";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { AddInteractionDialog } from "@/components/add-interaction-dialog";
 import { EditPersonDialog } from "@/components/edit-person-dialog";
@@ -21,10 +23,12 @@ import { getInitials } from "@/lib/utils";
 
 export default function MeProfile() {
   const [, navigate] = useLocation();
+  const { toast } = useToast();
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
+  const photoFileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
     queryKey: ["/api/me"],
@@ -34,6 +38,26 @@ export default function MeProfile() {
     queryKey: ["/api/prm-face/facial-intelligence"],
   });
   const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
+
+  const addPhotoMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append("image", file);
+      const response = await fetch("/api/prm-face/img/add", { method: "POST", body: formData });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to upload photo");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Photo uploaded", description: "Photo added to facial recognition database." });
+      if (person) queryClient.invalidateQueries({ queryKey: ["/api/prm-face/person-photos", person.id] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Upload failed", description: error.message, variant: "destructive" });
+    },
+  });
 
   if (isLoading) {
     return (
@@ -136,14 +160,51 @@ export default function MeProfile() {
                   </div>
                 )}
               </div>
-              <Button
-                variant="outline"
-                onClick={() => setIsEditPersonOpen(true)}
-                data-testid="button-edit-person"
-              >
-                <Edit className="h-4 w-4" />
-                Edit
-              </Button>
+              <div className="flex items-center gap-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" data-testid="button-add-menu">
+                      <Plus className="h-4 w-4" />
+                      Add
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => setIsAddRelationshipOpen(true)} data-testid="menu-item-add-relationship">
+                      <GitBranch className="h-4 w-4" />
+                      Relationship
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setIsAddNoteOpen(true)} data-testid="menu-item-add-note">
+                      <StickyNote className="h-4 w-4" />
+                      Note
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setIsAddInteractionOpen(true)} data-testid="menu-item-add-interaction">
+                      <CalendarDays className="h-4 w-4" />
+                      Interaction
+                    </DropdownMenuItem>
+                    {facialIntelligenceEnabled && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => photoFileInputRef.current?.click()}
+                          disabled={addPhotoMutation.isPending}
+                          data-testid="menu-item-add-photo"
+                        >
+                          <ImageIcon className="h-4 w-4" />
+                          Photo
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsEditPersonOpen(true)}
+                  data-testid="button-edit-person"
+                >
+                  <Edit className="h-4 w-4" />
+                  Edit
+                </Button>
+              </div>
             </div>
 
             <PersonSocialAccountsChips
@@ -286,6 +347,18 @@ export default function MeProfile() {
         onOpenChange={setIsEditPersonOpen}
         person={person}
         onDelete={() => navigate("/people")}
+      />
+      <input
+        ref={photoFileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        data-testid="input-add-photo"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) addPhotoMutation.mutate(file);
+          e.target.value = "";
+        }}
       />
     </div>
   );
