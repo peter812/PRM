@@ -5493,17 +5493,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
           ?? (await getOllamaSetting("ollama_password")) ?? "";
         headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
       }
+      const testUrl = `${base}/api/tags`;
+      console.log(`[Ollama test] url=${testUrl} auth=${authRequired} hasAuthHeader=${!!headers["Authorization"]}`);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
       try {
-        const resp = await fetch(`${base}/api/tags`, { headers, signal: controller.signal });
+        const resp = await fetch(testUrl, { headers, signal: controller.signal });
         clearTimeout(timeout);
         if (resp.ok) {
           const data = await resp.json() as { models?: { name: string }[] };
           const count = data.models?.length ?? 0;
           res.json({ ok: true, message: `Connected. ${count} model${count !== 1 ? "s" : ""} available.` });
         } else {
-          res.json({ ok: false, message: `Server responded with status ${resp.status}.` });
+          let detail = "";
+          try {
+            const body = await resp.text();
+            if (body.trim()) detail = ` — ${body.trim().slice(0, 200)}`;
+          } catch {}
+          console.log(`[Ollama test] status=${resp.status}${detail}`);
+          if (resp.status === 401) {
+            res.json({ ok: false, message: `Authentication required (401). Check your username and password.` });
+          } else if (resp.status === 403) {
+            res.json({ ok: false, message: `Access denied (403). Credentials were sent but rejected by the server.${detail}` });
+          } else {
+            res.json({ ok: false, message: `Server responded with ${resp.status}${detail}` });
+          }
         }
       } catch (err: any) {
         clearTimeout(timeout);
