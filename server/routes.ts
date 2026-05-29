@@ -5,7 +5,7 @@ import { db } from "./db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -4807,6 +4807,110 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
       }
       res.json(await response.json());
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+    }
+  });
+
+  app.get("/api/prm-face/img/detail-enriched", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const { uuid } = req.query as { uuid?: string };
+    if (!uuid) return res.status(400).json({ error: "uuid is required" });
+    const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+    if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+    const apiKey = await getPrmFaceSetting("prm_face_api_key");
+    if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+    try {
+      // 1. Fetch raw face detail from PRM-face
+      const response = await fetch(
+        `${prmBase(apiUrl)}/api/img/get?uuid=${encodeURIComponent(uuid)}`,
+        { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(10000) }
+      );
+      if (!response.ok) {
+        const body = await response.text();
+        return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+      }
+      const detail: any = await response.json();
+      const rawFaces: any[] = detail?.faces ?? [];
+
+      // 2. Collect unique non-null person_uuids from PRM-face
+      const assignedUuids = [...new Set(rawFaces.map((f: any) => f.person_uuid).filter(Boolean))] as string[];
+
+      if (assignedUuids.length === 0) {
+        // No assignments stored — return as-is with enriched nulls
+        return res.json({
+          ...detail,
+          faces: rawFaces.map((f: any) => ({
+            ...f,
+            person_uuid: null,
+            person_name: null,
+            is_social: false,
+            social_username: null,
+            social_nickname: null,
+          })),
+        });
+      }
+
+      // 3. Batch-lookup in PRM people and social_accounts tables in parallel
+      const [matchedPeople, matchedSocials] = await Promise.all([
+        db.select({ id: people.id, firstName: people.firstName, lastName: people.lastName })
+          .from(people)
+          .where(inArray(people.id, assignedUuids)),
+        db.select({
+            id: socialAccounts.id,
+            username: socialAccounts.username,
+            nickname: socialProfileVersions.nickname,
+          })
+          .from(socialAccounts)
+          .leftJoin(socialProfileVersions,
+            and(
+              eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+              eq(socialProfileVersions.isCurrent, true)
+            )
+          )
+          .where(inArray(socialAccounts.id, assignedUuids)),
+      ]);
+
+      // 4. Build lookup maps
+      const peopleMap = new Map(matchedPeople.map(p => [p.id, p]));
+      const socialMap = new Map(matchedSocials.map(s => [s.id, s]));
+
+      // 5. Enrich each face
+      const enrichedFaces = rawFaces.map((f: any) => {
+        const pUuid: string | null = f.person_uuid ?? null;
+        if (!pUuid) {
+          return { ...f, person_uuid: null, person_name: null, is_social: false, social_username: null, social_nickname: null };
+        }
+
+        const person = peopleMap.get(pUuid);
+        if (person) {
+          return {
+            ...f,
+            person_uuid: pUuid,
+            person_name: `${person.firstName} ${person.lastName}`.trim(),
+            is_social: false,
+            social_username: null,
+            social_nickname: null,
+          };
+        }
+
+        const social = socialMap.get(pUuid);
+        if (social) {
+          return {
+            ...f,
+            person_uuid: pUuid,
+            person_name: social.nickname ?? `@${social.username}`,
+            is_social: true,
+            social_username: social.username,
+            social_nickname: social.nickname ?? null,
+          };
+        }
+
+        // UUID stored in PRM-face but no longer exists in PRM — treat as orphan
+        return { ...f, person_uuid: null, person_name: null, is_social: false, social_username: null, social_nickname: null };
+      });
+
+      res.json({ ...detail, faces: enrichedFaces });
     } catch (error: any) {
       res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
     }

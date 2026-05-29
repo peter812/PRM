@@ -37,6 +37,9 @@ type FaceDetail = {
   face_uuid: string;
   person_uuid?: string | null;
   person_name?: string | null;
+  is_social?: boolean;
+  social_username?: string | null;
+  social_nickname?: string | null;
   box?: { x: number; y: number; w: number; h: number } | null;
 };
 
@@ -232,9 +235,9 @@ function MatchModal({ item, apiUrl, onClose }: { item: ImageItem | null; apiUrl:
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
 
   const { data: detail, isLoading, isError } = useQuery<ImageDetail>({
-    queryKey: ["/api/prm-face/img/detail", item?.image_uuid],
+    queryKey: ["/api/prm-face/img/detail-enriched", item?.image_uuid],
     queryFn: async () => {
-      const res = await fetch(`/api/prm-face/img/detail?uuid=${encodeURIComponent(item!.image_uuid)}`, { credentials: "include" });
+      const res = await fetch(`/api/prm-face/img/detail-enriched?uuid=${encodeURIComponent(item!.image_uuid)}`, { credentials: "include" });
       const text = await res.text();
       let payload: any;
       try { payload = JSON.parse(text); } catch { throw new Error("Unexpected server response."); }
@@ -251,11 +254,20 @@ function MatchModal({ item, apiUrl, onClose }: { item: ImageItem | null; apiUrl:
     if (!detail) return;
     setNaturalSize(null);
     setFaceStates(
-      (detail.faces ?? []).map((f) => ({
-        isSocial: false,
-        person: f.person_uuid && f.person_name ? { uuid: f.person_uuid, name: f.person_name } : null,
-        social: null,
-      }))
+      (detail.faces ?? []).map((f) => {
+        if (f.is_social && f.person_uuid && f.social_username) {
+          return {
+            isSocial: true,
+            person: null,
+            social: { uuid: f.person_uuid, username: f.social_username, nickname: f.social_nickname ?? null },
+          };
+        }
+        return {
+          isSocial: false,
+          person: f.person_uuid && f.person_name ? { uuid: f.person_uuid, name: f.person_name } : null,
+          social: null,
+        };
+      })
     );
   }, [detail]);
 
