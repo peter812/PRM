@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2 } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, Sparkles } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -42,6 +42,7 @@ import RecognitionSettingsPage from "@/pages/recognition-settings";
 import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
+import AiDescriptionSettingsPage from "@/pages/ai-description-settings";
 import NotFound from "@/pages/not-found";
 
 interface MenuItem {
@@ -87,6 +88,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Storage", url: "/image-storage", icon: HardDrive },
       { title: "Image Table", url: "/image-storage/table", icon: Table2 },
+      { title: "AI Description", url: "/image-storage/ai-description", icon: Sparkles },
     ],
   },
   {
@@ -244,6 +246,7 @@ export default function SettingsLayout() {
               <Route path="/data-types/interaction-types" component={InteractionTypesList} />
               <Route path="/data-types/social-account-types" component={SocialAccountTypesList} />
               <Route path="/image-storage/table" component={ImageTablePage} />
+              <Route path="/image-storage/ai-description" component={AiDescriptionSettingsPage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />

@@ -12,6 +12,7 @@ import {
   Moon,
   Sun,
   Scan,
+  Sparkles,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
@@ -86,6 +87,11 @@ const menuItems = [
         icon: Scan,
       },
     ],
+  },
+  {
+    title: "AI desc demo",
+    url: "/ai-desc-demo",
+    icon: Sparkles,
   },
 ];
 

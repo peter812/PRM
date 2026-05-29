@@ -5393,6 +5393,134 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Ollama AI Description ─────────────────────────────────────────────────
+
+  async function getOllamaSetting(key: string): Promise<string | null> {
+    const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
+    return row?.value ?? null;
+  }
+
+  async function setOllamaSetting(key: string, value: string): Promise<void> {
+    await db.execute(
+      sql`INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
+          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    );
+  }
+
+  app.get("/api/ollama/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const enabled = (await getOllamaSetting("ollama_enabled")) ?? "false";
+      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+      const authRequired = (await getOllamaSetting("ollama_auth_required")) ?? "false";
+      const username = (await getOllamaSetting("ollama_username")) ?? "";
+      const hasPassword = !!((await getOllamaSetting("ollama_password")));
+      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch Ollama settings" });
+    }
+  });
+
+  app.post("/api/ollama/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const { enabled, apiUrl, authRequired, username, password } = req.body;
+    try {
+      if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
+      if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
+      if (typeof authRequired === "boolean") await setOllamaSetting("ollama_auth_required", String(authRequired));
+      if (typeof username === "string") await setOllamaSetting("ollama_username", username);
+      if (typeof password === "string" && password.length > 0) await setOllamaSetting("ollama_password", password);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to save Ollama settings" });
+    }
+  });
+
+  app.post("/api/ollama/test", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+      if (!apiUrl.trim()) return res.json({ ok: false, message: "No API URL configured." });
+      const base = apiUrl.replace(/\/+$/, "");
+      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+      const headers: Record<string, string> = {};
+      if (authRequired) {
+        const username = (await getOllamaSetting("ollama_username")) ?? "";
+        const password = (await getOllamaSetting("ollama_password")) ?? "";
+        headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const resp = await fetch(`${base}/api/tags`, { headers, signal: controller.signal });
+        clearTimeout(timeout);
+        if (resp.ok) {
+          const data = await resp.json() as { models?: { name: string }[] };
+          const count = data.models?.length ?? 0;
+          res.json({ ok: true, message: `Connected. ${count} model${count !== 1 ? "s" : ""} available.` });
+        } else {
+          res.json({ ok: false, message: `Server responded with status ${resp.status}.` });
+        }
+      } catch (err: any) {
+        clearTimeout(timeout);
+        if (err.name === "AbortError") {
+          res.json({ ok: false, message: "Connection timed out after 8 seconds." });
+        } else {
+          res.json({ ok: false, message: `Connection failed: ${err.message}` });
+        }
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/ollama/describe", upload.single("image"), async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+      if (!apiUrl.trim()) return res.status(400).json({ error: "No Ollama API URL configured." });
+      const base = apiUrl.replace(/\/+$/, "");
+      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (authRequired) {
+        const username = (await getOllamaSetting("ollama_username")) ?? "";
+        const password = (await getOllamaSetting("ollama_password")) ?? "";
+        headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+      }
+      if (!req.file) return res.status(400).json({ error: "No image provided." });
+      const imageBase64 = req.file.buffer.toString("base64");
+      const model = (req.body.model as string | undefined) || "llava";
+      const prompt = (req.body.prompt as string | undefined) || "Describe this image in detail.";
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+      try {
+        const resp = await fetch(`${base}/api/generate`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ model, prompt, images: [imageBase64], stream: false }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!resp.ok) {
+          const text = await resp.text();
+          return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
+        }
+        const data = await resp.json() as { response?: string; error?: string };
+        if (data.error) return res.status(502).json({ error: data.error });
+        res.json({ description: data.response ?? "" });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        if (err.name === "AbortError") {
+          res.status(504).json({ error: "Request timed out after 60 seconds." });
+        } else {
+          res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
+        }
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // --- Upgrade #7: SSE for Real-Time Updates ---
   app.get("/api/v1/events/stream", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
