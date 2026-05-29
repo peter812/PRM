@@ -4903,7 +4903,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const apiKey = await getPrmFaceSetting("prm_face_api_key");
     if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
 
-    let assignments: Array<{ face_index: number; person_uuid?: string; social_account_id?: string; is_social_account: boolean }> = [];
+    let assignments: Array<{ face_index: number; person_uuid?: string; social_account_id?: string; is_social_account: boolean; label?: string }> = [];
     if (req.body.assignments) {
       try {
         assignments = JSON.parse(req.body.assignments);
@@ -4913,6 +4913,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
 
     try {
+      // Step 1: Upload image to PRM-Face
       const formData = new FormData();
       formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
       const response = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
@@ -4928,7 +4929,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const body = await response.text();
         return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
       }
-      const prmData = await response.json();
+      const prmData = await response.json() as { image_uuid?: string; faces?: Array<{ face_uuid: string; face_index?: number }> };
+
+      // Step 2: Map face_index → face_uuid from the img/add response
+      const faces: Array<{ face_uuid: string; face_index?: number }> = prmData.faces ?? [];
+      const faceByIndex = new Map<number, string>();
+      faces.forEach((f, arrayIdx) => {
+        const idx = f.face_index ?? arrayIdx;
+        faceByIndex.set(idx, f.face_uuid);
+      });
+
+      // Step 3: Build bulk assign payload — person assignments only (not social accounts)
+      const bulkAssignments = assignments
+        .filter((a) => !a.is_social_account && a.person_uuid && faceByIndex.has(a.face_index))
+        .map((a) => ({
+          face_uuid: faceByIndex.get(a.face_index)!,
+          person_uuid: a.person_uuid!,
+          name: a.label ?? undefined,
+        }));
+
+      // Step 4: Persist the face-to-person links (non-fatal if it fails)
+      if (bulkAssignments.length > 0) {
+        try {
+          const assignRes = await fetch(`${prmBase(apiUrl)}/api/face/assign-bulk`, {
+            method: "POST",
+            headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
+            body: JSON.stringify({ assignments: bulkAssignments }),
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!assignRes.ok) {
+            const assignBody = await assignRes.text();
+            console.warn("[PRM-Face] face/assign-bulk failed:", assignBody);
+          }
+        } catch (assignErr: any) {
+          console.warn("[PRM-Face] face/assign-bulk error:", assignErr.message);
+        }
+      }
+
       res.json({ ...prmData, assignments });
     } catch (error: any) {
       res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
