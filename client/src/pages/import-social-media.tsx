@@ -196,7 +196,7 @@ export default function ImportSocialMediaPage() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    if (!file.name.endsWith(".csv")) {
+    if (!file.name.toLowerCase().endsWith(".csv")) {
       setFilenameError("Please select a CSV file (.csv)");
       setSelectedInstagramFile(null);
       setDetectedUsername(null);

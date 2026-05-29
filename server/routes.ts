@@ -1405,20 +1405,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return res.status(404).json({ error: "Selected account not found" });
         }
       } else {
-        // Look up by username derived from filename
+        const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
+        const normalizedUsername = usernameFromFilename.toLowerCase();
+
+        // Look up by username AND Instagram type to avoid matching accounts on other platforms
         const [existing] = await db
           .select()
           .from(socialAccounts)
-          .where(eq(socialAccounts.username, usernameFromFilename))
+          .where(
+            and(
+              eq(socialAccounts.username, normalizedUsername),
+              eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)
+            )
+          )
           .limit(1);
 
         if (existing) {
           targetAccount = await storage.getSocialAccountById(existing.id);
         } else {
-          // Auto-create the account (Instagram type)
-          const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
+          // Auto-create the Instagram account
           targetAccount = await storage.createSocialAccount({
-            username: usernameFromFilename,
+            username: normalizedUsername,
             typeId: INSTAGRAM_TYPE_ID,
             internalAccountCreationType: "auto-import",
           });
