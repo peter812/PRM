@@ -82,18 +82,37 @@ function PersonSearch({ value, onChange }: { value: PersonOption | null; onChang
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebounce(query, 300);
 
-  const { data: results, isFetching } = useQuery<PersonOption[]>({
+  const { data: mePerson } = useQuery<PersonOption | null>({
+    queryKey: ["/api/people/me-person"],
+    queryFn: async () => {
+      const res = await fetch("/api/people/me-person", { credentials: "include" });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    staleTime: Infinity,
+  });
+
+  const { data: searchResults, isFetching } = useQuery<PersonOption[]>({
     queryKey: ["/api/people/search", debouncedQuery],
     queryFn: async () => {
-      if (debouncedQuery.length < 3) return [];
       const res = await fetch(`/api/people/search?q=${encodeURIComponent(debouncedQuery)}`, { credentials: "include" });
       if (!res.ok) return [];
       const data = await res.json();
       return Array.isArray(data) ? data.map((p: any) => ({ uuid: p.uuid, name: p.name })) : [];
     },
-    enabled: debouncedQuery.length >= 3,
+    enabled: debouncedQuery.length >= 2,
     staleTime: 10000,
   });
+
+  const meMatchesQuery = !query || query.toLowerCase() === "me" ||
+    (mePerson?.name?.toLowerCase().includes(query.toLowerCase()) ?? false);
+  const filteredResults = (searchResults ?? []).filter((p) => p.uuid !== mePerson?.uuid);
+  const showItems = mePerson && meMatchesQuery || filteredResults.length > 0;
+
+  let statusMsg: string | null = null;
+  if (query.length === 1) statusMsg = "Type 1 more character to search…";
+  else if (debouncedQuery.length >= 2 && isFetching) statusMsg = null;
+  else if (debouncedQuery.length >= 2 && !showItems) statusMsg = "No people found.";
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -105,27 +124,36 @@ function PersonSearch({ value, onChange }: { value: PersonOption | null; onChang
       </PopoverTrigger>
       <PopoverContent className="w-72 p-0" align="start">
         <Command shouldFilter={false}>
-          <CommandInput placeholder="Search people (3+ chars)…" value={query} onValueChange={setQuery} />
+          <CommandInput placeholder="Search people…" value={query} onValueChange={setQuery} />
           <CommandList>
-            {query.length < 3 ? (
-              <CommandEmpty>Type at least 3 characters to search.</CommandEmpty>
-            ) : isFetching ? (
-              <CommandEmpty><Loader2 className="h-4 w-4 animate-spin mx-auto" /></CommandEmpty>
-            ) : !results?.length ? (
-              <CommandEmpty>No people found.</CommandEmpty>
-            ) : (
-              <CommandGroup>
-                <CommandItem value="__none__" onSelect={() => { onChange(null); setOpen(false); setQuery(""); }}>
-                  <Check className={cn("mr-2 h-4 w-4", value === null ? "opacity-100" : "opacity-0")} />
-                  None (orphan)
+            <CommandGroup>
+              <CommandItem value="__none__" onSelect={() => { onChange(null); setOpen(false); setQuery(""); }}>
+                <Check className={cn("mr-2 h-4 w-4", value === null ? "opacity-100" : "opacity-0")} />
+                None (orphan)
+              </CommandItem>
+              {mePerson && meMatchesQuery && (
+                <CommandItem value={mePerson.uuid} onSelect={() => { onChange(mePerson); setOpen(false); setQuery(""); }}>
+                  <Check className={cn("mr-2 h-4 w-4", value?.uuid === mePerson.uuid ? "opacity-100" : "opacity-0")} />
+                  <span className="flex items-center gap-1.5">
+                    {mePerson.name}
+                    <span className="text-xs text-muted-foreground">(Me)</span>
+                  </span>
                 </CommandItem>
-                {results.map((p) => (
-                  <CommandItem key={p.uuid} value={p.uuid} onSelect={() => { onChange(p); setOpen(false); setQuery(""); }}>
-                    <Check className={cn("mr-2 h-4 w-4", value?.uuid === p.uuid ? "opacity-100" : "opacity-0")} />
-                    {p.name}
-                  </CommandItem>
-                ))}
-              </CommandGroup>
+              )}
+              {filteredResults.map((p) => (
+                <CommandItem key={p.uuid} value={p.uuid} onSelect={() => { onChange(p); setOpen(false); setQuery(""); }}>
+                  <Check className={cn("mr-2 h-4 w-4", value?.uuid === p.uuid ? "opacity-100" : "opacity-0")} />
+                  {p.name}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            {isFetching && (
+              <div className="py-4 flex items-center justify-center">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </div>
+            )}
+            {!isFetching && statusMsg && (
+              <div className="py-4 text-center text-sm text-muted-foreground">{statusMsg}</div>
             )}
           </CommandList>
         </Command>

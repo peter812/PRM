@@ -2307,6 +2307,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/people/me-person", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const mePerson = await storage.getMePerson(req.user!.id);
+      if (!mePerson) return res.status(404).json({ error: "ME person not found" });
+      res.json({ uuid: mePerson.id, name: mePerson.name });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/people/paginated", async (req, res) => {
     try {
       const offset = parseInt(req.query.offset as string) || 0;
