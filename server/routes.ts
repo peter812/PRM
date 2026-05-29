@@ -4935,6 +4935,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/prm-face/reset-all", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+
+    const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+    if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+    const apiKey = await getPrmFaceSetting("prm_face_api_key");
+    if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+
+    try {
+      const response = await fetch(`${prmBase(apiUrl)}/api/reset/all`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+      }
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+    }
+  });
+
   // --- Upgrade #7: SSE for Real-Time Updates ---
   app.get("/api/v1/events/stream", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");

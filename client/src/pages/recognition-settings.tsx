@@ -4,7 +4,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -27,6 +37,7 @@ export default function RecognitionSettingsPage() {
   const [keyVisible, setKeyVisible] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isRevealing, setIsRevealing] = useState(false);
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
 
   const { data: settings, isLoading } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
@@ -109,6 +120,21 @@ export default function RecognitionSettingsPage() {
     },
     onError: (error: Error) => {
       setTestResult({ ok: false, message: error.message });
+    },
+  });
+
+  const resetAllMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/prm-face/reset-all", {});
+      return res.json();
+    },
+    onSuccess: () => {
+      setResetDialogOpen(false);
+      toast({ title: "All PRM-Face data deleted", description: "All records, faces, and images have been wiped from the PRM-Face server." });
+    },
+    onError: (error: Error) => {
+      setResetDialogOpen(false);
+      toast({ title: "Reset failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -304,7 +330,66 @@ export default function RecognitionSettingsPage() {
             )}
           </CardContent>
         </Card>
+        <Card className="border-destructive/40" data-testid="card-danger-zone">
+          <CardHeader>
+            <CardTitle className="text-lg text-destructive flex items-center gap-2">
+              <Trash2 className="h-4 w-4" />
+              Danger Zone
+            </CardTitle>
+            <CardDescription>
+              Permanently delete all data stored on the PRM-Face server — this includes all indexed images,
+              face records, and recognition data. This action cannot be undone.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="destructive"
+              onClick={() => setResetDialogOpen(true)}
+              disabled={!hasApiKey || resetAllMutation.isPending}
+              data-testid="button-reset-all-prm-face"
+            >
+              {resetAllMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting…
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete All PRM-Face Data
+                </>
+              )}
+            </Button>
+            {!hasApiKey && (
+              <p className="text-xs text-muted-foreground mt-2" data-testid="text-reset-disabled-hint">
+                Configure an API key above before using this action.
+              </p>
+            )}
+          </CardContent>
+        </Card>
       </div>
+
+      <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
+        <AlertDialogContent data-testid="dialog-confirm-reset-all">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete all PRM-Face data?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently wipe all images, face records, and recognition data from the PRM-Face server.
+              This action <strong>cannot be undone</strong>.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-reset-all">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => resetAllMutation.mutate()}
+              data-testid="button-confirm-reset-all"
+            >
+              Yes, delete everything
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
