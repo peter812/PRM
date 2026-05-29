@@ -1115,15 +1115,6 @@ export class DatabaseStorage implements IStorage {
       if (row.imageUrl) results.push({ table: "social_profile_versions", id: row.id, column: "imageUrl", url: row.imageUrl });
     }
 
-    const messageRows = await db.select({ id: messages.id, imageUrls: messages.imageUrls }).from(messages);
-    for (const row of messageRows) {
-      if (row.imageUrls && row.imageUrls.length > 0) {
-        for (const url of row.imageUrls) {
-          results.push({ table: "messages", id: row.id, column: "imageUrls", url });
-        }
-      }
-    }
-
     return results;
   }
 
