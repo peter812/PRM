@@ -277,6 +277,9 @@ function SocialGraphContent({
   const [multiHighlightAccountIds, setMultiHighlightAccountIds] = useState<string[]>([]);
   const [multiHighlightSearchOpen, setMultiHighlightSearchOpen] = useState(false);
   const [multiHighlightSearchQuery, setMultiHighlightSearchQuery] = useState('');
+  const [multiHighlightColor, setMultiHighlightColor] = useState('#ef4444');
+  const [multiFollowsAllColor, setMultiFollowsAllColor] = useState('#ffffff');
+  const [multiFollowsOneColor, setMultiFollowsOneColor] = useState('#eab308');
   const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(0.5);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
@@ -406,6 +409,31 @@ function SocialGraphContent({
 
     const colorMap = new Map<string, string>();
 
+    if (graphMode === 'multi-highlight' && multiHighlightAccountIds.length >= 2) {
+      const highlightedSet = new Set(multiHighlightAccountIds);
+      graphData.nodes.forEach(n => {
+        if (highlightedSet.has(n.id)) {
+          colorMap.set(n.id, multiHighlightColor);
+          return;
+        }
+        let matchCount = 0;
+        highlightedSet.forEach(hId => {
+          const connected = graphData.links.some(l => {
+            const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+            const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+            return (src === n.id && tgt === hId) || (src === hId && tgt === n.id);
+          });
+          if (connected) matchCount++;
+        });
+        if (matchCount === highlightedSet.size) {
+          colorMap.set(n.id, multiFollowsAllColor);
+        } else if (matchCount === 1) {
+          colorMap.set(n.id, multiFollowsOneColor);
+        }
+      });
+      return colorMap;
+    }
+
     if (graphMode === 'single-highlight' && singleHighlightAccountId && singleNodeColorScheme === 'follow-status') {
       graphData.nodes.forEach(n => {
         if (n.id === singleHighlightAccountId) {
@@ -468,7 +496,7 @@ function SocialGraphContent({
     }
 
     return colorMap;
-  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor]);
+  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, multiHighlightAccountIds, multiHighlightColor, multiFollowsAllColor, multiFollowsOneColor]);
 
   useEffect(() => {
     if (!graphRef.current || !graphData || !graphData.nodes.length) return;
@@ -1225,9 +1253,21 @@ function SocialGraphContent({
                   </div>
                 )}
                 {graphMode === 'multi-highlight' && (
-                  <p className="text-sm text-muted-foreground" data-testid="text-multi-highlight-color-info">
-                    Selected accounts are highlighted in distinct colors. Shared connections are shown in a neutral color.
-                  </p>
+                  <div className="space-y-2" data-testid="multi-highlight-color-options">
+                    <Label>Node Colors</Label>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Highlighted</Label>
+                      <input type="color" value={multiHighlightColor} onChange={(e) => setMultiHighlightColor(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-multi-highlight-color" />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Follows all highlighted</Label>
+                      <input type="color" value={multiFollowsAllColor} onChange={(e) => setMultiFollowsAllColor(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-multi-follows-all-color" />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Follows one highlighted</Label>
+                      <input type="color" value={multiFollowsOneColor} onChange={(e) => setMultiFollowsOneColor(e.target.value)} className="h-7 w-10 rounded cursor-pointer border" data-testid="input-multi-follows-one-color" />
+                    </div>
+                  </div>
                 )}
                 {(graphMode === 'default' || graphMode === 'blob') && (
                 <div className="space-y-2">
