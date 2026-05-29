@@ -126,7 +126,7 @@ export default function DeleteOptionsPage() {
   };
 
   return (
-    <div className="container max-w-2xl py-8">
+    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="mb-8">
         <h1 className="text-2xl font-bold" data-testid="text-page-title">Delete Options</h1>
         <p className="text-muted-foreground">Manage destructive operations for your data</p>

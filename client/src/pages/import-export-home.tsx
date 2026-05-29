@@ -39,9 +39,9 @@ export default function ImportExportHome() {
         </p>
       </div>
 
-      <div className="space-y-4">
+      <div className="flex flex-col gap-4">
         {importExportSections.map((section) => (
-          <Link key={section.title} href={section.url}>
+          <Link key={section.title} href={section.url} className="block">
             <Card className="hover-elevate cursor-pointer" data-testid={`card-${section.title.toLowerCase().replace(/\s+/g, '-')}`}>
               <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0 pb-2">
                 <div className="flex items-center gap-3">
