@@ -16,6 +16,7 @@ import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
+import { PersonPhotosTab } from "@/components/person-photos-tab";
 import { getInitials } from "@/lib/utils";
 
 export default function MeProfile() {
@@ -28,6 +29,11 @@ export default function MeProfile() {
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
     queryKey: ["/api/me"],
   });
+
+  const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
+    queryKey: ["/api/prm-face/facial-intelligence"],
+  });
+  const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
 
   if (isLoading) {
     return (
@@ -214,6 +220,15 @@ export default function MeProfile() {
             >
               Groups
             </TabsTrigger>
+            {facialIntelligenceEnabled && (
+              <TabsTrigger
+                value="photos"
+                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                data-testid="tab-photos"
+              >
+                Photos
+              </TabsTrigger>
+            )}
           </TabsList>
         </div>
 
@@ -242,6 +257,12 @@ export default function MeProfile() {
               personId={person.id}
             />
           </TabsContent>
+
+          {facialIntelligenceEnabled && (
+            <TabsContent value="photos" className="mt-0 h-full">
+              <PersonPhotosTab personId={person.id} />
+            </TabsContent>
+          )}
         </div>
       </Tabs>
 
