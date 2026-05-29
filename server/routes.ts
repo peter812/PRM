@@ -5477,14 +5477,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/ollama/test", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     try {
-      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+      const apiUrl = (typeof req.body.apiUrl === "string" && req.body.apiUrl.trim())
+        ? req.body.apiUrl.trim()
+        : ((await getOllamaSetting("ollama_api_url")) ?? "");
       if (!apiUrl.trim()) return res.json({ ok: false, message: "No API URL configured." });
       const base = apiUrl.replace(/\/+$/, "");
-      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+      const authRequired = (typeof req.body.authRequired === "boolean")
+        ? req.body.authRequired
+        : ((await getOllamaSetting("ollama_auth_required")) === "true");
       const headers: Record<string, string> = {};
       if (authRequired) {
-        const username = (await getOllamaSetting("ollama_username")) ?? "";
-        const password = (await getOllamaSetting("ollama_password")) ?? "";
+        const username = (typeof req.body.username === "string" ? req.body.username : null)
+          ?? (await getOllamaSetting("ollama_username")) ?? "";
+        const password = (typeof req.body.password === "string" && req.body.password.length > 0 ? req.body.password : null)
+          ?? (await getOllamaSetting("ollama_password")) ?? "";
         headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
       }
       const controller = new AbortController();

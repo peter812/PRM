@@ -81,7 +81,9 @@ export default function AiDescriptionSettingsPage() {
 
   const testMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ollama/test", {});
+      const body: Record<string, unknown> = { apiUrl, authRequired, username };
+      if (password.length > 0) body.password = password;
+      const res = await apiRequest("POST", "/api/ollama/test", body);
       return res.json() as Promise<TestResult>;
     },
     onSuccess: (data) => {
