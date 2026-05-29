@@ -203,6 +203,7 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   commentCount: integer("comment_count").notNull().default(0),
   comments: text("comments"), // JSON string with post comments data
   mentionedAccounts: text("mentioned_accounts"), // JSON array of {imageIndex: number, accounts: string[]} objects, e.g. '[{"imageIndex":0,"accounts":["user1"]}]'
+  faceIds: text("face_ids"), // JSON array of arrays of face UUIDs, one entry per image, e.g. '[["uuid1","uuid2"],["uuid3"]]'
   isDeleted: boolean("is_deleted").notNull().default(false),
   postedAt: timestamp("posted_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
