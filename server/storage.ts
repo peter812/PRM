@@ -1435,15 +1435,19 @@ export class DatabaseStorage implements IStorage {
 
     let filtered = accountsWithFollowing;
 
-    if (settings.hideOrphans) {
-      filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) > 0);
+    const isSingleHighlightActive = settings.mode === 'single-highlight' && !!settings.singleHighlightAccountId;
+
+    if (!isSingleHighlightActive) {
+      if (settings.hideOrphans) {
+        filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) > 0);
+      }
+
+      if (settings.minConnections > 0) {
+        filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) >= settings.minConnections);
+      }
     }
 
-    if (settings.minConnections > 0) {
-      filtered = filtered.filter(a => (uniqueConnectionCounts.get(a.id) || 0) >= settings.minConnections);
-    }
-
-    if (settings.limitExtras && settings.minConnections < 2) {
+    if (!isSingleHighlightActive && settings.limitExtras && settings.minConnections < 2) {
       const safeIds = new Set<string>();
       const extraIds = new Set<string>();
       filtered.forEach(a => {
