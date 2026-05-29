@@ -5216,6 +5216,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
       const faces: any[] = data.faces ?? [];
 
+      // DEBUG: log first face to inspect field names
+      if (faces.length > 0) {
+        console.log("[person-photos DEBUG] sample face keys:", Object.keys(faces[0]));
+        console.log("[person-photos DEBUG] sample face:", JSON.stringify(faces[0]));
+        console.log("[person-photos DEBUG] personUuid requested:", personUuid);
+      }
+
       // Collect only images that contain at least one face belonging to the requested person
       const matchingImageUuids = new Set<string>(
         faces
