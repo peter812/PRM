@@ -154,6 +154,8 @@ export const socialAccounts = pgTable("social_accounts", {
   internalAccountCreationDate: timestamp("internal_account_creation_date").notNull().defaultNow(),
   internalAccountCreationType: text("internal_account_creation_type").notNull().default("User"),
   lastScrapedAt: timestamp("last_scraped_at"),
+  currentPosts: text("current_posts"), // JSON array of post UUIDs currently visible on the account, e.g. '["uuid1","uuid2"]'
+  deletedPosts: text("deleted_posts"), // JSON array of post UUIDs that were previously seen but are now deleted, e.g. '["uuid3"]'
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
