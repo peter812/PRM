@@ -2416,7 +2416,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      res.json(people);
+      res.json(people.map(p => ({ uuid: p.id, name: `${p.firstName} ${p.lastName}`.trim() })));
     } catch (error) {
       console.error("Error searching people:", error);
       res.status(500).json({ error: "Failed to search people" });
