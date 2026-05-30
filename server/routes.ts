@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, type SocialAccountWithCurrentProfile, type ExtensionSession } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
@@ -5416,8 +5416,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const username = (await getOllamaSetting("ollama_username")) ?? "";
       const hasPassword = !!((await getOllamaSetting("ollama_password")));
       const model = (await getOllamaSetting("ollama_model")) ?? "";
+      const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
       const prompt = (await getOllamaSetting("ollama_prompt")) ?? "";
-      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, prompt });
+      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch Ollama settings" });
     }
@@ -5425,7 +5426,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/ollama/settings", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-    const { enabled, apiUrl, authRequired, username, password, model, prompt } = req.body;
+    const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt } = req.body;
     try {
       if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
       if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
@@ -5433,6 +5434,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof username === "string") await setOllamaSetting("ollama_username", username);
       if (typeof password === "string" && password.length > 0) await setOllamaSetting("ollama_password", password);
       if (typeof model === "string") await setOllamaSetting("ollama_model", model);
+      if (typeof textModel === "string") await setOllamaSetting("ollama_text_model", textModel);
       if (typeof prompt === "string") await setOllamaSetting("ollama_prompt", prompt);
       res.json({ success: true });
     } catch (error) {
@@ -5576,6 +5578,189 @@ export async function registerRoutes(app: Express): Promise<Server> {
           res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
         }
       }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ── AI Chat (Ollama text chat) ────────────────────────────────────────────
+
+  // Helper: build Ollama request headers (with optional basic auth)
+  async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
+    const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+    if (!apiUrl.trim()) return null;
+    const base = apiUrl.replace(/\/+$/, "");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+    if (authRequired) {
+      const username = (await getOllamaSetting("ollama_username")) ?? "";
+      const password = (await getOllamaSetting("ollama_password")) ?? "";
+      headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+    }
+    return { base, headers };
+  }
+
+  function sanitizeChatMessages(input: unknown): AiChatMessage[] {
+    if (!Array.isArray(input)) return [];
+    return input
+      .filter((m): m is { role: string; content: string } =>
+        !!m && typeof m === "object" && typeof (m as any).content === "string" &&
+        ((m as any).role === "user" || (m as any).role === "assistant"))
+      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+  }
+
+  // List all chats for the current user (most recently updated first)
+  app.get("/api/ai-chats", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const rows = await db.query.aiChats.findMany({
+        where: (t, { eq }) => eq(t.userId, req.user!.id),
+        orderBy: (t, { desc }) => [desc(t.updatedAt)],
+      });
+      res.json(rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        systemMessage: r.systemMessage,
+        messageCount: Array.isArray(r.messages) ? (r.messages as unknown[]).length : 0,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })));
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get a single chat (with full message history)
+  app.get("/api/ai-chats/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const row = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!row) return res.status(404).json({ error: "Chat not found" });
+      res.json(row);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Create a new chat
+  app.post("/api/ai-chats", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const title = typeof req.body.title === "string" && req.body.title.trim() ? req.body.title.trim() : "New chat";
+      const systemMessage = typeof req.body.systemMessage === "string" ? req.body.systemMessage : "";
+      const [row] = await db.insert(aiChats).values({
+        userId: req.user!.id,
+        title,
+        systemMessage,
+        messages: [],
+      }).returning();
+      res.status(201).json(row);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Update a chat (title, system message, and/or messages)
+  app.patch("/api/ai-chats/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const existing = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!existing) return res.status(404).json({ error: "Chat not found" });
+      const patch: Record<string, unknown> = { updatedAt: new Date() };
+      if (typeof req.body.title === "string") patch.title = req.body.title.trim() || "New chat";
+      if (typeof req.body.systemMessage === "string") patch.systemMessage = req.body.systemMessage;
+      if (req.body.messages !== undefined) patch.messages = sanitizeChatMessages(req.body.messages);
+      const [row] = await db.update(aiChats).set(patch).where(eq(aiChats.id, req.params.id)).returning();
+      res.json(row);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Delete a chat
+  app.delete("/api/ai-chats/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const existing = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!existing) return res.status(404).json({ error: "Chat not found" });
+      await db.delete(aiChats).where(eq(aiChats.id, req.params.id));
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Send a message in a chat and get the assistant reply (persists the conversation)
+  app.post("/api/ai-chats/:id/message", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const message = req.body.message;
+      if (typeof message !== "string" || !message.trim()) {
+        return res.status(400).json({ error: "Message is required." });
+      }
+      const chat = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+      const ctx = await buildOllamaChatContext();
+      if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
+
+      const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
+      const model = textModel || ((await getOllamaSetting("ollama_model")) ?? "") || "llama3";
+
+      const history = sanitizeChatMessages(chat.messages);
+      const userMessage: AiChatMessage = { role: "user", content: message };
+
+      // Build the messages payload for Ollama, including the system message if present.
+      const ollamaMessages: { role: string; content: string }[] = [];
+      const systemMessage = chat.systemMessage?.trim();
+      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      for (const m of history) ollamaMessages.push({ role: m.role, content: m.content });
+      ollamaMessages.push({ role: "user", content: message });
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
+      let assistantContent = "";
+      try {
+        const resp = await fetch(`${ctx.base}/api/chat`, {
+          method: "POST",
+          headers: ctx.headers,
+          body: JSON.stringify({ model, messages: ollamaMessages, stream: false }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!resp.ok) {
+          const text = await resp.text();
+          return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
+        }
+        const data = await resp.json() as { message?: { content?: string }; error?: string };
+        if (data.error) return res.status(502).json({ error: data.error });
+        assistantContent = data.message?.content ?? "";
+      } catch (err: any) {
+        clearTimeout(timeout);
+        if (err.name === "AbortError") {
+          return res.status(504).json({ error: "Request timed out after 120 seconds." });
+        }
+        return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
+      }
+
+      const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+      const updatedMessages = [...history, userMessage, assistantMessage];
+
+      // Derive a title from the first user message if the chat is still untitled.
+      const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
+      if (!chat.title || chat.title === "New chat") {
+        patch.title = message.trim().slice(0, 60);
+      }
+      const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
+      res.json({ chat: updated, assistant: assistantMessage });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

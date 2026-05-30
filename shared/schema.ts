@@ -265,6 +265,17 @@ export const tasks = pgTable("tasks", {
   completedAt: timestamp("completed_at"),
 });
 
+// AI chats table - stores historical AI chat conversations so they can be recalled and continued
+export const aiChats = pgTable("ai_chats", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: text("title").notNull().default("New chat"),
+  systemMessage: text("system_message").notNull().default(""),
+  messages: jsonb("messages").notNull().default(sql`'[]'::jsonb`), // Array of { role: 'user' | 'assistant', content: string }
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ one }) => ({
   person: one(people, {
@@ -496,6 +507,12 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   completedAt: true,
 });
 
+export const insertAiChatSchema = createInsertSchema(aiChats).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const insertExtensionSessionSchema = createInsertSchema(extensionSessions).omit({
   id: true,
   createdAt: true,
@@ -569,6 +586,10 @@ export type InsertPhoto = z.infer<typeof insertPhotoSchema>;
 
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
+
+export type AiChatMessage = { role: "user" | "assistant"; content: string };
+export type AiChat = typeof aiChats.$inferSelect;
+export type InsertAiChat = z.infer<typeof insertAiChatSchema>;
 
 export type ExtensionSession = typeof extensionSessions.$inferSelect;
 export type InsertExtensionSession = z.infer<typeof insertExtensionSessionSchema>;

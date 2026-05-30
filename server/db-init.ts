@@ -428,6 +428,24 @@ async function validateAndSyncSchema(): Promise<void> {
       log("app_settings table created successfully");
     }
 
+    // Ensure ai_chats table exists
+    const aiChatsExists = await tableExists("ai_chats");
+    if (!aiChatsExists) {
+      log("Creating ai_chats table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS ai_chats (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          title TEXT NOT NULL DEFAULT 'New chat',
+          system_message TEXT NOT NULL DEFAULT '',
+          messages JSONB NOT NULL DEFAULT '[]'::jsonb,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      log("ai_chats table created successfully");
+    }
+
     // Migrate social_accounts to historical model (v2)
     await migrateSocialAccountsToHistorical();
 

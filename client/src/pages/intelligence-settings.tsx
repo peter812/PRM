@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, Cpu, MessageSquare } from "lucide-react";
+import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, Cpu, MessageSquare, MessagesSquare } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -20,6 +20,7 @@ type OllamaSettings = {
   username: string;
   hasPassword: boolean;
   model: string;
+  textModel: string;
   prompt: string;
 };
 
@@ -33,7 +34,7 @@ type OllamaModel = {
   parameterSize: string | null;
 };
 
-export default function AiDescriptionSettingsPage() {
+export default function IntelligenceSettingsPage() {
   const { toast } = useToast();
 
   const [enabled, setEnabled] = useState(false);
@@ -42,6 +43,7 @@ export default function AiDescriptionSettingsPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [selectedTextModel, setSelectedTextModel] = useState("");
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
@@ -62,6 +64,7 @@ export default function AiDescriptionSettingsPage() {
     setAuthRequired(settings.authRequired);
     setUsername(settings.username);
     setSelectedModel(settings.model ?? "");
+    setSelectedTextModel(settings.textModel ?? "");
     setPrompt(settings.prompt || DEFAULT_PROMPT);
   }, [settings]);
 
@@ -94,10 +97,6 @@ export default function AiDescriptionSettingsPage() {
     },
   });
 
-  const handleSaveEnabled = () => {
-    saveMutation.mutate({ enabled });
-  };
-
   const handleSaveUrl = () => {
     const patch: Record<string, unknown> = { apiUrl, authRequired, username };
     if (password.length > 0) patch.password = password;
@@ -106,6 +105,10 @@ export default function AiDescriptionSettingsPage() {
 
   const handleSaveModel = () => {
     saveMutation.mutate({ model: selectedModel });
+  };
+
+  const handleSaveTextModel = () => {
+    saveMutation.mutate({ textModel: selectedTextModel });
   };
 
   const handleSavePrompt = () => {
@@ -117,7 +120,7 @@ export default function AiDescriptionSettingsPage() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-16" data-testid="loading-ai-description-settings">
+      <div className="flex items-center justify-center py-16" data-testid="loading-intelligence-settings">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     );
@@ -126,31 +129,31 @@ export default function AiDescriptionSettingsPage() {
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="space-y-2 mb-6">
-        <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-ai-description-title">
+        <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-intelligence-title">
           <Sparkles className="h-6 w-6" />
-          AI Description
+          Intelligence
         </h1>
         <p className="text-muted-foreground">
-          Connect to a local <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">Ollama</a> instance to generate AI-powered image descriptions using a vision model such as LLaVA.
+          Connect to a local <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">Ollama</a> instance to power AI features such as image descriptions and AI chat.
         </p>
       </div>
 
       <div className="space-y-6">
-        <Card data-testid="card-ai-description-enable">
+        <Card data-testid="card-ai-enable">
           <CardHeader>
-            <CardTitle className="text-lg">Enable AI Description</CardTitle>
+            <CardTitle className="text-lg">Enable AI</CardTitle>
             <CardDescription>
-              When enabled, AI-generated descriptions can be produced for images via the demo page and other features.
+              When enabled, AI-powered features such as image descriptions and AI chat are available.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-0.5">
                 <Label htmlFor="ollama-enabled-switch" className="text-sm font-medium">
-                  Enable AI description
+                  Enable AI
                 </Label>
                 <p className="text-xs text-muted-foreground">
-                  {enabled ? "AI description is active." : "AI description is disabled."}
+                  {enabled ? "AI features are active." : "AI features are disabled."}
                 </p>
               </div>
               <Switch
@@ -275,11 +278,11 @@ export default function AiDescriptionSettingsPage() {
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
               <Cpu className="h-4 w-4" />
-              Model
+              Image Description Model
             </CardTitle>
             <CardDescription>
               {urlConfigured
-                ? "Choose which model to use for image descriptions. Only models already pulled on your Ollama instance are shown."
+                ? "Choose which vision model to use for image descriptions. Only models already pulled on your Ollama instance are shown."
                 : "Configure and save an API URL above to load available models."}
             </CardDescription>
           </CardHeader>
@@ -343,11 +346,83 @@ export default function AiDescriptionSettingsPage() {
           </CardContent>
         </Card>
 
+        <Card data-testid="card-ollama-text-model">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <MessagesSquare className="h-4 w-4" />
+              Text Model Selection
+            </CardTitle>
+            <CardDescription>
+              {urlConfigured
+                ? "Choose which text model to use for AI chat. Only models already pulled on your Ollama instance are shown."
+                : "Configure and save an API URL above to load available models."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1 space-y-2">
+                <Label htmlFor="ollama-text-model-select">Model</Label>
+                <Select
+                  value={selectedTextModel}
+                  onValueChange={setSelectedTextModel}
+                  disabled={!urlConfigured || isLoadingModels}
+                >
+                  <SelectTrigger id="ollama-text-model-select" data-testid="select-ollama-text-model">
+                    <SelectValue placeholder={
+                      !urlConfigured ? "No API URL configured" :
+                      isLoadingModels ? "Loading models…" :
+                      models.length === 0 ? "No models found" :
+                      "Select a model"
+                    } />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {models.map((m) => (
+                      <SelectItem key={m.name} value={m.name} data-testid={`option-text-model-${m.name}`}>
+                        <span className="font-mono text-sm">{m.name}</span>
+                        {m.parameterSize && (
+                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => refetchModels()}
+                disabled={!urlConfigured || isLoadingModels}
+                title="Refresh model list"
+                data-testid="button-refresh-text-models"
+              >
+                {isLoadingModels ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                onClick={handleSaveTextModel}
+                disabled={!selectedTextModel || saveMutation.isPending}
+                data-testid="button-save-text-model"
+              >
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+            </div>
+
+            {settings?.textModel && (
+              <p className="text-xs text-muted-foreground" data-testid="text-saved-text-model">
+                Currently saved: <span className="font-mono">{settings.textModel}</span>
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
         <Card data-testid="card-ollama-prompt">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
               <MessageSquare className="h-4 w-4" />
-              Prompt
+              Image Description Prompt
             </CardTitle>
             <CardDescription>
               The instruction sent to the model along with each image. Edit this to change what kind of description the AI produces.
