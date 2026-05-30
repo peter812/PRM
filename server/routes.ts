@@ -5585,6 +5585,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── AI Chat (Ollama text chat) ────────────────────────────────────────────
 
+  const DEFAULT_CHAT_MODEL = "llama3";
+  const MAX_CHAT_TITLE_LENGTH = 60;
+
   // Helper: build Ollama request headers (with optional basic auth)
   async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
     const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
@@ -5713,7 +5716,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
 
       const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
-      const model = textModel || ((await getOllamaSetting("ollama_model")) ?? "") || "llama3";
+      const model = textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
 
       const history = sanitizeChatMessages(chat.messages);
       const userMessage: AiChatMessage = { role: "user", content: message };
@@ -5757,7 +5760,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Derive a title from the first user message if the chat is still untitled.
       const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
       if (!chat.title || chat.title === "New chat") {
-        patch.title = message.trim().slice(0, 60);
+        patch.title = message.trim().slice(0, MAX_CHAT_TITLE_LENGTH);
       }
       const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
       res.json({ chat: updated, assistant: assistantMessage });
