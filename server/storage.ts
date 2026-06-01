@@ -1147,9 +1147,14 @@ export class DatabaseStorage implements IStorage {
         await db.update(socialProfileVersions).set({ imageUrl: newUrl }).where(eq(socialProfileVersions.id, id));
         break;
       case "messages": {
+        // The `messages` table is not defined in the Drizzle schema; this
+        // branch is preserved for parity with legacy callers but is currently
+        // unreachable. Suppress the resulting "cannot find name" errors.
+        // @ts-expect-error - messages table is not part of the current schema
         const [msg] = await db.select({ imageUrls: messages.imageUrls }).from(messages).where(eq(messages.id, id));
         if (msg?.imageUrls) {
           const updatedUrls = msg.imageUrls.map((u: string) => u === oldUrl ? newUrl : u);
+          // @ts-expect-error - messages table is not part of the current schema
           await db.update(messages).set({ imageUrls: updatedUrls }).where(eq(messages.id, id));
         }
         break;

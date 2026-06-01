@@ -30,7 +30,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getInitials, isValidHexColor } from "@/lib/utils";
-import type { SocialAccount, Person, SocialAccountType } from "@shared/schema";
+import type { SocialAccount, SocialAccountWithCurrentProfile, Person, SocialAccountType } from "@shared/schema";
 import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
@@ -41,9 +41,9 @@ export default function SocialAccountsList() {
   const [, navigate] = useLocation();
   const searchParams = useSearch();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
-  const [accountToDelete, setAccountToDelete] = useState<SocialAccount | null>(null);
-  const [accountToEdit, setAccountToEdit] = useState<SocialAccount | null>(null);
-  const [accountToExport, setAccountToExport] = useState<SocialAccount | null>(null);
+  const [accountToDelete, setAccountToDelete] = useState<SocialAccountWithCurrentProfile | null>(null);
+  const [accountToEdit, setAccountToEdit] = useState<SocialAccountWithCurrentProfile | null>(null);
+  const [accountToExport, setAccountToExport] = useState<SocialAccountWithCurrentProfile | null>(null);
   const [showMassExportDialog, setShowMassExportDialog] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedSearch = useDebounce(searchQuery, 300);
@@ -76,7 +76,7 @@ export default function SocialAccountsList() {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-  } = useInfiniteQuery<SocialAccount[]>({
+  } = useInfiniteQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts/paginated", { search: debouncedSearch, typeId: selectedTypeId, followsYou: showFollowsYou }],
     queryFn: async ({ pageParam = 0 }) => {
       const params = new URLSearchParams();
@@ -344,7 +344,7 @@ export default function SocialAccountsList() {
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            window.open(account.currentProfile?.accountUrl, "_blank");
+                            window.open(account.currentProfile?.accountUrl ?? undefined, "_blank");
                           }}
                           data-testid={`button-goto-profile-${account.id}`}
                         >

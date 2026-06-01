@@ -108,7 +108,7 @@ export function EditRelationshipDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Relationship Type</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value ?? undefined}>
                     <FormControl>
                       <SelectTrigger data-testid="select-edit-relationship-type">
                         <SelectValue placeholder="Select relationship type" />

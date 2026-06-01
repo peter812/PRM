@@ -91,3 +91,20 @@ export function setupAuth(app: Express) {
     res.json(req.user);
   });
 }
+
+/**
+ * Express middleware that requires the request be authenticated.
+ *
+ * Honors the DISABLE_AUTH bypass flag set in server/index.ts: when
+ * DISABLE_AUTH=true, the bypass middleware populates req.user with a mock
+ * developer account, which causes req.isAuthenticated() (Passport) to return
+ * true. Do NOT remove this bypass option.
+ */
+export function requireAuth(
+  req: import("express").Request,
+  res: import("express").Response,
+  next: import("express").NextFunction,
+) {
+  if (req.isAuthenticated()) return next();
+  return res.status(401).json({ error: "Not authenticated" });
+}

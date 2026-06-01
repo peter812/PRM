@@ -22,12 +22,10 @@ import SocialAccountsList from "@/pages/social-accounts-list";
 import SocialAccountProfile from "@/pages/social-account-profile";
 import Graph from "@/pages/graph";
 import SocialGraph3D from "@/pages/social-graph-3d";
-import ApiPlayground from "@/pages/api-playground";
 import AuthPage from "@/pages/auth-page";
 import AuthDirectPage from "@/pages/auth-direct";
 import WelcomePage from "@/pages/welcome-page";
 import SettingsLayout from "@/pages/settings-layout";
-import DummyAuth from "@/pages/dummy-auth";
 import EloRanking from "@/pages/elo-ranking";
 import AccountMatching from "@/pages/account-matching";
 import PrmFaceDemo from "@/pages/prm-face-demo";
@@ -108,13 +106,11 @@ function Router() {
       <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
-      <ProtectedRoute path="/api-playground" component={ApiPlayground} />
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
       <ProtectedRoute path="/ai-chat-demo" component={AiChatDemo} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
-      <ProtectedRoute path="/dummy-auth" component={DummyAuth} />
       <Route component={NotFound} />
     </Switch>
   );

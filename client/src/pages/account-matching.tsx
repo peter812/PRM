@@ -6,9 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, UserX, Link2, SkipForward, Check } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { Person, SocialAccount } from "@shared/schema";
+import type { Person, SocialAccountWithCurrentProfile } from "@shared/schema";
 
-type CandidateAccount = SocialAccount & {
+type CandidateAccount = SocialAccountWithCurrentProfile & {
   typeName: string | null;
   typeColor: string | null;
   matchScore: number;
