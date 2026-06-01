@@ -191,7 +191,7 @@ export function AddSocialAccountDialog({ open, onOpenChange, onAccountCreated }:
       ...data,
       imageUrl: imageUrl || null,
       typeId: selectedTypeId && selectedTypeId !== "none" ? selectedTypeId : null,
-    } as AddSocialAccountFormValues);
+    });
   };
 
   const handleXmlFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
