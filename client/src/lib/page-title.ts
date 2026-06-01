@@ -10,7 +10,6 @@ export function getPageTitle(location: string): string {
   if (location === "/graph") return "Graph";
   if (location === "/social-graph-3d") return "Social Graph";
   if (location === "/elo-ranking") return "ELO Ranking";
-  if (location === "/api-playground") return "API Playground";
   if (location === "/prm-face-demo") return "PRM-Face Demo";
   if (location === "/prm-face-save-demo") return "PRM-Face Save Demo";
   if (location === "/ai-desc-demo") return "AI desc demo";
