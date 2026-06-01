@@ -6,15 +6,59 @@ import { log } from "./vite";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import crypto from "crypto";
 import { eq, isNotNull } from "drizzle-orm";
 import {
   people,
   tasks,
+  imageTasks,
   relationshipTypes,
   interactionTypes,
   socialNetworkChanges,
   socialAccountPosts,
 } from "@shared/schema";
+
+// ── Image dimension helper ────────────────────────────────────────────────────
+
+function getImageDimensions(buffer: Buffer): { width: number; height: number } | null {
+  try {
+    // PNG: signature bytes 0-7, IHDR width at 16, height at 20 (big-endian uint32)
+    if (buffer.length >= 24 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+      return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+    }
+    // JPEG: scan for SOF markers
+    if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+      let offset = 2;
+      while (offset + 9 < buffer.length) {
+        if (buffer[offset] !== 0xff) break;
+        const marker = buffer[offset + 1];
+        if (marker >= 0xc0 && marker <= 0xc3) {
+          return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) };
+        }
+        const segLen = buffer.readUInt16BE(offset + 2);
+        offset += 2 + segLen;
+      }
+      return null;
+    }
+    // WebP: RIFF....WEBP format
+    if (buffer.length >= 30 && buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP") {
+      const fmt = buffer.slice(12, 16).toString("ascii");
+      if (fmt === "VP8 " && buffer.length >= 30) {
+        const w = (buffer.readUInt16LE(26) & 0x3fff) + 1;
+        const h = (buffer.readUInt16LE(28) & 0x3fff) + 1;
+        return { width: w, height: h };
+      }
+      if (fmt === "VP8X" && buffer.length >= 30) {
+        const w = buffer.readUIntLE(24, 3) + 1;
+        const h = buffer.readUIntLE(27, 3) + 1;
+        return { width: w, height: h };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 const INSTAGRAM_USER_AGENT =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1";
@@ -26,6 +70,196 @@ const REFRESH_DELAY_MS = 200;
 let isProcessing = false;
 let isPaused = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ── Image task worker state ───────────────────────────────────────────────────
+let isImageProcessing = false;
+let imageTaskPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ── Image task handlers ───────────────────────────────────────────────────────
+
+async function processDownloadImgInstagram(imageTaskId: string, payload: {
+  socialAccountId: string;
+  imageUrl: string;
+  profileVersionId?: string | null;
+}): Promise<string> {
+  const { socialAccountId, imageUrl, profileVersionId } = payload;
+
+  const response = await fetch(imageUrl, {
+    headers: { "User-Agent": INSTAGRAM_USER_AGENT },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to download image: HTTP ${response.status} ${response.statusText}`);
+  }
+
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+
+  // Compute file hash for deduplication
+  const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+
+  // Get current profile version to check existing image
+  const currentVersion = await storage.getCurrentProfileVersion(socialAccountId);
+  const targetVersionId = profileVersionId || currentVersion?.id || null;
+  if (currentVersion?.imageUrl) {
+    // Check if the existing photo in the DB has the same hash
+    const existingPhoto = await storage.getPhotoByHash(fileHash);
+    if (existingPhoto) {
+      log(`[ImageWorker] Skipping download for ${socialAccountId} — same hash as existing photo`);
+      return JSON.stringify({ skipped: true, reason: "same_hash", socialAccountId });
+    }
+
+    // Check resolution: if existing image has a larger resolution, skip
+    const existingPhotoByLocation = await storage.getPhotoByLocation(currentVersion.imageUrl);
+    if (existingPhotoByLocation?.widthPx) {
+      const newDims = getImageDimensions(buffer);
+      if (newDims && newDims.width <= existingPhotoByLocation.widthPx) {
+        log(`[ImageWorker] Skipping download for ${socialAccountId} — existing image (${existingPhotoByLocation.widthPx}px) >= new (${newDims.width}px)`);
+        return JSON.stringify({ skipped: true, reason: "lower_resolution", socialAccountId });
+      }
+    }
+  }
+
+  // Determine which storage provider to use
+  let cdnUrl: string;
+  try {
+    const user = (await storage.getAllUsers())[0];
+    const storageMode = user ? await storage.getImageStorageMode(user.id) : "s3";
+    if (storageMode === "local") {
+      cdnUrl = await uploadImageLocally(buffer, `instagram_profile.${ext}`, contentType);
+    } else {
+      cdnUrl = await uploadImageToS3(buffer, `instagram_profile.${ext}`, contentType);
+    }
+  } catch {
+    cdnUrl = await uploadImageToS3(buffer, `instagram_profile.${ext}`, contentType);
+  }
+
+  // Register in photos table with hash and dimensions
+  const dims = getImageDimensions(buffer);
+  const photo = await storage.insertPhoto({
+    location: cdnUrl,
+    prmLocation: `profile_image:${socialAccountId}`,
+    isSubImage: false,
+    fileHash,
+    widthPx: dims?.width ?? null,
+    heightPx: dims?.height ?? null,
+  }).catch(() => null);
+
+  // Update profile version image URL
+  if (targetVersionId) {
+    await storage.updateProfileVersion(targetVersionId, { imageUrl: cdnUrl });
+  }
+
+  // Link the photo to this image task
+  if (photo) {
+    await db.update(imageTasks).set({ photoId: photo.id }).where(eq(imageTasks.id, imageTaskId));
+  }
+
+  return JSON.stringify({ cdnUrl, socialAccountId, photoId: photo?.id ?? null, widthPx: dims?.width ?? null });
+}
+
+async function processAnalyzeImgFull(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
+  log(`[ImageWorker] analyze_img_full stub — photoId: ${payload.photoId ?? "none"}`);
+  return JSON.stringify({ stub: true, note: "Face detection, metadata extraction, and LLM analysis not yet implemented" });
+}
+
+async function processAnalyzeImgFace(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
+  log(`[ImageWorker] analyze_img_face stub — photoId: ${payload.photoId ?? "none"}`);
+  return JSON.stringify({ stub: true, note: "Face detection not yet implemented" });
+}
+
+async function processAnalyzeImgMetadata(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
+  log(`[ImageWorker] analyze_img_metadata stub — photoId: ${payload.photoId ?? "none"}`);
+  return JSON.stringify({ stub: true, note: "Metadata extraction not yet implemented" });
+}
+
+async function processAnalyzeImgLlm(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
+  log(`[ImageWorker] analyze_img_llm stub — photoId: ${payload.photoId ?? "none"}`);
+  return JSON.stringify({ stub: true, note: "LLM image analysis not yet implemented" });
+}
+
+async function processConvertImg(imageTaskId: string, payload: { photoId?: string; targetFormat?: string; maxWidthPx?: number }): Promise<string> {
+  log(`[ImageWorker] convert_img stub — photoId: ${payload.photoId ?? "none"}`);
+  return JSON.stringify({ stub: true, note: "Image conversion not yet implemented" });
+}
+
+async function processNextImageTask(): Promise<boolean> {
+  const task = await storage.getNextPendingImageTask();
+  if (!task) return false;
+
+  log(`[ImageWorker] Processing image task ${task.id} (type: ${task.type})`);
+  await storage.updateImageTaskStatus(task.id, "in_progress");
+
+  try {
+    let result: string;
+    const payload = JSON.parse(task.payload || "{}");
+
+    switch (task.type) {
+      case "download_img_instagram":
+        result = await processDownloadImgInstagram(task.id, payload);
+        break;
+      case "analyze_img_full":
+        result = await processAnalyzeImgFull(task.id, payload);
+        break;
+      case "analyze_img_face":
+        result = await processAnalyzeImgFace(task.id, payload);
+        break;
+      case "analyze_img_metadata":
+        result = await processAnalyzeImgMetadata(task.id, payload);
+        break;
+      case "analyze_img_llm":
+        result = await processAnalyzeImgLlm(task.id, payload);
+        break;
+      case "convert_img":
+        result = await processConvertImg(task.id, payload);
+        break;
+      default:
+        throw new Error(`Unknown image task type: ${task.type}`);
+    }
+
+    await storage.updateImageTaskStatus(task.id, "completed", result);
+    log(`[ImageWorker] Image task ${task.id} completed`);
+    return true;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
+    await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
+    return true;
+  }
+}
+
+async function runImageTaskWorkerLoop() {
+  if (isImageProcessing || isPaused) return;
+  isImageProcessing = true;
+  try {
+    let hasMore = true;
+    while (hasMore && !isPaused) {
+      hasMore = await processNextImageTask();
+      if (hasMore && !isPaused) {
+        await new Promise(resolve => setTimeout(resolve, IMAGE_DOWNLOAD_DELAY_MS));
+      }
+    }
+  } catch (error) {
+    log(`[ImageWorker] Worker loop error: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    isImageProcessing = false;
+    if (!isPaused) scheduleImagePoll();
+  }
+}
+
+function scheduleImagePoll() {
+  if (imageTaskPollTimer) clearTimeout(imageTaskPollTimer);
+  imageTaskPollTimer = setTimeout(() => {
+    runImageTaskWorkerLoop();
+  }, POLL_INTERVAL_MS);
+}
+
+export function triggerImageTaskWorker() {
+  if (isImageProcessing || isPaused) return;
+  if (imageTaskPollTimer) clearTimeout(imageTaskPollTimer);
+  runImageTaskWorkerLoop();
+}
 
 async function processGetImgTask(payload: {
   socialAccountId: string;
@@ -980,9 +1214,10 @@ async function processImportInstagram(taskId: string, payload: {
 
       if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
         const currentProfile = await storage.getCurrentProfileVersion(existingAccount.id);
-        await storage.createTask({
-          type: "get_img",
+        await storage.createImageTask({
+          type: "download_img_instagram",
           status: "pending",
+          parentTaskId: taskId,
           payload: JSON.stringify({
             socialAccountId: existingAccount.id,
             profileVersionId: currentProfile?.id || null,
@@ -1009,9 +1244,10 @@ async function processImportInstagram(taskId: string, payload: {
       }
 
       if (profilePicUrl) {
-        await storage.createTask({
-          type: "get_img",
+        await storage.createImageTask({
+          type: "download_img_instagram",
           status: "pending",
+          parentTaskId: taskId,
           payload: JSON.stringify({
             socialAccountId: newAccount.id,
             profileVersionId: currentProfile?.id || null,
@@ -1053,6 +1289,9 @@ async function processImportInstagram(taskId: string, payload: {
     followers: newFollowers,
     following: newFollowing,
   });
+
+  // Kick off the image task worker for the download_img_instagram tasks we just created
+  triggerImageTaskWorker();
 
   return JSON.stringify({
     success: true,
@@ -1165,6 +1404,7 @@ function schedulePoll() {
 export function startTaskWorker() {
   log("[TaskWorker] Starting background task worker");
   runWorkerLoop();
+  runImageTaskWorkerLoop();
 }
 
 export function triggerTaskWorker() {

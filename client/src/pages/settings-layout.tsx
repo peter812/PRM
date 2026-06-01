@@ -38,6 +38,7 @@ import InstagramSettingsPage from "@/pages/instagram-settings";
 import TasksSettingsPage from "@/pages/tasks-settings";
 import ImageStorageSettingsPage from "@/pages/image-storage-settings";
 import ImageTablePage from "@/pages/image-table-page";
+import ImageTasksSettingsPage from "@/pages/image-tasks-settings";
 import RecognitionSettingsPage from "@/pages/recognition-settings";
 import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
@@ -88,6 +89,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Storage", url: "/image-storage", icon: HardDrive },
       { title: "Image Table", url: "/image-storage/table", icon: Table2 },
+      { title: "Image Tasks", url: "/image-storage/tasks", icon: ListTodo },
     ],
   },
   {
@@ -249,6 +251,7 @@ export default function SettingsLayout() {
               <Route path="/data-types/relationship-types" component={RelationshipTypesList} />
               <Route path="/data-types/interaction-types" component={InteractionTypesList} />
               <Route path="/data-types/social-account-types" component={SocialAccountTypesList} />
+              <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
               <Route path="/image-storage/table" component={ImageTablePage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/intelligence" component={IntelligenceSettingsPage} />

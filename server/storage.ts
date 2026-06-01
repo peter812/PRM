@@ -18,6 +18,9 @@ import {
   socialNetworkChanges,
   socialAccountPosts,
   photos,
+  imageTasks,
+  type ImageTask,
+  type InsertImageTask,
   type Person,
   type InsertPerson,
   type Note,
@@ -314,7 +317,18 @@ export interface IStorage {
   getPhotoByLocation(location: string): Promise<Photo | undefined>;
   listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<{ items: Photo[]; total: number }>;
   updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
+  updatePhotoMeta(id: string, data: Partial<Pick<Photo, 'fileHash' | 'widthPx' | 'heightPx' | 'metadata' | 'imageDescription' | 'imageDescriptionAt' | 'faceUuids' | 'faceIdAt' | 'processedAt'>>): Promise<void>;
+  getPhotoByHash(fileHash: string): Promise<Photo | undefined>;
   deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }>;
+
+  // Image task operations
+  createImageTask(task: InsertImageTask): Promise<ImageTask>;
+  getImageTaskById(id: string): Promise<ImageTask | undefined>;
+  getNextPendingImageTask(): Promise<ImageTask | undefined>;
+  updateImageTaskStatus(id: string, status: string, result?: string): Promise<void>;
+  updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void>;
+  listImageTasks(options?: { type?: string; status?: string; limit?: number; offset?: number }): Promise<{ items: ImageTask[]; total: number }>;
+  cancelImageTask(id: string): Promise<void>;
 
   // Session store
   sessionStore: session.Store;
@@ -2808,6 +2822,79 @@ export class DatabaseStorage implements IStorage {
       .update(photos)
       .set({ location: newLocation })
       .where(eq(photos.location, oldLocation));
+  }
+
+  async updatePhotoMeta(id: string, data: Partial<Pick<Photo, 'fileHash' | 'widthPx' | 'heightPx' | 'metadata' | 'imageDescription' | 'imageDescriptionAt' | 'faceUuids' | 'faceIdAt' | 'processedAt'>>): Promise<void> {
+    if (Object.keys(data).length === 0) return;
+    await db.update(photos).set(data as any).where(eq(photos.id, id));
+  }
+
+  async getPhotoByHash(fileHash: string): Promise<Photo | undefined> {
+    const [photo] = await db.select().from(photos).where(eq(photos.fileHash, fileHash));
+    return photo || undefined;
+  }
+
+  // Image task operations
+  async createImageTask(task: InsertImageTask): Promise<ImageTask> {
+    const [created] = await db.insert(imageTasks).values(task).returning();
+    return created;
+  }
+
+  async getImageTaskById(id: string): Promise<ImageTask | undefined> {
+    const [task] = await db.select().from(imageTasks).where(eq(imageTasks.id, id));
+    return task || undefined;
+  }
+
+  async getNextPendingImageTask(): Promise<ImageTask | undefined> {
+    const [task] = await db
+      .select()
+      .from(imageTasks)
+      .where(eq(imageTasks.status, "pending"))
+      .orderBy(imageTasks.createdAt)
+      .limit(1);
+    return task || undefined;
+  }
+
+  async updateImageTaskStatus(id: string, status: string, result?: string): Promise<void> {
+    const updates: Partial<typeof imageTasks.$inferInsert> & { startedAt?: Date; completedAt?: Date } = { status };
+    if (status === "in_progress") updates.startedAt = new Date();
+    if (status === "completed" || status === "failed" || status === "cancelled") {
+      updates.completedAt = new Date();
+      if (status === "completed") updates.progress = 100;
+    }
+    if (result !== undefined) updates.result = result;
+    await db.update(imageTasks).set(updates).where(eq(imageTasks.id, id));
+  }
+
+  async updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void> {
+    const updates: Partial<typeof imageTasks.$inferInsert> = { progress };
+    if (message !== undefined) updates.progressMessage = message;
+    await db.update(imageTasks).set(updates).where(eq(imageTasks.id, id));
+  }
+
+  async listImageTasks(options: { type?: string; status?: string; limit?: number; offset?: number } = {}): Promise<{ items: ImageTask[]; total: number }> {
+    const { type, status, limit = 25, offset = 0 } = options;
+    const conditions = [];
+    if (type) conditions.push(eq(imageTasks.type, type));
+    if (status) conditions.push(eq(imageTasks.status, status));
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [items, countResult] = await Promise.all([
+      whereClause
+        ? db.select().from(imageTasks).where(whereClause).orderBy(desc(imageTasks.createdAt)).limit(limit).offset(offset)
+        : db.select().from(imageTasks).orderBy(desc(imageTasks.createdAt)).limit(limit).offset(offset),
+      whereClause
+        ? db.select({ count: sql<number>`count(*)::int` }).from(imageTasks).where(whereClause)
+        : db.select({ count: sql<number>`count(*)::int` }).from(imageTasks),
+    ]);
+    return { items, total: countResult[0]?.count ?? 0 };
+  }
+
+  async cancelImageTask(id: string): Promise<void> {
+    await db
+      .update(imageTasks)
+      .set({ status: "cancelled", completedAt: new Date() })
+      .where(and(eq(imageTasks.id, id), sql`${imageTasks.status} IN ('pending', 'in_progress')`));
   }
 
   async deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }> {

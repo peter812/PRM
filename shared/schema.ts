@@ -249,6 +249,10 @@ export const photos = pgTable("photos", {
   faceIdAt: timestamp("face_id_at"),
   faceUuids: jsonb("face_uuids"), // Array of { faceUuid: string, subImagePhotoId: string }
   prmLocation: text("prm_location").notNull(), // e.g. "post:UUID", "interaction:UUID", "profile_image:UUID"
+  metadata: jsonb("metadata"), // EXIF / image metadata extracted by analyze_img_metadata
+  fileHash: text("file_hash"), // SHA-256 hash of the file contents for deduplication
+  widthPx: integer("width_px"), // Image width in pixels
+  heightPx: integer("height_px"), // Image height in pixels
 });
 
 // Background tasks table - for long-running operations like image downloads
@@ -260,6 +264,22 @@ export const tasks = pgTable("tasks", {
   result: text("result"), // JSON string with task result or error message
   progress: integer("progress").notNull().default(0), // 0-100 percent complete
   progressMessage: text("progress_message"), // human-readable progress description
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+});
+
+// Image tasks table - specialized operations performed on images
+export const imageTasks = pgTable("image_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: text("type").notNull(), // 'download_img_instagram' | 'analyze_img_full' | 'analyze_img_face' | 'analyze_img_metadata' | 'analyze_img_llm' | 'convert_img'
+  status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  payload: text("payload").notNull().default("{}"),
+  result: text("result"),
+  progress: integer("progress").notNull().default(0),
+  progressMessage: text("progress_message"),
+  parentTaskId: varchar("parent_task_id").references(() => tasks.id, { onDelete: "set null" }),
+  photoId: varchar("photo_id").references(() => photos.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
@@ -507,6 +527,13 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   completedAt: true,
 });
 
+export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
+  id: true,
+  createdAt: true,
+  startedAt: true,
+  completedAt: true,
+});
+
 export const insertAiChatSchema = createInsertSchema(aiChats).omit({
   id: true,
   createdAt: true,
@@ -588,6 +615,9 @@ export type InsertPhoto = z.infer<typeof insertPhotoSchema>;
 
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema>;
+
+export type ImageTask = typeof imageTasks.$inferSelect;
+export type InsertImageTask = z.infer<typeof insertImageTaskSchema>;
 
 export type AiChatMessage = { role: "user" | "assistant"; content: string };
 export type AiChat = typeof aiChats.$inferSelect;

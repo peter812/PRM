@@ -4474,6 +4474,73 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Image task endpoints ──────────────────────────────────────────────────
+
+  // GET /api/image-tasks — list image tasks with optional type/status filter and pagination
+  app.get("/api/image-tasks", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const type = typeof req.query.type === "string" ? req.query.type : undefined;
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
+      const limit = 25;
+      const offset = (page - 1) * limit;
+      const result = await storage.listImageTasks({ type, status, limit, offset });
+      res.json({ items: result.items, total: result.total, page, limit, totalPages: Math.ceil(result.total / limit) });
+    } catch (error) {
+      console.error("Error listing image tasks:", error);
+      res.status(500).json({ error: "Failed to list image tasks" });
+    }
+  });
+
+  // GET /api/image-tasks/:id — get a single image task
+  app.get("/api/image-tasks/:id", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const task = await storage.getImageTaskById(req.params.id);
+      if (!task) return res.status(404).json({ error: "Image task not found" });
+      res.json(task);
+    } catch (error) {
+      console.error("Error getting image task:", error);
+      res.status(500).json({ error: "Failed to get image task" });
+    }
+  });
+
+  // DELETE /api/image-tasks/:id — cancel an image task
+  app.delete("/api/image-tasks/:id", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      await storage.cancelImageTask(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error cancelling image task:", error);
+      res.status(500).json({ error: "Failed to cancel image task" });
+    }
+  });
+
+  // DELETE /api/image-tasks — cancel all pending/in-progress image tasks (bulk)
+  app.delete("/api/image-tasks", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const { items } = await storage.listImageTasks({ status: "pending", limit: 10000 });
+      const inProgress = await storage.listImageTasks({ status: "in_progress", limit: 10000 });
+      const all = [...items, ...inProgress.items];
+      await Promise.all(all.map(t => storage.cancelImageTask(t.id)));
+      res.json({ success: true, cancelled: all.length });
+    } catch (error) {
+      console.error("Error cancelling all image tasks:", error);
+      res.status(500).json({ error: "Failed to cancel all image tasks" });
+    }
+  });
+
   // Image storage settings
   app.get("/api/image-storage/mode", async (req, res) => {
     if (!req.isAuthenticated() || !req.user) {
