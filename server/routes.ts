@@ -26,7 +26,7 @@ import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "./local-storage";
 import { hashPassword, requireAuth } from "./auth";
-import { triggerTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "./task-worker";
+import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "./task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import fs from "fs";
@@ -4521,6 +4521,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error cancelling image task:", error);
       res.status(500).json({ error: "Failed to cancel image task" });
+    }
+  });
+
+  // POST /api/image-tasks/download-instagram — manually enqueue a download_img_instagram task
+  app.post("/api/image-tasks/download-instagram", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const { socialAccountId, imageUrl, profileVersionId, parentTaskId } = req.body;
+      if (!socialAccountId || typeof socialAccountId !== "string") {
+        return res.status(400).json({ error: "socialAccountId is required" });
+      }
+      if (!imageUrl || typeof imageUrl !== "string") {
+        return res.status(400).json({ error: "imageUrl is required" });
+      }
+      const task = await storage.createImageTask({
+        type: "download_img_instagram",
+        status: "pending",
+        parentTaskId: parentTaskId || null,
+        payload: JSON.stringify({
+          socialAccountId,
+          imageUrl,
+          profileVersionId: profileVersionId || null,
+        }),
+      });
+      triggerImageTaskWorker();
+      res.status(201).json(task);
+    } catch (error) {
+      console.error("Error creating download-instagram task:", error);
+      res.status(500).json({ error: "Failed to create image task" });
     }
   });
 

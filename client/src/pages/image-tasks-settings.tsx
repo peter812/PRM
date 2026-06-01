@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Trash2, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import { Loader2, Trash2, ChevronLeft, ChevronRight, RefreshCw, Image as ImageIcon, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import type { ImageTask } from "@shared/schema";
 
@@ -89,7 +89,7 @@ export default function ImageTasksSettingsPage() {
   const total = data?.total ?? 0;
 
   return (
-    <div className="container max-w-full md:max-w-4xl py-3 md:py-8 px-4 md:pl-12">
+    <div className="container max-w-full md:max-w-5xl py-3 md:py-8 px-4 md:pl-12">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">Image Tasks</h1>
         <p className="text-sm text-muted-foreground mt-1">
@@ -160,17 +160,18 @@ export default function ImageTasksSettingsPage() {
           No image tasks found.
         </div>
       ) : (
-        <div className="border rounded-md overflow-hidden">
+        <div className="border rounded-md overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Type</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Status</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Progress</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Parent</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Created</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Started</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Completed</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Type</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Status</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Progress</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Photo</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Parent Task</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Created</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Started</th>
+                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Completed</th>
                 <th className="px-3 py-2"></th>
               </tr>
             </thead>
@@ -187,7 +188,7 @@ export default function ImageTasksSettingsPage() {
                   <td className="px-3 py-2">
                     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[task.status] ?? "bg-muted text-muted-foreground"}`}>
                       {task.status === "in_progress" && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-                      {task.status.replace("_", " ")}
+                      {task.status.replace(/_/g, " ")}
                     </span>
                   </td>
                   <td className="px-3 py-2">
@@ -206,10 +207,31 @@ export default function ImageTasksSettingsPage() {
                     )}
                   </td>
                   <td className="px-3 py-2">
+                    {task.photoId ? (
+                      <Link
+                        href="/settings/image-storage/table"
+                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-mono"
+                        title={task.photoId}
+                        data-testid={`link-photo-${task.id}`}
+                      >
+                        <ImageIcon className="h-3 w-3 shrink-0" />
+                        {task.photoId.slice(0, 8)}…
+                      </Link>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
                     {task.parentTaskId ? (
-                      <span className="font-mono text-xs text-muted-foreground" title={task.parentTaskId}>
+                      <Link
+                        href="/settings/tasks"
+                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-mono"
+                        title={task.parentTaskId}
+                        data-testid={`link-parent-task-${task.id}`}
+                      >
+                        <ExternalLink className="h-3 w-3 shrink-0" />
                         {task.parentTaskId.slice(0, 8)}…
-                      </span>
+                      </Link>
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}

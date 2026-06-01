@@ -108,6 +108,11 @@ const settingsMenuItems: MenuItem[] = [
     icon: ListTodo,
   },
   {
+    title: "Image Tasks",
+    url: "/image-tasks",
+    icon: ImageIcon,
+  },
+  {
     title: "Import & Export",
     url: "/import-export",
     icon: FolderSync,
@@ -251,6 +256,7 @@ export default function SettingsLayout() {
               <Route path="/data-types/relationship-types" component={RelationshipTypesList} />
               <Route path="/data-types/interaction-types" component={InteractionTypesList} />
               <Route path="/data-types/social-account-types" component={SocialAccountTypesList} />
+              <Route path="/image-tasks" component={ImageTasksSettingsPage} />
               <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
               <Route path="/image-storage/table" component={ImageTablePage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />

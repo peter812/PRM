@@ -98,27 +98,33 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
 
   // Compute file hash for deduplication
   const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+  const dims = getImageDimensions(buffer);
 
-  // Get current profile version to check existing image
+  // Get current profile version to check existing image for THIS account
   const currentVersion = await storage.getCurrentProfileVersion(socialAccountId);
   const targetVersionId = profileVersionId || currentVersion?.id || null;
   if (currentVersion?.imageUrl) {
-    // Check if the existing photo in the DB has the same hash
-    const existingPhoto = await storage.getPhotoByHash(fileHash);
-    if (existingPhoto) {
-      log(`[ImageWorker] Skipping download for ${socialAccountId} — same hash as existing photo`);
-      return JSON.stringify({ skipped: true, reason: "same_hash", socialAccountId });
-    }
-
-    // Check resolution: if existing image has a larger resolution, skip
+    // Fetch the photo record for THIS account's current image (scoped, not global)
     const existingPhotoByLocation = await storage.getPhotoByLocation(currentVersion.imageUrl);
-    if (existingPhotoByLocation?.widthPx) {
-      const newDims = getImageDimensions(buffer);
-      if (newDims && newDims.width <= existingPhotoByLocation.widthPx) {
-        log(`[ImageWorker] Skipping download for ${socialAccountId} — existing image (${existingPhotoByLocation.widthPx}px) >= new (${newDims.width}px)`);
+    if (existingPhotoByLocation) {
+      // Same hash → same content, skip entirely
+      if (existingPhotoByLocation.fileHash === fileHash) {
+        log(`[ImageWorker] Skipping download for ${socialAccountId} — same hash as current profile photo`);
+        return JSON.stringify({ skipped: true, reason: "same_hash", socialAccountId });
+      }
+      // Existing photo has equal or better resolution → skip
+      if (existingPhotoByLocation.widthPx && dims && dims.width <= existingPhotoByLocation.widthPx) {
+        log(`[ImageWorker] Skipping download for ${socialAccountId} — existing (${existingPhotoByLocation.widthPx}px) >= new (${dims.width}px)`);
         return JSON.stringify({ skipped: true, reason: "lower_resolution", socialAccountId });
       }
     }
+  }
+
+  // Re-check cancellation before performing upload (slow I/O)
+  const freshTask = await storage.getImageTaskById(imageTaskId);
+  if (!freshTask || freshTask.status === "cancelled") {
+    log(`[ImageWorker] Task ${imageTaskId} cancelled before upload — aborting`);
+    return JSON.stringify({ skipped: true, reason: "cancelled", socialAccountId });
   }
 
   // Determine which storage provider to use
@@ -135,8 +141,14 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     cdnUrl = await uploadImageToS3(buffer, `instagram_profile.${ext}`, contentType);
   }
 
+  // Re-check cancellation again after upload before persisting changes
+  const postUploadTask = await storage.getImageTaskById(imageTaskId);
+  if (!postUploadTask || postUploadTask.status === "cancelled") {
+    log(`[ImageWorker] Task ${imageTaskId} cancelled after upload — skipping DB writes`);
+    return JSON.stringify({ skipped: true, reason: "cancelled_post_upload", socialAccountId });
+  }
+
   // Register in photos table with hash and dimensions
-  const dims = getImageDimensions(buffer);
   const photo = await storage.insertPhoto({
     location: cdnUrl,
     prmLocation: `profile_image:${socialAccountId}`,
