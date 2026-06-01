@@ -2387,7 +2387,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const mePerson = await storage.getMePerson(req.user!.id);
       if (!mePerson) return res.status(404).json({ error: "ME person not found" });
-      res.json({ uuid: mePerson.id, name: mePerson.name });
+      res.json({ uuid: mePerson.id, name: (mePerson as any).name });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

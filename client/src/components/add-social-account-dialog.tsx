@@ -32,8 +32,21 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { isValidHexColor } from "@/lib/utils";
 import { URL_TYPE_MAPPINGS } from "@/lib/constants";
 import { insertSocialAccountSchema, type InsertSocialAccount, type SocialAccountType, type SocialAccount } from "@shared/schema";
+import { z } from "zod";
 import { ImageUpload } from "./image-upload";
 import { Upload, FileText, CheckCircle2, AlertCircle } from "lucide-react";
+
+// The dialog UI exposes a few profile-only fields (nickname, accountUrl, imageUrl)
+// that are not part of the social_accounts table itself. Extend the insert
+// schema locally so react-hook-form is correctly typed for these inputs.
+const addSocialAccountFormSchema = insertSocialAccountSchema.extend({
+  nickname: z.string().nullable().optional(),
+  accountUrl: z.string().nullable().optional(),
+  imageUrl: z.string().nullable().optional(),
+  following: z.array(z.string()).optional(),
+  followers: z.array(z.string()).optional(),
+});
+type AddSocialAccountFormValues = z.infer<typeof addSocialAccountFormSchema>;
 
 interface AddSocialAccountDialogProps {
   open: boolean;
@@ -52,8 +65,8 @@ export function AddSocialAccountDialog({ open, onOpenChange, onAccountCreated }:
     queryKey: ["/api/social-account-types"],
   });
 
-  const form = useForm<InsertSocialAccount>({
-    resolver: zodResolver(insertSocialAccountSchema),
+  const form = useForm<AddSocialAccountFormValues>({
+    resolver: zodResolver(addSocialAccountFormSchema),
     defaultValues: {
       username: "",
       nickname: "",
@@ -106,7 +119,7 @@ export function AddSocialAccountDialog({ open, onOpenChange, onAccountCreated }:
   };
 
   const createMutation = useMutation({
-    mutationFn: async (data: InsertSocialAccount) => {
+    mutationFn: async (data: AddSocialAccountFormValues) => {
       const res = await apiRequest("POST", "/api/social-accounts", data);
       return res.json();
     },
@@ -173,12 +186,12 @@ export function AddSocialAccountDialog({ open, onOpenChange, onAccountCreated }:
     },
   });
 
-  const onSubmit = (data: InsertSocialAccount) => {
+  const onSubmit = (data: AddSocialAccountFormValues) => {
     createMutation.mutate({
       ...data,
       imageUrl: imageUrl || null,
       typeId: selectedTypeId && selectedTypeId !== "none" ? selectedTypeId : null,
-    });
+    } as AddSocialAccountFormValues);
   };
 
   const handleXmlFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -271,6 +284,7 @@ export function AddSocialAccountDialog({ open, onOpenChange, onAccountCreated }:
                             <Input
                               placeholder="https://instagram.com/johndoe"
                               {...field}
+                              value={field.value ?? ""}
                               data-testid="input-account-url"
                             />
                           </FormControl>

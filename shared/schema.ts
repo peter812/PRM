@@ -559,6 +559,8 @@ export type InsertSocialAccountPost = z.infer<typeof insertSocialAccountPostSche
 export type SocialAccountWithCurrentProfile = SocialAccount & {
   currentProfile: SocialProfileVersion | null;
   latestState: SocialNetworkState | null;
+  latestImportFollowers?: Date | string | null;
+  latestImportFollowing?: Date | string | null;
 };
 
 export type AppSetting = typeof appSettings.$inferSelect;
