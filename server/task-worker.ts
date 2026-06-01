@@ -148,7 +148,7 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     return JSON.stringify({ skipped: true, reason: "cancelled_post_upload", socialAccountId });
   }
 
-  // Register in photos table with hash and dimensions
+  // Register in photos table with hash and dimensions (let errors propagate to fail the task)
   const photo = await storage.insertPhoto({
     location: cdnUrl,
     prmLocation: `profile_image:${socialAccountId}`,
@@ -156,7 +156,7 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     fileHash,
     widthPx: dims?.width ?? null,
     heightPx: dims?.height ?? null,
-  }).catch(() => null);
+  });
 
   // Update profile version image URL
   if (targetVersionId) {
@@ -164,11 +164,9 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
   }
 
   // Link the photo to this image task
-  if (photo) {
-    await db.update(imageTasks).set({ photoId: photo.id }).where(eq(imageTasks.id, imageTaskId));
-  }
+  await db.update(imageTasks).set({ photoId: photo.id }).where(eq(imageTasks.id, imageTaskId));
 
-  return JSON.stringify({ cdnUrl, socialAccountId, photoId: photo?.id ?? null, widthPx: dims?.width ?? null });
+  return JSON.stringify({ cdnUrl, socialAccountId, photoId: photo.id, widthPx: dims?.width ?? null });
 }
 
 async function processAnalyzeImgFull(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
@@ -230,13 +228,23 @@ async function processNextImageTask(): Promise<boolean> {
         throw new Error(`Unknown image task type: ${task.type}`);
     }
 
-    await storage.updateImageTaskStatus(task.id, "completed", result);
-    log(`[ImageWorker] Image task ${task.id} completed`);
+    // Re-check cancellation before persisting completed state — a DELETE during execution should win
+    const postHandlerTask = await storage.getImageTaskById(task.id);
+    if (postHandlerTask?.status === "cancelled") {
+      log(`[ImageWorker] Image task ${task.id} was cancelled during execution — preserving cancelled state`);
+    } else {
+      await storage.updateImageTaskStatus(task.id, "completed", result);
+      log(`[ImageWorker] Image task ${task.id} completed`);
+    }
     return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
-    await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
+    // Only write failed state if not already cancelled
+    const postErrorTask = await storage.getImageTaskById(task.id).catch(() => null);
+    if (!postErrorTask || postErrorTask.status !== "cancelled") {
+      await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
+    }
     return true;
   }
 }
