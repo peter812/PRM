@@ -2,7 +2,6 @@ import {
   Users,
   Users2,
   User,
-  Code,
   AtSign,
   Trophy,
   Share2,
@@ -70,11 +69,6 @@ const menuItems = [
     title: "ELO Ranking",
     url: "/elo-ranking",
     icon: Trophy,
-  },
-  {
-    title: "API Playground",
-    url: "/api-playground",
-    icon: Code,
   },
   {
     title: "PRM-Face Demo",

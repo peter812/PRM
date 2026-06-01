@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import type { SocialAccount, SocialAccountType, SocialGraphData } from "@shared/schema";
+import type { SocialAccount, SocialAccountType, SocialAccountWithCurrentProfile, SocialGraphData } from "@shared/schema";
 import PersonGraphView from "./person-graph-view";
 
 type ViewMode = 'person' | 'social' | 'hybrid';
@@ -347,7 +347,7 @@ function SocialGraphContent({
     });
   };
 
-  const { data: socialAccounts } = useQuery<SocialAccount[]>({
+  const { data: socialAccounts } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts"],
   });
 
@@ -584,7 +584,7 @@ function SocialGraphContent({
     };
 
     if (!fgRef.current) {
-      const fg = ForceGraph3D({
+      const fg = (ForceGraph3D as any)({
         controlType: 'orbit',
         rendererConfig: { antialias: true, alpha: true },
       })(graphRef.current)

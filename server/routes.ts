@@ -25,7 +25,7 @@ import {
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "./local-storage";
-import { hashPassword } from "./auth";
+import { hashPassword, requireAuth } from "./auth";
 import { triggerTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "./task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -42,7 +42,36 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 // Flag to track if user creation is allowed (only after database reset)
 let isUserCreationAllowed = false;
 
+// Endpoints under /api that intentionally do not require authentication.
+// Paths are relative to the "/api" mount point (so "/setup/status" matches
+// the route "/api/setup/status"). Everything not listed here is protected
+// by the requireAuth gate installed at the top of registerRoutes().
+const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
+  "/setup/status",
+  "/setup/initialize",
+  "/sso-config/status",
+  "/sso/login",
+  "/sso/callback",
+  "/extension-auth/verify",
+  "/extension-auth/ping",
+  "/v1/ping",
+]);
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Authentication gate for all /api/* endpoints registered below.
+  //
+  // Auth endpoints registered by setupAuth() (/api/login, /api/register,
+  // /api/logout, /api/user) run before this middleware because they were
+  // registered earlier, so they are unaffected.
+  //
+  // The DISABLE_AUTH bypass flag (see server/index.ts) continues to work
+  // because that middleware populates req.user, which makes Passport's
+  // req.isAuthenticated() return true.
+  app.use("/api", (req, res, next) => {
+    if (PUBLIC_API_PATHS.has(req.path)) return next();
+    return requireAuth(req, res, next);
+  });
+
   // Serve local images (authenticated)
   app.get("/api/images/:filename", (req, res) => {
     if (!req.isAuthenticated()) {
@@ -2358,7 +2387,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const mePerson = await storage.getMePerson(req.user!.id);
       if (!mePerson) return res.status(404).json({ error: "ME person not found" });
-      res.json({ uuid: mePerson.id, name: mePerson.name });
+      res.json({ uuid: mePerson.id, name: (mePerson as any).name });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

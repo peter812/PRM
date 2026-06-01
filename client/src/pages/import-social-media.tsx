@@ -18,7 +18,7 @@ import { SiInstagram } from "react-icons/si";
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import type { SocialAccount } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile } from "@shared/schema";
 
 const FILENAME_REGEX = /^(.+?)_(followers|following)\.csv$/i;
 
@@ -46,7 +46,7 @@ export default function ImportSocialMediaPage() {
   const [selectedAccountLabel, setSelectedAccountLabel] = useState<string>("");
   const [accountSearchOpen, setAccountSearchOpen] = useState(false);
   const [accountSearchQuery, setAccountSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SocialAccount[]>([]);
+  const [searchResults, setSearchResults] = useState<SocialAccountWithCurrentProfile[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskResult, setTaskResult] = useState<{ imported: number; updated: number; total: number; skippedRows: number } | null>(null);

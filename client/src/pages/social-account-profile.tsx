@@ -402,7 +402,7 @@ export default function SocialAccountProfile() {
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={() => window.open(account.currentProfile?.accountUrl, "_blank")}
+                  onClick={() => window.open(account.currentProfile?.accountUrl ?? undefined, "_blank")}
                   data-testid="button-goto-profile"
                 >
                   <ExternalLink className="h-4 w-4" />
