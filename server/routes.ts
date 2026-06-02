@@ -6059,10 +6059,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
       ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
 
-      res.setHeader("Content-Type", "text/plain");
-      res.setHeader("Transfer-Encoding", "chunked");
+      // text/event-stream is understood by every reverse-proxy as "do not buffer";
+      // flush headers immediately so the browser opens the stream before Ollama replies.
+      res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+
+      const writeChunk = (line: string) => {
+        res.write(line + "\n");
+        (res as any).flush?.();
+      };
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000);
@@ -6102,7 +6110,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineBuffer = lines.pop() ?? "";
           for (const line of lines) {
             if (!line.trim()) continue;
-            res.write(line + "\n");
+            writeChunk(line);
             try {
               const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean; error?: string };
               if (parsed.message?.content) assistantContent += parsed.message.content;
@@ -6172,10 +6180,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
       ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
 
-      res.setHeader("Content-Type", "text/plain");
-      res.setHeader("Transfer-Encoding", "chunked");
+      res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+
+      const writeChunk = (line: string) => {
+        res.write(line + "\n");
+        (res as any).flush?.();
+      };
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000);
@@ -6215,7 +6229,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lineBuffer = lines.pop() ?? "";
           for (const line of lines) {
             if (!line.trim()) continue;
-            res.write(line + "\n");
+            writeChunk(line);
             try {
               const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean; error?: string };
               if (parsed.message?.content) assistantContent += parsed.message.content;
