@@ -327,7 +327,7 @@ export interface IStorage {
   getNextPendingImageTask(): Promise<ImageTask | undefined>;
   updateImageTaskStatus(id: string, status: string, result?: string): Promise<void>;
   updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void>;
-  listImageTasks(options?: { type?: string; status?: string; limit?: number; offset?: number }): Promise<{ items: ImageTask[]; total: number }>;
+  listImageTasks(options?: { type?: string; status?: string; parentTaskId?: string; limit?: number; offset?: number }): Promise<{ items: ImageTask[]; total: number }>;
   cancelImageTask(id: string): Promise<void>;
 
   // Session store
@@ -2878,11 +2878,12 @@ export class DatabaseStorage implements IStorage {
     await db.update(imageTasks).set(updates).where(eq(imageTasks.id, id));
   }
 
-  async listImageTasks(options: { type?: string; status?: string; limit?: number; offset?: number } = {}): Promise<{ items: ImageTask[]; total: number }> {
-    const { type, status, limit = 25, offset = 0 } = options;
+  async listImageTasks(options: { type?: string; status?: string; parentTaskId?: string; limit?: number; offset?: number } = {}): Promise<{ items: ImageTask[]; total: number }> {
+    const { type, status, parentTaskId, limit = 25, offset = 0 } = options;
     const conditions = [];
     if (type) conditions.push(eq(imageTasks.type, type));
     if (status) conditions.push(eq(imageTasks.status, status));
+    if (parentTaskId) conditions.push(eq(imageTasks.parentTaskId, parentTaskId));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [items, countResult] = await Promise.all([

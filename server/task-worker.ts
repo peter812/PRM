@@ -96,6 +96,18 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
   const buffer = Buffer.from(arrayBuffer);
   const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
 
+  // Capture OpenGraph-style metadata about where this file came from. This is
+  // intentionally lightweight (response headers + source URL) so it can be
+  // recorded for every file added to storage without extra network round-trips.
+  const ogMetadata: Record<string, unknown> = {
+    sourceUrl: imageUrl,
+    contentType,
+    contentLength: response.headers.get("content-length"),
+    lastModified: response.headers.get("last-modified"),
+    etag: response.headers.get("etag"),
+    fetchedAt: new Date().toISOString(),
+  };
+
   // Compute file hash for deduplication
   const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
   const dims = getImageDimensions(buffer);
@@ -156,6 +168,7 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     fileHash,
     widthPx: dims?.width ?? null,
     heightPx: dims?.height ?? null,
+    ogMetadata,
   });
 
   // Update profile version image URL

@@ -209,7 +209,7 @@ export default function ImageTasksSettingsPage() {
                   <td className="px-3 py-2">
                     {task.photoId ? (
                       <Link
-                        href="/settings/image-storage/table"
+                        href={`~/image/${task.photoId}`}
                         className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-mono"
                         title={task.photoId}
                         data-testid={`link-photo-${task.id}`}
@@ -224,7 +224,7 @@ export default function ImageTasksSettingsPage() {
                   <td className="px-3 py-2">
                     {task.parentTaskId ? (
                       <Link
-                        href="/settings/tasks"
+                        href={`/task/${task.parentTaskId}`}
                         className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-mono"
                         title={task.parentTaskId}
                         data-testid={`link-parent-task-${task.id}`}

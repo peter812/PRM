@@ -32,6 +32,7 @@ import PrmFaceDemo from "@/pages/prm-face-demo";
 import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
 import AiDescDemo from "@/pages/ai-desc-demo";
 import AiChatDemo from "@/pages/ai-chat-demo";
+import ImageDetailPage from "@/pages/image-detail";
 import NotFound from "@/pages/not-found";
 
 const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
@@ -110,6 +111,7 @@ function Router() {
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
       <ProtectedRoute path="/ai-chat-demo" component={AiChatDemo} />
+      <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
       <Route component={NotFound} />
     </Switch>
