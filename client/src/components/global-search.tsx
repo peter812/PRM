@@ -51,15 +51,15 @@ function loadPreferences(): SearchPreferences {
     const stored = localStorage.getItem('searchPreferences');
     if (stored) {
       const parsed = JSON.parse(stored) as SearchPreferences;
-      const mergedOrder = [...parsed.order];
-      const mergedEnabled = { ...parsed.enabled };
+      // Only keep categories that are still valid; strip anything obsolete.
+      const validCategories = new Set(DEFAULT_PREFERENCES.order);
+      const mergedOrder = [...parsed.order].filter(c => validCategories.has(c as SearchCategory)) as SearchCategory[];
+      const mergedEnabled = { ...DEFAULT_PREFERENCES.enabled, ...parsed.enabled };
 
+      // Add any new categories missing from stored order.
       DEFAULT_PREFERENCES.order.forEach(category => {
         if (!mergedOrder.includes(category)) {
           mergedOrder.push(category);
-        }
-        if (mergedEnabled[category] === undefined) {
-          mergedEnabled[category] = DEFAULT_PREFERENCES.enabled[category];
         }
       });
 
@@ -131,6 +131,7 @@ function DraggableList({
         const isDragging = draggedIndex === index;
         const isDragOver = dragOverIndex === index;
 
+        if (!Icon) return null;
         return (
           <div
             key={category}
