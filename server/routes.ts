@@ -5733,10 +5733,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
   function sanitizeChatMessages(input: unknown): AiChatMessage[] {
     if (!Array.isArray(input)) return [];
     return input
-      .filter((m): m is { role: string; content: string } =>
+      .filter((m): m is { role: string; content: string; attachments?: unknown } =>
         !!m && typeof m === "object" && typeof (m as any).content === "string" &&
         ((m as any).role === "user" || (m as any).role === "assistant"))
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+      .map((m) => {
+        const out: AiChatMessage = { role: m.role as "user" | "assistant", content: m.content };
+        const atts = sanitizeAttachments((m as any).attachments);
+        if (atts.length) out.attachments = atts;
+        return out;
+      });
+  }
+
+  function sanitizeAttachments(input: unknown): { name: string; type: string; content: string }[] {
+    if (!Array.isArray(input)) return [];
+    const MAX_ATTACHMENT_BYTES = 256 * 1024; // 256 KB per attachment
+    const MAX_ATTACHMENTS = 10;
+    return input
+      .filter((a): a is { name: unknown; type: unknown; content: unknown } =>
+        !!a && typeof a === "object")
+      .slice(0, MAX_ATTACHMENTS)
+      .map((a) => {
+        const name = typeof a.name === "string" ? a.name.slice(0, 200) : "attachment";
+        const type = typeof a.type === "string" ? a.type.slice(0, 100) : "text/plain";
+        const raw = typeof a.content === "string" ? a.content : "";
+        const content = raw.length > MAX_ATTACHMENT_BYTES ? raw.slice(0, MAX_ATTACHMENT_BYTES) : raw;
+        return { name, type, content };
+      });
+  }
+
+  /** Build the text payload sent to Ollama for a message that has file attachments. */
+  function renderMessageWithAttachments(message: AiChatMessage): string {
+    if (!message.attachments || message.attachments.length === 0) return message.content;
+    const parts: string[] = [];
+    if (message.content && message.content.trim()) parts.push(message.content);
+    for (const a of message.attachments) {
+      parts.push(`\n--- Attached file: ${a.name} (${a.type}) ---\n${a.content}\n--- End of ${a.name} ---`);
+    }
+    return parts.join("\n");
   }
 
   // List all chats for the current user (most recently updated first)
@@ -5751,6 +5784,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         id: r.id,
         title: r.title,
         systemMessage: r.systemMessage,
+        model: r.model,
         messageCount: Array.isArray(r.messages) ? (r.messages as unknown[]).length : 0,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
@@ -5780,10 +5814,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const title = typeof req.body.title === "string" && req.body.title.trim() ? req.body.title.trim() : "New chat";
       const systemMessage = typeof req.body.systemMessage === "string" ? req.body.systemMessage : "";
+      const model = typeof req.body.model === "string" ? req.body.model : "";
       const [row] = await db.insert(aiChats).values({
         userId: req.user!.id,
         title,
         systemMessage,
+        model,
         messages: [],
       }).returning();
       res.status(201).json(row);
@@ -5803,6 +5839,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const patch: Record<string, unknown> = { updatedAt: new Date() };
       if (typeof req.body.title === "string") patch.title = req.body.title.trim() || "New chat";
       if (typeof req.body.systemMessage === "string") patch.systemMessage = req.body.systemMessage;
+      if (typeof req.body.model === "string") patch.model = req.body.model;
       if (req.body.messages !== undefined) patch.messages = sanitizeChatMessages(req.body.messages);
       const [row] = await db.update(aiChats).set(patch).where(eq(aiChats.id, req.params.id)).returning();
       res.json(row);
@@ -5831,7 +5868,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     try {
       const message = req.body.message;
-      if (typeof message !== "string" || !message.trim()) {
+      const attachments = sanitizeAttachments(req.body.attachments);
+      const hasAttachments = attachments.length > 0;
+      if (typeof message !== "string" || (!message.trim() && !hasAttachments)) {
         return res.status(400).json({ error: "Message is required." });
       }
       const chat = await db.query.aiChats.findFirst({
@@ -5842,18 +5881,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const ctx = await buildOllamaChatContext();
       if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
 
+      // Prefer the chat's per-conversation model when set, otherwise fall back to global settings.
+      const chatModel = (chat.model ?? "").trim();
       const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
-      const model = textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
+      const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
 
       const history = sanitizeChatMessages(chat.messages);
-      const userMessage: AiChatMessage = { role: "user", content: message };
+      const userMessage: AiChatMessage = hasAttachments
+        ? { role: "user", content: message, attachments }
+        : { role: "user", content: message };
 
       // Build the messages payload for Ollama, including the system message if present.
       const ollamaMessages: { role: string; content: string }[] = [];
       const systemMessage = chat.systemMessage?.trim();
       if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
-      for (const m of history) ollamaMessages.push({ role: m.role, content: m.content });
-      ollamaMessages.push({ role: "user", content: message });
+      for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+      ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120000);
@@ -5887,10 +5930,120 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Derive a title from the first user message if the chat is still untitled.
       const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
       if (!chat.title || chat.title === "New chat") {
-        patch.title = message.trim().slice(0, MAX_CHAT_TITLE_LENGTH);
+        const titleSource = message.trim() || (hasAttachments ? attachments[0].name : "");
+        if (titleSource) patch.title = titleSource.slice(0, MAX_CHAT_TITLE_LENGTH);
       }
       const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
       res.json({ chat: updated, assistant: assistantMessage });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Edit and re-run the most recent user prompt. Replaces the trailing user (and any
+  // assistant reply that immediately follows it) with the new prompt and a fresh assistant reply.
+  app.post("/api/ai-chats/:id/regenerate", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const message = req.body.message;
+      const attachments = sanitizeAttachments(req.body.attachments);
+      const hasAttachments = attachments.length > 0;
+      if (typeof message !== "string" || (!message.trim() && !hasAttachments)) {
+        return res.status(400).json({ error: "Message is required." });
+      }
+      const chat = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+      const history = sanitizeChatMessages(chat.messages);
+      // Drop the trailing assistant reply (if any) and the most recent user message.
+      let trimmed = history.slice();
+      if (trimmed.length > 0 && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
+      const lastUserIdx = (() => {
+        for (let i = trimmed.length - 1; i >= 0; i--) if (trimmed[i].role === "user") return i;
+        return -1;
+      })();
+      if (lastUserIdx === -1) {
+        return res.status(400).json({ error: "No previous user message to edit." });
+      }
+      trimmed = trimmed.slice(0, lastUserIdx);
+
+      const ctx = await buildOllamaChatContext();
+      if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
+
+      const chatModel = (chat.model ?? "").trim();
+      const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
+      const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
+
+      const userMessage: AiChatMessage = hasAttachments
+        ? { role: "user", content: message, attachments }
+        : { role: "user", content: message };
+
+      const ollamaMessages: { role: string; content: string }[] = [];
+      const systemMessage = chat.systemMessage?.trim();
+      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+      ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
+      let assistantContent = "";
+      try {
+        const resp = await fetch(`${ctx.base}/api/chat`, {
+          method: "POST",
+          headers: ctx.headers,
+          body: JSON.stringify({ model, messages: ollamaMessages, stream: false }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!resp.ok) {
+          const text = await resp.text();
+          return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
+        }
+        const data = await resp.json() as { message?: { content?: string }; error?: string };
+        if (data.error) return res.status(502).json({ error: data.error });
+        assistantContent = data.message?.content ?? "";
+      } catch (err: any) {
+        clearTimeout(timeout);
+        if (err.name === "AbortError") {
+          return res.status(504).json({ error: "Request timed out after 120 seconds." });
+        }
+        return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
+      }
+
+      const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+      const updatedMessages = [...trimmed, userMessage, assistantMessage];
+      const [updated] = await db.update(aiChats)
+        .set({ messages: updatedMessages, updatedAt: new Date() })
+        .where(eq(aiChats.id, chat.id))
+        .returning();
+      res.json({ chat: updated, assistant: assistantMessage });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Branch off: duplicate an existing conversation (system message + history) into a
+  // brand new chat, optionally swapping the model used for subsequent replies.
+  app.post("/api/ai-chats/:id/branch", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const source = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!source) return res.status(404).json({ error: "Chat not found" });
+      const newModel = typeof req.body.model === "string" ? req.body.model : (source.model ?? "");
+      const baseTitle = source.title || "New chat";
+      const branchedTitle = `${baseTitle} (branch)`.slice(0, MAX_CHAT_TITLE_LENGTH);
+      const [row] = await db.insert(aiChats).values({
+        userId: req.user!.id,
+        title: branchedTitle,
+        systemMessage: source.systemMessage,
+        model: newModel,
+        messages: sanitizeChatMessages(source.messages),
+      }).returning();
+      res.status(201).json(row);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
