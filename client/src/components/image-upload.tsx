@@ -6,9 +6,10 @@ import { useToast } from "@/hooks/use-toast";
 
 interface ImageUploadProps {
   currentImageUrl?: string | null;
-  onImageChange: (imageUrl: string | null) => void;
+  onImageChange: (imageUrl: string | null, photoId?: string | null) => void;
   aspectRatio?: number;
   className?: string;
+  prmLocation?: string;
 }
 
 export function ImageUpload({
@@ -16,6 +17,7 @@ export function ImageUpload({
   onImageChange,
   aspectRatio = 1,
   className = "",
+  prmLocation,
 }: ImageUploadProps) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [cropModalOpen, setCropModalOpen] = useState(false);
@@ -49,6 +51,9 @@ export function ImageUpload({
     try {
       const formData = new FormData();
       formData.append("image", croppedBlob, "cropped-image.jpg");
+      if (prmLocation) {
+        formData.append("prmLocation", prmLocation);
+      }
 
       const response = await fetch("/api/upload-image", {
         method: "POST",
@@ -61,7 +66,7 @@ export function ImageUpload({
       }
 
       const data = await response.json();
-      onImageChange(data.imageUrl);
+      onImageChange(data.imageUrl, data.photoId ?? null);
       toast({
         title: "Success",
         description: "Image uploaded successfully",

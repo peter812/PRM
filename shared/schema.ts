@@ -72,6 +72,7 @@ export const notes = pgTable("notes", {
   personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   content: text("content").notNull(),
   imageUrl: text("image_url"),
+  imageUuid: varchar("image_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -95,6 +96,7 @@ export const interactions = pgTable("interactions", {
   date: timestamp("date").notNull(),
   description: text("description"),
   imageUrl: text("image_url"),
+  imageUuid: varchar("image_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

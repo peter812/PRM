@@ -62,6 +62,7 @@ export function AddInteractionDialog({
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [imageUuid, setImageUuid] = useState<string | null>(null);
   const [peopleSearchQuery, setPeopleSearchQuery] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -102,18 +103,19 @@ export function AddInteractionDialog({
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append("image", file);
+      formData.append("prmLocation", "interaction:pending");
       const response = await fetch("/api/upload-image", {
         method: "POST",
         body: formData,
       });
       if (!response.ok) throw new Error("Failed to upload image");
       const data = await response.json();
-      return data.imageUrl;
+      return { imageUrl: data.imageUrl as string, photoId: data.photoId as string | undefined };
     },
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: InteractionForm & { imageUrl?: string }) => {
+    mutationFn: async (data: InteractionForm & { imageUrl?: string; imageUuid?: string | null }) => {
       return await apiRequest("POST", "/api/interactions", data);
     },
     onSuccess: () => {
@@ -136,6 +138,7 @@ export function AddInteractionDialog({
       setSelectedGroupIds([]);
       setImageFile(null);
       setImagePreview(null);
+      setImageUuid(null);
       setPeopleSearchQuery("");
       form.reset({ 
         peopleIds: [personId], 
@@ -158,10 +161,13 @@ export function AddInteractionDialog({
 
   const onSubmit = async (data: InteractionForm) => {
     let imageUrl: string | undefined;
+    let uploadedImageUuid: string | null = imageUuid;
     
     if (imageFile) {
       try {
-        imageUrl = await uploadImageMutation.mutateAsync(imageFile);
+        const result = await uploadImageMutation.mutateAsync(imageFile);
+        imageUrl = result.imageUrl;
+        uploadedImageUuid = result.photoId ?? null;
       } catch (error) {
         toast({
           title: "Error",
@@ -176,7 +182,8 @@ export function AddInteractionDialog({
       ...data, 
       peopleIds: selectedPeopleIds,
       groupIds: selectedGroupIds.length > 0 ? selectedGroupIds : undefined,
-      imageUrl 
+      imageUrl,
+      imageUuid: uploadedImageUuid,
     });
   };
 
@@ -195,6 +202,7 @@ export function AddInteractionDialog({
   const removeImage = () => {
     setImageFile(null);
     setImagePreview(null);
+    setImageUuid(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }

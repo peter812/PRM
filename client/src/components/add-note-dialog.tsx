@@ -43,6 +43,7 @@ export function AddNoteDialog({
 }: AddNoteDialogProps) {
   const { toast } = useToast();
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageUuid, setImageUuid] = useState<string | null>(null);
 
   const form = useForm<NoteForm>({
     resolver: zodResolver(noteFormSchema),
@@ -65,6 +66,8 @@ export function AddNoteDialog({
         description: "Note added successfully",
       });
       form.reset({ personId, content: "" });
+      setImageUrl(null);
+      setImageUuid(null);
       onOpenChange(false);
     },
     onError: () => {
@@ -77,7 +80,7 @@ export function AddNoteDialog({
   });
 
   const onSubmit = (data: NoteForm) => {
-    createMutation.mutate({ ...data, imageUrl });
+    createMutation.mutate({ ...data, imageUrl, imageUuid });
   };
 
   return (
@@ -113,8 +116,12 @@ export function AddNoteDialog({
               <div className="mt-2">
                 <ImageUpload
                   currentImageUrl={imageUrl}
-                  onImageChange={setImageUrl}
+                  onImageChange={(url, photoId) => {
+                    setImageUrl(url);
+                    setImageUuid(photoId ?? null);
+                  }}
                   aspectRatio={4 / 3}
+                  prmLocation="note:pending"
                 />
               </div>
             </div>

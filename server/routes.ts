@@ -113,16 +113,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         );
       }
 
-      // Register in photos table
-      // TODO: callers should pass prmLocation in the request body to identify where this image is used
+      // Register in photos table — callers pass prmLocation to identify where this image is used
       const prmLocation = (req.body?.prmLocation as string) || "unknown";
+      let photoId: string | undefined;
       try {
-        await storage.insertPhoto({ location: imageUrl, prmLocation, isSubImage: false });
+        const photo = await storage.insertPhoto({ location: imageUrl, prmLocation, isSubImage: false });
+        photoId = photo.id;
       } catch (photoErr) {
         console.error("Warning: failed to register photo in photos table:", photoErr);
       }
 
-      res.json({ imageUrl });
+      res.json({ imageUrl, photoId });
     } catch (error) {
       console.error("Error uploading image:", error);
       res.status(500).json({ error: "Failed to upload image" });
@@ -724,6 +725,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <date>${escapeXml(interaction.date)}</date>\n`;
         xml += `      <description>${escapeXml(interaction.description || "")}</description>\n`;
         xml += `      <image_url>${escapeXml(interaction.imageUrl || "")}</image_url>\n`;
+        xml += `      <image_uuid>${escapeXml(interaction.imageUuid || "")}</image_uuid>\n`;
         xml += `      <people_ids>${arrayToXml(peopleIds, "person_id")}</people_ids>\n`;
         xml += `      <group_ids>${arrayToXml(interaction.groupIds || [], "group_id")}</group_ids>\n`;
         xml += `      <created_at>${escapeXml(interaction.createdAt)}</created_at>\n`;
@@ -741,6 +743,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         xml += `      <person_id>${escapeXml(note.personId)}</person_id>\n`;
         xml += `      <content>${escapeXml(note.content)}</content>\n`;
         xml += `      <image_url>${escapeXml(note.imageUrl || "")}</image_url>\n`;
+        xml += `      <image_uuid>${escapeXml(note.imageUuid || "")}</image_uuid>\n`;
         xml += `      <created_at>${escapeXml(note.createdAt)}</created_at>\n`;
         xml += '    </note>\n';
       }
@@ -1140,6 +1143,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const date = unescapeXml(parseXmlTag("date", block));
         const description = unescapeXml(parseXmlTag("description", block));
         const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+        const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
         const peopleIds = parseXmlArray("people_ids", "person_id", block);
         const groupIds = parseXmlArray("group_ids", "group_id", block);
 
@@ -1162,6 +1166,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             peopleIds: processedPeopleIds.length > 0 ? processedPeopleIds : [],
             groupIds: groupIds.length > 0 ? groupIds : [],
             imageUrl: imageUrl || undefined,
+            imageUuid: imageUuid || undefined,
           });
           importedCounts.interactions++;
           existingInteractionUuids.add(id);
@@ -1177,9 +1182,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const personId = unescapeXml(parseXmlTag("person_id", block));
         const content = unescapeXml(parseXmlTag("content", block));
         const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+        const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
 
         try {
-          await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null });
+          await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
           importedCounts.notes++;
         } catch (error) {
           console.error(`Error importing note ${id}:`, error);
