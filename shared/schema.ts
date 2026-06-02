@@ -292,7 +292,8 @@ export const aiChats = pgTable("ai_chats", {
   userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   title: text("title").notNull().default("New chat"),
   systemMessage: text("system_message").notNull().default(""),
-  messages: jsonb("messages").notNull().default(sql`'[]'::jsonb`), // Array of { role: 'user' | 'assistant', content: string }
+  model: text("model").notNull().default(""),
+  messages: jsonb("messages").notNull().default(sql`'[]'::jsonb`), // Array of { role: 'user' | 'assistant', content: string, attachments?: AiChatAttachment[] }
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -620,7 +621,18 @@ export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type ImageTask = typeof imageTasks.$inferSelect;
 export type InsertImageTask = z.infer<typeof insertImageTaskSchema>;
 
-export type AiChatMessage = { role: "user" | "assistant"; content: string };
+export type AiChatAttachment = {
+  name: string;
+  /** Mime type or short kind label (e.g. "text/plain", "application/json"). */
+  type: string;
+  /** Raw text content of the attachment. Files are read as text on the client. */
+  content: string;
+};
+export type AiChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  attachments?: AiChatAttachment[];
+};
 export type AiChat = typeof aiChats.$inferSelect;
 export type InsertAiChat = z.infer<typeof insertAiChatSchema>;
 

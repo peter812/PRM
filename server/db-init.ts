@@ -441,12 +441,16 @@ async function validateAndSyncSchema(): Promise<void> {
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           title TEXT NOT NULL DEFAULT 'New chat',
           system_message TEXT NOT NULL DEFAULT '',
+          model TEXT NOT NULL DEFAULT '',
           messages JSONB NOT NULL DEFAULT '[]'::jsonb,
           created_at TIMESTAMP NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
       `);
       log("ai_chats table created successfully");
+    } else {
+      // Ensure newer columns exist on pre-existing installations
+      await addColumnIfNotExists("ai_chats", "model", "TEXT NOT NULL DEFAULT ''");
     }
 
     // Migrate social_accounts to historical model (v2)
