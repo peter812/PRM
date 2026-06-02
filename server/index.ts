@@ -19,8 +19,15 @@ declare module 'http' {
 }
 
 // --- Upgrade #10: Response compression (gzip/br) ---
-// Compress responses with body size >= 1KB
-app.use(compression({ threshold: 1024 }));
+// Compress responses with body size >= 1KB, but skip streaming endpoints
+// (compression buffers the full response which defeats chunked streaming).
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.path.endsWith("/stream")) return false;
+    return compression.filter(req, res);
+  },
+}));
 
 app.use(express.json({
   verify: (req, _res, buf) => {
