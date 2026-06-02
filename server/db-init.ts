@@ -381,6 +381,9 @@ async function validateAndSyncSchema(): Promise<void> {
       people: {
         social_account_uuids: "TEXT[]",
       },
+      photos: {
+        og_metadata: "JSONB",
+      },
     };
 
     // Check and add missing columns

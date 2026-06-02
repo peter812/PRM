@@ -250,6 +250,7 @@ export const photos = pgTable("photos", {
   faceUuids: jsonb("face_uuids"), // Array of { faceUuid: string, subImagePhotoId: string }
   prmLocation: text("prm_location").notNull(), // e.g. "post:UUID", "interaction:UUID", "profile_image:UUID"
   metadata: jsonb("metadata"), // EXIF / image metadata extracted by analyze_img_metadata
+  ogMetadata: jsonb("og_metadata"), // OpenGraph-style metadata captured when the file is added to storage (source URL, content-type, content-length, last-modified, etag, etc.)
   fileHash: text("file_hash"), // SHA-256 hash of the file contents for deduplication
   widthPx: integer("width_px"), // Image width in pixels
   heightPx: integer("height_px"), // Image height in pixels

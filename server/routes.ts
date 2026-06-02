@@ -4484,10 +4484,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const type = typeof req.query.type === "string" ? req.query.type : undefined;
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      const parentTaskId = typeof req.query.parentTaskId === "string" ? req.query.parentTaskId : undefined;
       const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
       const limit = 25;
       const offset = (page - 1) * limit;
-      const result = await storage.listImageTasks({ type, status, limit, offset });
+      const result = await storage.listImageTasks({ type, status, parentTaskId, limit, offset });
       res.json({ items: result.items, total: result.total, page, limit, totalPages: Math.ceil(result.total / limit) });
     } catch (error) {
       console.error("Error listing image tasks:", error);

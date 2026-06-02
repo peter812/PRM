@@ -44,6 +44,7 @@ import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
 import IntelligenceSettingsPage from "@/pages/intelligence-settings";
+import TaskDetailPage from "@/pages/task-detail";
 import NotFound from "@/pages/not-found";
 
 interface MenuItem {
@@ -263,6 +264,7 @@ export default function SettingsLayout() {
               <Route path="/intelligence" component={IntelligenceSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
+              <Route path="/task/:id" component={TaskDetailPage} />
               <Route path="/social-graph" component={SocialGraphSettingsPage} />
               <Route path="/recognition/images" component={RecognitionImagesPage} />
               <Route path="/recognition/faces" component={RecognitionFacesPage} />
