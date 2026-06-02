@@ -1,6 +1,6 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,7 @@ export default function SocialAccountProfile() {
   const [isEditPostOpen, setIsEditPostOpen] = useState(false);
   const [isPostDetailOpen, setIsPostDetailOpen] = useState(false);
   const [selectedPost, setSelectedPost] = useState<SocialAccountPost | null>(null);
+  const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
 
   const { data: account, isLoading, isError, error } = useQuery<SocialAccountWithCurrentProfile>({
     queryKey: ["/api/social-accounts", uuid],
@@ -125,6 +126,17 @@ export default function SocialAccountProfile() {
   const { data: posts } = useQuery<SocialAccountPost[]>({
     queryKey: ["/api/social-accounts", uuid, "posts"],
     enabled: !!uuid,
+  });
+
+  // Query profile versions for info dialog
+  const { data: profileVersions } = useQuery<SocialProfileVersion[]>({
+    queryKey: ["/api/social-accounts", uuid, "profile-versions"],
+    queryFn: async () => {
+      const res = await fetch(`/api/social-accounts/${uuid}/profile-versions`);
+      if (!res.ok) throw new Error("Failed to fetch profile versions");
+      return res.json();
+    },
+    enabled: !!uuid && isInfoDialogOpen,
   });
 
   const linkPersonMutation = useMutation({
@@ -349,6 +361,65 @@ export default function SocialAccountProfile() {
     return username.slice(0, 1).toUpperCase();
   };
 
+  const formatDateTime = (dateInput: Date | string | null | undefined): string => {
+    if (!dateInput) return "—";
+    const date = new Date(dateInput);
+    return date.toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+  };
+
+  const formatYearMonth = (dateInput: Date | string | null | undefined): string => {
+    if (!dateInput) return "—";
+    const date = new Date(dateInput);
+    return date.toLocaleString([], { year: "numeric", month: "long" });
+  };
+
+  const getImageLastChangedAt = (): Date | null => {
+    if (!profileVersions || profileVersions.length === 0) return null;
+    const sorted = [...profileVersions].sort(
+      (a, b) => new Date(a.detectedAt).getTime() - new Date(b.detectedAt).getTime()
+    );
+    let lastImageChangeDate: Date | null = null;
+    let prevImageUrl: string | null | undefined = undefined;
+    for (const v of sorted) {
+      if (prevImageUrl === undefined) {
+        if (v.imageUrl) lastImageChangeDate = new Date(v.detectedAt);
+        prevImageUrl = v.imageUrl;
+      } else if (v.imageUrl !== prevImageUrl) {
+        lastImageChangeDate = new Date(v.detectedAt);
+        prevImageUrl = v.imageUrl;
+      }
+    }
+    return lastImageChangeDate;
+  };
+
+  const getMostRecentImportDate = (): Date | null => {
+    const dates = [account.latestImportFollowers, account.latestImportFollowing]
+      .filter(Boolean)
+      .map((d) => new Date(d!));
+    if (dates.length === 0) return null;
+    return dates.reduce((a, b) => (a.getTime() > b.getTime() ? a : b));
+  };
+
+  const getMostRecentActionDate = (): Date | null => {
+    const candidates = [
+      account.lastScrapedAt,
+      account.latestImportFollowers,
+      account.latestImportFollowing,
+      account.latestState?.updatedAt,
+    ]
+      .filter(Boolean)
+      .map((d) => new Date(d!));
+    if (candidates.length === 0) return null;
+    return candidates.reduce((a, b) => (a.getTime() > b.getTime() ? a : b));
+  };
+
   return (
     <div className="flex flex-col h-full overflow-auto">
       {/* Top Section */}
@@ -399,6 +470,20 @@ export default function SocialAccountProfile() {
                 )}
               </div>
               <div className="flex gap-2">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => setIsInfoDialogOpen(true)}
+                      data-testid="button-account-info"
+                      aria-label="Social account info"
+                    >
+                      <Info className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Social account info</TooltipContent>
+                </Tooltip>
                 <Button
                   variant="outline"
                   size="icon"
@@ -1050,6 +1135,54 @@ export default function SocialAccountProfile() {
           />
         </>
       )}
+
+      {/* Social Account Info Dialog */}
+      <Dialog open={isInfoDialogOpen} onOpenChange={setIsInfoDialogOpen}>
+        <DialogContent className="max-w-sm" data-testid="dialog-account-info">
+          <DialogHeader>
+            <DialogTitle>Social account info</DialogTitle>
+            <DialogDescription>
+              Account history and timeline details for @{account?.username}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">Account created</span>
+                <span className="text-right font-medium" data-testid="info-account-created">
+                  {formatYearMonth(account?.internalAccountCreationDate)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">First imported</span>
+                <span className="text-right font-medium" data-testid="info-first-imported">
+                  {formatDateTime(account?.internalAccountCreationDate)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">Most recent import</span>
+                <span className="text-right font-medium" data-testid="info-latest-import">
+                  {formatDateTime(getMostRecentImportDate())}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">Most recent action</span>
+                <span className="text-right font-medium" data-testid="info-latest-action">
+                  {formatDateTime(getMostRecentActionDate())}
+                </span>
+              </div>
+              <div className="border-t pt-3 flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">Profile image updated</span>
+                <span className="text-right font-medium" data-testid="info-image-updated">
+                  {profileVersions
+                    ? formatDateTime(getImageLastChangedAt())
+                    : "Loading…"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
