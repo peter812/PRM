@@ -2397,7 +2397,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const offset = parseInt(req.query.offset as string) || 0;
       const limit = parseInt(req.query.limit as string) || 30;
-      const sortByElo = req.query.sortByElo === "true";
+      const sortBy = (req.query.sortBy as string) || 'relationship';
       
       // Get ME user's person ID to filter relationships
       const userId = req.user?.id;
@@ -2407,7 +2407,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         mePersonId = mePerson?.id;
       }
       
-      const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortByElo);
+      const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortBy);
       res.json(people);
     } catch (error) {
       console.error("Error fetching paginated people:", error);

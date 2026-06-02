@@ -1,13 +1,18 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Plus, X, Star, Trophy } from "lucide-react";
+import { Plus, X, Star, Trophy, ArrowUpDown, CalendarDays } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,6 +29,16 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
+type SortOption = "relationship" | "added" | "starred" | "elo_high" | "elo_low";
+
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: "relationship", label: "Relationship type" },
+  { value: "added", label: "Added date" },
+  { value: "starred", label: "Starred" },
+  { value: "elo_high", label: "ELO score (high)" },
+  { value: "elo_low", label: "ELO score (low)" },
+];
+
 type PersonWithRelationship = Person & {
   maxRelationshipValue: number | null;
   relationshipTypeName: string | null;
@@ -36,7 +51,7 @@ export default function PeopleList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [personToDelete, setPersonToDelete] = useState<PersonWithRelationship | null>(null);
   const [starredStates, setStarredStates] = useState<Record<string, number>>({});
-  const [sortByElo, setSortByElo] = useState(false);
+  const [sortBy, setSortBy] = useState<SortOption>("relationship");
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -49,9 +64,9 @@ export default function PeopleList() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery<PersonWithRelationship[]>({
-    queryKey: ["/api/people/paginated", { sortByElo }],
+    queryKey: ["/api/people/paginated", { sortBy }],
     queryFn: async ({ pageParam = 0 }) => {
-      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortByElo=${sortByElo}`);
+      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=${sortBy}`);
       if (!response.ok) throw new Error("Failed to fetch people");
       return response.json();
     },
@@ -130,23 +145,33 @@ export default function PeopleList() {
     starMutation.mutate({ personId: person.id, isStarred: currentStarred });
   };
 
+  const showEloBadge = sortBy === "elo_high" || sortBy === "elo_low";
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b px-6 py-4">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-3xl font-semibold" data-testid="text-page-title">
             People
           </h1>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2">
-              <Trophy className="h-4 w-4 text-muted-foreground" />
-              <Label htmlFor="elo-toggle" className="text-sm cursor-pointer" data-testid="label-elo-toggle">ELO Rank</Label>
-              <Switch
-                id="elo-toggle"
-                checked={sortByElo}
-                onCheckedChange={setSortByElo}
-                data-testid="switch-elo-toggle"
-              />
+              <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
+              <Select
+                value={sortBy}
+                onValueChange={(val) => setSortBy(val as SortOption)}
+              >
+                <SelectTrigger className="w-48" data-testid="select-sort-by">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SORT_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} data-testid={`select-item-sort-${opt.value}`}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person">
               <Plus className="h-4 w-4" />
@@ -237,7 +262,7 @@ export default function PeopleList() {
                         )}
                       </div>
                       <div className="flex flex-wrap gap-1 mt-1">
-                        {sortByElo && (
+                        {showEloBadge && (
                           <Badge
                             variant="secondary"
                             className="text-[0.65rem] md:text-xs"
@@ -245,6 +270,16 @@ export default function PeopleList() {
                           >
                             <Trophy className="h-3 w-3 mr-1" />
                             {person.eloScore}
+                          </Badge>
+                        )}
+                        {sortBy === "added" && person.createdAt && (
+                          <Badge
+                            variant="secondary"
+                            className="text-[0.65rem] md:text-xs"
+                            data-testid={`badge-added-${person.id}`}
+                          >
+                            <CalendarDays className="h-3 w-3 mr-1" />
+                            {new Date(person.createdAt).toLocaleDateString()}
                           </Badge>
                         )}
                         {person.relationshipTypeName && (

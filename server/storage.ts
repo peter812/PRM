@@ -136,7 +136,7 @@ export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
   getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
-  getPeoplePaginated(offset: number, limit: number, mePersonId?: string, sortByElo?: boolean): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>>;
+  getPeoplePaginated(offset: number, limit: number, mePersonId?: string, sortBy?: string): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>>;
   getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
@@ -573,7 +573,7 @@ export class DatabaseStorage implements IStorage {
     offset: number,
     limit: number,
     mePersonId?: string,
-    sortByElo?: boolean
+    sortBy?: string
   ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>> {
     // Get all people (excluding ME user) with their highest-value relationship WITH THE ME USER
     const result = await db
@@ -621,8 +621,14 @@ export class DatabaseStorage implements IStorage {
       .where(sql`${people.userId} IS NULL`)
       .groupBy(people.id)
       .orderBy(
-        ...(sortByElo
+        ...(sortBy === 'elo_high'
           ? [sql`${people.eloScore} DESC`, people.firstName, people.lastName]
+          : sortBy === 'elo_low'
+          ? [sql`${people.eloScore} ASC`, people.firstName, people.lastName]
+          : sortBy === 'added'
+          ? [sql`${people.createdAt} DESC`, people.firstName, people.lastName]
+          : sortBy === 'starred'
+          ? [sql`${people.isStarred} DESC NULLS LAST`, sql`MAX(${relationshipTypes.value}) DESC NULLS LAST`, people.firstName, people.lastName]
           : [sql`MAX(${relationshipTypes.value}) DESC NULLS LAST`, people.firstName, people.lastName]
         )
       )
