@@ -384,6 +384,12 @@ async function validateAndSyncSchema(): Promise<void> {
       photos: {
         og_metadata: "JSONB",
       },
+      notes: {
+        image_uuid: "VARCHAR",
+      },
+      interactions: {
+        image_uuid: "VARCHAR",
+      },
     };
 
     // Check and add missing columns
@@ -397,6 +403,31 @@ async function validateAndSyncSchema(): Promise<void> {
       for (const [columnName, columnDef] of Object.entries(columns)) {
         await addColumnIfNotExists(tableName, columnName, columnDef);
       }
+    }
+
+    // Backfill image_uuid for notes and interactions from the photos table
+    // (safe to run repeatedly — only updates rows where image_uuid is still NULL)
+    const photosExists = await tableExists("photos");
+    if (photosExists) {
+      await pool.query(`
+        UPDATE notes n
+        SET image_uuid = p.id
+        FROM photos p
+        WHERE n.image_url IS NOT NULL
+          AND n.image_url <> ''
+          AND n.image_uuid IS NULL
+          AND p.location = n.image_url
+      `);
+      await pool.query(`
+        UPDATE interactions i
+        SET image_uuid = p.id
+        FROM photos p
+        WHERE i.image_url IS NOT NULL
+          AND i.image_url <> ''
+          AND i.image_uuid IS NULL
+          AND p.location = i.image_url
+      `);
+      log("Backfilled image_uuid for notes and interactions from photos table");
     }
 
     // Ensure tasks table exists

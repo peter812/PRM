@@ -562,6 +562,7 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <date>${escapeXml(interaction.date)}</date>\n`;
     xml += `      <description>${escapeXml(interaction.description || "")}</description>\n`;
     xml += `      <image_url>${escapeXml(interaction.imageUrl || "")}</image_url>\n`;
+    xml += `      <image_uuid>${escapeXml(interaction.imageUuid || "")}</image_uuid>\n`;
     xml += `      <people_ids>${arrayToXml(peopleIds, "person_id")}</people_ids>\n`;
     xml += `      <group_ids>${arrayToXml(interaction.groupIds || [], "group_id")}</group_ids>\n`;
     xml += `      <created_at>${escapeXml(interaction.createdAt)}</created_at>\n`;
@@ -579,6 +580,7 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <person_id>${escapeXml(note.personId)}</person_id>\n`;
     xml += `      <content>${escapeXml(note.content)}</content>\n`;
     xml += `      <image_url>${escapeXml(note.imageUrl || "")}</image_url>\n`;
+    xml += `      <image_uuid>${escapeXml(note.imageUuid || "")}</image_uuid>\n`;
     xml += `      <created_at>${escapeXml(note.createdAt)}</created_at>\n`;
     xml += '    </note>\n';
   }
@@ -880,6 +882,7 @@ async function processImportXmlTask(taskId: string, payload: {
     const date = unescapeXml(parseXmlTag("date", block));
     const description = unescapeXml(parseXmlTag("description", block));
     const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+    const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
     const peopleIds = parseXmlArray("people_ids", "person_id", block);
     const groupIds = parseXmlArray("group_ids", "group_id", block);
     const processedPeopleIds = peopleIds.map(p => replaceZeroUUID(p));
@@ -893,6 +896,7 @@ async function processImportXmlTask(taskId: string, payload: {
         peopleIds: processedPeopleIds.length > 0 ? processedPeopleIds : [],
         groupIds: groupIds.length > 0 ? groupIds : [],
         imageUrl: imageUrl || undefined,
+        imageUuid: imageUuid || undefined,
       });
       importedCounts.interactions++;
       existingInteractionUuids.add(id);
@@ -906,8 +910,9 @@ async function processImportXmlTask(taskId: string, payload: {
     const personId = unescapeXml(parseXmlTag("person_id", block));
     const content = unescapeXml(parseXmlTag("content", block));
     const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+    const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
     try {
-      await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null });
+      await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
       importedCounts.notes++;
     } catch (e) { console.error(`Error importing note ${id}:`, e); }
   }
