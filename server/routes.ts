@@ -6025,6 +6025,222 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Streaming version of the message endpoint — forwards Ollama NDJSON tokens to the client
+  // in real time, then persists the fully assembled reply to the DB at the end.
+  app.post("/api/ai-chats/:id/message/stream", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const message = req.body.message;
+      const attachments = sanitizeAttachments(req.body.attachments);
+      const hasAttachments = attachments.length > 0;
+      if (typeof message !== "string" || (!message.trim() && !hasAttachments)) {
+        return res.status(400).json({ error: "Message is required." });
+      }
+      const chat = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+      const ctx = await buildOllamaChatContext();
+      if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
+
+      const chatModel = (chat.model ?? "").trim();
+      const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
+      const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
+
+      const history = sanitizeChatMessages(chat.messages);
+      const userMessage: AiChatMessage = hasAttachments
+        ? { role: "user", content: message, attachments }
+        : { role: "user", content: message };
+
+      const ollamaMessages: { role: string; content: string }[] = [];
+      const systemMessage = chat.systemMessage?.trim();
+      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+      ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
+
+      res.setHeader("Content-Type", "text/plain");
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("X-Accel-Buffering", "no");
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
+
+      let ollamaResp: Response;
+      try {
+        ollamaResp = await fetch(`${ctx.base}/api/chat`, {
+          method: "POST",
+          headers: { ...ctx.headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ model, messages: ollamaMessages, stream: true }),
+          signal: controller.signal,
+        });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        res.end(JSON.stringify({ error: `Failed to reach Ollama: ${err.message}` }) + "\n");
+        return;
+      }
+
+      if (!ollamaResp.ok) {
+        clearTimeout(timeout);
+        const text = await ollamaResp.text();
+        res.end(JSON.stringify({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` }) + "\n");
+        return;
+      }
+
+      let assistantContent = "";
+      let lineBuffer = "";
+      const decoder = new TextDecoder();
+      const reader = ollamaResp.body!.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          lineBuffer += chunk;
+          const lines = lineBuffer.split("\n");
+          lineBuffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            res.write(line + "\n");
+            try {
+              const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean; error?: string };
+              if (parsed.message?.content) assistantContent += parsed.message.content;
+            } catch { /* ignore malformed JSON */ }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      clearTimeout(timeout);
+
+      const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+      const updatedMessages = [...history, userMessage, assistantMessage];
+      const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
+      if (!chat.title || chat.title === "New chat") {
+        const titleSource = message.trim() || (hasAttachments ? attachments[0].name : "");
+        if (titleSource) patch.title = titleSource.slice(0, MAX_CHAT_TITLE_LENGTH);
+      }
+      const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
+      res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
+      res.end();
+    } catch (error: any) {
+      if (!res.headersSent) res.status(500).json({ error: error.message });
+      else res.end();
+    }
+  });
+
+  // Streaming version of the regenerate endpoint.
+  app.post("/api/ai-chats/:id/regenerate/stream", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const message = req.body.message;
+      const attachments = sanitizeAttachments(req.body.attachments);
+      const hasAttachments = attachments.length > 0;
+      if (typeof message !== "string" || (!message.trim() && !hasAttachments)) {
+        return res.status(400).json({ error: "Message is required." });
+      }
+      const chat = await db.query.aiChats.findFirst({
+        where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+      });
+      if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+      const history = sanitizeChatMessages(chat.messages);
+      let trimmed = history.slice();
+      if (trimmed.length > 0 && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
+      const lastUserIdx = (() => {
+        for (let i = trimmed.length - 1; i >= 0; i--) if (trimmed[i].role === "user") return i;
+        return -1;
+      })();
+      if (lastUserIdx === -1) return res.status(400).json({ error: "No previous user message to edit." });
+      trimmed = trimmed.slice(0, lastUserIdx);
+
+      const ctx = await buildOllamaChatContext();
+      if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
+
+      const chatModel = (chat.model ?? "").trim();
+      const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
+      const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
+
+      const userMessage: AiChatMessage = hasAttachments
+        ? { role: "user", content: message, attachments }
+        : { role: "user", content: message };
+
+      const ollamaMessages: { role: string; content: string }[] = [];
+      const systemMessage = chat.systemMessage?.trim();
+      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+      ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
+
+      res.setHeader("Content-Type", "text/plain");
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("X-Accel-Buffering", "no");
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
+
+      let ollamaResp: Response;
+      try {
+        ollamaResp = await fetch(`${ctx.base}/api/chat`, {
+          method: "POST",
+          headers: { ...ctx.headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ model, messages: ollamaMessages, stream: true }),
+          signal: controller.signal,
+        });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        res.end(JSON.stringify({ error: `Failed to reach Ollama: ${err.message}` }) + "\n");
+        return;
+      }
+
+      if (!ollamaResp.ok) {
+        clearTimeout(timeout);
+        const text = await ollamaResp.text();
+        res.end(JSON.stringify({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` }) + "\n");
+        return;
+      }
+
+      let assistantContent = "";
+      let lineBuffer = "";
+      const decoder = new TextDecoder();
+      const reader = ollamaResp.body!.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          lineBuffer += chunk;
+          const lines = lineBuffer.split("\n");
+          lineBuffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            res.write(line + "\n");
+            try {
+              const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean; error?: string };
+              if (parsed.message?.content) assistantContent += parsed.message.content;
+            } catch { /* ignore malformed JSON */ }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      clearTimeout(timeout);
+
+      const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+      const updatedMessages = [...trimmed, userMessage, assistantMessage];
+      const [updated] = await db.update(aiChats)
+        .set({ messages: updatedMessages, updatedAt: new Date() })
+        .where(eq(aiChats.id, chat.id))
+        .returning();
+      res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
+      res.end();
+    } catch (error: any) {
+      if (!res.headersSent) res.status(500).json({ error: error.message });
+      else res.end();
+    }
+  });
+
   // Branch off: duplicate an existing conversation (system message + history) into a
   // brand new chat, optionally swapping the model used for subsequent replies.
   app.post("/api/ai-chats/:id/branch", async (req, res) => {

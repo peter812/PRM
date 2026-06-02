@@ -117,6 +117,9 @@ export default function AiChatDemoPage() {
   } | null>(null);
   const [branchOpen, setBranchOpen] = useState(false);
   const [branchModel, setBranchModel] = useState<string>("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
+  const [streamingUserMessage, setStreamingUserMessage] = useState<ChatMessage | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
@@ -148,6 +151,13 @@ export default function AiChatDemoPage() {
     scrollEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeChat?.messages?.length, activeChatId]);
 
+  // While streaming, keep scrolling to bottom as tokens arrive.
+  useEffect(() => {
+    if (isStreaming) {
+      scrollEndRef.current?.scrollIntoView({ behavior: "instant" });
+    }
+  }, [streamingContent, isStreaming]);
+
   const createChatMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/ai-chats", {});
@@ -162,41 +172,112 @@ export default function AiChatDemoPage() {
     },
   });
 
-  const sendMutation = useMutation({
-    mutationFn: async (payload: { message: string; attachments: ChatAttachment[] }) => {
+  // Core streaming helper: reads NDJSON from a /stream endpoint, appends tokens to
+  // streamingContent state, and on the final sentinel line updates the query cache.
+  const runStream = async (chatId: string, url: string, payload: { message: string; attachments: ChatAttachment[] }) => {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!resp.ok || !resp.body) {
+      const errText = await resp.text().catch(() => "");
+      let errMsg = `Request failed (${resp.status})`;
+      try { errMsg = JSON.parse(errText).error ?? errMsg; } catch { /* use default */ }
+      throw new Error(errMsg);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let parsed: { message?: { content?: string }; done?: boolean; chat?: ChatDetail; error?: string };
+          try { parsed = JSON.parse(line); } catch { continue; }
+          if (parsed.error) throw new Error(parsed.error);
+          if (parsed.done && parsed.chat) {
+            queryClient.setQueryData(["/api/ai-chats", chatId], parsed.chat);
+            queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
+          } else if (parsed.message?.content) {
+            setStreamingContent((prev) => prev + parsed.message!.content!);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
+  const streamSend = async (payload: { message: string; attachments: ChatAttachment[] }) => {
+    setIsStreaming(true);
+    setStreamingContent("");
+    setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
+    try {
       let chatId = activeChatId;
       if (!chatId) {
         const created = await apiRequest("POST", "/api/ai-chats", {}).then((r) => r.json() as Promise<ChatDetail>);
         chatId = created.id;
         setActiveChatId(chatId);
+        queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
       }
-      const res = await apiRequest("POST", `/api/ai-chats/${chatId}/message`, payload);
-      return res.json() as Promise<{ chat: ChatDetail; assistant: ChatMessage }>;
-    },
-    onSuccess: ({ chat }) => {
-      queryClient.setQueryData(["/api/ai-chats", chat.id], chat);
-      queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Message failed", description: error.message, variant: "destructive" });
-    },
-  });
+      await runStream(chatId, `/api/ai-chats/${chatId}/message/stream`, payload);
+    } catch (err: any) {
+      toast({ title: "Message failed", description: err.message, variant: "destructive" });
+    } finally {
+      setIsStreaming(false);
+      setStreamingContent("");
+      setStreamingUserMessage(null);
+    }
+  };
 
-  const regenerateMutation = useMutation({
-    mutationFn: async (payload: { message: string; attachments: ChatAttachment[] }) => {
-      if (!activeChatId) throw new Error("No active chat");
-      const res = await apiRequest("POST", `/api/ai-chats/${activeChatId}/regenerate`, payload);
-      return res.json() as Promise<{ chat: ChatDetail; assistant: ChatMessage }>;
-    },
-    onSuccess: ({ chat }) => {
-      queryClient.setQueryData(["/api/ai-chats", chat.id], chat);
-      queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
+  const streamRegenerate = async (payload: { message: string; attachments: ChatAttachment[] }) => {
+    if (!activeChatId) return;
+
+    // Optimistically trim the history to match what the server will do, so the UI
+    // shows the correct context (without the old user+assistant tail) during streaming.
+    const currentChat = queryClient.getQueryData(["/api/ai-chats", activeChatId]) as ChatDetail | undefined;
+    let trimmed: ChatMessage[] = [...(currentChat?.messages ?? [])];
+    if (trimmed.length > 0 && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
+    const lastUserIdx = (() => {
+      for (let i = trimmed.length - 1; i >= 0; i--) if (trimmed[i].role === "user") return i;
+      return -1;
+    })();
+    if (lastUserIdx === -1) {
+      toast({ title: "No previous message to edit.", variant: "destructive" });
+      return;
+    }
+    trimmed = trimmed.slice(0, lastUserIdx);
+
+    // Update cache to the trimmed history; the new user message is shown via streamingUserMessage.
+    queryClient.setQueryData(["/api/ai-chats", activeChatId], (old: ChatDetail | undefined) =>
+      old ? { ...old, messages: trimmed } : old
+    );
+
+    setIsStreaming(true);
+    setStreamingContent("");
+    setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
+    try {
+      await runStream(activeChatId, `/api/ai-chats/${activeChatId}/regenerate/stream`, payload);
       setEditingPrompt(null);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to update prompt", description: error.message, variant: "destructive" });
-    },
-  });
+    } catch (err: any) {
+      // Revert the optimistic trim on error so the user doesn't lose their history.
+      if (currentChat) queryClient.setQueryData(["/api/ai-chats", activeChatId], currentChat);
+      toast({ title: "Failed to update prompt", description: err.message, variant: "destructive" });
+    } finally {
+      setIsStreaming(false);
+      setStreamingContent("");
+      setStreamingUserMessage(null);
+    }
+  };
 
   const saveSettingsMutation = useMutation({
     mutationFn: async (patch: { systemMessage: string; model: string }) => {
@@ -288,11 +369,11 @@ export default function AiChatDemoPage() {
 
   const handleSend = () => {
     const message = input.trim();
-    if ((!message && pendingAttachments.length === 0) || sendMutation.isPending) return;
+    if ((!message && pendingAttachments.length === 0) || isStreaming) return;
     const payload = { message, attachments: pendingAttachments };
     setInput("");
     setPendingAttachments([]);
-    sendMutation.mutate(payload);
+    void streamSend(payload);
   };
 
   const handleStartEditLastPrompt = () => {
@@ -312,12 +393,12 @@ export default function AiChatDemoPage() {
     if (!editingPrompt) return;
     const message = editingPrompt.content.trim();
     if (!message && editingPrompt.attachments.length === 0) return;
-    regenerateMutation.mutate({ message, attachments: editingPrompt.attachments });
+    void streamRegenerate({ message, attachments: editingPrompt.attachments });
   };
 
   const messages = activeChat?.messages ?? [];
-  const isSending = sendMutation.isPending;
-  const isRegenerating = regenerateMutation.isPending;
+  const isSending = isStreaming;
+  const isRegenerating = isStreaming;
 
   // Find index of the most recent user message so we can attach an inline edit affordance.
   const lastUserIndex = (() => {
@@ -325,10 +406,10 @@ export default function AiChatDemoPage() {
     return -1;
   })();
 
-  // Optimistically show the in-flight user message while awaiting the reply.
+  // Show the optimistic user message during streaming (both send and regenerate cases).
   const displayMessages: ChatMessage[] =
-    isSending && sendMutation.variables
-      ? [...messages, { role: "user", content: sendMutation.variables.message, attachments: sendMutation.variables.attachments }]
+    isStreaming && streamingUserMessage
+      ? [...messages, streamingUserMessage]
       : messages;
 
   return (
@@ -513,13 +594,19 @@ export default function AiChatDemoPage() {
                 </div>
               ))
             )}
-            {(isSending || isRegenerating) && (
-              <div className="flex gap-3 justify-start" data-testid="message-assistant-loading">
+            {isStreaming && (
+              <div className="flex gap-3 justify-start" data-testid="message-assistant-streaming">
                 <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
                   <Bot className="h-4 w-4" />
                 </div>
-                <div className="rounded-lg bg-muted px-4 py-3">
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                <div className="rounded-lg bg-muted px-4 py-2 max-w-[80%]">
+                  {streamingContent ? (
+                    <MarkdownMessage content={streamingContent} />
+                  ) : (
+                    <div className="py-1">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -803,13 +890,13 @@ export default function AiChatDemoPage() {
             <Button
               onClick={handleSubmitEditedPrompt}
               disabled={
-                regenerateMutation.isPending ||
+                isRegenerating ||
                 !editingPrompt ||
                 (!editingPrompt.content.trim() && editingPrompt.attachments.length === 0)
               }
               data-testid="button-submit-edit-prompt"
             >
-              {regenerateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Resend"}
+              {isRegenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : "Resend"}
             </Button>
           </DialogFooter>
         </DialogContent>
