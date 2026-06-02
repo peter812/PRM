@@ -191,12 +191,16 @@ export default function AiChatDemoPage() {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    let chunkCount = 0;
 
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
+        if (done) { console.log("[stream] reader done after", chunkCount, "chunks"); break; }
+        chunkCount++;
+        const raw = decoder.decode(value, { stream: true });
+        console.log(`[stream] chunk #${chunkCount} bytes=${value.byteLength}`, raw.slice(0, 80));
+        buf += raw;
         const lines = buf.split("\n");
         buf = lines.pop() ?? "";
         for (const line of lines) {
