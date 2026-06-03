@@ -6323,7 +6323,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         userTitle: z.string().default(""),
         body: z.string().default(""),
         events: z.array(z.object({ text: z.string(), position: z.number().int() })).default([]),
-        involvedParties: z.array(z.object({ partyType: z.string(), refId: z.string() })).default([]),
+        involvedParties: z.array(z.object({ partyType: z.enum(["person", "social_account", "group"]), refId: z.string() })).default([]),
       });
       const parsed = schema.parse(req.body);
       const { events, involvedParties, ...noteData } = parsed;
@@ -6347,7 +6347,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         userTitle: z.string().optional(),
         body: z.string().optional(),
         events: z.array(z.object({ text: z.string(), position: z.number().int() })).optional(),
-        involvedParties: z.array(z.object({ partyType: z.string(), refId: z.string() })).optional(),
+        involvedParties: z.array(z.object({ partyType: z.enum(["person", "social_account", "group"]), refId: z.string() })).optional(),
       });
       const parsed = schema.parse(req.body);
       const { events, involvedParties, ...noteData } = parsed;
@@ -6365,6 +6365,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const existing = await storage.getDailyNoteById(req.params.id);
       if (!existing) return res.status(404).json({ error: "Not found" });
+      if (!existing.isEditable) return res.status(403).json({ error: "This note is read-only (edit window has passed)" });
       await storage.deleteDailyNote(req.params.id);
       res.json({ success: true });
     } catch (error: any) {

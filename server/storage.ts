@@ -28,6 +28,7 @@ import {
   type InsertDailyNoteEvent,
   type DailyNoteInvolvedParty,
   type InsertDailyNoteInvolvedParty,
+  type DailyNoteInvolvedPartyWithLabel,
   type DailyNoteWithDetails,
   type ImageTask,
   type InsertImageTask,
@@ -2938,7 +2939,37 @@ export class DatabaseStorage implements IStorage {
       db.select().from(dailyNoteEvents).where(eq(dailyNoteEvents.dailyNoteId, note.id)).orderBy(dailyNoteEvents.position),
       db.select().from(dailyNoteInvolvedParties).where(eq(dailyNoteInvolvedParties.dailyNoteId, note.id)),
     ]);
-    return { ...note, events, involvedParties: parties, isEditable: this.isDailyNoteEditable(note.date) };
+
+    // Resolve human-readable labels for each party
+    const personIds = parties.filter(p => p.partyType === "person").map(p => p.refId);
+    const groupIds = parties.filter(p => p.partyType === "group").map(p => p.refId);
+    const socialIds = parties.filter(p => p.partyType === "social_account").map(p => p.refId);
+
+    const [personRows, groupRows, socialRows] = await Promise.all([
+      personIds.length > 0
+        ? db.select({ id: people.id, firstName: people.firstName, lastName: people.lastName }).from(people).where(inArray(people.id, personIds))
+        : [],
+      groupIds.length > 0
+        ? db.select({ id: groups.id, name: groups.name }).from(groups).where(inArray(groups.id, groupIds))
+        : [],
+      socialIds.length > 0
+        ? db.select({ id: socialAccounts.id, username: socialAccounts.username }).from(socialAccounts).where(inArray(socialAccounts.id, socialIds))
+        : [],
+    ]);
+
+    const labelMap: Record<string, string> = {};
+    (personRows as { id: string; firstName: string | null; lastName: string | null }[]).forEach(p => {
+      labelMap[p.id] = `${p.firstName ?? ""} ${p.lastName ?? ""}`.trim() || p.id;
+    });
+    (groupRows as { id: string; name: string }[]).forEach(g => { labelMap[g.id] = g.name || g.id; });
+    (socialRows as { id: string; username: string }[]).forEach(s => { labelMap[s.id] = s.username || s.id; });
+
+    const involvedParties: DailyNoteInvolvedPartyWithLabel[] = parties.map(p => ({
+      ...p,
+      label: labelMap[p.refId] ?? p.refId,
+    }));
+
+    return { ...note, events, involvedParties, isEditable: this.isDailyNoteEditable(note.date) };
   }
 
   async listDailyNotes(): Promise<DailyNoteWithDetails[]> {

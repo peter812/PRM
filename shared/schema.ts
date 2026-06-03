@@ -707,9 +707,11 @@ export type InsertDailyNoteEvent = z.infer<typeof insertDailyNoteEventSchema>;
 export type DailyNoteInvolvedParty = typeof dailyNoteInvolvedParties.$inferSelect;
 export type InsertDailyNoteInvolvedParty = z.infer<typeof insertDailyNoteInvolvedPartySchema>;
 
+export type DailyNoteInvolvedPartyWithLabel = DailyNoteInvolvedParty & { label: string };
+
 export type DailyNoteWithDetails = DailyNote & {
   events: DailyNoteEvent[];
-  involvedParties: DailyNoteInvolvedParty[];
+  involvedParties: DailyNoteInvolvedPartyWithLabel[];
   isEditable: boolean;
 };
 
