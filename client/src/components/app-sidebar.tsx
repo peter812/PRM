@@ -13,6 +13,7 @@ import {
   Scan,
   Sparkles,
   MessagesSquare,
+  BookOpen,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
@@ -65,6 +66,11 @@ const menuItems = [
     title: "Social Graph",
     url: "/social-graph-3d",
     icon: Share2,
+  },
+  {
+    title: "Daily Notes",
+    url: "/daily-notes",
+    icon: BookOpen,
   },
   {
     title: "ELO Ranking",

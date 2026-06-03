@@ -19,6 +19,16 @@ import {
   socialAccountPosts,
   photos,
   imageTasks,
+  dailyNotes,
+  dailyNoteEvents,
+  dailyNoteInvolvedParties,
+  type DailyNote,
+  type InsertDailyNote,
+  type DailyNoteEvent,
+  type InsertDailyNoteEvent,
+  type DailyNoteInvolvedParty,
+  type InsertDailyNoteInvolvedParty,
+  type DailyNoteWithDetails,
   type ImageTask,
   type InsertImageTask,
   type Person,
@@ -329,6 +339,16 @@ export interface IStorage {
   updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void>;
   listImageTasks(options?: { type?: string; status?: string; parentTaskId?: string; limit?: number; offset?: number }): Promise<{ items: ImageTask[]; total: number }>;
   cancelImageTask(id: string): Promise<void>;
+
+  // Daily note operations
+  listDailyNotes(): Promise<DailyNoteWithDetails[]>;
+  getDailyNoteById(id: string): Promise<DailyNoteWithDetails | undefined>;
+  getDailyNoteByDate(date: string): Promise<DailyNoteWithDetails | undefined>;
+  createDailyNote(note: InsertDailyNote): Promise<DailyNoteWithDetails>;
+  updateDailyNote(id: string, data: Partial<InsertDailyNote>): Promise<DailyNoteWithDetails | undefined>;
+  deleteDailyNote(id: string): Promise<void>;
+  replaceDailyNoteEvents(dailyNoteId: string, events: Array<{ text: string; position: number }>): Promise<DailyNoteEvent[]>;
+  replaceDailyNoteParties(dailyNoteId: string, parties: Array<{ partyType: string; refId: string }>): Promise<DailyNoteInvolvedParty[]>;
 
   // Session store
   sessionStore: session.Store;
@@ -2902,6 +2922,69 @@ export class DatabaseStorage implements IStorage {
       .update(imageTasks)
       .set({ status: "cancelled", completedAt: new Date() })
       .where(and(eq(imageTasks.id, id), sql`${imageTasks.status} IN ('pending', 'in_progress')`));
+  }
+
+  // Daily note helpers
+  private isDailyNoteEditable(dateStr: string): boolean {
+    const today = new Date();
+    const noteDate = new Date(dateStr + "T00:00:00");
+    const diffMs = today.getTime() - noteDate.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    return diffDays <= 1;
+  }
+
+  private async buildDailyNoteWithDetails(note: DailyNote): Promise<DailyNoteWithDetails> {
+    const [events, parties] = await Promise.all([
+      db.select().from(dailyNoteEvents).where(eq(dailyNoteEvents.dailyNoteId, note.id)).orderBy(dailyNoteEvents.position),
+      db.select().from(dailyNoteInvolvedParties).where(eq(dailyNoteInvolvedParties.dailyNoteId, note.id)),
+    ]);
+    return { ...note, events, involvedParties: parties, isEditable: this.isDailyNoteEditable(note.date) };
+  }
+
+  async listDailyNotes(): Promise<DailyNoteWithDetails[]> {
+    const allNotes = await db.select().from(dailyNotes).orderBy(desc(dailyNotes.date));
+    return Promise.all(allNotes.map(n => this.buildDailyNoteWithDetails(n)));
+  }
+
+  async getDailyNoteById(id: string): Promise<DailyNoteWithDetails | undefined> {
+    const [note] = await db.select().from(dailyNotes).where(eq(dailyNotes.id, id));
+    if (!note) return undefined;
+    return this.buildDailyNoteWithDetails(note);
+  }
+
+  async getDailyNoteByDate(date: string): Promise<DailyNoteWithDetails | undefined> {
+    const [note] = await db.select().from(dailyNotes).where(eq(dailyNotes.date, date));
+    if (!note) return undefined;
+    return this.buildDailyNoteWithDetails(note);
+  }
+
+  async createDailyNote(data: InsertDailyNote): Promise<DailyNoteWithDetails> {
+    const [note] = await db.insert(dailyNotes).values(data).returning();
+    return this.buildDailyNoteWithDetails(note);
+  }
+
+  async updateDailyNote(id: string, data: Partial<InsertDailyNote>): Promise<DailyNoteWithDetails | undefined> {
+    const [updated] = await db.update(dailyNotes).set(data).where(eq(dailyNotes.id, id)).returning();
+    if (!updated) return undefined;
+    return this.buildDailyNoteWithDetails(updated);
+  }
+
+  async deleteDailyNote(id: string): Promise<void> {
+    await db.delete(dailyNotes).where(eq(dailyNotes.id, id));
+  }
+
+  async replaceDailyNoteEvents(dailyNoteId: string, events: Array<{ text: string; position: number }>): Promise<DailyNoteEvent[]> {
+    await db.delete(dailyNoteEvents).where(eq(dailyNoteEvents.dailyNoteId, dailyNoteId));
+    if (events.length === 0) return [];
+    const inserted = await db.insert(dailyNoteEvents).values(events.map(e => ({ dailyNoteId, text: e.text, position: e.position }))).returning();
+    return inserted.sort((a, b) => a.position - b.position);
+  }
+
+  async replaceDailyNoteParties(dailyNoteId: string, parties: Array<{ partyType: string; refId: string }>): Promise<DailyNoteInvolvedParty[]> {
+    await db.delete(dailyNoteInvolvedParties).where(eq(dailyNoteInvolvedParties.dailyNoteId, dailyNoteId));
+    if (parties.length === 0) return [];
+    const inserted = await db.insert(dailyNoteInvolvedParties).values(parties.map(p => ({ dailyNoteId, partyType: p.partyType, refId: p.refId }))).returning();
+    return inserted;
   }
 
   async deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }> {

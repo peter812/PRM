@@ -258,6 +258,30 @@ export const photos = pgTable("photos", {
   heightPx: integer("height_px"), // Image height in pixels
 });
 
+// Daily notes tables
+export const dailyNotes = pgTable("daily_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  date: text("date").notNull(), // YYYY-MM-DD format
+  userTitle: text("user_title").notNull().default(""),
+  body: text("body").notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const dailyNoteEvents = pgTable("daily_note_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  dailyNoteId: varchar("daily_note_id").notNull().references(() => dailyNotes.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  position: integer("position").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const dailyNoteInvolvedParties = pgTable("daily_note_involved_parties", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  dailyNoteId: varchar("daily_note_id").notNull().references(() => dailyNotes.id, { onDelete: "cascade" }),
+  partyType: text("party_type").notNull(), // 'person' | 'social_account' | 'group'
+  refId: varchar("ref_id").notNull(),
+});
+
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -411,6 +435,24 @@ export const socialAccountPostsRelations = relations(socialAccountPosts, ({ one 
   }),
 }));
 
+export const dailyNotesRelations = relations(dailyNotes, ({ many }) => ({
+  events: many(dailyNoteEvents),
+  involvedParties: many(dailyNoteInvolvedParties),
+}));
+
+export const dailyNoteEventsRelations = relations(dailyNoteEvents, ({ one }) => ({
+  dailyNote: one(dailyNotes, {
+    fields: [dailyNoteEvents.dailyNoteId],
+    references: [dailyNotes.id],
+  }),
+}));
+
+export const dailyNoteInvolvedPartiesRelations = relations(dailyNoteInvolvedParties, ({ one }) => ({
+  dailyNote: one(dailyNotes, {
+    fields: [dailyNoteInvolvedParties.dailyNoteId],
+    references: [dailyNotes.id],
+  }),
+}));
 
 // Insert schemas
 export const insertPersonSchema = createInsertSchema(people).omit({
@@ -544,6 +586,20 @@ export const insertAiChatSchema = createInsertSchema(aiChats).omit({
   updatedAt: true,
 });
 
+export const insertDailyNoteSchema = createInsertSchema(dailyNotes).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertDailyNoteEventSchema = createInsertSchema(dailyNoteEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertDailyNoteInvolvedPartySchema = createInsertSchema(dailyNoteInvolvedParties).omit({
+  id: true,
+});
+
 export const insertExtensionSessionSchema = createInsertSchema(extensionSessions).omit({
   id: true,
   createdAt: true,
@@ -643,6 +699,19 @@ export type InsertExtensionSession = z.infer<typeof insertExtensionSessionSchema
 
 export type ExtensionAuthCode = typeof extensionAuthCodes.$inferSelect;
 export type InsertExtensionAuthCode = z.infer<typeof insertExtensionAuthCodeSchema>;
+
+export type DailyNote = typeof dailyNotes.$inferSelect;
+export type InsertDailyNote = z.infer<typeof insertDailyNoteSchema>;
+export type DailyNoteEvent = typeof dailyNoteEvents.$inferSelect;
+export type InsertDailyNoteEvent = z.infer<typeof insertDailyNoteEventSchema>;
+export type DailyNoteInvolvedParty = typeof dailyNoteInvolvedParties.$inferSelect;
+export type InsertDailyNoteInvolvedParty = z.infer<typeof insertDailyNoteInvolvedPartySchema>;
+
+export type DailyNoteWithDetails = DailyNote & {
+  events: DailyNoteEvent[];
+  involvedParties: DailyNoteInvolvedParty[];
+  isEditable: boolean;
+};
 
 // Extended types for API responses with relations
 export type RelationshipWithPerson = Relationship & {

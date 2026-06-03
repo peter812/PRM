@@ -15,6 +15,8 @@ export function getPageTitle(location: string): string {
   if (location === "/ai-desc-demo") return "AI desc demo";
   if (location === "/ai-chat-demo") return "AI Chat - Demo";
   if (location.startsWith("/image/")) return "Image";
+  if (location === "/daily-notes") return "Daily Notes";
+  if (location.startsWith("/daily-notes/")) return "Daily Note";
   if (location.startsWith("/settings")) return "Settings";
   return "";
 }

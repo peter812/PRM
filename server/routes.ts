@@ -6286,6 +6286,92 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Daily notes endpoints
+  app.get("/api/daily-notes", async (req, res) => {
+    try {
+      const notes = await storage.listDailyNotes();
+      res.json(notes);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/daily-notes/by-date/:date", async (req, res) => {
+    try {
+      const note = await storage.getDailyNoteByDate(req.params.date);
+      if (!note) return res.status(404).json({ error: "Not found" });
+      res.json(note);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/daily-notes/:id", async (req, res) => {
+    try {
+      const note = await storage.getDailyNoteById(req.params.id);
+      if (!note) return res.status(404).json({ error: "Not found" });
+      res.json(note);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/daily-notes", async (req, res) => {
+    try {
+      const schema = z.object({
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        userTitle: z.string().default(""),
+        body: z.string().default(""),
+        events: z.array(z.object({ text: z.string(), position: z.number().int() })).default([]),
+        involvedParties: z.array(z.object({ partyType: z.string(), refId: z.string() })).default([]),
+      });
+      const parsed = schema.parse(req.body);
+      const { events, involvedParties, ...noteData } = parsed;
+      const created = await storage.createDailyNote(noteData);
+      if (events.length > 0) await storage.replaceDailyNoteEvents(created.id, events);
+      if (involvedParties.length > 0) await storage.replaceDailyNoteParties(created.id, involvedParties);
+      const full = await storage.getDailyNoteById(created.id);
+      res.status(201).json(full);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.put("/api/daily-notes/:id", async (req, res) => {
+    try {
+      const existing = await storage.getDailyNoteById(req.params.id);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+      if (!existing.isEditable) return res.status(403).json({ error: "This note is read-only (edit window has passed)" });
+
+      const schema = z.object({
+        userTitle: z.string().optional(),
+        body: z.string().optional(),
+        events: z.array(z.object({ text: z.string(), position: z.number().int() })).optional(),
+        involvedParties: z.array(z.object({ partyType: z.string(), refId: z.string() })).optional(),
+      });
+      const parsed = schema.parse(req.body);
+      const { events, involvedParties, ...noteData } = parsed;
+      if (Object.keys(noteData).length > 0) await storage.updateDailyNote(req.params.id, noteData);
+      if (events !== undefined) await storage.replaceDailyNoteEvents(req.params.id, events);
+      if (involvedParties !== undefined) await storage.replaceDailyNoteParties(req.params.id, involvedParties);
+      const full = await storage.getDailyNoteById(req.params.id);
+      res.json(full);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/daily-notes/:id", async (req, res) => {
+    try {
+      const existing = await storage.getDailyNoteById(req.params.id);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+      await storage.deleteDailyNote(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // --- Upgrade #7: SSE for Real-Time Updates ---
   app.get("/api/v1/events/stream", (req, res) => {
     res.setHeader("Content-Type", "text/event-stream");
