@@ -3,6 +3,7 @@ import Cropper, { Area } from "react-easy-crop";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { Unlock, Lock } from "lucide-react";
 
 interface ImageCropModalProps {
   open: boolean;
@@ -64,11 +65,13 @@ export function ImageCropModal({
   onClose,
   imageSrc,
   onCropComplete,
-  aspectRatio = 1,
+  aspectRatio,
 }: ImageCropModalProps) {
   const [crop, setCrop] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+
+  const isFreeAspect = aspectRatio === undefined;
 
   const onCropChange = useCallback((location: { x: number; y: number }) => {
     setCrop(location);
@@ -94,7 +97,20 @@ export function ImageCropModal({
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-2xl" data-testid="dialog-image-crop">
         <DialogHeader>
-          <DialogTitle>Crop Image</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            Crop Image
+            {isFreeAspect ? (
+              <span className="inline-flex items-center gap-1 text-xs font-normal text-muted-foreground">
+                <Unlock className="h-3 w-3" />
+                Free ratio
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-xs font-normal text-muted-foreground">
+                <Lock className="h-3 w-3" />
+                Fixed ratio
+              </span>
+            )}
+          </DialogTitle>
         </DialogHeader>
         
         <div className="relative h-96 bg-muted rounded-md">
@@ -102,7 +118,7 @@ export function ImageCropModal({
             image={imageSrc}
             crop={crop}
             zoom={zoom}
-            aspect={aspectRatio}
+            {...(isFreeAspect ? {} : { aspect: aspectRatio })}
             onCropChange={onCropChange}
             onCropComplete={onCropAreaChange}
             onZoomChange={setZoom}

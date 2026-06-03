@@ -120,7 +120,6 @@ export function AddNoteDialog({
                     setImageUrl(url);
                     setImageUuid(photoId ?? null);
                   }}
-                  aspectRatio={4 / 3}
                   prmLocation="note:pending"
                 />
               </div>

@@ -15,7 +15,7 @@ interface ImageUploadProps {
 export function ImageUpload({
   currentImageUrl,
   onImageChange,
-  aspectRatio = 1,
+  aspectRatio,
   className = "",
   prmLocation,
 }: ImageUploadProps) {
