@@ -146,6 +146,7 @@ export function AddGroupDialog({ open, onOpenChange }: AddGroupDialogProps) {
                   <ImageUpload
                     currentImageUrl={imageUrl}
                     onImageChange={setImageUrl}
+                    aspectRatio={1}
                   />
                 </div>
               </div>

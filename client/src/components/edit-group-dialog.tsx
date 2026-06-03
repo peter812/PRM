@@ -128,6 +128,7 @@ export function EditGroupDialog({ open, onOpenChange, group }: EditGroupDialogPr
                 <ImageUpload
                   currentImageUrl={imageUrl}
                   onImageChange={setImageUrl}
+                  aspectRatio={1}
                 />
               </div>
             </div>
