@@ -13,7 +13,7 @@ export function getPageTitle(location: string): string {
   if (location === "/prm-face-demo") return "PRM-Face Demo";
   if (location === "/prm-face-save-demo") return "PRM-Face Save Demo";
   if (location === "/ai-desc-demo") return "AI desc demo";
-  if (location === "/ai-chat-demo") return "AI Chat - Demo";
+  if (location === "/ai-chat-demo") return "Chat";
   if (location.startsWith("/image/")) return "Image";
   if (location === "/daily-notes") return "Daily Notes";
   if (location.startsWith("/daily-notes/")) return "Daily Note";

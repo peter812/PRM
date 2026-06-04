@@ -47,6 +47,12 @@ import {
   Paperclip,
   FileText,
   X,
+  Search,
+  AtSign,
+  Book,
+  NotebookPen,
+  MessageSquare,
+  type LucideIcon,
 } from "lucide-react";
 
 type ChatAttachment = {
@@ -55,11 +61,81 @@ type ChatAttachment = {
   content: string;
 };
 
+type ToolCallTrace = {
+  name: string;
+  icon: string;
+  label: string;
+  args: Record<string, unknown>;
+  summary: string;
+  ok: boolean;
+  /** Local-only: true while the call is in flight, false once a result has arrived. */
+  pending?: boolean;
+  /** Stable id assigned by the server stream (only present during live streaming). */
+  id?: string;
+};
+
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   attachments?: ChatAttachment[];
+  toolCalls?: ToolCallTrace[];
 };
+
+// Map from server-side icon keys (see server/ai-tools.ts) to Lucide components.
+const TOOL_ICON_MAP: Record<string, LucideIcon> = {
+  search: Search,
+  user: UserIcon,
+  "user-search": UserIcon,
+  "at-sign": AtSign,
+  "at-sign-search": AtSign,
+  book: Book,
+  notebook: NotebookPen,
+  "message-square": MessageSquare,
+};
+
+/**
+ * Renders a horizontal row of small "icon boxes" — one per tool the AI invoked
+ * during the assistant turn. Spy-glass for searches, person for person_pull,
+ * etc. (mapping is server-driven via the `icon` field).
+ */
+function ToolCallIconRow({ calls, dataTestidPrefix }: { calls: ToolCallTrace[]; dataTestidPrefix: string }) {
+  if (!calls || calls.length === 0) return null;
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-1.5" data-testid={`${dataTestidPrefix}-tool-row`}>
+      {calls.map((c, i) => {
+        const Icon = TOOL_ICON_MAP[c.icon] ?? Search;
+        const tooltip = (() => {
+          const argStr = Object.entries(c.args ?? {})
+            .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+            .join(", ");
+          const head = argStr ? `${c.label}: ${argStr}` : c.label;
+          return c.summary ? `${head} — ${c.summary}` : head;
+        })();
+        const stateClass = c.pending
+          ? "border-border text-muted-foreground"
+          : c.ok
+          ? "border-border text-foreground"
+          : "border-destructive text-destructive";
+        return (
+          <span
+            key={c.id ?? i}
+            title={tooltip}
+            className={cn(
+              "relative inline-flex h-7 w-7 items-center justify-center rounded-md border bg-background",
+              stateClass,
+            )}
+            data-testid={`${dataTestidPrefix}-tool-${i}`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {c.pending && (
+              <Loader2 className="absolute h-7 w-7 animate-spin text-muted-foreground/60" />
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 type ChatSummary = {
   id: string;
@@ -215,6 +291,10 @@ export default function AiChatDemoPage() {
     },
   });
 
+  // Live tool-call traces emitted by the server during the in-progress assistant
+  // turn. Drives the icon-box row above the "Thinking" indicator.
+  const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCallTrace[]>([]);
+
   // Core streaming helper: reads NDJSON from a /stream endpoint, appends tokens to
   // streamingContent state, and on the final sentinel line updates the query cache.
   const runStream = async (chatId: string, url: string, payload: { message: string; attachments: ChatAttachment[] }) => {
@@ -245,14 +325,38 @@ export default function AiChatDemoPage() {
         buf = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.trim()) continue;
-          let parsed: { message?: { content?: string }; done?: boolean; chat?: ChatDetail; error?: string };
+          let parsed: any;
           try { parsed = JSON.parse(line); } catch { continue; }
           if (parsed.error) throw new Error(parsed.error);
+          if (parsed.event === "tool_call") {
+            setStreamingToolCalls((prev) => [
+              ...prev,
+              {
+                id: parsed.id,
+                name: parsed.name ?? "",
+                icon: parsed.icon ?? "search",
+                label: parsed.label ?? parsed.name ?? "Tool",
+                args: parsed.args ?? {},
+                summary: "",
+                ok: true,
+                pending: true,
+              },
+            ]);
+            continue;
+          }
+          if (parsed.event === "tool_result") {
+            setStreamingToolCalls((prev) =>
+              prev.map((t) =>
+                t.id === parsed.id ? { ...t, pending: false, ok: !!parsed.ok, summary: parsed.summary ?? "" } : t,
+              ),
+            );
+            continue;
+          }
           if (parsed.done && parsed.chat) {
             queryClient.setQueryData(["/api/ai-chats", chatId], parsed.chat);
             queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
           } else if (parsed.message?.content) {
-            setStreamingContent((prev) => prev + parsed.message!.content!);
+            setStreamingContent((prev) => prev + parsed.message.content);
           }
         }
       }
@@ -264,6 +368,7 @@ export default function AiChatDemoPage() {
   const streamSend = async (payload: { message: string; attachments: ChatAttachment[] }) => {
     setIsStreaming(true);
     setStreamingContent("");
+    setStreamingToolCalls([]);
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       let chatId = activeChatId;
@@ -279,6 +384,7 @@ export default function AiChatDemoPage() {
     } finally {
       setIsStreaming(false);
       setStreamingContent("");
+      setStreamingToolCalls([]);
       setStreamingUserMessage(null);
     }
   };
@@ -308,6 +414,7 @@ export default function AiChatDemoPage() {
 
     setIsStreaming(true);
     setStreamingContent("");
+    setStreamingToolCalls([]);
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       await runStream(activeChatId, `/api/ai-chats/${activeChatId}/regenerate/stream`, payload);
@@ -319,6 +426,7 @@ export default function AiChatDemoPage() {
     } finally {
       setIsStreaming(false);
       setStreamingContent("");
+      setStreamingToolCalls([]);
       setStreamingUserMessage(null);
     }
   };
@@ -594,7 +702,12 @@ export default function AiChatDemoPage() {
                     )}
                   >
                     {m.role === "assistant" ? (
-                      <MarkdownMessage content={m.content} />
+                      <>
+                        {m.toolCalls && m.toolCalls.length > 0 && (
+                          <ToolCallIconRow calls={m.toolCalls} dataTestidPrefix={`message-${i}`} />
+                        )}
+                        <MarkdownMessage content={m.content} />
+                      </>
                     ) : (
                       <>
                         {m.content && (
@@ -644,6 +757,9 @@ export default function AiChatDemoPage() {
                   <Bot className="h-4 w-4" />
                 </div>
                 <div className="rounded-lg bg-muted px-4 py-2 max-w-[80%]">
+                  {streamingToolCalls.length > 0 && (
+                    <ToolCallIconRow calls={streamingToolCalls} dataTestidPrefix="streaming" />
+                  )}
                   {streamingContent ? (
                     <MarkdownMessage content={displayedContent} />
                   ) : (

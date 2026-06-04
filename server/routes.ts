@@ -2,7 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "./ai-tools";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
@@ -5761,15 +5762,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   function sanitizeChatMessages(input: unknown): AiChatMessage[] {
     if (!Array.isArray(input)) return [];
     return input
-      .filter((m): m is { role: string; content: string; attachments?: unknown } =>
+      .filter((m): m is { role: string; content: string; attachments?: unknown; toolCalls?: unknown } =>
         !!m && typeof m === "object" && typeof (m as any).content === "string" &&
         ((m as any).role === "user" || (m as any).role === "assistant"))
       .map((m) => {
         const out: AiChatMessage = { role: m.role as "user" | "assistant", content: m.content };
         const atts = sanitizeAttachments((m as any).attachments);
         if (atts.length) out.attachments = atts;
+        const calls = sanitizeToolCalls((m as any).toolCalls);
+        if (calls.length) out.toolCalls = calls;
         return out;
       });
+  }
+
+  function sanitizeToolCalls(input: unknown): AiToolCallTrace[] {
+    if (!Array.isArray(input)) return [];
+    return input
+      .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+      .slice(0, 50)
+      .map((c) => ({
+        name: typeof c.name === "string" ? c.name.slice(0, 100) : "",
+        icon: typeof c.icon === "string" ? c.icon.slice(0, 50) : "search",
+        label: typeof c.label === "string" ? c.label.slice(0, 100) : "",
+        args: (c.args && typeof c.args === "object" && !Array.isArray(c.args))
+          ? (c.args as Record<string, unknown>)
+          : {},
+        summary: typeof c.summary === "string" ? c.summary.slice(0, 300) : "",
+        ok: typeof c.ok === "boolean" ? c.ok : true,
+      }))
+      .filter((c) => c.name);
   }
 
   function sanitizeAttachments(input: unknown): { name: string; type: string; content: string }[] {
@@ -5798,6 +5819,236 @@ export async function registerRoutes(app: Express): Promise<Server> {
       parts.push(`\n--- Attached file: ${a.name} (${a.type}) ---\n${a.content}\n--- End of ${a.name} ---`);
     }
     return parts.join("\n");
+  }
+
+  // ── AI Tools (skills the chat LLM can invoke) ────────────────────────────
+
+  /** Read the tool settings (master switch + per-tool toggles) from app_settings. */
+  async function readAiToolSettings(): Promise<{ enabled: boolean; perTool: Record<string, boolean> }> {
+    const enabledRaw = await getOllamaSetting("ai_tools_enabled");
+    const enabled = enabledRaw === null || enabledRaw === undefined ? true : enabledRaw === "true";
+    const perToolRaw = await getOllamaSetting("ai_tools_per_tool");
+    let perTool: Record<string, boolean> = {};
+    if (perToolRaw) {
+      try {
+        const parsed = JSON.parse(perToolRaw);
+        if (parsed && typeof parsed === "object") {
+          for (const k of Object.keys(parsed)) {
+            perTool[k] = parsed[k] !== false;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    // Default any unspecified tool to enabled.
+    for (const t of AI_TOOLS) {
+      if (!(t.name in perTool)) perTool[t.name] = true;
+    }
+    return { enabled, perTool };
+  }
+
+  /** Compute the set of tool names that should be exposed for a given chat call. */
+  async function activeToolNames(): Promise<Set<string>> {
+    const { enabled, perTool } = await readAiToolSettings();
+    if (!enabled) return new Set();
+    return new Set(AI_TOOLS.filter((t) => perTool[t.name]).map((t) => t.name));
+  }
+
+  app.get("/api/ai-tools", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    res.json({ tools: listAiToolMetadata() });
+  });
+
+  app.get("/api/ai-tools/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const settings = await readAiToolSettings();
+      res.json(settings);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/ai-tools/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      if (typeof req.body.enabled === "boolean") {
+        await setOllamaSetting("ai_tools_enabled", String(req.body.enabled));
+      }
+      if (req.body.perTool && typeof req.body.perTool === "object") {
+        const current = (await readAiToolSettings()).perTool;
+        const patch = req.body.perTool as Record<string, unknown>;
+        const next: Record<string, boolean> = { ...current };
+        for (const k of Object.keys(patch)) {
+          if (typeof patch[k] === "boolean") next[k] = patch[k] as boolean;
+        }
+        await setOllamaSetting("ai_tools_per_tool", JSON.stringify(next));
+      }
+      const settings = await readAiToolSettings();
+      res.json(settings);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  type StreamingToolLoopParams = {
+    res: import("express").Response;
+    ctx: { base: string; headers: Record<string, string> };
+    model: string;
+    /** Initial messages array (system + history + new user). */
+    initialMessages: { role: string; content: string; tool_call_id?: string; name?: string }[];
+    userId: number;
+  };
+
+  /**
+   * Drives the multi-step tool-calling chat with Ollama, streaming each chunk
+   * back to the client over the open SSE connection. Returns the final
+   * assistant content + tool-call trace once the model produces a normal
+   * answer (or the iteration cap is hit).
+   */
+  async function runStreamingChatWithTools(p: StreamingToolLoopParams): Promise<{
+    assistantContent: string;
+    toolCalls: AiToolCallTrace[];
+  }> {
+    const { res, ctx, model, userId } = p;
+    const messages = [...p.initialMessages];
+    const toolNames = await activeToolNames();
+    const tools = toolNames.size > 0 ? buildOllamaToolsArray(toolNames) : undefined;
+    const toolTrace: AiToolCallTrace[] = [];
+
+    const writeLine = (obj: unknown) => {
+      res.write(JSON.stringify(obj) + "\n");
+      (res as any).flush?.();
+    };
+
+    const MAX_ITERATIONS = 5;
+    // Per-iteration timeout (5 minutes total budget for the whole loop).
+    const overallController = new AbortController();
+    const overallTimeout = setTimeout(() => overallController.abort(), 300000);
+
+    try {
+      for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+        // Per-iteration controller chained to the overall budget.
+        const iterController = new AbortController();
+        const onAbort = () => iterController.abort();
+        overallController.signal.addEventListener("abort", onAbort);
+
+        let ollamaResp: Response;
+        try {
+          ollamaResp = await fetch(`${ctx.base}/api/chat`, {
+            method: "POST",
+            headers: { ...ctx.headers, "Content-Type": "application/json" },
+            body: JSON.stringify({ model, messages, stream: true, ...(tools ? { tools } : {}) }),
+            signal: iterController.signal,
+          });
+        } catch (err: any) {
+          overallController.signal.removeEventListener("abort", onAbort);
+          writeLine({ error: `Failed to reach Ollama: ${err.message}` });
+          return { assistantContent: "", toolCalls: toolTrace };
+        }
+        if (!ollamaResp.ok) {
+          overallController.signal.removeEventListener("abort", onAbort);
+          const text = await ollamaResp.text();
+          writeLine({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` });
+          return { assistantContent: "", toolCalls: toolTrace };
+        }
+
+        const decoder = new TextDecoder();
+        const reader = ollamaResp.body!.getReader();
+        let lineBuffer = "";
+        let assistantContentThisIter = "";
+        let pendingToolCalls: any[] = [];
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            lineBuffer += decoder.decode(value, { stream: true });
+            const lines = lineBuffer.split("\n");
+            lineBuffer = lines.pop() ?? "";
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              let parsed: any;
+              try { parsed = JSON.parse(line); } catch { continue; }
+              if (parsed?.error) {
+                writeLine({ error: parsed.error });
+                continue;
+              }
+              const msgPart = parsed?.message ?? {};
+              if (Array.isArray(msgPart.tool_calls) && msgPart.tool_calls.length > 0) {
+                // Buffer tool calls — do NOT forward content chunks to the client
+                // for this iteration; they're internal model reasoning.
+                pendingToolCalls.push(...msgPart.tool_calls);
+              } else if (typeof msgPart.content === "string" && msgPart.content.length > 0) {
+                // Forward only when there are no pending tool calls in this
+                // iteration. If the model later produces tool_calls in this
+                // same iteration, the partial text is dropped (Ollama doesn't
+                // mix them in practice).
+                assistantContentThisIter += msgPart.content;
+                writeLine(parsed);
+              }
+            }
+          }
+        } finally {
+          reader.releaseLock();
+          overallController.signal.removeEventListener("abort", onAbort);
+        }
+
+        if (pendingToolCalls.length === 0) {
+          // Model produced its final answer — return.
+          return { assistantContent: assistantContentThisIter, toolCalls: toolTrace };
+        }
+
+        // Persist the assistant tool-call turn into the message list so
+        // subsequent Ollama calls include it.
+        messages.push({
+          role: "assistant",
+          content: assistantContentThisIter,
+          // @ts-expect-error - extra fields are fine; Ollama accepts them.
+          tool_calls: pendingToolCalls,
+        });
+
+        // Execute each tool call, emit visualization events, and append the
+        // resulting tool messages.
+        for (const tc of pendingToolCalls) {
+          const fn = tc?.function ?? {};
+          const name = typeof fn.name === "string" ? fn.name : "";
+          let rawArgs = fn.arguments;
+          if (typeof rawArgs === "string") {
+            try { rawArgs = JSON.parse(rawArgs); } catch { rawArgs = {}; }
+          }
+          const args = (rawArgs && typeof rawArgs === "object") ? rawArgs as Record<string, unknown> : {};
+          const id = `tc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+          const def = getAiToolByName(name);
+          if (!def || !toolNames.has(name)) {
+            writeLine({ event: "tool_call", id, name, args, icon: "search", label: name });
+            const summary = `Tool "${name}" is not available`;
+            writeLine({ event: "tool_result", id, ok: false, summary });
+            toolTrace.push({ name, icon: "search", label: name, args, summary, ok: false });
+            messages.push({ role: "tool", name, content: JSON.stringify({ error: summary }) });
+            continue;
+          }
+          writeLine({ event: "tool_call", id, name: def.name, label: def.label, icon: def.icon, args });
+          try {
+            const result = await def.handler(args, { userId });
+            writeLine({ event: "tool_result", id, ok: true, summary: result.summary });
+            toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary: result.summary, ok: true });
+            messages.push({ role: "tool", name: def.name, content: JSON.stringify(result.data) });
+          } catch (err: any) {
+            const summary = `Error: ${err?.message ?? "tool failed"}`;
+            writeLine({ event: "tool_result", id, ok: false, summary });
+            toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
+            messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: summary }) });
+          }
+        }
+        // Loop continues; next /api/chat call will see the tool messages.
+      }
+
+      // Iteration cap hit — emit a synthetic final answer.
+      const fallback = "I reached the tool-call limit before producing a final answer. Please refine your question.";
+      writeLine({ message: { role: "assistant", content: fallback } });
+      return { assistantContent: fallback, toolCalls: toolTrace };
+    } finally {
+      clearTimeout(overallTimeout);
+    }
   }
 
   // List all chats for the current user (most recently updated first)
@@ -6094,62 +6345,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders();
 
-      const writeChunk = (line: string) => {
-        res.write(line + "\n");
-        (res as any).flush?.();
-      };
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 120000);
-
-      let ollamaResp: Response;
-      try {
-        ollamaResp = await fetch(`${ctx.base}/api/chat`, {
-          method: "POST",
-          headers: { ...ctx.headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages: ollamaMessages, stream: true }),
-          signal: controller.signal,
-        });
-      } catch (err: any) {
-        clearTimeout(timeout);
-        res.end(JSON.stringify({ error: `Failed to reach Ollama: ${err.message}` }) + "\n");
-        return;
-      }
-
-      if (!ollamaResp.ok) {
-        clearTimeout(timeout);
-        const text = await ollamaResp.text();
-        res.end(JSON.stringify({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` }) + "\n");
-        return;
-      }
-
-      let assistantContent = "";
-      let lineBuffer = "";
-      const decoder = new TextDecoder();
-      const reader = ollamaResp.body!.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          lineBuffer += chunk;
-          const lines = lineBuffer.split("\n");
-          lineBuffer = lines.pop() ?? "";
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            writeChunk(line);
-            try {
-              const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean; error?: string };
-              if (parsed.message?.content) assistantContent += parsed.message.content;
-            } catch { /* ignore malformed JSON */ }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      clearTimeout(timeout);
+      const { assistantContent, toolCalls } = await runStreamingChatWithTools({
+        res,
+        ctx,
+        model,
+        initialMessages: ollamaMessages,
+        userId: req.user!.id,
+      });
 
       const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+      if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
       const updatedMessages = [...history, userMessage, assistantMessage];
       const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
       if (!chat.title || chat.title === "New chat") {
@@ -6213,62 +6418,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders();
 
-      const writeChunk = (line: string) => {
-        res.write(line + "\n");
-        (res as any).flush?.();
-      };
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 120000);
-
-      let ollamaResp: Response;
-      try {
-        ollamaResp = await fetch(`${ctx.base}/api/chat`, {
-          method: "POST",
-          headers: { ...ctx.headers, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages: ollamaMessages, stream: true }),
-          signal: controller.signal,
-        });
-      } catch (err: any) {
-        clearTimeout(timeout);
-        res.end(JSON.stringify({ error: `Failed to reach Ollama: ${err.message}` }) + "\n");
-        return;
-      }
-
-      if (!ollamaResp.ok) {
-        clearTimeout(timeout);
-        const text = await ollamaResp.text();
-        res.end(JSON.stringify({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` }) + "\n");
-        return;
-      }
-
-      let assistantContent = "";
-      let lineBuffer = "";
-      const decoder = new TextDecoder();
-      const reader = ollamaResp.body!.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          lineBuffer += chunk;
-          const lines = lineBuffer.split("\n");
-          lineBuffer = lines.pop() ?? "";
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            writeChunk(line);
-            try {
-              const parsed = JSON.parse(line) as { message?: { content?: string }; done?: boolean; error?: string };
-              if (parsed.message?.content) assistantContent += parsed.message.content;
-            } catch { /* ignore malformed JSON */ }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      clearTimeout(timeout);
+      const { assistantContent, toolCalls } = await runStreamingChatWithTools({
+        res,
+        ctx,
+        model,
+        initialMessages: ollamaMessages,
+        userId: req.user!.id,
+      });
 
       const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+      if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
       const updatedMessages = [...trimmed, userMessage, assistantMessage];
       const [updated] = await db.update(aiChats)
         .set({ messages: updatedMessages, updatedAt: new Date() })

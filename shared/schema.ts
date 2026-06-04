@@ -688,10 +688,32 @@ export type AiChatAttachment = {
   /** Raw text content of the attachment. Files are read as text on the client. */
   content: string;
 };
+/**
+ * Trace of a tool/skill invocation made by the LLM while answering an assistant
+ * turn. Stored on the assistant message so that the icon-box visualization shown
+ * in the chat UI survives reload, branch, and regenerate.
+ */
+export type AiToolCallTrace = {
+  /** Stable tool name from the server registry (e.g. "person_search"). */
+  name: string;
+  /** Icon key from the registry — client maps this to a Lucide icon. */
+  icon: string;
+  /** Human-readable label for tooltip in the UI. */
+  label: string;
+  /** Raw JSON args the model passed to the tool (already validated). */
+  args: Record<string, unknown>;
+  /** Short one-line summary of the tool result (e.g. "Found 3 people"). */
+  summary: string;
+  /** Whether the tool ran successfully. */
+  ok: boolean;
+};
+
 export type AiChatMessage = {
   role: "user" | "assistant";
   content: string;
   attachments?: AiChatAttachment[];
+  /** Present on assistant messages that involved tool calls. */
+  toolCalls?: AiToolCallTrace[];
 };
 export type AiChat = typeof aiChats.$inferSelect;
 export type InsertAiChat = z.infer<typeof insertAiChatSchema>;
