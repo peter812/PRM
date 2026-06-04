@@ -73,6 +73,8 @@ const settingsMenuItems: MenuItem[] = [
     icon: Settings,
     subItems: [
       { title: "Social Graph", url: "/social-graph", icon: Network },
+      { title: "Chrome Extension", url: "/chrome-extension", icon: Chrome },
+      { title: "API Settings", url: "/api-settings", icon: Key },
     ],
   },
   {
@@ -92,7 +94,6 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Storage", url: "/image-storage", icon: HardDrive },
       { title: "Image Table", url: "/image-storage/table", icon: Table2 },
-      { title: "Image Tasks", url: "/image-storage/tasks", icon: ListTodo },
     ],
   },
   {
@@ -101,27 +102,16 @@ const settingsMenuItems: MenuItem[] = [
     icon: BrainCircuit,
     subItems: [
       { title: "Tools", url: "/intelligence/tools", icon: Wrench },
+      { title: "Vector Storage", url: "/vector", icon: Database },
     ],
-  },
-  {
-    title: "Vector Storage",
-    url: "/vector",
-    icon: Database,
-  },
-  {
-    title: "Instagram Settings",
-    url: "/instagram",
-    icon: Camera,
   },
   {
     title: "Tasks",
     url: "/tasks",
     icon: ListTodo,
-  },
-  {
-    title: "Image Tasks",
-    url: "/image-tasks",
-    icon: ImageIcon,
+    subItems: [
+      { title: "Image Tasks", url: "/image-storage/tasks", icon: ImageIcon },
+    ],
   },
   {
     title: "Import & Export",
@@ -132,6 +122,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Social Media", url: "/import-export/social-media", icon: Share2 },
       { title: "Application Data", url: "/import-export/application", icon: Database },
       { title: "Image Pass In", url: "/import-export/image-pass-in", icon: ImageIcon },
+      { title: "Instagram Settings", url: "/instagram", icon: Camera },
     ],
   },
   {
@@ -142,16 +133,6 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Images", url: "/recognition/images", icon: ImageIcon },
       { title: "Faces", url: "/recognition/faces", icon: ScanFace },
     ],
-  },
-  {
-    title: "API Settings",
-    url: "/api-settings",
-    icon: Key,
-  },
-  {
-    title: "Chrome Extension",
-    url: "/chrome-extension",
-    icon: Chrome,
   },
   {
     title: "API Documentation",
@@ -169,11 +150,28 @@ function SettingsSidebar() {
   const [location] = useLocation();
 
   const isDataTypesActive = location.startsWith("/data-types");
-  const isImportExportActive = location.startsWith("/import-export");
+  const isImportExportActive = location.startsWith("/import-export") || location === "/instagram";
   const isRecognitionActive = location.startsWith("/recognition");
-  const isAppOptionsActive = location.startsWith("/app") || location.startsWith("/social-graph");
-  const isImageStorageActive = location.startsWith("/image-storage");
-  const isIntelligenceActive = location.startsWith("/intelligence");
+  const isAppOptionsActive =
+    location.startsWith("/app") ||
+    location.startsWith("/social-graph") ||
+    location === "/chrome-extension" ||
+    location === "/api-settings";
+  const isImageStorageActive = location.startsWith("/image-storage") && location !== "/image-storage/tasks";
+  const isIntelligenceActive = location.startsWith("/intelligence") || location === "/vector";
+  const isTasksActive = location.startsWith("/tasks") || location === "/image-tasks" || location === "/image-storage/tasks";
+
+  function getIsActive(item: MenuItem): boolean {
+    switch (item.url) {
+      case "/data-types": return isDataTypesActive;
+      case "/recognition": return isRecognitionActive;
+      case "/app": return isAppOptionsActive;
+      case "/image-storage": return isImageStorageActive;
+      case "/intelligence": return isIntelligenceActive;
+      case "/tasks": return isTasksActive;
+      default: return isImportExportActive;
+    }
+  }
 
   return (
     <Sidebar>
@@ -184,7 +182,7 @@ function SettingsSidebar() {
             <SidebarMenu>
               {settingsMenuItems.map((item) => {
                 if (item.subItems) {
-                  const isActive = item.url === "/data-types" ? isDataTypesActive : item.url === "/recognition" ? isRecognitionActive : item.url === "/app" ? isAppOptionsActive : item.url === "/image-storage" ? isImageStorageActive : item.url === "/intelligence" ? isIntelligenceActive : isImportExportActive;
+                  const isActive = getIsActive(item);
                   return (
                     <Collapsible
                       key={item.title}
