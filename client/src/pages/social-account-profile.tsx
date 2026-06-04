@@ -1,6 +1,6 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,7 @@ export default function SocialAccountProfile() {
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
   const [isAddPostOpen, setIsAddPostOpen] = useState(false);
   const [isEditPostOpen, setIsEditPostOpen] = useState(false);
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [isPostDetailOpen, setIsPostDetailOpen] = useState(false);
   const [selectedPost, setSelectedPost] = useState<SocialAccountPost | null>(null);
   const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
@@ -666,9 +667,19 @@ export default function SocialAccountProfile() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Followers Column */}
               <Card className="p-4">
-                <h3 className="text-lg font-semibold mb-4" data-testid="text-followers-header">
-                  Followers ({account.latestState?.followerCount || 0})
-                </h3>
+                <div className="flex items-center justify-between gap-2 mb-4">
+                  <h3 className="text-lg font-semibold" data-testid="text-followers-header">
+                    Followers ({account.latestState?.followerCount || 0})
+                  </h3>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsCompareOpen(true)}
+                    data-testid="button-compare-followers-following"
+                  >
+                    <GitCompare className="h-4 w-4" />
+                  </Button>
+                </div>
                 {followers.length > 0 ? (
                   <div className="space-y-2">
                     {followers.map((followerAccount) => (
@@ -1180,6 +1191,103 @@ export default function SocialAccountProfile() {
                 </span>
               </div>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Differences Modal */}
+      <Dialog open={isCompareOpen} onOpenChange={setIsCompareOpen}>
+        <DialogContent className="max-w-lg" data-testid="dialog-compare-followers-following">
+          <DialogHeader>
+            <DialogTitle>Differences</DialogTitle>
+            <DialogDescription>
+              Accounts that only follow you or only that you follow.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5 pt-1 max-h-[60vh] overflow-y-auto pr-1">
+            {(() => {
+              const followingIds = new Set(followingList.map((a) => a.id));
+              const followerIds = new Set(followers.map((a) => a.id));
+              const followersOnly = followers.filter((a) => !followingIds.has(a.id));
+              const followingOnly = followingList.filter((a) => !followerIds.has(a.id));
+              return (
+                <>
+                  <div>
+                    <p className="text-sm font-semibold mb-2" data-testid="text-followers-only-heading">
+                      Followers only ({followersOnly.length})
+                    </p>
+                    <p className="text-xs text-muted-foreground mb-3">They follow you, but you don't follow them back.</p>
+                    {followersOnly.length > 0 ? (
+                      <div className="space-y-1">
+                        {followersOnly.map((a) => (
+                          <div
+                            key={a.id}
+                            className="flex items-center gap-3 p-2 rounded-md hover-elevate"
+                            data-testid={`card-followers-only-${a.id}`}
+                          >
+                            <Avatar className="w-8 h-8">
+                              {a.currentProfile?.imageUrl && (
+                                <AvatarImage src={a.currentProfile.imageUrl} alt={a.username} />
+                              )}
+                              <AvatarFallback className="text-xs">
+                                {getInitials(a.username)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <Link
+                              href={`/social-accounts/${a.id}`}
+                              className="text-sm font-medium hover:underline"
+                              onClick={() => setIsCompareOpen(false)}
+                              data-testid={`link-followers-only-${a.id}`}
+                            >
+                              {a.username}
+                            </Link>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground italic">None</p>
+                    )}
+                  </div>
+
+                  <div className="border-t pt-5">
+                    <p className="text-sm font-semibold mb-2" data-testid="text-following-only-heading">
+                      Following only ({followingOnly.length})
+                    </p>
+                    <p className="text-xs text-muted-foreground mb-3">You follow them, but they don't follow you back.</p>
+                    {followingOnly.length > 0 ? (
+                      <div className="space-y-1">
+                        {followingOnly.map((a) => (
+                          <div
+                            key={a.id}
+                            className="flex items-center gap-3 p-2 rounded-md hover-elevate"
+                            data-testid={`card-following-only-${a.id}`}
+                          >
+                            <Avatar className="w-8 h-8">
+                              {a.currentProfile?.imageUrl && (
+                                <AvatarImage src={a.currentProfile.imageUrl} alt={a.username} />
+                              )}
+                              <AvatarFallback className="text-xs">
+                                {getInitials(a.username)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <Link
+                              href={`/social-accounts/${a.id}`}
+                              className="text-sm font-medium hover:underline"
+                              onClick={() => setIsCompareOpen(false)}
+                              data-testid={`link-following-only-${a.id}`}
+                            >
+                              {a.username}
+                            </Link>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground italic">None</p>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </DialogContent>
       </Dialog>
