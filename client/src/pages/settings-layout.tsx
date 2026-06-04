@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, ImagePlus } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -47,6 +47,7 @@ import IntelligenceSettingsPage from "@/pages/intelligence-settings";
 import IntelligenceToolsSettingsPage from "@/pages/intelligence-tools-settings";
 import IntelligenceImagesSettingsPage from "@/pages/intelligence-images-settings";
 import VectorSettingsPage from "@/pages/vector-settings";
+import ImmichSettingsPage from "@/pages/immich-settings";
 import TaskDetailPage from "@/pages/task-detail";
 import NotFound from "@/pages/not-found";
 
@@ -76,6 +77,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Social Graph", url: "/social-graph", icon: Network },
       { title: "Chrome Extension", url: "/chrome-extension", icon: Chrome },
       { title: "API Settings", url: "/api-settings", icon: Key },
+      { title: "Immich Connection", url: "/immich", icon: ImagePlus },
     ],
   },
   {
@@ -158,7 +160,8 @@ function SettingsSidebar() {
     location.startsWith("/app") ||
     location.startsWith("/social-graph") ||
     location === "/chrome-extension" ||
-    location === "/api-settings";
+    location === "/api-settings" ||
+    location === "/immich";
   const isImageStorageActive = location.startsWith("/image-storage") && location !== "/image-storage/tasks";
   const isIntelligenceActive = location.startsWith("/intelligence") || location === "/vector";
   const isTasksActive = location.startsWith("/tasks") || location === "/image-tasks" || location === "/image-storage/tasks";
@@ -289,6 +292,7 @@ export default function SettingsLayout() {
               <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
               <Route path="/import-export" component={ImportExportHome} />
               <Route path="/api-settings" component={ApiSettingsPage} />
+              <Route path="/immich" component={ImmichSettingsPage} />
               <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
               <Route path="/api" component={ApiDocs} />
               <Route path="/delete" component={DeleteOptionsPage} />
