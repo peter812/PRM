@@ -35,6 +35,7 @@ import AiChatDemo from "@/pages/ai-chat-demo";
 import ImageDetailPage from "@/pages/image-detail";
 import DailyNotesList from "@/pages/daily-notes";
 import DailyNoteDetail from "@/pages/daily-note-detail";
+import ImmichDemo from "@/pages/immich-demo";
 import NotFound from "@/pages/not-found";
 
 const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
@@ -116,6 +117,7 @@ function Router() {
       <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
       <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
       <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
+      <ProtectedRoute path="/immich-demo" component={ImmichDemo} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
       <Route component={NotFound} />
     </Switch>

@@ -5790,6 +5790,227 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Immich photo storage backend ──────────────────────────────────────────
+  // Settings are stored in the app_settings key-value table, reusing the
+  // getOllamaSetting/setOllamaSetting helpers above (the helpers are generic).
+
+  function normalizeImmichBaseUrl(url: string): string {
+    return url.trim().replace(/\/+$/, "");
+  }
+
+  async function getImmichConfig(): Promise<{ enabled: boolean; url: string; apiKey: string }> {
+    const enabled = (await getOllamaSetting("immich_enabled")) === "true";
+    const url = normalizeImmichBaseUrl((await getOllamaSetting("immich_url")) ?? "");
+    const apiKey = (await getOllamaSetting("immich_api_key")) ?? "";
+    return { enabled, url, apiKey };
+  }
+
+  async function pingImmich(url: string, apiKey: string): Promise<{ ok: boolean; message: string }> {
+    if (!url) return { ok: false, message: "No Immich URL configured." };
+    if (!apiKey) return { ok: false, message: "No Immich API key configured." };
+    const base = normalizeImmichBaseUrl(url);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      // /api/users/me requires a valid x-api-key, so this is a good
+      // combined auth + connectivity check.
+      const resp = await fetch(`${base}/api/users/me`, {
+        headers: { "x-api-key": apiKey, Accept: "application/json" },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (resp.ok) {
+        const data = (await resp.json().catch(() => ({}))) as { email?: string; name?: string };
+        const who = data.email || data.name || "user";
+        return { ok: true, message: `Connected to Immich as ${who}.` };
+      }
+      const detail = (await resp.text().catch(() => "")).trim().slice(0, 200);
+      return { ok: false, message: `Immich returned ${resp.status}${detail ? ` — ${detail}` : ""}` };
+    } catch (err: any) {
+      clearTimeout(timeout);
+      if (err?.name === "AbortError") return { ok: false, message: "Request timed out after 8 seconds." };
+      return { ok: false, message: `Failed to reach Immich: ${err?.message ?? err}` };
+    }
+  }
+
+  app.get("/api/immich/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const enabled = (await getOllamaSetting("immich_enabled")) ?? "false";
+      const url = (await getOllamaSetting("immich_url")) ?? "";
+      const hasApiKey = !!(await getOllamaSetting("immich_api_key"));
+      res.json({ enabled: enabled === "true", url, hasApiKey });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch Immich settings" });
+    }
+  });
+
+  app.post("/api/immich/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const { enabled, url, apiKey } = req.body ?? {};
+    try {
+      if (typeof enabled === "boolean") await setOllamaSetting("immich_enabled", String(enabled));
+      if (typeof url === "string") await setOllamaSetting("immich_url", normalizeImmichBaseUrl(url));
+      if (typeof apiKey === "string" && apiKey.length > 0) await setOllamaSetting("immich_api_key", apiKey);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to save Immich settings" });
+    }
+  });
+
+  // Save (if values provided) and run a connectivity test against Immich.
+  app.post("/api/immich/test", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const reqUrl = typeof req.body?.url === "string" ? req.body.url : null;
+      const reqKey = typeof req.body?.apiKey === "string" && req.body.apiKey.length > 0 ? req.body.apiKey : null;
+      const url = reqUrl !== null ? normalizeImmichBaseUrl(reqUrl) : normalizeImmichBaseUrl((await getOllamaSetting("immich_url")) ?? "");
+      const apiKey = reqKey ?? ((await getOllamaSetting("immich_api_key")) ?? "");
+      const result = await pingImmich(url, apiKey);
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ ok: false, message: error?.message ?? "Test failed" });
+    }
+  });
+
+  // Returns the URL + API key the client needs to call Immich directly for
+  // image retrieval. Only returned to authenticated users when Immich is
+  // enabled and configured.
+  app.get("/api/immich/client-config", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const { enabled, url, apiKey } = await getImmichConfig();
+      if (!enabled || !url || !apiKey) {
+        return res.json({ enabled: false, url: "", apiKey: "" });
+      }
+      res.json({ enabled: true, url, apiKey });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch Immich client config" });
+    }
+  });
+
+  // List recent IMAGE assets via Immich search. Proxies through middleware so
+  // the API key is not required to list, but the actual image bytes are
+  // fetched directly from Immich by the client (see /api/immich/client-config).
+  app.get("/api/immich/assets", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const { enabled, url, apiKey } = await getImmichConfig();
+      if (!enabled) return res.status(400).json({ error: "Immich demo is not enabled" });
+      if (!url || !apiKey) return res.status(400).json({ error: "Immich is not configured" });
+      const size = Math.min(Number(req.query.size) || 100, 500);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      try {
+        const resp = await fetch(`${url}/api/search/metadata`, {
+          method: "POST",
+          headers: { "x-api-key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ type: "IMAGE", size, page: 1, order: "desc" }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          return res.status(502).json({ error: `Immich returned ${resp.status}: ${text.slice(0, 200)}` });
+        }
+        const data = (await resp.json()) as any;
+        const items: any[] = data?.assets?.items ?? data?.items ?? [];
+        const assets = items.map((a) => ({
+          id: a.id,
+          originalFileName: a.originalFileName ?? null,
+          fileCreatedAt: a.fileCreatedAt ?? null,
+          type: a.type ?? null,
+        }));
+        res.json({ assets });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        if (err?.name === "AbortError") return res.status(504).json({ error: "Request timed out" });
+        res.status(502).json({ error: `Failed to reach Immich: ${err?.message ?? err}` });
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message ?? "Failed to list Immich assets" });
+    }
+  });
+
+  // Photo upload goes through the middleware: the file is forwarded to Immich
+  // and a row is registered in the photos table so the asset is tracked.
+  app.post("/api/immich/upload", upload.single("image"), async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      if (!req.file) return res.status(400).json({ error: "No image file provided" });
+      const { enabled, url, apiKey } = await getImmichConfig();
+      if (!enabled) return res.status(400).json({ error: "Immich demo is not enabled" });
+      if (!url || !apiKey) return res.status(400).json({ error: "Immich is not configured" });
+
+      const now = new Date();
+      const fileCreatedAt = now.toISOString();
+      const fileModifiedAt = now.toISOString();
+      const deviceAssetId = `prm-${crypto.randomUUID()}`;
+      const deviceId = "PRM";
+
+      const form = new FormData();
+      // Node 18+ provides global Blob/FormData; multer gives us a Buffer.
+      const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "application/octet-stream" });
+      form.append("assetData", blob, req.file.originalname || "upload.jpg");
+      form.append("deviceAssetId", deviceAssetId);
+      form.append("deviceId", deviceId);
+      form.append("fileCreatedAt", fileCreatedAt);
+      form.append("fileModifiedAt", fileModifiedAt);
+      form.append("isFavorite", "false");
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+      let immichResp: Response;
+      try {
+        immichResp = await fetch(`${url}/api/assets`, {
+          method: "POST",
+          headers: { "x-api-key": apiKey, Accept: "application/json" },
+          body: form as any,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (!immichResp.ok) {
+        const text = await immichResp.text().catch(() => "");
+        return res.status(502).json({ error: `Immich upload failed (${immichResp.status}): ${text.slice(0, 300)}` });
+      }
+      const result = (await immichResp.json()) as { id?: string; status?: string; duplicate?: boolean };
+      const assetId = result.id;
+      if (!assetId) {
+        return res.status(502).json({ error: "Immich did not return an asset id" });
+      }
+
+      // Register in photos table so this image is tracked alongside others.
+      // We store the Immich asset URL as the location so it can be resolved
+      // back later, and use a prmLocation namespace of "immich_demo:<assetId>".
+      const location = `${url}/api/assets/${assetId}/original`;
+      const prmLocation = `immich_demo:${assetId}`;
+      let photoId: string | undefined;
+      try {
+        const existing = await storage.getPhotoByLocation(location);
+        if (existing) {
+          photoId = existing.id;
+        } else {
+          const photo = await storage.insertPhoto({ location, prmLocation, isSubImage: false });
+          photoId = photo.id;
+        }
+      } catch (photoErr) {
+        console.error("Warning: failed to register Immich photo in photos table:", photoErr);
+      }
+
+      res.json({
+        assetId,
+        status: result.status ?? "ok",
+        duplicate: !!result.duplicate,
+        photoId,
+      });
+    } catch (error: any) {
+      console.error("Immich upload error:", error);
+      res.status(500).json({ error: error?.message ?? "Failed to upload to Immich" });
+    }
+  });
+
   // ── AI Chat (Ollama text chat) ────────────────────────────────────────────
 
   const DEFAULT_CHAT_MODEL = "llama3";

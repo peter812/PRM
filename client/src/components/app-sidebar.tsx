@@ -14,9 +14,11 @@ import {
   Sparkles,
   MessagesSquare,
   BookOpen,
+  ImagePlus,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Sidebar,
   SidebarContent,
@@ -106,6 +108,22 @@ export function AppSidebar() {
   const { user, logoutMutation } = useAuth();
   const [theme, setTheme] = useState<"light" | "dark">("light");
 
+  const { data: immichSettings } = useQuery<{ enabled: boolean }>({
+    queryKey: ["/api/immich/settings"],
+    enabled: !!user,
+  });
+
+  const visibleMenuItems = immichSettings?.enabled
+    ? [
+        ...menuItems,
+        {
+          title: "Immich Demo",
+          url: "/immich-demo",
+          icon: ImagePlus,
+        },
+      ]
+    : menuItems;
+
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") as "light" | "dark" | null;
     const initialTheme = savedTheme || "light";
@@ -135,7 +153,7 @@ export function AppSidebar() {
           <SidebarGroupLabel>PRM 2.0</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => (
+              {visibleMenuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton
                     asChild
