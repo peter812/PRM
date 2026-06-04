@@ -190,8 +190,8 @@ export default function SocialGraphSettingsPage() {
         <h1 className="text-2xl font-semibold" data-testid="text-social-graph-settings-title">Social Graph Settings</h1>
         <p className="text-muted-foreground">
           Configure the default behaviour of the social account graph. These options are applied
-          when the graph is opened with no URL parameters &mdash; URL params (e.g. <code>?view=...</code>,
-          <code> ?selected=...</code>) override these defaults.
+          when the graph is opened with no URL parameters &mdash; URL params (e.g. <code>?view=...</code>,{' '}
+          <code>?selected=...</code>) override these defaults.
         </p>
       </div>
 
