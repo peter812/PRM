@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { db } from "./db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
@@ -34,6 +34,16 @@ import path from "path";
 import Papa from "papaparse";
 import { sendApiError, ErrorCodes } from "./middleware/error-handler";
 import { sseManager } from "./middleware/sse";
+import {
+  loadVectorConfig,
+  setVectorSetting,
+  getVectorSetting,
+  testVectorConnection,
+  upsertDailyNoteVector,
+  deleteDailyNoteVector,
+  syncDailyNoteInBackground,
+  searchDailyNotes,
+} from "./vector";
 
 const scryptAsync = promisify(scrypt);
 
@@ -6331,6 +6341,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (events.length > 0) await storage.replaceDailyNoteEvents(created.id, events);
       if (involvedParties.length > 0) await storage.replaceDailyNoteParties(created.id, involvedParties);
       const full = await storage.getDailyNoteById(created.id);
+      syncDailyNoteInBackground(created.id);
       res.status(201).json(full);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -6355,6 +6366,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (events !== undefined) await storage.replaceDailyNoteEvents(req.params.id, events);
       if (involvedParties !== undefined) await storage.replaceDailyNoteParties(req.params.id, involvedParties);
       const full = await storage.getDailyNoteById(req.params.id);
+      syncDailyNoteInBackground(req.params.id);
       res.json(full);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -6366,8 +6378,191 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const existing = await storage.getDailyNoteById(req.params.id);
       if (!existing) return res.status(404).json({ error: "Not found" });
       if (!existing.isEditable) return res.status(403).json({ error: "This note is read-only (edit window has passed)" });
+      const vectorIdToDelete = existing.vectorId ?? null;
       await storage.deleteDailyNote(req.params.id);
+      if (vectorIdToDelete) {
+        void deleteDailyNoteVector(req.params.id, vectorIdToDelete);
+      }
       res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ── Vector storage (Qdrant) ──────────────────────────────────────────────
+
+  app.get("/api/vector/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const cfg = await loadVectorConfig();
+      res.json({
+        enabled: cfg.enabled,
+        qdrantUrl: cfg.qdrantUrl,
+        hasApiKey: !!cfg.qdrantApiKey,
+        collectionName: cfg.collectionName,
+        embeddingModel: cfg.embeddingModel,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/vector/settings", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const { enabled, qdrantUrl, qdrantApiKey, collectionName, embeddingModel } = req.body ?? {};
+    try {
+      if (typeof enabled === "boolean") await setVectorSetting("vector_enabled", String(enabled));
+      if (typeof qdrantUrl === "string") await setVectorSetting("vector_qdrant_url", qdrantUrl.trim());
+      if (typeof qdrantApiKey === "string" && qdrantApiKey.length > 0) {
+        await setVectorSetting("vector_qdrant_api_key", qdrantApiKey);
+      }
+      if (typeof collectionName === "string" && collectionName.trim().length > 0) {
+        await setVectorSetting("vector_collection", collectionName.trim());
+      }
+      if (typeof embeddingModel === "string") await setVectorSetting("vector_embedding_model", embeddingModel);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/vector/test", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const result = await testVectorConnection();
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ ok: false, message: error.message });
+    }
+  });
+
+  // List candidate embedding models from the configured Ollama instance.
+  app.get("/api/vector/embedding-models", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+      if (!apiUrl.trim()) return res.json({ models: [] });
+      const base = apiUrl.replace(/\/+$/, "");
+      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+      const headers: Record<string, string> = {};
+      if (authRequired) {
+        const username = (await getOllamaSetting("ollama_username")) ?? "";
+        const password = (await getOllamaSetting("ollama_password")) ?? "";
+        headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+      }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      try {
+        const resp = await fetch(`${base}/api/tags`, { headers, signal: controller.signal });
+        clearTimeout(timeout);
+        if (!resp.ok) return res.json({ models: [] });
+        const data = (await resp.json()) as { models?: { name: string; details?: { parameter_size?: string } }[] };
+        const models = (data.models ?? []).map(m => ({
+          name: m.name,
+          parameterSize: m.details?.parameter_size ?? null,
+        }));
+        res.json({ models });
+      } catch {
+        clearTimeout(timeout);
+        res.json({ models: [] });
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Stats panel for the vector settings page.
+  app.get("/api/vector/stats", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const rows = await db
+        .select({
+          total: sql<number>`COUNT(*)::int`,
+          vectorized: sql<number>`COUNT(*) FILTER (WHERE vector_id IS NOT NULL)::int`,
+          lastSyncedAt: sql<Date | null>`MAX(vector_synced_at)`,
+        })
+        .from(dailyNotes);
+      const r = rows[0] ?? { total: 0, vectorized: 0, lastSyncedAt: null };
+      res.json({
+        totalNotes: r.total ?? 0,
+        vectorized: r.vectorized ?? 0,
+        missing: Math.max(0, (r.total ?? 0) - (r.vectorized ?? 0)),
+        lastSyncedAt: r.lastSyncedAt,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Manually vectorize a single daily note.
+  app.post("/api/daily-notes/:id/vectorize", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const note = await storage.getDailyNoteById(req.params.id);
+      if (!note) return res.status(404).json({ error: "Not found" });
+      const pointId = await upsertDailyNoteVector(note);
+      res.json({ ok: true, vectorId: pointId });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Backfill: vectorize every daily note that is missing a vector or whose
+  // vector is stale (vector_synced_at is null).
+  app.post("/api/daily-notes/vectorize-all", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const cfg = await loadVectorConfig();
+      if (!cfg.enabled) return res.status(400).json({ error: "Vector storage is disabled." });
+      const rows = await db
+        .select({ id: dailyNotes.id })
+        .from(dailyNotes)
+        .where(sql`vector_synced_at IS NULL`);
+      let processed = 0;
+      let failed = 0;
+      const errors: string[] = [];
+      for (const r of rows) {
+        try {
+          const full = await storage.getDailyNoteById(r.id);
+          if (!full) continue;
+          await upsertDailyNoteVector(full);
+          processed++;
+        } catch (e: any) {
+          failed++;
+          if (errors.length < 5) errors.push(e?.message ?? String(e));
+        }
+      }
+      res.json({ ok: true, processed, failed, total: rows.length, errors });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete("/api/daily-notes/:id/vector", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const note = await storage.getDailyNoteById(req.params.id);
+      if (!note) return res.status(404).json({ error: "Not found" });
+      await deleteDailyNoteVector(note.id, note.vectorId ?? null);
+      await db
+        .update(dailyNotes)
+        .set({ vectorId: null, vectorSyncedAt: null })
+        .where(eq(dailyNotes.id, note.id));
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Optional: semantic search endpoint over daily notes (no UI yet).
+  app.get("/api/vector/search", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const q = (req.query.q as string | undefined)?.trim();
+    const limit = Math.min(50, Math.max(1, parseInt((req.query.limit as string) ?? "10", 10) || 10));
+    if (!q) return res.status(400).json({ error: "Missing query parameter 'q'." });
+    try {
+      const hits = await searchDailyNotes(q, limit);
+      res.json({ hits });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

@@ -390,6 +390,10 @@ async function validateAndSyncSchema(): Promise<void> {
       interactions: {
         image_uuid: "VARCHAR",
       },
+      daily_notes: {
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
+      },
     };
 
     // Check and add missing columns
@@ -482,6 +486,41 @@ async function validateAndSyncSchema(): Promise<void> {
     } else {
       // Ensure newer columns exist on pre-existing installations
       await addColumnIfNotExists("ai_chats", "model", "TEXT NOT NULL DEFAULT ''");
+    }
+
+    // Ensure daily_notes tables exist
+    const dailyNotesExists = await tableExists("daily_notes");
+    if (!dailyNotesExists) {
+      log("Creating daily_notes tables...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS daily_notes (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          date TEXT NOT NULL,
+          user_title TEXT NOT NULL DEFAULT '',
+          body TEXT NOT NULL DEFAULT '',
+          vector_id TEXT,
+          vector_synced_at TIMESTAMP,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS daily_note_events (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          daily_note_id VARCHAR NOT NULL REFERENCES daily_notes(id) ON DELETE CASCADE,
+          text TEXT NOT NULL,
+          position INTEGER NOT NULL DEFAULT 0,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS daily_note_involved_parties (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          daily_note_id VARCHAR NOT NULL REFERENCES daily_notes(id) ON DELETE CASCADE,
+          party_type TEXT NOT NULL,
+          ref_id VARCHAR NOT NULL
+        )
+      `);
+      log("daily_notes tables created successfully");
     }
 
     // Migrate social_accounts to historical model (v2)
