@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -44,6 +44,7 @@ import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
 import IntelligenceSettingsPage from "@/pages/intelligence-settings";
+import IntelligenceToolsSettingsPage from "@/pages/intelligence-tools-settings";
 import VectorSettingsPage from "@/pages/vector-settings";
 import TaskDetailPage from "@/pages/task-detail";
 import NotFound from "@/pages/not-found";
@@ -98,6 +99,9 @@ const settingsMenuItems: MenuItem[] = [
     title: "Intelligence",
     url: "/intelligence",
     icon: BrainCircuit,
+    subItems: [
+      { title: "Tools", url: "/intelligence/tools", icon: Wrench },
+    ],
   },
   {
     title: "Vector Storage",
@@ -169,6 +173,7 @@ function SettingsSidebar() {
   const isRecognitionActive = location.startsWith("/recognition");
   const isAppOptionsActive = location.startsWith("/app") || location.startsWith("/social-graph");
   const isImageStorageActive = location.startsWith("/image-storage");
+  const isIntelligenceActive = location.startsWith("/intelligence");
 
   return (
     <Sidebar>
@@ -179,7 +184,7 @@ function SettingsSidebar() {
             <SidebarMenu>
               {settingsMenuItems.map((item) => {
                 if (item.subItems) {
-                  const isActive = item.url === "/data-types" ? isDataTypesActive : item.url === "/recognition" ? isRecognitionActive : item.url === "/app" ? isAppOptionsActive : item.url === "/image-storage" ? isImageStorageActive : isImportExportActive;
+                  const isActive = item.url === "/data-types" ? isDataTypesActive : item.url === "/recognition" ? isRecognitionActive : item.url === "/app" ? isAppOptionsActive : item.url === "/image-storage" ? isImageStorageActive : item.url === "/intelligence" ? isIntelligenceActive : isImportExportActive;
                   return (
                     <Collapsible
                       key={item.title}
@@ -267,6 +272,7 @@ export default function SettingsLayout() {
               <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
               <Route path="/image-storage/table" component={ImageTablePage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
+              <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
               <Route path="/intelligence" component={IntelligenceSettingsPage} />
               <Route path="/vector" component={VectorSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />

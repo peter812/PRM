@@ -95,7 +95,7 @@ const menuItems = [
     icon: Sparkles,
   },
   {
-    title: "AI Chat - Demo",
+    title: "Chat",
     url: "/ai-chat-demo",
     icon: MessagesSquare,
   },
