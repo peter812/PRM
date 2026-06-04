@@ -27,10 +27,10 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
-import { Plus, Trash2, Eye, Edit2, ChevronDown, X, Lock } from "lucide-react";
+import { Plus, Trash2, Eye, Edit2, ChevronDown, X, Lock, Sparkles, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
 
 interface EventRow {
   id: string;
@@ -50,8 +50,12 @@ interface DailyNoteModalProps {
   defaultDate?: string;
 }
 
-function formatFullTitle(date: string, userTitle: string): string {
-  return `{${date}${userTitle ? `-[${userTitle}]` : ""}}`;
+function formatModalTitleDate(date: string): string {
+  try {
+    return format(parseISO(date), "MMMM d, yyyy");
+  } catch {
+    return date;
+  }
 }
 
 function generateId() {
@@ -133,6 +137,27 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate }: DailyN
     },
   });
 
+  const generateEventsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/daily-notes/generate-events", { body });
+      return res.json() as Promise<{ events: { text: string }[] }>;
+    },
+    onSuccess: (data) => {
+      const generated = (data.events || [])
+        .map(e => ({ id: generateId(), text: (e?.text ?? "").trim() }))
+        .filter(e => e.text);
+      if (generated.length === 0) {
+        toast({ title: "No events found", description: "The AI did not extract any events from this body." });
+        return;
+      }
+      setEvents(prev => [...prev, ...generated]);
+      toast({ title: "Events generated", description: `Added ${generated.length} event${generated.length === 1 ? "" : "s"}.` });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Failed to generate events", variant: "destructive" });
+    },
+  });
+
   const addEvent = () => {
     setEvents(prev => [...prev, { id: generateId(), text: "" }]);
     setTimeout(() => lastEventRef.current?.focus(), 50);
@@ -197,31 +222,24 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate }: DailyN
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center gap-2" data-testid="text-daily-note-modal-title">
             {isReadOnly && <Lock className="h-4 w-4 text-muted-foreground" />}
-            {isReadOnly ? "Daily Note (Read-only)" : isEditing ? "Edit Daily Note" : "New Daily Note"}
+            {`${formatModalTitleDate(date)} - Daily Note`}
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-5">
           {/* Title */}
           <div className="space-y-1.5">
-            <Label>Title</Label>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground shrink-0 font-mono">{`{${date}${userTitle ? "-[" : ""}`}</span>
-              <Input
-                value={userTitle}
-                onChange={e => setUserTitle(e.target.value)}
-                placeholder="your title"
-                disabled={isReadOnly}
-                className="font-mono"
-                data-testid="input-daily-note-title"
-              />
-              {userTitle && <span className="text-sm text-muted-foreground shrink-0 font-mono">{"]}"}
-              </span>}
-              {!userTitle && <span className="text-sm text-muted-foreground shrink-0 font-mono">{"}"}</span>}
-            </div>
-            <p className="text-xs text-muted-foreground font-mono">{formatFullTitle(date, userTitle)}</p>
+            <Label htmlFor="daily-note-title">Title</Label>
+            <Input
+              id="daily-note-title"
+              value={userTitle}
+              onChange={e => setUserTitle(e.target.value)}
+              placeholder="Optional title for this day"
+              disabled={isReadOnly}
+              data-testid="input-daily-note-title"
+            />
           </div>
 
           {/* Body */}
@@ -266,16 +284,33 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate }: DailyN
             <div className="flex items-center justify-between">
               <Label>Events</Label>
               {!isReadOnly && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={addEvent}
-                  data-testid="button-add-event"
-                >
-                  <Plus className="h-3 w-3 mr-1" />
-                  Add event
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => generateEventsMutation.mutate()}
+                    disabled={!body.trim() || generateEventsMutation.isPending}
+                    data-testid="button-ai-generate-events"
+                  >
+                    {generateEventsMutation.isPending ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3 w-3 mr-1" />
+                    )}
+                    {generateEventsMutation.isPending ? "Generating…" : "AI generate"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={addEvent}
+                    data-testid="button-add-event"
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Add event
+                  </Button>
+                </div>
               )}
             </div>
             {events.length === 0 && (

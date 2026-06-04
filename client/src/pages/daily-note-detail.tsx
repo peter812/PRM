@@ -23,10 +23,6 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 
-function formatFullTitle(date: string, userTitle: string): string {
-  return `{${date}${userTitle ? `-[${userTitle}]` : ""}}`;
-}
-
 const partyTypeLabel: Record<string, string> = {
   person: "Person",
   group: "Group",
@@ -185,8 +181,8 @@ export default function DailyNoteDetail() {
             )}
             {note.date === today && <Badge>Today</Badge>}
           </div>
-          <h1 className="text-xl font-mono font-semibold break-all" data-testid="text-daily-note-title">
-            {formatFullTitle(note.date, note.userTitle)}
+          <h1 className="text-xl font-semibold break-words" data-testid="text-daily-note-title">
+            {note.userTitle || `${format(parseISO(note.date), "MMMM d, yyyy")} - Daily Note`}
           </h1>
         </div>
 

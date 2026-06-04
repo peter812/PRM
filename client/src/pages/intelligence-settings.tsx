@@ -7,11 +7,12 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, Cpu, MessageSquare, MessagesSquare } from "lucide-react";
+import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, Cpu, MessageSquare, MessagesSquare, ListChecks } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const DEFAULT_PROMPT = "Return 2 sentences explaining what is happening in this image.";
+const DEFAULT_EVENTS_PROMPT = "You extract a list of distinct events from a daily journal entry. An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations. Each event must be a short, standalone past-tense statement (one sentence, ideally under 120 characters). Do not include opinions, plans for the future, or generic reflections. Do not invent events that aren't supported by the text. Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.";
 
 type OllamaSettings = {
   enabled: boolean;
@@ -22,6 +23,8 @@ type OllamaSettings = {
   model: string;
   textModel: string;
   prompt: string;
+  eventsModel: string;
+  eventsPrompt: string;
 };
 
 type TestResult = {
@@ -45,6 +48,8 @@ export default function IntelligenceSettingsPage() {
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedTextModel, setSelectedTextModel] = useState("");
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
+  const [selectedEventsModel, setSelectedEventsModel] = useState("");
+  const [eventsPrompt, setEventsPrompt] = useState(DEFAULT_EVENTS_PROMPT);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data: settings, isLoading } = useQuery<OllamaSettings>({
@@ -66,6 +71,8 @@ export default function IntelligenceSettingsPage() {
     setSelectedModel(settings.model ?? "");
     setSelectedTextModel(settings.textModel ?? "");
     setPrompt(settings.prompt || DEFAULT_PROMPT);
+    setSelectedEventsModel(settings.eventsModel ?? "");
+    setEventsPrompt(settings.eventsPrompt || DEFAULT_EVENTS_PROMPT);
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -113,6 +120,14 @@ export default function IntelligenceSettingsPage() {
 
   const handleSavePrompt = () => {
     saveMutation.mutate({ prompt });
+  };
+
+  const handleSaveEventsModel = () => {
+    saveMutation.mutate({ eventsModel: selectedEventsModel });
+  };
+
+  const handleSaveEventsPrompt = () => {
+    saveMutation.mutate({ eventsPrompt });
   };
 
   const models = modelsData?.models ?? [];
@@ -454,6 +469,126 @@ export default function IntelligenceSettingsPage() {
                 onClick={handleSavePrompt}
                 disabled={!prompt.trim() || saveMutation.isPending}
                 data-testid="button-save-prompt"
+              >
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-ollama-events-model">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <ListChecks className="h-4 w-4" />
+              Daily Note Event Extraction Model
+            </CardTitle>
+            <CardDescription>
+              {urlConfigured
+                ? "Choose which text model to use when generating events from a daily note's markdown body. The model is asked for a structured JSON response."
+                : "Configure and save an API URL above to load available models."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1 space-y-2">
+                <Label htmlFor="ollama-events-model-select">Model</Label>
+                <Select
+                  value={selectedEventsModel}
+                  onValueChange={setSelectedEventsModel}
+                  disabled={!urlConfigured || isLoadingModels}
+                >
+                  <SelectTrigger id="ollama-events-model-select" data-testid="select-ollama-events-model">
+                    <SelectValue placeholder={
+                      !urlConfigured ? "No API URL configured" :
+                      isLoadingModels ? "Loading models…" :
+                      models.length === 0 ? "No models found" :
+                      "Select a model"
+                    } />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {models.map((m) => (
+                      <SelectItem key={m.name} value={m.name} data-testid={`option-events-model-${m.name}`}>
+                        <span className="font-mono text-sm">{m.name}</span>
+                        {m.parameterSize && (
+                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => refetchModels()}
+                disabled={!urlConfigured || isLoadingModels}
+                title="Refresh model list"
+                data-testid="button-refresh-events-models"
+              >
+                {isLoadingModels ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                onClick={handleSaveEventsModel}
+                disabled={!selectedEventsModel || saveMutation.isPending}
+                data-testid="button-save-events-model"
+              >
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+            </div>
+
+            {settings?.eventsModel && (
+              <p className="text-xs text-muted-foreground" data-testid="text-saved-events-model">
+                Currently saved: <span className="font-mono">{settings.eventsModel}</span>
+              </p>
+            )}
+            {!settings?.eventsModel && settings?.textModel && (
+              <p className="text-xs text-muted-foreground">
+                Falls back to the text model (<span className="font-mono">{settings.textModel}</span>) when not set.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-ollama-events-prompt">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <MessageSquare className="h-4 w-4" />
+              Daily Note Event Extraction System Prompt
+            </CardTitle>
+            <CardDescription>
+              The system prompt sent to the model when extracting events from a daily note's markdown body. The model is also constrained at the API level to return JSON in the shape <code className="text-xs bg-muted px-1 rounded">{"{ events: [{ text }] }"}</code>, but the prompt should reinforce this and define what counts as an event.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Textarea
+              value={eventsPrompt}
+              onChange={(e) => setEventsPrompt(e.target.value)}
+              rows={6}
+              className="resize-y font-mono text-xs"
+              data-testid="textarea-ollama-events-prompt"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                  onClick={() => setEventsPrompt(DEFAULT_EVENTS_PROMPT)}
+                  data-testid="button-reset-events-prompt"
+                >
+                  Reset to default
+                </button>
+                <span className="text-xs text-muted-foreground" data-testid="text-events-prompt-char-count">
+                  {eventsPrompt.length} characters
+                </span>
+              </div>
+              <Button
+                onClick={handleSaveEventsPrompt}
+                disabled={!eventsPrompt.trim() || saveMutation.isPending}
+                data-testid="button-save-events-prompt"
               >
                 {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </Button>
