@@ -99,8 +99,10 @@ export async function embedText(text: string, model?: string): Promise<number[]>
 
 function buildClient(cfg: VectorConfig): QdrantClient {
   if (!cfg.qdrantUrl) throw new Error("Qdrant URL is not configured.");
+  // Normalize: strip trailing slashes so the client builds correct API paths.
+  const url = cfg.qdrantUrl.replace(/\/+$/, "");
   return new QdrantClient({
-    url: cfg.qdrantUrl,
+    url,
     apiKey: cfg.qdrantApiKey || undefined,
     checkCompatibility: false,
   });
@@ -228,7 +230,9 @@ export async function testVectorConnection(): Promise<{ ok: boolean; message: st
       message: `Connected to Qdrant. ${collections.collections.length} collection(s).${embedMessage}`,
     };
   } catch (err: any) {
-    return { ok: false, message: `Qdrant connection failed: ${err?.message ?? err}` };
+    const msg = `Qdrant connection failed: ${err?.message ?? err}`;
+    console.error("[vector] testVectorConnection error:", msg, err?.cause ?? "");
+    return { ok: false, message: msg };
   }
 }
 
