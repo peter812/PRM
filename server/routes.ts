@@ -6419,7 +6419,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof collectionName === "string" && collectionName.trim().length > 0) {
         await setVectorSetting("vector_collection", collectionName.trim());
       }
-      if (typeof embeddingModel === "string") await setVectorSetting("vector_embedding_model", embeddingModel);
+      if (typeof embeddingModel === "string") {
+        const previous = (await getVectorSetting("vector_embedding_model")) ?? "";
+        await setVectorSetting("vector_embedding_model", embeddingModel);
+        // If the embedding model changed, existing vectors are no longer valid.
+        // Clear vector_synced_at so vectorize-all picks them up; the per-note
+        // vector_id is preserved so re-embeds upsert in place.
+        if (previous && previous !== embeddingModel) {
+          await db.update(dailyNotes).set({ vectorSyncedAt: null });
+        }
+      }
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });

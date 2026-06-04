@@ -3,6 +3,7 @@ import { sql, eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
 import { dailyNotes, type DailyNoteWithDetails } from "@shared/schema";
+import { storage } from "./storage";
 
 // ── Settings helpers (key/value app_settings, mirrors getOllamaSetting) ─────
 
@@ -150,7 +151,10 @@ export async function upsertDailyNoteVector(note: DailyNoteWithDetails): Promise
 
   // Reuse existing vector id if we have one; otherwise mint a fresh UUID.
   // Qdrant point IDs must be either an unsigned integer or a UUID.
-  const pointId = note.vectorId && /^[0-9a-f-]{36}$/i.test(note.vectorId) ? note.vectorId : randomUUID();
+  const pointId =
+    note.vectorId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(note.vectorId)
+      ? note.vectorId
+      : randomUUID();
 
   await client.upsert(cfg.collectionName, {
     wait: true,
@@ -239,8 +243,6 @@ export function syncDailyNoteInBackground(noteId: string): void {
       if (!cfg.enabled || !cfg.qdrantUrl || !cfg.embeddingModel) return;
       const [row] = await db.select().from(dailyNotes).where(eq(dailyNotes.id, noteId));
       if (!row) return;
-      // Pull full details (events, parties) via a fresh query to avoid an import cycle.
-      const { storage } = await import("./storage");
       const full = await storage.getDailyNoteById(noteId);
       if (!full) return;
       await upsertDailyNoteVector(full);
