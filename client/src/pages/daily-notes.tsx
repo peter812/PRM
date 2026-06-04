@@ -23,10 +23,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Trash2 } from "lucide-react";
 
-function formatFullTitle(date: string, userTitle: string): string {
-  return `{${date}${userTitle ? `-[${userTitle}]` : ""}}`;
-}
-
 function getTodayDate(): string {
   return format(new Date(), "yyyy-MM-dd");
 }
@@ -142,9 +138,11 @@ export default function DailyNotesList() {
                         </div>
 
                         {/* Title */}
-                        <p className="text-sm font-mono text-foreground truncate">
-                          {formatFullTitle(note.date, note.userTitle)}
-                        </p>
+                        {note.userTitle && (
+                          <p className="text-sm font-medium text-foreground truncate">
+                            {note.userTitle}
+                          </p>
+                        )}
 
                         {/* Body preview */}
                         {note.body && (

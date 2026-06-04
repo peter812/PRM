@@ -5552,7 +5552,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const model = (await getOllamaSetting("ollama_model")) ?? "";
       const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
       const prompt = (await getOllamaSetting("ollama_prompt")) ?? "";
-      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt });
+      const eventsModel = (await getOllamaSetting("ollama_events_model")) ?? "";
+      const eventsPrompt = (await getOllamaSetting("ollama_events_prompt")) ?? "";
+      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch Ollama settings" });
     }
@@ -5560,7 +5562,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/ollama/settings", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-    const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt } = req.body;
+    const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt } = req.body;
     try {
       if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
       if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
@@ -5570,6 +5572,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof model === "string") await setOllamaSetting("ollama_model", model);
       if (typeof textModel === "string") await setOllamaSetting("ollama_text_model", textModel);
       if (typeof prompt === "string") await setOllamaSetting("ollama_prompt", prompt);
+      if (typeof eventsModel === "string") await setOllamaSetting("ollama_events_model", eventsModel);
+      if (typeof eventsPrompt === "string") await setOllamaSetting("ollama_events_prompt", eventsPrompt);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to save Ollama settings" });
@@ -5721,6 +5725,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const DEFAULT_CHAT_MODEL = "llama3";
   const MAX_CHAT_TITLE_LENGTH = 60;
+  const DEFAULT_EVENTS_SYSTEM_PROMPT = [
+    "You extract a list of distinct events from a daily journal entry.",
+    "An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations.",
+    "Each event must be a short, standalone past-tense statement (one sentence, ideally under 120 characters).",
+    "Do not include opinions, plans for the future, or generic reflections. Do not invent events that aren't supported by the text.",
+    "Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.",
+  ].join(" ");
 
   // Helper: build Ollama request headers (with optional basic auth)
   async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
@@ -6295,6 +6306,92 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: error.message });
     }
   });
+
+  // Use the configured Ollama text model + events prompt to extract a structured
+  // list of events from a daily-note markdown body. Uses Ollama's `format` JSON
+  // schema parameter to constrain the model to a deterministic shape.
+  app.post("/api/daily-notes/generate-events", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const schema = z.object({ body: z.string() });
+      const { body } = schema.parse(req.body);
+      if (!body.trim()) return res.status(400).json({ error: "Body is empty." });
+
+      const ctx = await buildOllamaChatContext();
+      if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
+
+      const eventsModel = ((await getOllamaSetting("ollama_events_model")) ?? "").trim();
+      const fallbackTextModel = ((await getOllamaSetting("ollama_text_model")) ?? "").trim();
+      const fallbackModel = ((await getOllamaSetting("ollama_model")) ?? "").trim();
+      const model = eventsModel || fallbackTextModel || fallbackModel;
+      if (!model) return res.status(400).json({ error: "No Ollama model configured for event extraction." });
+
+      const customPrompt = ((await getOllamaSetting("ollama_events_prompt")) ?? "").trim();
+      const systemPrompt = customPrompt || DEFAULT_EVENTS_SYSTEM_PROMPT;
+
+      // JSON schema constrains the model to return { events: [{ text: string }, ...] }
+      const responseFormat = {
+        type: "object",
+        properties: {
+          events: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { text: { type: "string" } },
+              required: ["text"],
+            },
+          },
+        },
+        required: ["events"],
+      };
+
+      const ollamaMessages = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: body },
+      ];
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000);
+      try {
+        const resp = await fetch(`${ctx.base}/api/chat`, {
+          method: "POST",
+          headers: ctx.headers,
+          body: JSON.stringify({ model, messages: ollamaMessages, stream: false, format: responseFormat }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!resp.ok) {
+          const text = await resp.text();
+          return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
+        }
+        const data = await resp.json() as { message?: { content?: string }; error?: string };
+        if (data.error) return res.status(502).json({ error: data.error });
+        const content = data.message?.content ?? "";
+
+        let parsed: { events?: { text?: unknown }[] } = {};
+        try {
+          parsed = JSON.parse(content);
+        } catch {
+          return res.status(502).json({ error: "Model did not return valid JSON.", raw: content.slice(0, 500) });
+        }
+        const events = Array.isArray(parsed.events)
+          ? parsed.events
+              .map((e) => ({ text: typeof e?.text === "string" ? e.text.trim() : "" }))
+              .filter((e) => e.text.length > 0)
+          : [];
+        res.json({ events });
+      } catch (err: any) {
+        clearTimeout(timeout);
+        if (err.name === "AbortError") {
+          return res.status(504).json({ error: "Request timed out after 120 seconds." });
+        }
+        return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
+      }
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
 
   app.get("/api/daily-notes/by-date/:date", async (req, res) => {
     try {
