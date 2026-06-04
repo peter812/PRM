@@ -99,10 +99,25 @@ export async function embedText(text: string, model?: string): Promise<number[]>
 
 function buildClient(cfg: VectorConfig): QdrantClient {
   if (!cfg.qdrantUrl) throw new Error("Qdrant URL is not configured.");
-  // Normalize: strip trailing slashes so the client builds correct API paths.
-  const url = cfg.qdrantUrl.replace(/\/+$/, "");
+  // Parse the URL so we can pass host/port/https explicitly.
+  // The @qdrant/js-client-rest `url` param defaults to port 6333 regardless
+  // of the scheme, so HTTPS-on-443 URLs silently hit the wrong port.
+  let parsed: URL;
+  try {
+    parsed = new URL(cfg.qdrantUrl);
+  } catch {
+    throw new Error(`Invalid Qdrant URL: "${cfg.qdrantUrl}"`);
+  }
+  const isHttps = parsed.protocol === "https:";
+  const defaultPort = isHttps ? 443 : 6333;
+  const port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
+  // Include any sub-path prefix (e.g. https://host/qdrant → prefix "/qdrant")
+  const prefix = parsed.pathname !== "/" ? parsed.pathname.replace(/\/$/, "") : undefined;
   return new QdrantClient({
-    url,
+    host: parsed.hostname,
+    https: isHttps,
+    port,
+    ...(prefix ? { prefix } : {}),
     apiKey: cfg.qdrantApiKey || undefined,
     checkCompatibility: false,
   });
