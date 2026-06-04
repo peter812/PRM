@@ -264,6 +264,8 @@ export const dailyNotes = pgTable("daily_notes", {
   date: text("date").notNull(), // YYYY-MM-DD format
   userTitle: text("user_title").notNull().default(""),
   body: text("body").notNull().default(""),
+  vectorId: text("vector_id"), // Qdrant point ID (set on first vectorization, reused on edit)
+  vectorSyncedAt: timestamp("vector_synced_at"), // Timestamp of last successful vector sync; null = needs sync
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

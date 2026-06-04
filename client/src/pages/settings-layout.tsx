@@ -44,6 +44,7 @@ import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
 import IntelligenceSettingsPage from "@/pages/intelligence-settings";
+import VectorSettingsPage from "@/pages/vector-settings";
 import TaskDetailPage from "@/pages/task-detail";
 import NotFound from "@/pages/not-found";
 
@@ -97,6 +98,11 @@ const settingsMenuItems: MenuItem[] = [
     title: "Intelligence",
     url: "/intelligence",
     icon: BrainCircuit,
+  },
+  {
+    title: "Vector Storage",
+    url: "/vector",
+    icon: Database,
   },
   {
     title: "Instagram Settings",
@@ -262,6 +268,7 @@ export default function SettingsLayout() {
               <Route path="/image-storage/table" component={ImageTablePage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/intelligence" component={IntelligenceSettingsPage} />
+              <Route path="/vector" component={VectorSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />
               <Route path="/tasks" component={TasksSettingsPage} />
               <Route path="/task/:id" component={TaskDetailPage} />
