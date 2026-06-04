@@ -31,38 +31,91 @@ async function getCroppedImage(imageSrc: string, pixelCrop: Area): Promise<Blob>
 
 function createImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.addEventListener("load", () => resolve(image));
-    image.addEventListener("error", (error) => reject(error));
-    image.setAttribute("crossOrigin", "anonymous");
-    image.src = url;
+    const img = new Image();
+    img.setAttribute("crossOrigin", "anonymous");
+    img.addEventListener("load", () => resolve(img));
+    img.addEventListener("error", reject);
+    img.src = url;
   });
 }
 
-type Handle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw" | "move" | null;
+// ---------------------------------------------------------------------------
+// FreeCropArea — resizable crop box with zoom slider; letterbox-safe
+// ---------------------------------------------------------------------------
 
+type Handle = "nw" | "ne" | "sw" | "se" | "n" | "s" | "e" | "w" | "move";
 interface Rect { x: number; y: number; w: number; h: number; }
 
-function FreeCropArea({
-  imageSrc,
-  onCropComplete,
-  onClose,
-}: {
+function FreeCropArea({ imageSrc, onCropComplete, onClose }: {
   imageSrc: string;
   onCropComplete: (blob: Blob) => void;
   onClose: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  const [imgNaturalSize, setImgNaturalSize] = useState<{ w: number; h: number } | null>(null);
+  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  // rect: normalised to CONTAINER (0–1)
   const [rect, setRect] = useState<Rect>({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
   const dragRef = useRef<{ handle: Handle; startX: number; startY: number; startRect: Rect } | null>(null);
-  const MIN = 0.05;
+  const HANDLE_T = 0.025; // threshold for handle hit-test (normalised)
+  const MIN = 0.02;
 
   const onImgLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
-    setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+    setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
   };
+
+  // Returns {left,top,scaleW,scaleH} — the zoomed rendered image bounds in
+  // container-normalised coords.  scaleW/scaleH are the fraction of the
+  // container the zoomed image occupies (can exceed 1 when zoomed in).
+  const getImgBounds = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || !naturalSize) return null;
+    const { width: cW, height: cH } = container.getBoundingClientRect();
+    if (cW === 0 || cH === 0) return null;
+    const { w: nW, h: nH } = naturalSize;
+    // base scale: fit image inside container
+    const baseScale = Math.min(cW / nW, cH / nH);
+    const dW = nW * baseScale * zoom;  // zoomed rendered width  (px)
+    const dH = nH * baseScale * zoom;  // zoomed rendered height (px)
+    return {
+      left:  (cW / 2 - dW / 2) / cW,
+      top:   (cH / 2 - dH / 2) / cH,
+      right: (cW / 2 + dW / 2) / cW,
+      bot:   (cH / 2 + dH / 2) / cH,
+      scaleW: dW / cW,
+      scaleH: dH / cH,
+      cW, cH, nW, nH,
+    };
+  }, [naturalSize, zoom]);
+
+  // Clamp rect so it stays within the zoomed image bounds
+  const clampRect = useCallback((r: Rect): Rect => {
+    const b = getImgBounds();
+    if (!b) return r;
+    let { x, y, w, h } = r;
+    w = Math.max(MIN, Math.min(b.scaleW, w));
+    h = Math.max(MIN, Math.min(b.scaleH, h));
+    x = Math.max(b.left, Math.min(b.right - w, x));
+    y = Math.max(b.top,  Math.min(b.bot   - h, y));
+    return { x, y, w, h };
+  }, [getImgBounds]);
+
+  // Initialise crop box when image loads or zoom changes
+  useEffect(() => {
+    const b = getImgBounds();
+    if (!b) return;
+    const margin = 0.05;
+    setRect(clampRect({
+      x: b.left + margin * b.scaleW,
+      y: b.top  + margin * b.scaleH,
+      w: b.scaleW * (1 - 2 * margin),
+      h: b.scaleH * (1 - 2 * margin),
+    }));
+  // Only re-init when the image first loads, not on every zoom change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [naturalSize]);
 
   const toNorm = (clientX: number, clientY: number) => {
     const el = containerRef.current;
@@ -71,68 +124,54 @@ function FreeCropArea({
     return { nx: (clientX - left) / width, ny: (clientY - top) / height };
   };
 
-  const getHandle = (clientX: number, clientY: number): Handle => {
+  const hitHandle = (clientX: number, clientY: number): Handle | null => {
     const { nx, ny } = toNorm(clientX, clientY);
     const { x, y, w, h } = rect;
-    const T = 0.03;
-    const inX = nx >= x - T && nx <= x + w + T;
-    const inY = ny >= y - T && ny <= y + h + T;
-    if (!inX || !inY) return null;
-    const onLeft = Math.abs(nx - x) < T;
-    const onRight = Math.abs(nx - (x + w)) < T;
-    const onTop = Math.abs(ny - y) < T;
-    const onBottom = Math.abs(ny - (y + h)) < T;
-    if (onTop && onLeft) return "nw";
-    if (onTop && onRight) return "ne";
-    if (onBottom && onLeft) return "sw";
-    if (onBottom && onRight) return "se";
-    if (onTop) return "n";
-    if (onBottom) return "s";
-    if (onLeft) return "w";
-    if (onRight) return "e";
+    const T = HANDLE_T;
+    const insideX = nx >= x - T && nx <= x + w + T;
+    const insideY = ny >= y - T && ny <= y + h + T;
+    if (!insideX || !insideY) return null;
+    const onL = Math.abs(nx - x)       < T;
+    const onR = Math.abs(nx - (x + w)) < T;
+    const onT = Math.abs(ny - y)       < T;
+    const onB = Math.abs(ny - (y + h)) < T;
+    if (onT && onL) return "nw";
+    if (onT && onR) return "ne";
+    if (onB && onL) return "sw";
+    if (onB && onR) return "se";
+    if (onT) return "n";
+    if (onB) return "s";
+    if (onL) return "w";
+    if (onR) return "e";
     if (nx >= x && nx <= x + w && ny >= y && ny <= y + h) return "move";
     return null;
   };
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
-    const handle = getHandle(e.clientX, e.clientY);
+    const handle = hitHandle(e.clientX, e.clientY);
     if (!handle) return;
     dragRef.current = { handle, startX: e.clientX, startY: e.clientY, startRect: { ...rect } };
   };
 
   const onMouseMove = useCallback((e: MouseEvent) => {
     if (!dragRef.current) return;
-    const el = containerRef.current;
-    if (!el) return;
-    const { width, height } = el.getBoundingClientRect();
+    const container = containerRef.current;
+    if (!container) return;
+    const { width: cW, height: cH } = container.getBoundingClientRect();
     const { handle, startX, startY, startRect } = dragRef.current;
-    const dx = (e.clientX - startX) / width;
-    const dy = (e.clientY - startY) / height;
+    const dx = (e.clientX - startX) / cW;
+    const dy = (e.clientY - startY) / cH;
     let { x, y, w, h } = startRect;
 
-    if (handle === "move") {
-      x = Math.max(0, Math.min(1 - w, x + dx));
-      y = Math.max(0, Math.min(1 - h, y + dy));
-    }
-    if (handle === "e" || handle === "ne" || handle === "se") {
-      w = Math.max(MIN, Math.min(1 - x, w + dx));
-    }
-    if (handle === "w" || handle === "nw" || handle === "sw") {
-      const newX = Math.max(0, Math.min(x + w - MIN, x + dx));
-      w = w + (x - newX);
-      x = newX;
-    }
-    if (handle === "s" || handle === "se" || handle === "sw") {
-      h = Math.max(MIN, Math.min(1 - y, h + dy));
-    }
-    if (handle === "n" || handle === "ne" || handle === "nw") {
-      const newY = Math.max(0, Math.min(y + h - MIN, y + dy));
-      h = h + (y - newY);
-      y = newY;
-    }
-    setRect({ x, y, w, h });
-  }, []);
+    if (handle === "move") { x += dx; y += dy; }
+    if (handle === "e"  || handle === "ne" || handle === "se") { w += dx; }
+    if (handle === "w"  || handle === "nw" || handle === "sw") { const nx = x + dx; w -= (nx - x); x = nx; }
+    if (handle === "s"  || handle === "se" || handle === "sw") { h += dy; }
+    if (handle === "n"  || handle === "ne" || handle === "nw") { const ny = y + dy; h -= (ny - y); y = ny; }
+
+    setRect(clampRect({ x, y, w, h }));
+  }, [clampRect]);
 
   const onMouseUp = useCallback(() => { dragRef.current = null; }, []);
 
@@ -145,28 +184,34 @@ function FreeCropArea({
     };
   }, [onMouseMove, onMouseUp]);
 
-  const getCursor = (e: React.MouseEvent): string => {
-    const h = getHandle(e.clientX, e.clientY);
-    if (!h) return "default";
-    if (h === "move") return "move";
-    if (h === "n" || h === "s") return "ns-resize";
-    if (h === "e" || h === "w") return "ew-resize";
-    if (h === "ne" || h === "sw") return "nesw-resize";
-    if (h === "nw" || h === "se") return "nwse-resize";
-    return "default";
+  const [cursor, setCursor] = useState("default");
+  const handleMouseMove = (e: React.MouseEvent) => {
+    const h = hitHandle(e.clientX, e.clientY);
+    const map: Record<string, string> = {
+      nw: "nwse-resize", se: "nwse-resize",
+      ne: "nesw-resize", sw: "nesw-resize",
+      n: "ns-resize", s: "ns-resize",
+      e: "ew-resize", w: "ew-resize",
+      move: "move",
+    };
+    setCursor(h ? (map[h] ?? "default") : "default");
   };
 
-  const [cursor, setCursor] = useState("default");
-
   const handleSave = async () => {
-    if (!imgNaturalSize) return;
-    const { w: nw, h: nh } = imgNaturalSize;
+    const b = getImgBounds();
+    if (!b) return;
+    // Convert container-normalised rect → image-normalised → natural pixels
+    const imgX = (rect.x - b.left) / b.scaleW;
+    const imgY = (rect.y - b.top)  / b.scaleH;
+    const imgW = rect.w / b.scaleW;
+    const imgH = rect.h / b.scaleH;
     const pixelCrop: Area = {
-      x: Math.round(rect.x * nw),
-      y: Math.round(rect.y * nh),
-      width: Math.round(rect.w * nw),
-      height: Math.round(rect.h * nh),
+      x: Math.max(0, Math.round(imgX * b.nW)),
+      y: Math.max(0, Math.round(imgY * b.nH)),
+      width:  Math.min(b.nW, Math.round(imgW * b.nW)),
+      height: Math.min(b.nH, Math.round(imgH * b.nH)),
     };
+    if (pixelCrop.width < 1 || pixelCrop.height < 1) return;
     try {
       const blob = await getCroppedImage(imageSrc, pixelCrop);
       onCropComplete(blob);
@@ -176,45 +221,66 @@ function FreeCropArea({
     }
   };
 
-  const pct = (v: number) => `${(v * 100).toFixed(2)}%`;
-  const HANDLE_SIZE = 10;
+  const pct = (v: number) => `${(v * 100).toFixed(3)}%`;
+  const HSIZ = 10; // handle size in px
+
   const handles: { id: Handle; style: React.CSSProperties }[] = [
-    { id: "nw", style: { left: pct(rect.x), top: pct(rect.y), cursor: "nwse-resize" } },
-    { id: "ne", style: { left: pct(rect.x + rect.w), top: pct(rect.y), cursor: "nesw-resize" } },
-    { id: "sw", style: { left: pct(rect.x), top: pct(rect.y + rect.h), cursor: "nesw-resize" } },
-    { id: "se", style: { left: pct(rect.x + rect.w), top: pct(rect.y + rect.h), cursor: "nwse-resize" } },
-    { id: "n", style: { left: pct(rect.x + rect.w / 2), top: pct(rect.y), cursor: "ns-resize" } },
-    { id: "s", style: { left: pct(rect.x + rect.w / 2), top: pct(rect.y + rect.h), cursor: "ns-resize" } },
-    { id: "w", style: { left: pct(rect.x), top: pct(rect.y + rect.h / 2), cursor: "ew-resize" } },
-    { id: "e", style: { left: pct(rect.x + rect.w), top: pct(rect.y + rect.h / 2), cursor: "ew-resize" } },
+    { id: "nw", style: { left: pct(rect.x),           top: pct(rect.y),           cursor: "nwse-resize" } },
+    { id: "ne", style: { left: pct(rect.x + rect.w),  top: pct(rect.y),           cursor: "nesw-resize" } },
+    { id: "sw", style: { left: pct(rect.x),           top: pct(rect.y + rect.h),  cursor: "nesw-resize" } },
+    { id: "se", style: { left: pct(rect.x + rect.w),  top: pct(rect.y + rect.h),  cursor: "nwse-resize" } },
+    { id: "n",  style: { left: pct(rect.x + rect.w / 2), top: pct(rect.y),        cursor: "ns-resize"   } },
+    { id: "s",  style: { left: pct(rect.x + rect.w / 2), top: pct(rect.y + rect.h), cursor: "ns-resize" } },
+    { id: "w",  style: { left: pct(rect.x),           top: pct(rect.y + rect.h / 2), cursor: "ew-resize" } },
+    { id: "e",  style: { left: pct(rect.x + rect.w),  top: pct(rect.y + rect.h / 2), cursor: "ew-resize" } },
   ];
 
   return (
     <>
+      {/* Image + crop overlay */}
       <div
         ref={containerRef}
-        className="relative select-none overflow-hidden rounded-md bg-black"
-        style={{ cursor, touchAction: "none" }}
+        className="relative overflow-hidden rounded-md bg-black select-none"
+        style={{ height: 384, cursor }}
         onMouseDown={onMouseDown}
-        onMouseMove={(e) => setCursor(getCursor(e))}
+        onMouseMove={handleMouseMove}
+        data-testid="free-crop-container"
       >
         <img
           ref={imgRef}
           src={imageSrc}
           alt="Crop source"
           onLoad={onImgLoad}
-          className="block w-full max-h-96 object-contain pointer-events-none"
           draggable={false}
+          className="pointer-events-none absolute inset-0 w-full h-full object-contain"
+          style={{ transform: `scale(${zoom})`, transformOrigin: "center" }}
         />
-        {imgNaturalSize && (
+
+        {naturalSize && (
           <>
+            {/* Dark overlay with a "hole" cut out for the crop area */}
             <div
               className="absolute inset-0 pointer-events-none"
               style={{
-                boxShadow: `0 0 0 9999px rgba(0,0,0,0.55)`,
-                clipPath: `polygon(0% 0%, 0% 100%, ${pct(rect.x)} 100%, ${pct(rect.x)} ${pct(rect.y)}, ${pct(rect.x + rect.w)} ${pct(rect.y)}, ${pct(rect.x + rect.w)} ${pct(rect.y + rect.h)}, ${pct(rect.x)} ${pct(rect.y + rect.h)}, ${pct(rect.x)} 100%, 100% 100%, 100% 0%)`,
+                background: `rgba(0,0,0,0)`,
+                boxShadow: "none",
+                clipPath: [
+                  "polygon(",
+                  "0% 0%, 0% 100%, ",
+                  `${pct(rect.x)} 100%, `,
+                  `${pct(rect.x)} ${pct(rect.y)}, `,
+                  `${pct(rect.x + rect.w)} ${pct(rect.y)}, `,
+                  `${pct(rect.x + rect.w)} ${pct(rect.y + rect.h)}, `,
+                  `${pct(rect.x)} ${pct(rect.y + rect.h)}, `,
+                  `${pct(rect.x)} 100%, `,
+                  "100% 100%, 100% 0%",
+                  ")",
+                ].join(""),
+                backgroundColor: "rgba(0,0,0,0.55)",
               }}
             />
+
+            {/* Crop border */}
             <div
               className="absolute pointer-events-none border border-white/80"
               style={{
@@ -224,14 +290,16 @@ function FreeCropArea({
                 height: pct(rect.h),
               }}
             />
+
+            {/* Drag handles */}
             {handles.map(({ id, style }) => (
               <div
                 key={id}
                 className="absolute bg-white border border-gray-400 pointer-events-none"
                 style={{
                   ...style,
-                  width: HANDLE_SIZE,
-                  height: HANDLE_SIZE,
+                  width: HSIZ,
+                  height: HSIZ,
                   transform: "translate(-50%, -50%)",
                   borderRadius: 2,
                 }}
@@ -240,6 +308,20 @@ function FreeCropArea({
           </>
         )}
       </div>
+
+      {/* Zoom slider */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">Zoom</label>
+        <Slider
+          value={[zoom]}
+          onValueChange={(v) => setZoom(v[0])}
+          min={1}
+          max={3}
+          step={0.1}
+          data-testid="slider-zoom"
+        />
+      </div>
+
       <DialogFooter>
         <Button variant="outline" onClick={onClose} data-testid="button-cancel-crop">
           Cancel
@@ -251,6 +333,10 @@ function FreeCropArea({
     </>
   );
 }
+
+// ---------------------------------------------------------------------------
+// ImageCropModal — fixed-ratio uses react-easy-crop; free uses FreeCropArea
+// ---------------------------------------------------------------------------
 
 export function ImageCropModal({
   open,
@@ -265,13 +351,8 @@ export function ImageCropModal({
 
   const isFreeAspect = aspectRatio === undefined;
 
-  const onCropChange = useCallback((location: { x: number; y: number }) => {
-    setCrop(location);
-  }, []);
-
-  const onCropAreaChange = useCallback((_: Area, pixels: Area) => {
-    setCroppedAreaPixels(pixels);
-  }, []);
+  const onCropChange = useCallback((loc: { x: number; y: number }) => setCrop(loc), []);
+  const onCropAreaChange = useCallback((_: Area, pixels: Area) => setCroppedAreaPixels(pixels), []);
 
   const handleSave = async () => {
     if (!croppedAreaPixels) return;
@@ -279,8 +360,8 @@ export function ImageCropModal({
       const blob = await getCroppedImage(imageSrc, croppedAreaPixels);
       onCropComplete(blob);
       onClose();
-    } catch (error) {
-      console.error("Error cropping image:", error);
+    } catch (err) {
+      console.error("Error cropping image:", err);
     }
   };
 
@@ -327,7 +408,7 @@ export function ImageCropModal({
               <label className="text-sm font-medium">Zoom</label>
               <Slider
                 value={[zoom]}
-                onValueChange={(value) => setZoom(value[0])}
+                onValueChange={(v) => setZoom(v[0])}
                 min={1}
                 max={3}
                 step={0.1}
