@@ -144,7 +144,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate }: DailyN
     },
     onSuccess: (data) => {
       const generated = (data.events || [])
-        .map(e => ({ id: generateId(), text: (e?.text ?? "").toString().trim() }))
+        .map(e => ({ id: generateId(), text: (e?.text ?? "").trim() }))
         .filter(e => e.text);
       if (generated.length === 0) {
         toast({ title: "No events found", description: "The AI did not extract any events from this body." });
