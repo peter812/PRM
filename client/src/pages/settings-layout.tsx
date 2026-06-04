@@ -45,6 +45,7 @@ import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
 import IntelligenceSettingsPage from "@/pages/intelligence-settings";
 import IntelligenceToolsSettingsPage from "@/pages/intelligence-tools-settings";
+import IntelligenceImagesSettingsPage from "@/pages/intelligence-images-settings";
 import VectorSettingsPage from "@/pages/vector-settings";
 import TaskDetailPage from "@/pages/task-detail";
 import NotFound from "@/pages/not-found";
@@ -102,6 +103,7 @@ const settingsMenuItems: MenuItem[] = [
     icon: BrainCircuit,
     subItems: [
       { title: "Tools", url: "/intelligence/tools", icon: Wrench },
+      { title: "Images", url: "/intelligence/images", icon: ImageIcon },
       { title: "Vector Storage", url: "/vector", icon: Database },
     ],
   },
@@ -271,6 +273,7 @@ export default function SettingsLayout() {
               <Route path="/image-storage/table" component={ImageTablePage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
+              <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
               <Route path="/intelligence" component={IntelligenceSettingsPage} />
               <Route path="/vector" component={VectorSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />

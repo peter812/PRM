@@ -135,6 +135,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       res.json({ imageUrl, photoId });
+
+      // Fire-and-forget: auto-describe if enabled (never blocks the upload response)
+      const capturedBuffer = req.file?.buffer;
+      const capturedPhotoId = photoId;
+      const capturedPrmLocation = prmLocation;
+      ;(async () => {
+        try {
+          const autoDescribe = (await getOllamaSetting("ollama_auto_describe_images")) === "true";
+          if (!autoDescribe) return;
+          // Skip profile images
+          if (
+            capturedPrmLocation.startsWith("profile_image") ||
+            capturedPrmLocation.startsWith("social_profile_image")
+          ) return;
+          if (!capturedPhotoId || !capturedBuffer) return;
+          const ollamaEnabled = (await getOllamaSetting("ollama_enabled")) === "true";
+          if (!ollamaEnabled) return;
+          const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+          if (!apiUrl.trim()) return;
+          const model = (await getOllamaSetting("ollama_model")) ?? "";
+          if (!model.trim()) return;
+          const base = apiUrl.replace(/\/+$/, "");
+          const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          if (authRequired) {
+            const uname = (await getOllamaSetting("ollama_username")) ?? "";
+            const pwd = (await getOllamaSetting("ollama_password")) ?? "";
+            headers["Authorization"] = "Basic " + Buffer.from(`${uname}:${pwd}`).toString("base64");
+          }
+          const savedPrompt = (await getOllamaSetting("ollama_prompt")) ?? "";
+          const prompt = savedPrompt || "Return 2 sentences explaining what is happening in this image.";
+          const imageBase64 = capturedBuffer.toString("base64");
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 60000);
+          try {
+            const resp = await fetch(`${base}/api/generate`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ model, prompt, images: [imageBase64], stream: false }),
+              signal: controller.signal,
+            });
+            clearTimeout(timeout);
+            if (!resp.ok) return;
+            const data = await resp.json() as { response?: string; error?: string };
+            if (data.error || !data.response) return;
+            await storage.updatePhotoMeta(capturedPhotoId, {
+              imageDescription: data.response,
+              imageDescriptionAt: new Date(),
+            });
+          } catch {
+            clearTimeout(timeout);
+          }
+        } catch (err) {
+          console.error("[auto-describe] error:", err);
+        }
+      })();
     } catch (error) {
       console.error("Error uploading image:", error);
       res.status(500).json({ error: "Failed to upload image" });
@@ -5565,7 +5621,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const prompt = (await getOllamaSetting("ollama_prompt")) ?? "";
       const eventsModel = (await getOllamaSetting("ollama_events_model")) ?? "";
       const eventsPrompt = (await getOllamaSetting("ollama_events_prompt")) ?? "";
-      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt });
+      const autoDescribeImages = (await getOllamaSetting("ollama_auto_describe_images")) ?? "false";
+      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, autoDescribeImages: autoDescribeImages === "true" });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch Ollama settings" });
     }
@@ -5573,7 +5630,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/ollama/settings", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-    const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt } = req.body;
+    const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, autoDescribeImages } = req.body;
     try {
       if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
       if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
@@ -5585,6 +5642,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof prompt === "string") await setOllamaSetting("ollama_prompt", prompt);
       if (typeof eventsModel === "string") await setOllamaSetting("ollama_events_model", eventsModel);
       if (typeof eventsPrompt === "string") await setOllamaSetting("ollama_events_prompt", eventsPrompt);
+      if (typeof autoDescribeImages === "boolean") await setOllamaSetting("ollama_auto_describe_images", String(autoDescribeImages));
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to save Ollama settings" });

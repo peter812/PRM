@@ -7,11 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, Cpu, MessageSquare, MessagesSquare, ListChecks } from "lucide-react";
+import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare } from "lucide-react";
+
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
-const DEFAULT_PROMPT = "Return 2 sentences explaining what is happening in this image.";
 const DEFAULT_EVENTS_PROMPT = "You extract a list of distinct events from a daily journal entry. An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations. Each event must be a short, standalone past-tense statement (one sentence, ideally under 120 characters). Do not include opinions, plans for the future, or generic reflections. Do not invent events that aren't supported by the text. Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.";
 
 type OllamaSettings = {
@@ -45,9 +45,7 @@ export default function IntelligenceSettingsPage() {
   const [authRequired, setAuthRequired] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [selectedModel, setSelectedModel] = useState("");
   const [selectedTextModel, setSelectedTextModel] = useState("");
-  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [selectedEventsModel, setSelectedEventsModel] = useState("");
   const [eventsPrompt, setEventsPrompt] = useState(DEFAULT_EVENTS_PROMPT);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
@@ -68,9 +66,7 @@ export default function IntelligenceSettingsPage() {
     setApiUrl(settings.apiUrl);
     setAuthRequired(settings.authRequired);
     setUsername(settings.username);
-    setSelectedModel(settings.model ?? "");
     setSelectedTextModel(settings.textModel ?? "");
-    setPrompt(settings.prompt || DEFAULT_PROMPT);
     setSelectedEventsModel(settings.eventsModel ?? "");
     setEventsPrompt(settings.eventsPrompt || DEFAULT_EVENTS_PROMPT);
   }, [settings]);
@@ -110,16 +106,8 @@ export default function IntelligenceSettingsPage() {
     saveMutation.mutate(patch);
   };
 
-  const handleSaveModel = () => {
-    saveMutation.mutate({ model: selectedModel });
-  };
-
   const handleSaveTextModel = () => {
     saveMutation.mutate({ textModel: selectedTextModel });
-  };
-
-  const handleSavePrompt = () => {
-    saveMutation.mutate({ prompt });
   };
 
   const handleSaveEventsModel = () => {
@@ -289,78 +277,6 @@ export default function IntelligenceSettingsPage() {
           </CardContent>
         </Card>
 
-        <Card data-testid="card-ollama-models">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Cpu className="h-4 w-4" />
-              Image Description Model
-            </CardTitle>
-            <CardDescription>
-              {urlConfigured
-                ? "Choose which vision model to use for image descriptions. Only models already pulled on your Ollama instance are shown."
-                : "Configure and save an API URL above to load available models."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2 items-end">
-              <div className="flex-1 space-y-2">
-                <Label htmlFor="ollama-model-select">Model</Label>
-                <Select
-                  value={selectedModel}
-                  onValueChange={setSelectedModel}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-model-select" data-testid="select-ollama-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} data-testid={`option-model-${m.name}`}>
-                        <span className="font-mono text-sm">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => refetchModels()}
-                disabled={!urlConfigured || isLoadingModels}
-                title="Refresh model list"
-                data-testid="button-refresh-models"
-              >
-                {isLoadingModels ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-              </Button>
-              <Button
-                onClick={handleSaveModel}
-                disabled={!selectedModel || saveMutation.isPending}
-                data-testid="button-save-model"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-              </Button>
-            </div>
-
-            {settings?.model && (
-              <p className="text-xs text-muted-foreground" data-testid="text-saved-model">
-                Currently saved: <span className="font-mono">{settings.model}</span>
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
         <Card data-testid="card-ollama-text-model">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
@@ -430,49 +346,6 @@ export default function IntelligenceSettingsPage() {
                 Currently saved: <span className="font-mono">{settings.textModel}</span>
               </p>
             )}
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-ollama-prompt">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <MessageSquare className="h-4 w-4" />
-              Image Description Prompt
-            </CardTitle>
-            <CardDescription>
-              The instruction sent to the model along with each image. Edit this to change what kind of description the AI produces.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={3}
-              className="resize-y"
-              data-testid="textarea-ollama-prompt"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
-                  onClick={() => setPrompt(DEFAULT_PROMPT)}
-                  data-testid="button-reset-prompt"
-                >
-                  Reset to default
-                </button>
-                <span className="text-xs text-muted-foreground" data-testid="text-prompt-char-count">
-                  {prompt.length} characters
-                </span>
-              </div>
-              <Button
-                onClick={handleSavePrompt}
-                disabled={!prompt.trim() || saveMutation.isPending}
-                data-testid="button-save-prompt"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-              </Button>
-            </div>
           </CardContent>
         </Card>
 
