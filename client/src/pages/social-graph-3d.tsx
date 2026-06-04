@@ -31,6 +31,11 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import type { SocialAccount, SocialAccountType, SocialAccountWithCurrentProfile, SocialGraphData } from "@shared/schema";
 import PersonGraphView from "./person-graph-view";
+import {
+  EXTRAS_STEPS,
+  MERGE_MULTIPLIER_STEPS,
+  getInitialGraphSettings,
+} from "@/lib/social-graph-defaults";
 
 type ViewMode = 'person' | 'social' | 'hybrid';
 
@@ -247,63 +252,51 @@ function SocialGraphContent({
   const fgRef = useRef<any>(null);
   const materialCacheRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
   const [, navigate] = useLocation();
-  const [hideOrphans, setHideOrphans] = useState(true);
-  const [minConnections, setMinConnections] = useState(3);
-  const [limitExtras, setLimitExtras] = useState(true);
-  const [maxExtras, setMaxExtras] = useState(20);
-  const [colorScheme, setColorScheme] = useState<'type' | 'distance' | 'connections'>('type');
-  const [colorSchemeAccountId, setColorSchemeAccountId] = useState<string | null>(null);
+
+  // Load saved defaults once on first render. URL params (e.g. `?view=...`)
+  // override these — see getInitialGraphSettings().
+  const initialDefaultsRef = useRef(getInitialGraphSettings());
+  const initialDefaults = initialDefaultsRef.current;
+
+  const [hideOrphans, setHideOrphans] = useState(initialDefaults.hideOrphans);
+  const [minConnections, setMinConnections] = useState(initialDefaults.minConnections);
+  const [limitExtras, setLimitExtras] = useState(initialDefaults.limitExtras);
+  const [maxExtras, setMaxExtras] = useState(initialDefaults.maxExtras);
+  const [colorScheme, setColorScheme] = useState<'type' | 'distance' | 'connections'>(initialDefaults.colorScheme);
+  const [colorSchemeAccountId, setColorSchemeAccountId] = useState<string | null>(initialDefaults.colorSchemeAccountId);
   const [distanceSearchOpen, setDistanceSearchOpen] = useState(false);
   const [distanceSearchQuery, setDistanceSearchQuery] = useState('');
-  const [connectionsColorMax, setConnectionsColorMax] = useState('#ef4444');
-  const [connectionsColorMin, setConnectionsColorMin] = useState('#3b0764');
-  const [linkMutualColor, setLinkMutualColor] = useState('#6366f1');
-  const [linkDefaultColor, setLinkDefaultColor] = useState('#6b7280');
-  const [distanceColorSelf, setDistanceColorSelf] = useState('#ef4444');
-  const [distanceColorDirect, setDistanceColorDirect] = useState('#22c55e');
-  const [distanceColor2nd, setDistanceColor2nd] = useState('#3b82f6');
-  const [distanceColorOther, setDistanceColorOther] = useState('#9ca3af');
-  const [singleLinkMutualColor, setSingleLinkMutualColor] = useState('#22c55e');
-  const [singleLinkFollowsYouColor, setSingleLinkFollowsYouColor] = useState('#3b82f6');
-  const [singleLinkYouFollowColor, setSingleLinkYouFollowColor] = useState('#ef4444');
-  const [singleNodeColorScheme, setSingleNodeColorScheme] = useState<'follow-status' | 'type'>('follow-status');
+  const [connectionsColorMax, setConnectionsColorMax] = useState(initialDefaults.connectionsColorMax);
+  const [connectionsColorMin, setConnectionsColorMin] = useState(initialDefaults.connectionsColorMin);
+  const [linkMutualColor, setLinkMutualColor] = useState(initialDefaults.linkMutualColor);
+  const [linkDefaultColor, setLinkDefaultColor] = useState(initialDefaults.linkDefaultColor);
+  const [distanceColorSelf, setDistanceColorSelf] = useState(initialDefaults.distanceColorSelf);
+  const [distanceColorDirect, setDistanceColorDirect] = useState(initialDefaults.distanceColorDirect);
+  const [distanceColor2nd, setDistanceColor2nd] = useState(initialDefaults.distanceColor2nd);
+  const [distanceColorOther, setDistanceColorOther] = useState(initialDefaults.distanceColorOther);
+  const [singleLinkMutualColor, setSingleLinkMutualColor] = useState(initialDefaults.singleLinkMutualColor);
+  const [singleLinkFollowsYouColor, setSingleLinkFollowsYouColor] = useState(initialDefaults.singleLinkFollowsYouColor);
+  const [singleLinkYouFollowColor, setSingleLinkYouFollowColor] = useState(initialDefaults.singleLinkYouFollowColor);
+  const [singleNodeColorScheme, setSingleNodeColorScheme] = useState<'follow-status' | 'type'>(initialDefaults.singleNodeColorScheme);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
-  const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>(() => {
-    try {
-      const saved = localStorage.getItem('socialGraphDefaults');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.defaultMode) return parsed.defaultMode as 'default' | 'blob' | 'single-highlight' | 'multi-highlight';
-      }
-    } catch {}
-    return 'single-highlight';
-  });
-  const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(() => {
-    try {
-      const saved = localStorage.getItem('socialGraphDefaults');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.defaultSingleAccountId) return parsed.defaultSingleAccountId as string;
-      }
-    } catch {}
-    return null;
-  });
+  const [graphMode, setGraphMode] = useState<'default' | 'blob' | 'single-highlight' | 'multi-highlight'>(initialDefaults.defaultMode);
+  const [singleHighlightAccountId, setSingleHighlightAccountId] = useState<string | null>(initialDefaults.defaultSingleAccountId);
   const [singleHighlightSearchOpen, setSingleHighlightSearchOpen] = useState(false);
   const [singleHighlightSearchQuery, setSingleHighlightSearchQuery] = useState('');
-  const [singleShowFriendLinks, setSingleShowFriendLinks] = useState(true);
-  const [singleRemoveExtras, setSingleRemoveExtras] = useState(false);
+  const [singleShowFriendLinks, setSingleShowFriendLinks] = useState(initialDefaults.singleShowFriendLinks);
+  const [singleRemoveExtras, setSingleRemoveExtras] = useState(initialDefaults.singleRemoveExtras);
   const [multiHighlightAccountIds, setMultiHighlightAccountIds] = useState<string[]>([]);
   const [multiHighlightSearchOpen, setMultiHighlightSearchOpen] = useState(false);
   const [multiHighlightSearchQuery, setMultiHighlightSearchQuery] = useState('');
-  const [multiHighlightColor, setMultiHighlightColor] = useState('#ef4444');
-  const [multiFollowsAllColor, setMultiFollowsAllColor] = useState('#ffffff');
-  const [multiFollowsOneColor, setMultiFollowsOneColor] = useState('#eab308');
-  const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(0.5);
-  const [blobForceMultiplier, setBlobForceMultiplier] = useState(2);
+  const [multiHighlightColor, setMultiHighlightColor] = useState(initialDefaults.multiHighlightColor);
+  const [multiFollowsAllColor, setMultiFollowsAllColor] = useState(initialDefaults.multiFollowsAllColor);
+  const [multiFollowsOneColor, setMultiFollowsOneColor] = useState(initialDefaults.multiFollowsOneColor);
+  const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(initialDefaults.blobMergeMultiplier);
+  const [blobForceMultiplier, setBlobForceMultiplier] = useState(initialDefaults.blobForceMultiplier);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
 
-  const extrasSteps = [5, 10, 20, 50, 100];
-  const mergeMultiplierSteps = [0, 0.15, 0.3, 0.5, 0.75, 1];
+  const extrasSteps = EXTRAS_STEPS;
+  const mergeMultiplierSteps = MERGE_MULTIPLIER_STEPS;
 
   const [appliedSettings, setAppliedSettings] = useState({
     hideOrphans,
