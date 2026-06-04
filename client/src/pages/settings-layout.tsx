@@ -189,7 +189,7 @@ function SettingsSidebar() {
                     <Collapsible
                       key={item.title}
                       asChild
-                      defaultOpen={isActive}
+                      open={isActive}
                       className="group/collapsible"
                     >
                       <SidebarMenuItem>

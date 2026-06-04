@@ -497,6 +497,8 @@ export class DatabaseStorage implements IStorage {
           sql`${people.userId} IS NULL AND (
             ${people.firstName} ILIKE ${query} OR
             ${people.lastName} ILIKE ${query} OR
+            CONCAT(${people.firstName}, ' ', ${people.lastName}) ILIKE ${query} OR
+            CONCAT(${people.lastName}, ' ', ${people.firstName}) ILIKE ${query} OR
             ${people.email} ILIKE ${query} OR
             ${people.company} ILIKE ${query} OR
             EXISTS (

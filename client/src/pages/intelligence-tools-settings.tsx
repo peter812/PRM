@@ -3,7 +3,8 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Loader2, Wrench, Search, AtSign, User, Book, NotebookPen, MessageSquare, type LucideIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Loader2, Wrench, Search, AtSign, User, Book, NotebookPen, MessageSquare, RefreshCw, AlertCircle, type LucideIcon } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -36,10 +37,10 @@ export default function IntelligenceToolsSettingsPage() {
   const [enabled, setEnabled] = useState(true);
   const [perTool, setPerTool] = useState<Record<string, boolean>>({});
 
-  const { data: toolsData, isLoading: isLoadingTools } = useQuery<{ tools: ToolMetadata[] }>({
+  const { data: toolsData, isLoading: isLoadingTools, isError: isToolsError, refetch: refetchTools } = useQuery<{ tools: ToolMetadata[] }>({
     queryKey: ["/api/ai-tools"],
   });
-  const { data: settings, isLoading: isLoadingSettings } = useQuery<ToolSettings>({
+  const { data: settings, isLoading: isLoadingSettings, isError: isSettingsError, refetch: refetchSettings } = useQuery<ToolSettings>({
     queryKey: ["/api/ai-tools/settings"],
   });
 
@@ -78,6 +79,23 @@ export default function IntelligenceToolsSettingsPage() {
     return (
       <div className="flex items-center justify-center py-16" data-testid="loading-tool-settings">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isToolsError || isSettingsError) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-center" data-testid="error-tool-settings">
+        <AlertCircle className="h-8 w-8 text-destructive" />
+        <p className="text-sm text-muted-foreground">Failed to load tool settings.</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => { void refetchTools(); void refetchSettings(); }}
+          data-testid="button-retry-tool-settings"
+        >
+          <RefreshCw className="h-4 w-4 mr-2" /> Retry
+        </Button>
       </div>
     );
   }

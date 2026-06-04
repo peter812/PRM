@@ -5735,6 +5735,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ── AI Chat (Ollama text chat) ────────────────────────────────────────────
 
   const DEFAULT_CHAT_MODEL = "llama3";
+  const DEFAULT_PRM_SYSTEM_MESSAGE =
+    "You are an intelligent assistant integrated with a Personal Relationship Manager (PRM). " +
+    "You have access to tools that allow you to read live data from the PRM — including people, " +
+    "social accounts, notes, interactions, and daily notes. When the user asks about a person, " +
+    "their notes, relationships, social accounts, or any stored data, always call the appropriate " +
+    "tool to look up the current information rather than guessing. Use person_search to find " +
+    "someone by name, person_pull to get their full details, and the other available tools as " +
+    "needed. Combine tool results with your own reasoning to give accurate, helpful answers.";
   const MAX_CHAT_TITLE_LENGTH = 60;
   const DEFAULT_EVENTS_SYSTEM_PROMPT = [
     "You extract a list of distinct events from a daily journal entry.",
@@ -6173,7 +6181,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Build the messages payload for Ollama, including the system message if present.
       const ollamaMessages: { role: string; content: string }[] = [];
       const systemMessage = chat.systemMessage?.trim();
-      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
       for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
       ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
 
@@ -6261,7 +6269,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const ollamaMessages: { role: string; content: string }[] = [];
       const systemMessage = chat.systemMessage?.trim();
-      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
       for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
       ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
 
@@ -6333,7 +6341,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const ollamaMessages: { role: string; content: string }[] = [];
       const systemMessage = chat.systemMessage?.trim();
-      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
       for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
       ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
 
@@ -6408,7 +6416,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const ollamaMessages: { role: string; content: string }[] = [];
       const systemMessage = chat.systemMessage?.trim();
-      if (systemMessage) ollamaMessages.push({ role: "system", content: systemMessage });
+      ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
       for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
       ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
 
