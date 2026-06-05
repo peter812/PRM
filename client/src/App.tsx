@@ -16,6 +16,7 @@ import { getPageTitle } from "@/lib/page-title";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import MeProfile from "@/pages/me-profile";
+import HomePage from "@/pages/home";
 import GroupsList from "@/pages/groups-list";
 import GroupProfile from "@/pages/group-profile";
 import SocialAccountsList from "@/pages/social-accounts-list";
@@ -99,6 +100,7 @@ function Router() {
       <ProtectedRoute path="/" component={PeopleList} />
       <ProtectedRoute path="/people" component={PeopleList} />
       <ProtectedRoute path="/person/:id" component={PersonProfile} />
+      <ProtectedRoute path="/home" component={HomePage} />
       <ProtectedRoute path="/me" component={MeProfile} />
       <ProtectedRoute path="/groups" component={GroupsList} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
