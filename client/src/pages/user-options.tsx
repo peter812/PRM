@@ -68,7 +68,7 @@ export default function UserOptionsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showClientSecret, setShowClientSecret] = useState(false);
-  const [redirectUrl, setRedirectUrl] = useState("");
+  const redirectUrl = `${window.location.origin}/api/sso/callback`;
   const [copiedRedirectUrl, setCopiedRedirectUrl] = useState(false);
   const ssoFormInitialized = useRef(false);
   const userFormInitialized = useRef(false);
@@ -138,12 +138,6 @@ export default function UserOptionsPage() {
       });
     }
   }, [user, form]);
-
-  // Calculate redirect URL on mount
-  useEffect(() => {
-    const computedRedirectUrl = `${window.location.origin}/api/sso/callback`;
-    setRedirectUrl(computedRedirectUrl);
-  }, []);
 
   // Update SSO form when config loads (only once)
   useEffect(() => {
