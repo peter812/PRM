@@ -52,6 +52,10 @@ import {
   Book,
   NotebookPen,
   MessageSquare,
+  ChevronDown,
+  ChevronRight,
+  CheckCircle2,
+  XCircle,
   type LucideIcon,
 } from "lucide-react";
 
@@ -94,45 +98,98 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
 };
 
 /**
- * Renders a horizontal row of small "icon boxes" — one per tool the AI invoked
- * during the assistant turn. Spy-glass for searches, person for person_pull,
- * etc. (mapping is server-driven via the `icon` field).
+ * Renders one tool-call step as a full row: icon + label + arg summary on the
+ * left, spinner while pending, then result summary (with success/error icon) once
+ * the result has arrived.
  */
-function ToolCallIconRow({ calls, dataTestidPrefix }: { calls: ToolCallTrace[]; dataTestidPrefix: string }) {
-  if (!calls || calls.length === 0) return null;
+function ThoughtChainSteps({ calls, dataTestidPrefix }: { calls: ToolCallTrace[]; dataTestidPrefix: string }) {
   return (
-    <div className="mb-2 flex flex-wrap items-center gap-1.5" data-testid={`${dataTestidPrefix}-tool-row`}>
+    <div className="flex flex-col gap-1" data-testid={`${dataTestidPrefix}-thought-chain`}>
       {calls.map((c, i) => {
         const Icon = TOOL_ICON_MAP[c.icon] ?? Search;
-        const tooltip = (() => {
-          const argStr = Object.entries(c.args ?? {})
-            .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
-            .join(", ");
-          const head = argStr ? `${c.label}: ${argStr}` : c.label;
-          return c.summary ? `${head} — ${c.summary}` : head;
-        })();
-        const stateClass = c.pending
-          ? "border-border text-muted-foreground"
-          : c.ok
-          ? "border-border text-foreground"
-          : "border-destructive text-destructive";
+        const argStr = Object.values(c.args ?? {})
+          .map((v) => (typeof v === "string" ? v : JSON.stringify(v)))
+          .filter(Boolean)
+          .join(", ");
         return (
-          <span
+          <div
             key={c.id ?? i}
-            title={tooltip}
-            className={cn(
-              "relative inline-flex h-7 w-7 items-center justify-center rounded-md border bg-background",
-              stateClass,
-            )}
-            data-testid={`${dataTestidPrefix}-tool-${i}`}
+            className="flex items-center gap-2 text-xs"
+            data-testid={`${dataTestidPrefix}-thought-step-${i}`}
           >
-            <Icon className="h-3.5 w-3.5" />
-            {c.pending && (
-              <Loader2 className="absolute h-7 w-7 animate-spin text-muted-foreground/60" />
-            )}
-          </span>
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
+              <Icon className="h-3 w-3" />
+            </span>
+            <span className="flex-1 truncate text-muted-foreground">
+              <span className="font-medium text-foreground/80">{c.label}</span>
+              {argStr ? <span>: {argStr}</span> : null}
+            </span>
+            <span className="shrink-0">
+              {c.pending ? (
+                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+              ) : c.ok ? (
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400" />
+                  {c.summary ? <span className="max-w-[180px] truncate">{c.summary}</span> : null}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-destructive">
+                  <XCircle className="h-3 w-3" />
+                  {c.summary ? <span className="max-w-[180px] truncate">{c.summary}</span> : null}
+                </span>
+              )}
+            </span>
+          </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Live thought-chain: shown during streaming with all steps expanded so the user
+ * can watch them build in real time.
+ *
+ * History thought-chain: shown on completed messages as a collapsed toggle
+ * ("N tools used ▸") that expands on click.
+ */
+function ThoughtChain({
+  calls,
+  live = false,
+  dataTestidPrefix,
+}: {
+  calls: ToolCallTrace[];
+  live?: boolean;
+  dataTestidPrefix: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!calls || calls.length === 0) return null;
+
+  if (live) {
+    return (
+      <div className="mb-3 rounded-md border bg-background/60 px-3 py-2" data-testid={`${dataTestidPrefix}-tool-live`}>
+        <ThoughtChainSteps calls={calls} dataTestidPrefix={dataTestidPrefix} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-2" data-testid={`${dataTestidPrefix}-tool-history`}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+        data-testid={`${dataTestidPrefix}-tool-toggle`}
+      >
+        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        {calls.length} tool{calls.length !== 1 ? "s" : ""} used
+      </button>
+      {expanded && (
+        <div className="mt-1.5 rounded-md border bg-background/60 px-3 py-2">
+          <ThoughtChainSteps calls={calls} dataTestidPrefix={dataTestidPrefix} />
+        </div>
+      )}
     </div>
   );
 }
@@ -704,7 +761,7 @@ export default function AiChatDemoPage() {
                     {m.role === "assistant" ? (
                       <>
                         {m.toolCalls && m.toolCalls.length > 0 && (
-                          <ToolCallIconRow calls={m.toolCalls} dataTestidPrefix={`message-${i}`} />
+                          <ThoughtChain calls={m.toolCalls} dataTestidPrefix={`message-${i}`} />
                         )}
                         <MarkdownMessage content={m.content} />
                       </>
@@ -758,7 +815,7 @@ export default function AiChatDemoPage() {
                 </div>
                 <div className="rounded-lg bg-muted px-4 py-2 max-w-[80%]">
                   {streamingToolCalls.length > 0 && (
-                    <ToolCallIconRow calls={streamingToolCalls} dataTestidPrefix="streaming" />
+                    <ThoughtChain calls={streamingToolCalls} live dataTestidPrefix="streaming" />
                   )}
                   {streamingContent ? (
                     <MarkdownMessage content={displayedContent} />
