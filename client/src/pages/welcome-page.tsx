@@ -5,7 +5,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Users, Network, Search } from "lucide-react";
+import {
+  Users,
+  Network,
+  Instagram,
+  Brain,
+  CalendarDays,
+  Trophy,
+  FileDown,
+  Shield,
+} from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -21,11 +30,53 @@ const setupSchema = z.object({
 
 type SetupFormData = z.infer<typeof setupSchema>;
 
+const FEATURES = [
+  {
+    icon: Users,
+    title: "People & Groups",
+    description: "Rich profiles with notes, interaction history, tags, and group membership",
+  },
+  {
+    icon: Network,
+    title: "Relationship Graphs",
+    description: "WebGL-powered interactive graphs with blob mode, orphan filtering, and anonymization",
+  },
+  {
+    icon: Instagram,
+    title: "Social Account Tracking",
+    description: "Versioned profile history and follower/following change logs for every linked account",
+  },
+  {
+    icon: Brain,
+    title: "AI Intelligence",
+    description: "AI chat with live tool-call reasoning, image recognition, and smart description generation",
+  },
+  {
+    icon: CalendarDays,
+    title: "Daily Notes & Flow",
+    description: "Chronological per-person timeline mixing notes, interactions, and communications",
+  },
+  {
+    icon: Trophy,
+    title: "ELO Ranking & Matching",
+    description: "Head-to-head ranking and social account matching with similarity scoring",
+  },
+  {
+    icon: FileDown,
+    title: "XML Import & Export",
+    description: "Full data backup and migration preserving UUIDs, with background task processing",
+  },
+  {
+    icon: Shield,
+    title: "API & SSO Access",
+    description: "External REST API with key-based auth and optional single sign-on",
+  },
+];
+
 export default function WelcomePage() {
   const { toast } = useToast();
   const [setupComplete, setSetupComplete] = useState(false);
 
-  // Check if user is already authenticated - redirect to /me if so
   const { data: currentUser } = useQuery({
     queryKey: ["/api/user"],
     retry: false,
@@ -64,12 +115,10 @@ export default function WelcomePage() {
     },
   });
 
-  // If user is already authenticated, redirect to /me
   if (currentUser) {
     return <Redirect to="/me" />;
   }
 
-  // If setup is complete, redirect to /me
   if (setupComplete) {
     return <Redirect to="/me" />;
   }
@@ -80,12 +129,13 @@ export default function WelcomePage() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
+      {/* Left — setup form */}
       <div className="flex items-center justify-center p-8">
         <div className="w-full max-w-md">
           <div className="mb-8">
             <h1 className="text-3xl font-bold mb-2">People Manager</h1>
             <p className="text-muted-foreground">
-              Welcome! Let's set up your account
+              Welcome! Create your account to get started
             </p>
           </div>
 
@@ -93,7 +143,7 @@ export default function WelcomePage() {
             <CardHeader>
               <CardTitle>Create Your Account</CardTitle>
               <CardDescription>
-                This is your first time here. Let's create your account to get started.
+                You're the first user — this account becomes your "ME" profile at the center of your network.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -104,7 +154,7 @@ export default function WelcomePage() {
                     name="name"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Name</FormLabel>
+                        <FormLabel>Full Name</FormLabel>
                         <FormControl>
                           <Input
                             {...field}
@@ -126,7 +176,7 @@ export default function WelcomePage() {
                         <FormControl>
                           <Input
                             {...field}
-                            placeholder="Enter your preferred nickname"
+                            placeholder="How you prefer to be called"
                             data-testid="input-setup-nickname"
                           />
                         </FormControl>
@@ -144,7 +194,7 @@ export default function WelcomePage() {
                         <FormControl>
                           <Input
                             {...field}
-                            placeholder="Choose a username"
+                            placeholder="Choose a login username"
                             data-testid="input-setup-username"
                           />
                         </FormControl>
@@ -163,7 +213,7 @@ export default function WelcomePage() {
                           <Input
                             {...field}
                             type="password"
-                            placeholder="Create a secure password"
+                            placeholder="At least 6 characters"
                             data-testid="input-setup-password"
                           />
                         </FormControl>
@@ -178,7 +228,7 @@ export default function WelcomePage() {
                     disabled={setupMutation.isPending}
                     data-testid="button-setup-submit"
                   >
-                    {setupMutation.isPending ? "Creating Account..." : "Create Account"}
+                    {setupMutation.isPending ? "Creating Account..." : "Create Account & Get Started"}
                   </Button>
                 </form>
               </Form>
@@ -187,40 +237,25 @@ export default function WelcomePage() {
         </div>
       </div>
 
-      <div className="hidden lg:flex items-center justify-center bg-primary text-primary-foreground p-12">
-        <div className="max-w-md">
-          <h2 className="text-4xl font-bold mb-6">Manage Your Professional Network</h2>
-          <p className="text-lg mb-8 opacity-90">
-            A powerful CRM to track contacts, interactions, and relationships all in one place.
+      {/* Right — feature showcase */}
+      <div className="hidden lg:flex items-center justify-center bg-primary text-primary-foreground p-12 overflow-y-auto">
+        <div className="max-w-md w-full">
+          <h2 className="text-3xl font-bold mb-2">Everything you need to manage your network</h2>
+          <p className="text-base mb-8 opacity-80">
+            From social tracking to AI-powered insights — all in one place.
           </p>
-          <div className="space-y-4">
-            <div className="flex items-start gap-3">
-              <Users className="h-6 w-6 mt-1 flex-shrink-0" />
-              <div>
-                <h3 className="font-semibold mb-1">Contact Management</h3>
-                <p className="opacity-80">
-                  Store detailed profiles with notes and interaction history
-                </p>
+          <div className="grid gap-5">
+            {FEATURES.map(({ icon: Icon, title, description }) => (
+              <div key={title} className="flex items-start gap-3">
+                <div className="mt-0.5 flex-shrink-0 rounded-md bg-primary-foreground/10 p-1.5">
+                  <Icon className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-sm mb-0.5">{title}</h3>
+                  <p className="text-sm opacity-75">{description}</p>
+                </div>
               </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <Network className="h-6 w-6 mt-1 flex-shrink-0" />
-              <div>
-                <h3 className="font-semibold mb-1">Relationship Mapping</h3>
-                <p className="opacity-80">
-                  Visualize connections between people with interactive graphs
-                </p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3">
-              <Search className="h-6 w-6 mt-1 flex-shrink-0" />
-              <div>
-                <h3 className="font-semibold mb-1">Advanced Search</h3>
-                <p className="opacity-80">
-                  Find contacts quickly with powerful search and filtering
-                </p>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       </div>
