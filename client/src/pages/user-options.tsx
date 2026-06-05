@@ -115,7 +115,7 @@ export default function UserOptionsPage() {
       authUrl: "",
       tokenUrl: "",
       userInfoUrl: "",
-      redirectUrl: "",
+      redirectUrl: redirectUrl,
       logoutUrl: "",
       userIdentifier: "email",
       scopes: "openid",
