@@ -1,5 +1,6 @@
 export function getPageTitle(location: string): string {
   if (location === "/" || location === "/people") return "People";
+  if (location === "/home") return "Home";
   if (location.startsWith("/person/")) return "Person";
   if (location === "/me") return "Me";
   if (location === "/groups") return "Groups";

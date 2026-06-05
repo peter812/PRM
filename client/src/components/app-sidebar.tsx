@@ -14,6 +14,7 @@ import {
   Sparkles,
   MessagesSquare,
   BookOpen,
+  Home,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
@@ -35,6 +36,11 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 
 const menuItems = [
+  {
+    title: "Home",
+    url: "/home",
+    icon: Home,
+  },
   {
     title: "Me",
     url: "/me",
