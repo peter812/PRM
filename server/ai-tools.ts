@@ -23,11 +23,30 @@ export type AiToolIcon =
   | "search"
   | "user"
   | "user-search"
+  | "user-plus"
+  | "user-pen"
   | "at-sign"
   | "at-sign-search"
   | "book"
+  | "book-plus"
   | "notebook"
-  | "message-square";
+  | "notebook-pen"
+  | "message-square"
+  | "message-square-plus"
+  | "pencil";
+
+/**
+ * High-level grouping shown in the Intelligence → Tools settings page. The
+ * settings page renders one expandable card per category. Adding a new
+ * category here requires adding a label in the settings page's
+ * `CATEGORY_LABELS` map.
+ */
+export type AiToolCategory =
+  | "people"
+  | "notes"
+  | "interactions"
+  | "daily-notes"
+  | "social-accounts";
 
 export interface AiToolJsonSchema {
   type: "object";
@@ -44,6 +63,17 @@ export interface AiToolDefinition {
   description: string;
   /** Icon key the client maps to a Lucide icon. */
   icon: AiToolIcon;
+  /**
+   * High-level grouping for the settings page. Tools sharing a category
+   * appear together inside a single expandable card.
+   */
+  category: AiToolCategory;
+  /**
+   * `true` if the tool mutates PRM data (create / update / delete). Write
+   * tools are gated by the AI-tools execution mode (off / auth / open) and
+   * require user approval when running in `auth` mode.
+   */
+  write?: boolean;
   /** JSON-schema for the arguments the LLM must produce. */
   parameters: AiToolJsonSchema;
   /** Async handler that performs the work and returns a small JSON payload. */
@@ -131,6 +161,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: "person_search",
     label: "Person search",
     icon: "search",
+    category: "people",
     description:
       "Search for people in the user's PRM by name, nickname, or other text. Returns up to 10 matching people with their UUIDs. Use this when the user asks about a person but you don't yet know their UUID.",
     parameters: {
@@ -152,6 +183,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: "person_pull",
     label: "Pull person account",
     icon: "user",
+    category: "people",
     description:
       "Fetch a single person account in full (notes, interactions, relationships) by UUID. Call this after person_search if you need the full record.",
     parameters: {
@@ -180,6 +212,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: "social_account_search",
     label: "Social account search",
     icon: "search",
+    category: "social-accounts",
     description:
       "Search social accounts (handles, display names) for a text query. Returns up to 10 matching accounts with their UUIDs.",
     parameters: {
@@ -201,6 +234,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: "social_account_pull",
     label: "Pull social account",
     icon: "at-sign",
+    category: "social-accounts",
     description:
       "Fetch a single social account in full (current profile, latest state) by UUID. Call this after social_account_search if you need the full record.",
     parameters: {
@@ -226,6 +260,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: "daily_note_search",
     label: "Daily note search",
     icon: "search",
+    category: "daily-notes",
     description:
       "Look up a daily note by UUID, by date (YYYY-MM-DD), or by free-text content match. Returns up to 10 matching daily notes.",
     parameters: {
@@ -262,6 +297,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: "note_search",
     label: "Note search",
     icon: "search",
+    category: "notes",
     description:
       "Look up a person-attached note by UUID or by free-text content match. Returns up to 10 matching notes.",
     parameters: {
@@ -291,6 +327,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     name: "interaction_search",
     label: "Interaction search",
     icon: "search",
+    category: "interactions",
     description:
       "Look up an interaction by UUID or by free-text description match. Returns up to 10 matching interactions, newest first.",
     parameters: {
@@ -325,6 +362,254 @@ export const AI_TOOLS: AiToolDefinition[] = [
       return { summary: `Found ${results.length} interaction${results.length === 1 ? "" : "s"}`, data: { results } };
     },
   },
+
+  // ── Write tools ─────────────────────────────────────────────────────────
+  // The handlers below mutate PRM data. They are gated by the AI-tools
+  // execution-mode setting (off / auth / open) defined in server/routes.ts.
+  // In `auth` mode the streaming chat loop emits a `tool_approval_request`
+  // event and waits for the user before invoking any of these handlers.
+
+  {
+    name: "create_person",
+    label: "Create person",
+    icon: "user-plus",
+    category: "people",
+    write: true,
+    description:
+      "Create a new person record in the PRM. Requires firstName and lastName. Returns the new person's UUID.",
+    parameters: {
+      type: "object",
+      properties: {
+        firstName: { type: "string", description: "Given / first name." },
+        lastName: { type: "string", description: "Family / last name." },
+        email: { type: "string", description: "Optional email address." },
+        phone: { type: "string", description: "Optional phone number." },
+        company: { type: "string", description: "Optional company / organization." },
+        title: { type: "string", description: "Optional job title." },
+      },
+      required: ["firstName", "lastName"],
+    },
+    handler: async (args) => {
+      const firstName = asString(args.firstName).trim();
+      const lastName = asString(args.lastName).trim();
+      if (!firstName || !lastName) {
+        return { summary: "firstName and lastName are required", data: { error: "missing_required" } };
+      }
+      const person = await storage.createPerson({
+        firstName,
+        lastName,
+        email: asString(args.email).trim() || null,
+        phone: asString(args.phone).trim() || null,
+        company: asString(args.company).trim() || null,
+        title: asString(args.title).trim() || null,
+      } as any);
+      return { summary: `Created ${firstName} ${lastName}`, data: trimPerson(person) };
+    },
+  },
+  {
+    name: "update_person",
+    label: "Update person",
+    icon: "user-pen",
+    category: "people",
+    write: true,
+    description:
+      "Update fields on an existing person identified by UUID. Only the fields supplied are changed; omit fields you don't want to touch.",
+    parameters: {
+      type: "object",
+      properties: {
+        uuid: { type: "string", description: "UUID of the person to update." },
+        firstName: { type: "string" },
+        lastName: { type: "string" },
+        email: { type: "string" },
+        phone: { type: "string" },
+        company: { type: "string" },
+        title: { type: "string" },
+      },
+      required: ["uuid"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.uuid).trim();
+      if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
+      const patch: Record<string, unknown> = {};
+      for (const k of ["firstName", "lastName", "email", "phone", "company", "title"]) {
+        if (typeof args[k] === "string") patch[k] = (args[k] as string).trim() || null;
+      }
+      if (Object.keys(patch).length === 0) {
+        return { summary: "No fields to update", data: { error: "no_fields" } };
+      }
+      const updated = await storage.updatePerson(uuid, patch as any);
+      if (!updated) return { summary: "Person not found", data: { error: "not_found" } };
+      return { summary: `Updated person ${uuid}`, data: trimPerson(updated) };
+    },
+  },
+  {
+    name: "create_note",
+    label: "Create note",
+    icon: "book-plus",
+    category: "notes",
+    write: true,
+    description:
+      "Create a note attached to a person. Requires personId (UUID) and content. Use person_search first if you don't have the UUID.",
+    parameters: {
+      type: "object",
+      properties: {
+        personId: { type: "string", description: "UUID of the person the note belongs to." },
+        content: { type: "string", description: "Note body text." },
+      },
+      required: ["personId", "content"],
+    },
+    handler: async (args) => {
+      const personId = asString(args.personId).trim();
+      const content = asString(args.content);
+      if (!personId || !content.trim()) {
+        return { summary: "personId and content are required", data: { error: "missing_required" } };
+      }
+      const note = await storage.createNote({ personId, content } as any);
+      return { summary: "Created note", data: trimNote(note) };
+    },
+  },
+  {
+    name: "create_interaction",
+    label: "Create interaction",
+    icon: "message-square-plus",
+    category: "interactions",
+    write: true,
+    description:
+      "Create an interaction between two or more people. Requires peopleIds (an array of at least 2 person UUIDs) and a date (ISO-8601). Optional: title, description, typeId.",
+    parameters: {
+      type: "object",
+      properties: {
+        peopleIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "UUIDs of the people involved (2 or more).",
+        },
+        date: { type: "string", description: "ISO-8601 date string for when the interaction occurred." },
+        title: { type: "string", description: "Optional short title." },
+        description: { type: "string", description: "Optional longer description." },
+        typeId: { type: "string", description: "Optional interaction type UUID." },
+      },
+      required: ["peopleIds", "date"],
+    },
+    handler: async (args) => {
+      const peopleIds = Array.isArray(args.peopleIds)
+        ? (args.peopleIds as unknown[]).filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        : [];
+      if (peopleIds.length < 2) {
+        return { summary: "At least 2 peopleIds are required", data: { error: "missing_required" } };
+      }
+      const dateStr = asString(args.date).trim();
+      const date = dateStr ? new Date(dateStr) : null;
+      if (!date || Number.isNaN(date.getTime())) {
+        return { summary: "Invalid date", data: { error: "invalid_date" } };
+      }
+      const payload: Record<string, unknown> = { peopleIds, date };
+      const title = asString(args.title).trim();
+      if (title) payload.title = title;
+      const description = asString(args.description).trim();
+      if (description) payload.description = description;
+      const typeId = asString(args.typeId).trim();
+      if (typeId) payload.typeId = typeId;
+      const created = await storage.createInteraction(payload as any);
+      return { summary: "Created interaction", data: trimInteraction(created) };
+    },
+  },
+  {
+    name: "update_interaction",
+    label: "Update interaction",
+    icon: "pencil",
+    category: "interactions",
+    write: true,
+    description:
+      "Update an existing interaction identified by UUID. Only the fields supplied are changed.",
+    parameters: {
+      type: "object",
+      properties: {
+        uuid: { type: "string", description: "UUID of the interaction to update." },
+        title: { type: "string" },
+        description: { type: "string" },
+        date: { type: "string", description: "ISO-8601 date string." },
+        typeId: { type: "string" },
+      },
+      required: ["uuid"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.uuid).trim();
+      if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
+      const patch: Record<string, unknown> = {};
+      if (typeof args.title === "string") patch.title = args.title;
+      if (typeof args.description === "string") patch.description = args.description;
+      if (typeof args.typeId === "string") patch.typeId = args.typeId.trim() || null;
+      if (typeof args.date === "string") {
+        const d = new Date(args.date);
+        if (Number.isNaN(d.getTime())) return { summary: "Invalid date", data: { error: "invalid_date" } };
+        patch.date = d;
+      }
+      if (Object.keys(patch).length === 0) {
+        return { summary: "No fields to update", data: { error: "no_fields" } };
+      }
+      const updated = await storage.updateInteraction(uuid, patch as any);
+      if (!updated) return { summary: "Interaction not found", data: { error: "not_found" } };
+      return { summary: `Updated interaction ${uuid}`, data: trimInteraction(updated) };
+    },
+  },
+  {
+    name: "create_daily_note",
+    label: "Create daily note",
+    icon: "notebook-pen",
+    category: "daily-notes",
+    write: true,
+    description:
+      "Create a daily note for a given ISO date (YYYY-MM-DD). The body is the freeform note content.",
+    parameters: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "ISO date (YYYY-MM-DD)." },
+        userTitle: { type: "string", description: "Optional title." },
+        body: { type: "string", description: "Note body text." },
+      },
+      required: ["date"],
+    },
+    handler: async (args) => {
+      const date = asString(args.date).trim();
+      if (!date) return { summary: "Missing date", data: { error: "date is required" } };
+      const userTitle = asString(args.userTitle);
+      const body = asString(args.body);
+      const note = await storage.createDailyNote({ date, userTitle, body } as any);
+      return { summary: `Created daily note for ${date}`, data: trimDailyNote(note) };
+    },
+  },
+  {
+    name: "update_daily_note",
+    label: "Update daily note",
+    icon: "pencil",
+    category: "daily-notes",
+    write: true,
+    description:
+      "Update an existing daily note identified by UUID. Only fields supplied are changed.",
+    parameters: {
+      type: "object",
+      properties: {
+        uuid: { type: "string", description: "UUID of the daily note to update." },
+        userTitle: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["uuid"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.uuid).trim();
+      if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
+      const patch: Record<string, unknown> = {};
+      if (typeof args.userTitle === "string") patch.userTitle = args.userTitle;
+      if (typeof args.body === "string") patch.body = args.body;
+      if (Object.keys(patch).length === 0) {
+        return { summary: "No fields to update", data: { error: "no_fields" } };
+      }
+      const updated = await storage.updateDailyNote(uuid, patch as any);
+      if (!updated) return { summary: "Daily note not found", data: { error: "not_found" } };
+      return { summary: `Updated daily note ${uuid}`, data: trimDailyNote(updated) };
+    },
+  },
 ];
 
 export function getAiToolByName(name: string): AiToolDefinition | undefined {
@@ -337,10 +622,19 @@ export interface AiToolMetadata {
   label: string;
   description: string;
   icon: AiToolIcon;
+  category: AiToolCategory;
+  write: boolean;
 }
 
 export function listAiToolMetadata(): AiToolMetadata[] {
-  return AI_TOOLS.map((t) => ({ name: t.name, label: t.label, description: t.description, icon: t.icon }));
+  return AI_TOOLS.map((t) => ({
+    name: t.name,
+    label: t.label,
+    description: t.description,
+    icon: t.icon,
+    category: t.category,
+    write: !!t.write,
+  }));
 }
 
 /** Build the `tools` array Ollama expects for an /api/chat request. */

@@ -5889,8 +5889,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── AI Tools (skills the chat LLM can invoke) ────────────────────────────
 
-  /** Read the tool settings (master switch + per-tool toggles) from app_settings. */
-  async function readAiToolSettings(): Promise<{ enabled: boolean; perTool: Record<string, boolean> }> {
+  /**
+   * Execution mode for write tools:
+   * - "off"  → write tools are never offered to the model (read-only).
+   * - "auth" → write tools are offered, but every call must be approved by
+   *            the user via a popup before the handler runs.
+   * - "open" → write tools run with no approval (full autonomy).
+   * The setting lives in app_settings under `ai_tools_execution_mode`.
+   */
+  type AiToolExecutionMode = "off" | "auth" | "open";
+  function parseExecutionMode(v: unknown): AiToolExecutionMode {
+    return v === "auth" || v === "open" ? v : "off";
+  }
+
+  /** Read the tool settings (master switch + per-tool toggles + write mode) from app_settings. */
+  async function readAiToolSettings(): Promise<{
+    enabled: boolean;
+    perTool: Record<string, boolean>;
+    executionMode: AiToolExecutionMode;
+  }> {
     const enabledRaw = await getOllamaSetting("ai_tools_enabled");
     const enabled = enabledRaw === null || enabledRaw === undefined ? true : enabledRaw === "true";
     const perToolRaw = await getOllamaSetting("ai_tools_per_tool");
@@ -5909,14 +5926,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     for (const t of AI_TOOLS) {
       if (!(t.name in perTool)) perTool[t.name] = true;
     }
-    return { enabled, perTool };
+    const modeRaw = await getOllamaSetting("ai_tools_execution_mode");
+    // Default to the most restrictive mode (off) so writes are opt-in.
+    const executionMode = parseExecutionMode(modeRaw ?? "off");
+    return { enabled, perTool, executionMode };
   }
 
   /** Compute the set of tool names that should be exposed for a given chat call. */
-  async function activeToolNames(): Promise<Set<string>> {
-    const { enabled, perTool } = await readAiToolSettings();
-    if (!enabled) return new Set();
-    return new Set(AI_TOOLS.filter((t) => perTool[t.name]).map((t) => t.name));
+  async function activeToolNames(): Promise<{ names: Set<string>; executionMode: AiToolExecutionMode }> {
+    const { enabled, perTool, executionMode } = await readAiToolSettings();
+    if (!enabled) return { names: new Set(), executionMode };
+    const names = new Set(
+      AI_TOOLS
+        // Hide write tools from the model entirely when writes are off.
+        .filter((t) => (t.write ? executionMode !== "off" : true))
+        .filter((t) => perTool[t.name])
+        .map((t) => t.name),
+    );
+    return { names, executionMode };
   }
 
   app.get("/api/ai-tools", async (req, res) => {
@@ -5940,6 +5967,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof req.body.enabled === "boolean") {
         await setOllamaSetting("ai_tools_enabled", String(req.body.enabled));
       }
+      if (typeof req.body.executionMode === "string") {
+        const mode = parseExecutionMode(req.body.executionMode);
+        await setOllamaSetting("ai_tools_execution_mode", mode);
+      }
       if (req.body.perTool && typeof req.body.perTool === "object") {
         const current = (await readAiToolSettings()).perTool;
         const patch = req.body.perTool as Record<string, unknown>;
@@ -5954,6 +5985,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
+  });
+
+  // ── Tool-call approval bus ───────────────────────────────────────────────
+  // When a write tool is invoked while executionMode === "auth", the
+  // streaming chat loop registers a pending approval here keyed by id and
+  // awaits the resulting promise. The client posts the user's decision to
+  // POST /api/ai-tools/approvals/:id and the loop resumes.
+  type ApprovalDecision = "accept" | "reject";
+  const pendingApprovals = new Map<string, {
+    userId: number;
+    resolve: (decision: ApprovalDecision) => void;
+  }>();
+
+  function awaitApproval(id: string, userId: number): Promise<ApprovalDecision> {
+    return new Promise((resolve) => {
+      pendingApprovals.set(id, { userId, resolve });
+    });
+  }
+
+  app.post("/api/ai-tools/approvals/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    const id = req.params.id;
+    const decision = req.body?.decision === "accept" ? "accept"
+      : req.body?.decision === "reject" ? "reject" : null;
+    if (!decision) return res.status(400).json({ error: "decision must be 'accept' or 'reject'" });
+    const pending = pendingApprovals.get(id);
+    if (!pending) return res.status(404).json({ error: "approval_not_found" });
+    if (pending.userId !== req.user!.id) return res.status(403).json({ error: "forbidden" });
+    pendingApprovals.delete(id);
+    pending.resolve(decision);
+    res.json({ ok: true });
   });
 
   type StreamingToolLoopParams = {
@@ -5977,7 +6039,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }> {
     const { res, ctx, model, userId } = p;
     const messages = [...p.initialMessages];
-    const toolNames = await activeToolNames();
+    const { names: toolNames, executionMode } = await activeToolNames();
     const tools = toolNames.size > 0 ? buildOllamaToolsArray(toolNames) : undefined;
     const toolTrace: AiToolCallTrace[] = [];
 
@@ -6093,6 +6155,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
             continue;
           }
           writeLine({ event: "tool_call", id, name: def.name, label: def.label, icon: def.icon, args });
+          // Write tools are gated by the execution mode setting.
+          if (def.write) {
+            if (executionMode === "off") {
+              const summary = "Write tools are disabled";
+              writeLine({ event: "tool_result", id, ok: false, summary });
+              toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
+              messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: summary }) });
+              continue;
+            }
+            if (executionMode === "auth") {
+              writeLine({
+                event: "tool_approval_request",
+                id,
+                name: def.name,
+                label: def.label,
+                icon: def.icon,
+                args,
+              });
+              const decision = await awaitApproval(id, userId);
+              writeLine({ event: "tool_approval_decision", id, decision });
+              if (decision === "reject") {
+                const summary = "Rejected by user";
+                writeLine({ event: "tool_result", id, ok: false, summary });
+                toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
+                messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: "user_rejected" }) });
+                continue;
+              }
+            }
+          }
           try {
             const result = await def.handler(args, { userId });
             writeLine({ event: "tool_result", id, ok: true, summary: result.summary });
