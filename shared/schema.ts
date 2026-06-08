@@ -745,6 +745,32 @@ export type RelationshipWithPerson = Relationship & {
   type?: RelationshipType;
 };
 
+// Response shape for GET /api/people/:personId/relationships-grouped.
+// Relationships are grouped by relationship type so the UI can render
+// each type's chips together with cached colors in a single API call.
+export type RelationshipsGroupedResponse = {
+  groups: Array<{
+    type: {
+      id: string | null;
+      name: string;
+      color: string;
+      value: number;
+    };
+    relationships: Array<{
+      id: string;
+      notes: string | null;
+      toPerson: {
+        id: string;
+        firstName: string;
+        lastName: string;
+        imageUrl: string | null;
+        company: string | null;
+        title: string | null;
+      };
+    }>;
+  }>;
+};
+
 export type PersonWithRelations = Person & {
   notes: Note[];
   interactions: Interaction[];

@@ -359,6 +359,7 @@ export default function PersonProfile() {
             <RelationshipsTab
               relationships={person.relationships}
               personId={person.id}
+              personName={`${person.firstName} ${person.lastName}`.trim()}
               onAddRelationship={() => setIsAddRelationshipOpen(true)}
             />
           </TabsContent>
