@@ -2933,6 +2933,102 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Returns this person's relationships grouped by relationship type, sorted
+  // by the type's value (highest first), with empty groups omitted. Provides
+  // all data the Relationships tab needs in a single API call.
+  app.get("/api/people/:personId/relationships-grouped", async (req, res) => {
+    try {
+      const { personId } = req.params;
+
+      const person = await storage.getPersonById(personId);
+      if (!person) {
+        return res.status(404).json({ error: "Person not found" });
+      }
+
+      const rels = person.relationships || [];
+
+      type GroupedRel = {
+        id: string;
+        notes: string | null;
+        toPerson: {
+          id: string;
+          firstName: string;
+          lastName: string;
+          imageUrl: string | null;
+          company: string | null;
+          title: string | null;
+        };
+      };
+
+      type Group = {
+        type: {
+          id: string | null;
+          name: string;
+          color: string;
+          value: number;
+        };
+        relationships: GroupedRel[];
+      };
+
+      const groupsMap = new Map<string, Group>();
+
+      for (const rel of rels) {
+        const typeKey = rel.type?.id ?? "__untyped__";
+        const typeName = rel.type?.name ?? "Other";
+        const typeColor = rel.type?.color ?? "#6b7280";
+        const typeValue = rel.type?.value ?? 0;
+
+        if (!groupsMap.has(typeKey)) {
+          groupsMap.set(typeKey, {
+            type: {
+              id: rel.type?.id ?? null,
+              name: typeName,
+              color: typeColor,
+              value: typeValue,
+            },
+            relationships: [],
+          });
+        }
+
+        groupsMap.get(typeKey)!.relationships.push({
+          id: rel.id,
+          notes: rel.notes ?? null,
+          toPerson: {
+            id: rel.toPerson.id,
+            firstName: rel.toPerson.firstName,
+            lastName: rel.toPerson.lastName,
+            imageUrl: rel.toPerson.imageUrl ?? null,
+            company: rel.toPerson.company ?? null,
+            title: rel.toPerson.title ?? null,
+          },
+        });
+      }
+
+      const groups = Array.from(groupsMap.values())
+        .filter((g) => g.relationships.length > 0)
+        .sort((a, b) => {
+          if (b.type.value !== a.type.value) {
+            return b.type.value - a.type.value;
+          }
+          return a.type.name.localeCompare(b.type.name);
+        });
+
+      // Sort chips within each group alphabetically for stable display.
+      for (const group of groups) {
+        group.relationships.sort((a, b) => {
+          const an = `${a.toPerson.firstName} ${a.toPerson.lastName}`.trim();
+          const bn = `${b.toPerson.firstName} ${b.toPerson.lastName}`.trim();
+          return an.localeCompare(bn);
+        });
+      }
+
+      res.json({ groups });
+    } catch (error) {
+      console.error("Error fetching grouped relationships:", error);
+      res.status(500).json({ error: "Failed to fetch relationships" });
+    }
+  });
+
   app.post("/api/relationships", async (req, res) => {
     try {
       const validatedData = insertRelationshipSchema.parse(req.body);
