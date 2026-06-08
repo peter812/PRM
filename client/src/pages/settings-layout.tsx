@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench } from "lucide-react";
+import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -45,6 +45,7 @@ import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
 import IntelligenceSettingsPage from "@/pages/intelligence-settings";
 import IntelligenceToolsSettingsPage from "@/pages/intelligence-tools-settings";
+import IntelligenceExternalToolsSettingsPage from "@/pages/intelligence-external-tools-settings";
 import IntelligenceImagesSettingsPage from "@/pages/intelligence-images-settings";
 import VectorSettingsPage from "@/pages/vector-settings";
 import TaskDetailPage from "@/pages/task-detail";
@@ -103,6 +104,7 @@ const settingsMenuItems: MenuItem[] = [
     icon: BrainCircuit,
     subItems: [
       { title: "Tools", url: "/intelligence/tools", icon: Wrench },
+      { title: "External Tools", url: "/intelligence/external-tools", icon: Plug },
       { title: "Images", url: "/intelligence/images", icon: ImageIcon },
       { title: "Vector Storage", url: "/vector", icon: Database },
     ],
@@ -273,6 +275,7 @@ export default function SettingsLayout() {
               <Route path="/image-storage/table" component={ImageTablePage} />
               <Route path="/image-storage" component={ImageStorageSettingsPage} />
               <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
+              <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
               <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
               <Route path="/intelligence" component={IntelligenceSettingsPage} />
               <Route path="/vector" component={VectorSettingsPage} />
