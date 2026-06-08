@@ -330,6 +330,7 @@ export interface IStorage {
   updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
   updatePhotoMeta(id: string, data: Partial<Pick<Photo, 'fileHash' | 'widthPx' | 'heightPx' | 'metadata' | 'imageDescription' | 'imageDescriptionAt' | 'faceUuids' | 'faceIdAt' | 'processedAt'>>): Promise<void>;
   getPhotoByHash(fileHash: string): Promise<Photo | undefined>;
+  getPhotoParent(subImageId: string): Promise<Photo | undefined>;
   deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }>;
 
   // Image task operations
@@ -2860,6 +2861,16 @@ export class DatabaseStorage implements IStorage {
 
   async getPhotoByHash(fileHash: string): Promise<Photo | undefined> {
     const [photo] = await db.select().from(photos).where(eq(photos.fileHash, fileHash));
+    return photo || undefined;
+  }
+
+  async getPhotoParent(subImageId: string): Promise<Photo | undefined> {
+    // Find a photo whose faceUuids JSONB array contains an entry with this subImagePhotoId
+    const [photo] = await db
+      .select()
+      .from(photos)
+      .where(sql`${photos.faceUuids} @> ${JSON.stringify([{ subImagePhotoId: subImageId }])}::jsonb`)
+      .limit(1);
     return photo || undefined;
   }
 

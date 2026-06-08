@@ -1,13 +1,30 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useRoute } from "wouter";
-import { Loader2, ChevronLeft, ImageOff } from "lucide-react";
+import { Loader2, ChevronLeft, ImageOff, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import type { Photo } from "@shared/schema";
 import { Button } from "@/components/ui/button";
+import { imageDetailHref } from "@/lib/image-link";
 
 function formatDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
   return format(new Date(d), "MMM d, yyyy HH:mm:ss");
+}
+
+function StatusChip({ label, value, testId }: { label: string; value: boolean; testId?: string }) {
+  const Icon = value ? CheckCircle2 : XCircle;
+  return (
+    <span
+      className={
+        "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-white " +
+        (value ? "bg-green-600" : "bg-red-600")
+      }
+      data-testid={testId}
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {label}
+    </span>
+  );
 }
 
 function MetaRow({ label, value, mono, testId }: { label: string; value: React.ReactNode; mono?: boolean; testId?: string }) {
@@ -21,36 +38,37 @@ function MetaRow({ label, value, mono, testId }: { label: string; value: React.R
   );
 }
 
-function JsonBlock({ value }: { value: unknown }) {
-  if (value === null || value === undefined) {
-    return <span className="text-muted-foreground">—</span>;
-  }
-  let formatted: string;
-  try {
-    formatted = JSON.stringify(value, null, 2);
-  } catch {
-    formatted = String(value);
-  }
-  return (
-    <pre className="bg-muted/40 rounded px-2 py-1.5 text-xs whitespace-pre-wrap break-all max-h-96 overflow-auto">
-      {formatted}
-    </pre>
-  );
-}
-
 type FaceEntry = { faceUuid?: string; subImagePhotoId?: string };
 
 function isFaceArray(v: unknown): v is FaceEntry[] {
   return Array.isArray(v);
 }
 
+function useBackHref(currentId: string): { href: string; label: string } {
+  const search = typeof window !== "undefined" ? window.location.search : "";
+  const from = new URLSearchParams(search).get("from");
+  if (from && from.startsWith("/") && !from.startsWith("//") && !from.startsWith(`/image/${currentId}`)) {
+    return { href: from, label: "Back" };
+  }
+  return { href: "/images", label: "Back to Images" };
+}
+
 export default function ImageDetailPage() {
   const [, params] = useRoute("/image/:id");
-  const id = params?.id;
+  const id = params?.id ?? "";
+
+  const back = useBackHref(id);
 
   const { data: photo, isLoading, error } = useQuery<Photo>({
     queryKey: [`/api/photos/${id}`],
     enabled: !!id,
+  });
+
+  // Parent lookup (only for sub-images)
+  const { data: parent } = useQuery<Photo>({
+    queryKey: [`/api/photos/${id}/parent`],
+    enabled: !!id && !!photo?.isSubImage,
+    retry: false,
   });
 
   if (isLoading) {
@@ -64,8 +82,12 @@ export default function ImageDetailPage() {
   if (error || !photo) {
     return (
       <div className="container max-w-3xl py-8 px-4">
-        <Link href="/settings/image-tasks" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
-          <ChevronLeft className="h-4 w-4 mr-1" /> Back to Image Tasks
+        <Link
+          href={back.href}
+          className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground"
+          data-testid="link-back"
+        >
+          <ChevronLeft className="h-4 w-4 mr-1" /> {back.label}
         </Link>
         <div className="mt-8 text-center text-muted-foreground">
           <ImageOff className="h-10 w-10 mx-auto mb-3" />
@@ -76,108 +98,141 @@ export default function ImageDetailPage() {
   }
 
   const faces = isFaceArray(photo.faceUuids) ? photo.faceUuids : [];
+  const subImageRefs = faces.filter((f) => !!f.subImagePhotoId);
+  const hasAiDescription = !!photo.imageDescriptionAt;
+  const hasFaceRecog = !!photo.faceIdAt;
 
   return (
-    <div className="container max-w-5xl py-6 px-4">
+    <div className="container max-w-4xl py-6 px-4 overflow-y-auto h-full">
       <div className="flex items-center justify-between mb-4">
-        <Link href="/settings/image-tasks" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground" data-testid="link-back">
-          <ChevronLeft className="h-4 w-4 mr-1" /> Back
+        <Link
+          href={back.href}
+          className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground"
+          data-testid="link-back"
+        >
+          <ChevronLeft className="h-4 w-4 mr-1" /> {back.label}
         </Link>
         <Button asChild variant="outline" size="sm">
-          <a href={photo.location} target="_blank" rel="noreferrer" data-testid="link-open-original">Open original</a>
+          <a href={photo.location} target="_blank" rel="noreferrer" data-testid="link-open-original">
+            <ExternalLink className="h-4 w-4 mr-1" />
+            Open original
+          </a>
         </Button>
       </div>
 
-      <h1 className="text-2xl font-semibold mb-1" data-testid="text-image-title">Image</h1>
-      <p className="text-xs font-mono text-muted-foreground mb-6 break-all" data-testid="text-image-id">{photo.id}</p>
+      {/* Image at the top */}
+      <div className="border rounded-md overflow-hidden bg-muted/30 flex items-center justify-center mb-6">
+        <img
+          src={photo.location}
+          alt={photo.imageDescription || photo.id}
+          className="max-h-[560px] w-auto object-contain"
+          data-testid="img-photo"
+        />
+      </div>
+      {(photo.widthPx || photo.heightPx) && (
+        <p className="text-xs text-muted-foreground text-center -mt-4 mb-6" data-testid="text-image-dimensions">
+          {photo.widthPx ?? "?"} × {photo.heightPx ?? "?"} px
+        </p>
+      )}
 
-      <div className="grid md:grid-cols-2 gap-6">
-        <div>
-          <div className="border rounded-md overflow-hidden bg-muted/30 flex items-center justify-center">
-            <img
-              src={photo.location}
-              alt={photo.imageDescription || photo.id}
-              className="max-h-[480px] w-auto object-contain"
-              data-testid="img-photo"
-            />
+      {/* Status chips */}
+      <div className="flex flex-wrap gap-2 mb-4" data-testid="group-status-chips">
+        <StatusChip label="AI desc" value={hasAiDescription} testId="chip-ai-status" />
+        <StatusChip label="Face recog" value={hasFaceRecog} testId="chip-face-recog" />
+        <StatusChip label="Sub image" value={!!photo.isSubImage} testId="chip-sub-image" />
+      </div>
+
+      {/* Creation date */}
+      <div className="mb-6 text-sm" data-testid="text-creation-date">
+        <span className="text-muted-foreground">Created: </span>
+        <span>{formatDate(photo.uploadedAt)}</span>
+      </div>
+
+      {/* Image description (only if non-empty) */}
+      {photo.imageDescription && photo.imageDescription.trim() !== "" && (
+        <div className="mb-6" data-testid="section-image-description">
+          <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">
+            Image description
+          </h2>
+          <div className="border rounded-md px-3 py-2 text-sm whitespace-pre-wrap break-words" data-testid="text-image-description">
+            {photo.imageDescription}
           </div>
-          {(photo.widthPx || photo.heightPx) && (
-            <p className="text-xs text-muted-foreground mt-2 text-center">
-              {photo.widthPx ?? "?"} × {photo.heightPx ?? "?"} px
-            </p>
+        </div>
+      )}
+
+      {/* Links section */}
+      <div className="mb-6" data-testid="section-links">
+        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Links</h2>
+        <div className="border rounded-md px-3 py-2 text-sm">
+          {photo.isSubImage ? (
+            parent ? (
+              <Link
+                href={imageDetailHref(parent.id)}
+                className="text-primary hover:underline break-all font-mono text-xs"
+                data-testid="link-parent-image"
+              >
+                ↑ Parent image: {parent.id}
+              </Link>
+            ) : (
+              <span className="text-muted-foreground">Parent image not found.</span>
+            )
+          ) : subImageRefs.length === 0 ? (
+            <span className="text-muted-foreground">No sub-images.</span>
+          ) : (
+            <ul className="space-y-1" data-testid="list-sub-images">
+              {subImageRefs.map((f, i) => (
+                <li key={f.subImagePhotoId ?? i}>
+                  <Link
+                    href={imageDetailHref(f.subImagePhotoId!)}
+                    className="text-primary hover:underline break-all font-mono text-xs"
+                    data-testid={`link-sub-image-${i}`}
+                  >
+                    ↓ Sub-image: {f.subImagePhotoId}
+                  </Link>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
-
-        <div>
-          <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Basic info</h2>
-          <div className="border rounded-md px-3">
-            <MetaRow label="Location" value={photo.location} mono testId="text-photo-location" />
-            <MetaRow label="PRM Location" value={photo.prmLocation} mono testId="text-photo-prm-location" />
-            <MetaRow label="Sub-image" value={photo.isSubImage ? "Yes" : "No"} />
-            <MetaRow label="Uploaded" value={formatDate(photo.uploadedAt)} />
-            <MetaRow label="Processed" value={formatDate(photo.processedAt)} />
-            <MetaRow label="File hash" value={photo.fileHash} mono />
-            <MetaRow label="Width" value={photo.widthPx ?? null} />
-            <MetaRow label="Height" value={photo.heightPx ?? null} />
-          </div>
-        </div>
       </div>
 
-      <div className="mt-8">
-        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">AI image description</h2>
+      {/* Location / URL / UUID */}
+      <div className="mb-6" data-testid="section-location">
+        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Location</h2>
         <div className="border rounded-md px-3">
-          <MetaRow label="Generated at" value={formatDate(photo.imageDescriptionAt)} />
+          <MetaRow label="PRM Location" value={photo.prmLocation} mono testId="text-photo-prm-location" />
           <MetaRow
-            label="Description"
-            value={photo.imageDescription || <span className="text-muted-foreground">—</span>}
-            testId="text-image-description"
-          />
-        </div>
-      </div>
-
-      <div className="mt-8">
-        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Facial detection</h2>
-        <div className="border rounded-md px-3">
-          <MetaRow label="Detected at" value={formatDate(photo.faceIdAt)} />
-          <MetaRow
-            label="Faces"
+            label="Image URL"
             value={
-              faces.length === 0 ? (
-                <span className="text-muted-foreground">No faces detected</span>
-              ) : (
-                <ul className="space-y-1" data-testid="list-faces">
-                  {faces.map((f, i) => (
-                    <li key={i} className="font-mono text-xs break-all">
-                      {f.faceUuid ?? "(unknown)"}
-                      {f.subImagePhotoId && (
-                        <Link
-                          href={`/image/${f.subImagePhotoId}`}
-                          className="ml-2 text-primary hover:underline"
-                          data-testid={`link-sub-image-${i}`}
-                        >
-                          → sub-image
-                        </Link>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )
+              <a
+                href={photo.location}
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline break-all"
+                data-testid="link-image-url"
+              >
+                {photo.location}
+              </a>
             }
           />
+          <MetaRow label="Image UUID" value={photo.id} mono testId="text-image-uuid" />
         </div>
       </div>
 
-      <div className="mt-8">
-        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">OG metadata</h2>
-        <div className="border rounded-md p-3" data-testid="block-og-metadata">
-          <JsonBlock value={photo.ogMetadata} />
-        </div>
-      </div>
-
-      <div className="mt-8 mb-12">
-        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Image metadata (EXIF / analysis)</h2>
-        <div className="border rounded-md p-3" data-testid="block-image-metadata">
-          <JsonBlock value={photo.metadata} />
+      {/* Deep info: action dates */}
+      <div className="mb-12" data-testid="section-deep-info">
+        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">
+          Deep info — action dates
+        </h2>
+        <div className="border rounded-md px-3">
+          <MetaRow label="Uploaded" value={formatDate(photo.uploadedAt)} testId="text-date-uploaded" />
+          <MetaRow label="Processed" value={formatDate(photo.processedAt)} testId="text-date-processed" />
+          <MetaRow
+            label="AI description"
+            value={formatDate(photo.imageDescriptionAt)}
+            testId="text-date-ai-description"
+          />
+          <MetaRow label="Face detection" value={formatDate(photo.faceIdAt)} testId="text-date-face-id" />
         </div>
       </div>
     </div>

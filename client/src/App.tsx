@@ -34,6 +34,7 @@ import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
 import AiDescDemo from "@/pages/ai-desc-demo";
 import AiChatDemo from "@/pages/ai-chat-demo";
 import ImageDetailPage from "@/pages/image-detail";
+import ImagesListPage from "@/pages/images-list";
 import DailyNotesList from "@/pages/daily-notes";
 import DailyNoteDetail from "@/pages/daily-note-detail";
 import NotFound from "@/pages/not-found";
@@ -116,6 +117,7 @@ function Router() {
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
       <ProtectedRoute path="/ai-chat-demo" component={AiChatDemo} />
       <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
+      <ProtectedRoute path="/images" component={ImagesListPage} />
       <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
       <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
