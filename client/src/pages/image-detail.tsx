@@ -47,7 +47,10 @@ function isFaceArray(v: unknown): v is FaceEntry[] {
 function useBackHref(currentId: string): { href: string; label: string } {
   const search = typeof window !== "undefined" ? window.location.search : "";
   const from = new URLSearchParams(search).get("from");
-  if (from && from.startsWith("/") && !from.startsWith("//") && !from.startsWith(`/image/${currentId}`)) {
+  // Only accept same-origin paths that look like a simple in-app route. This
+  // rejects protocol-relative URLs (//evil.com), backslash tricks (/\evil.com)
+  // and any non-leading-slash value.
+  if (from && /^\/[A-Za-z0-9_\-/?=&%.]*$/.test(from) && !from.startsWith(`/image/${currentId}`)) {
     return { href: from, label: "Back" };
   }
   return { href: "/images", label: "Back to Images" };
