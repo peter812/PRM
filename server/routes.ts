@@ -4861,6 +4861,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/photos/:id/parent", async (req, res) => {
+    if (!req.isAuthenticated() || !req.user) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    try {
+      const parent = await storage.getPhotoParent(req.params.id);
+      if (!parent) {
+        return res.status(404).json({ error: "Parent photo not found" });
+      }
+      res.json(parent);
+    } catch (error) {
+      console.error("Error fetching parent photo:", error);
+      res.status(500).json({ error: "Failed to fetch parent photo" });
+    }
+  });
+
   app.post("/api/photos/backfill", async (req, res) => {
     if (!req.isAuthenticated() || !req.user) {
       return res.status(401).json({ error: "Not authenticated" });

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { format } from "date-fns";
+import { imageDetailHref } from "@/lib/image-link";
 
 const PAGE_SIZE = 50;
 
@@ -173,9 +175,15 @@ export default function ImageTablePage() {
                     data-testid={`row-photo-${photo.id}`}
                   >
                     <Td w={210}>
-                      <span className="font-mono text-[10px] text-muted-foreground truncate block" style={{ maxWidth: 195 }}>
+                      <Link
+                        href={`~${imageDetailHref(photo.id, "/settings/image-storage/table")}`}
+                        className="font-mono text-[10px] text-primary hover:underline truncate block"
+                        style={{ maxWidth: 195 }}
+                        title={photo.id}
+                        data-testid={`link-photo-${photo.id}`}
+                      >
                         {photo.id}
-                      </span>
+                      </Link>
                     </Td>
                     <Td w={220}>
                       <TruncCell value={photo.location} maxW={205} />

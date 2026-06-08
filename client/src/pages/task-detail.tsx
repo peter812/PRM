@@ -4,6 +4,7 @@ import { Loader2, ChevronLeft, ImageIcon } from "lucide-react";
 import { format } from "date-fns";
 import type { Task, ImageTask } from "@shared/schema";
 import { Badge } from "@/components/ui/badge";
+import { imageDetailHref } from "@/lib/image-link";
 
 function formatDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
@@ -225,7 +226,7 @@ export default function TaskDetailPage() {
                   <td className="px-3 py-2">
                     {st.photoId ? (
                       <Link
-                        href={`~/image/${st.photoId}`}
+                        href={`~${imageDetailHref(st.photoId)}`}
                         className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-mono"
                         title={st.photoId}
                         data-testid={`link-sub-photo-${st.id}`}

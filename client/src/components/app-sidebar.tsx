@@ -15,6 +15,7 @@ import {
   MessagesSquare,
   BookOpen,
   Home,
+  Image,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
@@ -77,6 +78,11 @@ const menuItems = [
     title: "Daily Notes",
     url: "/daily-notes",
     icon: BookOpen,
+  },
+  {
+    title: "Images",
+    url: "/images",
+    icon: Image,
   },
   {
     title: "ELO Ranking",

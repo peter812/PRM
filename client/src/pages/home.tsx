@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getInitials, cn } from "@/lib/utils";
+import { imageDetailHref } from "@/lib/image-link";
 import type {
   Person,
   PersonWithRelations,
@@ -336,7 +337,7 @@ function RecentPhotosContent() {
         return (
           <Link
             key={img.uuid}
-            href={`/image/${img.uuid}`}
+            href={imageDetailHref(img.uuid, "/home")}
             className="relative aspect-square overflow-hidden rounded-md bg-muted hover-elevate"
             data-testid={`home-recent-photo-${img.uuid}`}
           >

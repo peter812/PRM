@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Loader2, Trash2, ChevronLeft, ChevronRight, RefreshCw, Image as ImageIcon, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import type { ImageTask } from "@shared/schema";
+import { imageDetailHref } from "@/lib/image-link";
 
 type ImageTasksResponse = {
   items: ImageTask[];
@@ -209,7 +210,7 @@ export default function ImageTasksSettingsPage() {
                   <td className="px-3 py-2">
                     {task.photoId ? (
                       <Link
-                        href={`~/image/${task.photoId}`}
+                        href={`~${imageDetailHref(task.photoId, "/settings/image-storage/tasks")}`}
                         className="inline-flex items-center gap-1 text-xs text-primary hover:underline font-mono"
                         title={task.photoId}
                         data-testid={`link-photo-${task.id}`}
