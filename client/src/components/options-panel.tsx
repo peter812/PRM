@@ -93,7 +93,7 @@ export function OptionsPanel({
 
       {/* Desktop: Sidebar panel */}
       {!isCollapsed && (
-        <div className="hidden lg:flex lg:flex-col lg:w-80 lg:border-l lg:bg-card">
+        <div className="hidden lg:flex lg:flex-col lg:w-80 lg:border-l lg:bg-card overflow-hidden">
           <div className="p-4 border-b flex items-center justify-between shrink-0">
             <h3 className="font-semibold text-lg">Graph Options</h3>
             <Button
