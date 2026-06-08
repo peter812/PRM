@@ -1,6 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
+import { useQueries } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import type { RelationshipsGroupedResponse } from "@shared/schema";
 
 interface MiniGraphNode {
@@ -57,6 +60,51 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
   const containerRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphInstance | null>(null);
   const [, navigate] = useLocation();
+  const [showExtended, setShowExtended] = useState(false);
+
+  // The ids of people directly connected to the center person. These are
+  // the only nodes that should appear in the graph; second-degree people
+  // are filtered out even when the toggle is on.
+  const directIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (data) {
+      for (const group of data.groups) {
+        for (const rel of group.relationships) {
+          ids.add(rel.toPerson.id);
+        }
+      }
+    }
+    return ids;
+  }, [data]);
+
+  // When the toggle is on, fetch each direct connection's grouped
+  // relationships so we can draw edges between any two direct connections
+  // that are themselves related to each other.
+  const directIdList = useMemo(() => Array.from(directIds), [directIds]);
+  const extendedQueries = useQueries({
+    queries: directIdList.map((id) => ({
+      queryKey: ["/api/people", id, "relationships-grouped"],
+      enabled: showExtended,
+    })),
+  });
+
+  // Compact signature that changes whenever the extended query results
+  // change shape (used to retrigger the graph build effect).
+  const extendedSignature = useMemo(() => {
+    if (!showExtended) return "off";
+    return extendedQueries
+      .map((q, i) => {
+        const payload = q.data as RelationshipsGroupedResponse | undefined;
+        const count = payload
+          ? payload.groups.reduce((sum, g) => sum + g.relationships.length, 0)
+          : -1;
+        return `${directIdList[i]}:${count}`;
+      })
+      .join(",");
+  }, [showExtended, extendedQueries, directIdList]);
+
+  const isLoadingExtended =
+    showExtended && extendedQueries.some((q) => q.isLoading);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -86,6 +134,41 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
             target: targetId,
             color: group.type.color || "#6b7280",
           });
+        }
+      }
+    }
+
+    // Add edges between two direct connections that are themselves
+    // related. Connections to people who are not direct connections of
+    // the center person are intentionally ignored.
+    if (showExtended) {
+      const addedPairs = new Set<string>();
+      for (let i = 0; i < directIdList.length; i++) {
+        const sourceId = directIdList[i];
+        const result = extendedQueries[i];
+        const payload = result?.data as RelationshipsGroupedResponse | undefined;
+        if (!payload) continue;
+        for (const group of payload.groups) {
+          for (const rel of group.relationships) {
+            const targetId = rel.toPerson.id;
+            // Only render edges whose endpoints are both direct
+            // connections (and not the center person itself, which is
+            // already covered by primary links above).
+            if (targetId === personId) continue;
+            if (!directIds.has(targetId)) continue;
+            // Dedupe undirected pairs so each link is added at most once.
+            const pairKey =
+              sourceId < targetId
+                ? `${sourceId}|${targetId}`
+                : `${targetId}|${sourceId}`;
+            if (addedPairs.has(pairKey)) continue;
+            addedPairs.add(pairKey);
+            links.push({
+              source: sourceId,
+              target: targetId,
+              color: group.type.color || "#9ca3af",
+            });
+          }
         }
       }
     }
@@ -163,7 +246,10 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
       window.clearTimeout(fitTimer);
       resizeObserver.disconnect();
     };
-  }, [personId, personName, data, navigate]);
+    // `extendedSignature` is included so the effect re-runs when extended
+    // relationship data finishes loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personId, personName, data, navigate, showExtended, extendedSignature]);
 
   // Tear down the renderer when the component unmounts.
   useEffect(() => {
@@ -176,10 +262,38 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
   }, []);
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-full min-h-[320px] rounded-md border bg-background overflow-hidden"
-      data-testid="mini-person-graph"
-    />
+    <div className="relative w-full h-full min-h-[320px]">
+      <div
+        ref={containerRef}
+        className="w-full h-full min-h-[320px] rounded-md border bg-background overflow-hidden"
+        data-testid="mini-person-graph"
+      />
+      <div
+        className="absolute top-2 right-2 z-10 flex items-center gap-2 rounded-md border bg-background/85 backdrop-blur px-2 py-1 shadow-sm"
+        data-testid="toggle-show-peoples-relationships"
+      >
+        <Switch
+          id="show-peoples-relationships"
+          checked={showExtended}
+          onCheckedChange={setShowExtended}
+          aria-label="Show people's relationships"
+          data-testid="switch-show-peoples-relationships"
+        />
+        <Label
+          htmlFor="show-peoples-relationships"
+          className="text-xs cursor-pointer select-none"
+        >
+          Show people's relationships
+          {isLoadingExtended && (
+            <span
+              className="ml-1 text-muted-foreground"
+              data-testid="text-extended-loading"
+            >
+              (loading…)
+            </span>
+          )}
+        </Label>
+      </div>
+    </div>
   );
 }
