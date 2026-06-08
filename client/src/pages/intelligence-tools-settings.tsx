@@ -4,20 +4,49 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { Loader2, Wrench, Search, AtSign, User, Book, NotebookPen, MessageSquare, RefreshCw, AlertCircle, type LucideIcon } from "lucide-react";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Loader2,
+  Wrench,
+  Search,
+  AtSign,
+  User,
+  UserPlus,
+  UserPen,
+  Book,
+  BookPlus,
+  NotebookPen,
+  MessageSquare,
+  MessageSquarePlus,
+  Pencil,
+  RefreshCw,
+  AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  ShieldCheck,
+  ShieldOff,
+  ShieldAlert,
+  type LucideIcon,
+} from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+
+type ExecutionMode = "off" | "auth" | "open";
 
 type ToolMetadata = {
   name: string;
   label: string;
   description: string;
   icon: string;
+  category: string;
+  write: boolean;
 };
 
 type ToolSettings = {
   enabled: boolean;
   perTool: Record<string, boolean>;
+  executionMode: ExecutionMode;
 };
 
 // Mirror of the server-side icon map (server/ai-tools.ts).
@@ -25,17 +54,38 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   search: Search,
   user: User,
   "user-search": User,
+  "user-plus": UserPlus,
+  "user-pen": UserPen,
   "at-sign": AtSign,
   "at-sign-search": AtSign,
   book: Book,
+  "book-plus": BookPlus,
   notebook: NotebookPen,
+  "notebook-pen": NotebookPen,
   "message-square": MessageSquare,
+  "message-square-plus": MessageSquarePlus,
+  pencil: Pencil,
 };
+
+// Display labels for each backend category. Keep in sync with `AiToolCategory`
+// in server/ai-tools.ts.
+const CATEGORY_LABELS: Record<string, string> = {
+  people: "People",
+  notes: "Notes",
+  interactions: "Interactions",
+  "daily-notes": "Daily notes",
+  "social-accounts": "Social accounts",
+};
+
+// Stable category ordering for the UI.
+const CATEGORY_ORDER = ["people", "interactions", "notes", "daily-notes", "social-accounts"];
 
 export default function IntelligenceToolsSettingsPage() {
   const { toast } = useToast();
   const [enabled, setEnabled] = useState(true);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("off");
   const [perTool, setPerTool] = useState<Record<string, boolean>>({});
+  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({});
 
   const { data: toolsData, isLoading: isLoadingTools, isError: isToolsError, refetch: refetchTools } = useQuery<{ tools: ToolMetadata[] }>({
     queryKey: ["/api/ai-tools"],
@@ -48,6 +98,7 @@ export default function IntelligenceToolsSettingsPage() {
     if (!settings) return;
     setEnabled(settings.enabled);
     setPerTool(settings.perTool ?? {});
+    setExecutionMode(settings.executionMode ?? "off");
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -68,6 +119,12 @@ export default function IntelligenceToolsSettingsPage() {
   const handleMasterToggle = (next: boolean) => {
     setEnabled(next);
     saveMutation.mutate({ enabled: next });
+  };
+
+  const handleExecutionModeChange = (next: string) => {
+    if (next !== "off" && next !== "auth" && next !== "open") return;
+    setExecutionMode(next);
+    saveMutation.mutate({ executionMode: next });
   };
 
   const handleToolToggle = (name: string, next: boolean) => {
@@ -100,19 +157,96 @@ export default function IntelligenceToolsSettingsPage() {
     );
   }
 
+  // Group tools by category for the expandable cards below.
+  const grouped: Record<string, ToolMetadata[]> = {};
+  for (const t of tools) {
+    const key = t.category || "other";
+    (grouped[key] ??= []).push(t);
+  }
+  const categoryKeys = [
+    ...CATEGORY_ORDER.filter((c) => grouped[c]?.length),
+    ...Object.keys(grouped).filter((c) => !CATEGORY_ORDER.includes(c)),
+  ];
+
   return (
     <div className="space-y-6 max-w-3xl">
+      {/* Execution mode — top of the page per spec. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5" /> AI tool execution
+          </CardTitle>
+          <CardDescription>
+            Controls whether the AI may modify your PRM data. Read-only tools (searches, lookups)
+            are always available when AI tools are enabled below — these options govern write tools
+            (create / update) only.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <RadioGroup
+            value={executionMode}
+            onValueChange={handleExecutionModeChange}
+            className="grid gap-3"
+            data-testid="radio-execution-mode"
+          >
+            <label
+              htmlFor="exec-off"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-4 hover-elevate"
+            >
+              <RadioGroupItem value="off" id="exec-off" data-testid="radio-execution-off" />
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <ShieldOff className="h-4 w-4" /> No AI writes
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  AI models have no access to tools that write or edit aspects of PRM. The model
+                  may only read.
+                </p>
+              </div>
+            </label>
+            <label
+              htmlFor="exec-auth"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-4 hover-elevate"
+            >
+              <RadioGroupItem value="auth" id="exec-auth" data-testid="radio-execution-auth" />
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <ShieldAlert className="h-4 w-4" /> User auth requests
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  The AI must request every change. A popup appears in the lower-left corner (top
+                  center on mobile) and you can accept, examine, or reject the request.
+                </p>
+              </div>
+            </label>
+            <label
+              htmlFor="exec-open"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-4 hover-elevate"
+            >
+              <RadioGroupItem value="open" id="exec-open" data-testid="radio-execution-open" />
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <ShieldCheck className="h-4 w-4" /> Unrestricted
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  All create and edit tools are accessible to the LLM with no auth required.
+                </p>
+              </div>
+            </label>
+          </RadioGroup>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Wrench className="h-5 w-5" /> AI Tools
           </CardTitle>
           <CardDescription>
-            Tools (also called "skills") let the AI chat read data from your PRM during a
-            conversation — for example, looking up a person, pulling a social account, or finding a
-            note. The model decides when to call a tool based on what you ask. Disabled tools are
-            hidden from the model entirely; turning them all off forces the chat to rely only on
-            its prompt and the message history.
+            Tools (also called "skills") let the AI chat read and (when allowed above) modify data
+            in your PRM during a conversation. The model decides when to call a tool based on what
+            you ask. Disabled tools are hidden from the model entirely; turning the master switch
+            off forces the chat to rely only on its prompt and the message history.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -134,47 +268,93 @@ export default function IntelligenceToolsSettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Available tools</CardTitle>
-          <CardDescription>
-            Toggle individual tools the AI chat may invoke.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {tools.map((tool) => {
-            const Icon = TOOL_ICON_MAP[tool.icon] ?? Search;
-            const checked = perTool[tool.name] !== false;
-            return (
-              <div
-                key={tool.name}
-                className="flex items-start justify-between gap-4 rounded-md border p-4"
-                data-testid={`tool-row-${tool.name}`}
+      {/* One expandable card per category. Per-tool details are hidden by default. */}
+      <div className="space-y-3">
+        {categoryKeys.map((cat) => {
+          const list = grouped[cat] ?? [];
+          if (list.length === 0) return null;
+          const isOpen = openCategories[cat] ?? false;
+          const writeCount = list.filter((t) => t.write).length;
+          return (
+            <Card key={cat} data-testid={`tool-category-${cat}`}>
+              <Collapsible
+                open={isOpen}
+                onOpenChange={(v) => setOpenCategories((prev) => ({ ...prev, [cat]: v }))}
               >
-                <div className="flex items-start gap-3">
-                  <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-md border bg-background">
-                    <Icon className="h-4 w-4" />
-                  </span>
-                  <div className="space-y-0.5">
-                    <Label htmlFor={`tool-${tool.name}`} className="text-base">{tool.label}</Label>
-                    <p className="text-sm text-muted-foreground">{tool.description}</p>
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between p-4 text-left hover-elevate"
+                    data-testid={`tool-category-toggle-${cat}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      <span className="text-base font-medium">
+                        {CATEGORY_LABELS[cat] ?? cat}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {list.length} tool{list.length === 1 ? "" : "s"}
+                        {writeCount > 0 && ` · ${writeCount} write`}
+                      </span>
+                    </div>
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="space-y-3 px-4 pb-4">
+                    {list.map((tool) => {
+                      const Icon = TOOL_ICON_MAP[tool.icon] ?? Search;
+                      const checked = perTool[tool.name] !== false;
+                      const writeDisabled = tool.write && executionMode === "off";
+                      return (
+                        <div
+                          key={tool.name}
+                          className="flex items-start justify-between gap-4 rounded-md border p-4"
+                          data-testid={`tool-row-${tool.name}`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-md border bg-background">
+                              <Icon className="h-4 w-4" />
+                            </span>
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2">
+                                <Label htmlFor={`tool-${tool.name}`} className="text-base">{tool.label}</Label>
+                                {tool.write && (
+                                  <span
+                                    className="rounded-md border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-600 border-amber-300 dark:text-amber-400 dark:border-amber-700"
+                                    data-testid={`tool-write-badge-${tool.name}`}
+                                  >
+                                    Write
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-sm text-muted-foreground">{tool.description}</p>
+                              {writeDisabled && (
+                                <p className="text-xs text-muted-foreground italic">
+                                  Disabled by execution mode (No AI writes).
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <Switch
+                            id={`tool-${tool.name}`}
+                            checked={checked}
+                            onCheckedChange={(v) => handleToolToggle(tool.name, v)}
+                            disabled={!enabled || writeDisabled}
+                            data-testid={`switch-tool-${tool.name}`}
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
-                <Switch
-                  id={`tool-${tool.name}`}
-                  checked={checked}
-                  onCheckedChange={(v) => handleToolToggle(tool.name, v)}
-                  disabled={!enabled}
-                  data-testid={`switch-tool-${tool.name}`}
-                />
-              </div>
-            );
-          })}
-          {tools.length === 0 && (
-            <p className="text-sm text-muted-foreground">No tools are registered.</p>
-          )}
-        </CardContent>
-      </Card>
+                </CollapsibleContent>
+              </Collapsible>
+            </Card>
+          );
+        })}
+        {tools.length === 0 && (
+          <p className="text-sm text-muted-foreground">No tools are registered.</p>
+        )}
+      </div>
     </div>
   );
 }

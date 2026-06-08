@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { MarkdownMessage } from "@/components/markdown-message";
+import { ToolApprovalPopup, type ToolApprovalRequest } from "@/components/tool-approval-popup";
 import {
   Loader2,
   Plus,
@@ -352,6 +353,21 @@ export default function AiChatDemoPage() {
   // turn. Drives the icon-box row above the "Thinking" indicator.
   const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCallTrace[]>([]);
 
+  // Pending write-tool approval requests, populated when the server emits a
+  // `tool_approval_request` event (auth execution mode). The UI shows the
+  // first one as a popup; subsequent requests queue behind it.
+  const [pendingApprovals, setPendingApprovals] = useState<ToolApprovalRequest[]>([]);
+
+  /** Send the user's accept/reject decision for a pending approval to the server. */
+  const respondToApproval = async (id: string, decision: "accept" | "reject") => {
+    setPendingApprovals((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await apiRequest("POST", `/api/ai-tools/approvals/${id}`, { decision });
+    } catch (err: any) {
+      toast({ title: "Failed to send decision", description: err.message, variant: "destructive" });
+    }
+  };
+
   // Core streaming helper: reads NDJSON from a /stream endpoint, appends tokens to
   // streamingContent state, and on the final sentinel line updates the query cache.
   const runStream = async (chatId: string, url: string, payload: { message: string; attachments: ChatAttachment[] }) => {
@@ -401,6 +417,26 @@ export default function AiChatDemoPage() {
             ]);
             continue;
           }
+          if (parsed.event === "tool_approval_request") {
+            // Server is awaiting the user's decision before running this tool.
+            setPendingApprovals((prev) => [
+              ...prev,
+              {
+                id: parsed.id,
+                name: parsed.name ?? "",
+                label: parsed.label ?? parsed.name ?? "Tool",
+                icon: parsed.icon ?? "search",
+                args: parsed.args ?? {},
+              },
+            ]);
+            continue;
+          }
+          if (parsed.event === "tool_approval_decision") {
+            // Already handled optimistically when the user clicked; just
+            // make sure the popup is gone.
+            setPendingApprovals((prev) => prev.filter((p) => p.id !== parsed.id));
+            continue;
+          }
           if (parsed.event === "tool_result") {
             setStreamingToolCalls((prev) =>
               prev.map((t) =>
@@ -426,6 +462,7 @@ export default function AiChatDemoPage() {
     setIsStreaming(true);
     setStreamingContent("");
     setStreamingToolCalls([]);
+    setPendingApprovals([]);
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       let chatId = activeChatId;
@@ -442,6 +479,7 @@ export default function AiChatDemoPage() {
       setIsStreaming(false);
       setStreamingContent("");
       setStreamingToolCalls([]);
+      setPendingApprovals([]);
       setStreamingUserMessage(null);
     }
   };
@@ -472,6 +510,7 @@ export default function AiChatDemoPage() {
     setIsStreaming(true);
     setStreamingContent("");
     setStreamingToolCalls([]);
+    setPendingApprovals([]);
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       await runStream(activeChatId, `/api/ai-chats/${activeChatId}/regenerate/stream`, payload);
@@ -484,6 +523,7 @@ export default function AiChatDemoPage() {
       setIsStreaming(false);
       setStreamingContent("");
       setStreamingToolCalls([]);
+      setPendingApprovals([]);
       setStreamingUserMessage(null);
     }
   };
@@ -623,6 +663,12 @@ export default function AiChatDemoPage() {
 
   return (
     <div className="flex h-full w-full overflow-hidden">
+      {/* Tool-call approval popup. Shows the first pending request; later
+          requests queue behind it. */}
+      <ToolApprovalPopup
+        request={pendingApprovals[0] ?? null}
+        onDecision={respondToApproval}
+      />
       {/* Sidebar with historical chats */}
       <aside className="hidden md:flex w-64 shrink-0 flex-col border-r bg-sidebar" data-testid="chat-history-sidebar">
         <div className="p-3 border-b">
