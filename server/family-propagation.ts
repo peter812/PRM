@@ -1,5 +1,5 @@
 import { FAMILY_RELATIONSHIP_RULES, FAMILY_RELATIONSHIP_INVERSES } from "@shared/schema";
-import type { Relationship, InsertRelationship } from "@shared/schema";
+import type { Relationship, InsertRelationship, FamilyRelationshipType } from "@shared/schema";
 
 const MAX_PROPAGATION_DEPTH = 6;
 const MAX_BATCH_SIZE = 50;
@@ -93,7 +93,7 @@ export async function propagateRelationship(
         const newRel = await storage.createRelationship({
           fromPersonId: A,
           toPersonId: C,
-          familyRelationshipType: inferredType,
+          familyRelationshipType: inferredType as FamilyRelationshipType,
           typeId: rel.typeId,
           notes: null,
         });
@@ -109,7 +109,7 @@ export async function propagateRelationship(
               const inverseRel = await storage.createRelationship({
                 fromPersonId: C,
                 toPersonId: A,
-                familyRelationshipType: inverseType,
+                familyRelationshipType: inverseType as FamilyRelationshipType,
                 typeId: rel.typeId,
                 notes: null,
               });
