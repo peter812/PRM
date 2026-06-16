@@ -1168,8 +1168,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getPeopleByLastName(lastName: string): Promise<Person[]> {
-    // Escape ILIKE wildcard characters to prevent unintended pattern matching
-    const escapedName = lastName.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    // Escape ILIKE special characters: backslash first, then wildcards
+    const escapedName = lastName
+      .replace(/\\/g, '\\\\')
+      .replace(/%/g, '\\%')
+      .replace(/_/g, '\\_');
     return db.select().from(people).where(ilike(people.lastName, escapedName));
   }
 
