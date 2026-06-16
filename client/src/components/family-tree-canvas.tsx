@@ -1,6 +1,5 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 import { Application, Container, Graphics, Text, TextStyle } from "pixi.js";
-import { useLocation } from "wouter";
 
 // Layout constants
 const LAYOUT = {
@@ -352,7 +351,14 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
   return { nodes, edges };
 }
 
-export function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className }: FamilyTreeCanvasProps) {
+export interface FamilyTreeCanvasHandle {
+  fitToScreen: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+}
+
+export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCanvasProps>(
+  function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className }, ref) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const containerRef = useRef<Container | null>(null);
@@ -360,7 +366,6 @@ export function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className }
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastPanRef = useRef<{ x: number; y: number } | null>(null);
-  const [, navigate] = useLocation();
 
   const isDarkMode = document.documentElement.classList.contains("dark");
 
@@ -399,11 +404,20 @@ export function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className }
     app.renderer.render(app.stage);
   }, []);
 
-  // Expose fitToScreen via ref-like mechanism
-  useEffect(() => {
-    (window as any).__familyTreeFitToScreen = fitToScreen;
-    return () => { delete (window as any).__familyTreeFitToScreen; };
-  }, [fitToScreen]);
+  const zoomBy = useCallback((delta: number) => {
+    const container = containerRef.current;
+    const app = appRef.current;
+    if (!container || !app) return;
+    const newScale = Math.min(Math.max(container.scale.x + delta, 0.1), 3.0);
+    container.scale.set(newScale);
+    app.renderer.render(app.stage);
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    fitToScreen,
+    zoomIn: () => zoomBy(0.2),
+    zoomOut: () => zoomBy(-0.2),
+  }), [fitToScreen, zoomBy]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -661,8 +675,9 @@ export function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className }
       app.canvas.addEventListener("pointerup", handlePointerUp);
       app.canvas.addEventListener("pointerleave", handlePointerUp);
 
-      // Keyboard handlers
+      // Keyboard handlers - only active when canvas wrapper is focused
       const handleKeyDown = (e: KeyboardEvent) => {
+        if (!canvasRef.current?.contains(document.activeElement) && document.activeElement !== canvasRef.current) return;
         const PAN_STEP = 50;
         const ZOOM_STEP = 0.1;
         switch (e.key) {
@@ -732,7 +747,7 @@ export function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className }
       style={{ outline: "none" }}
     />
   );
-}
+});
 
 function drawDashedLine(
   g: Graphics,
@@ -760,10 +775,4 @@ function drawDashedLine(
     g.lineTo(ex, ey);
     g.stroke({ color, width });
   }
-}
-
-export { fitToScreen as fitToScreenFn };
-
-function fitToScreen() {
-  (window as any).__familyTreeFitToScreen?.();
 }

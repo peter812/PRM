@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Loader2, Maximize, ExternalLink } from "lucide-react";
-import { FamilyTreeCanvas, FamilyTreeData, fitToScreenFn } from "@/components/family-tree-canvas";
+import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle } from "@/components/family-tree-canvas";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
 
 interface FamilyTreeTabProps {
@@ -15,6 +15,7 @@ interface FamilyTreeTabProps {
 export function FamilyTreeTab({ personId, personName }: FamilyTreeTabProps) {
   const [, navigate] = useLocation();
   const [depth, setDepth] = useState(3);
+  const canvasRef = useRef<FamilyTreeCanvasHandle>(null);
   const [addMemberContext, setAddMemberContext] = useState<{
     relatedPersonId: string;
     suggestedRole: string;
@@ -68,7 +69,7 @@ export function FamilyTreeTab({ personId, personName }: FamilyTreeTabProps) {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => fitToScreenFn()}
+          onClick={() => canvasRef.current?.fitToScreen()}
         >
           <Maximize className="h-3 w-3 mr-1" />
           Fit
@@ -93,6 +94,7 @@ export function FamilyTreeTab({ personId, personName }: FamilyTreeTabProps) {
         )}
         {treeData && !isLoading && (
           <FamilyTreeCanvas
+            ref={canvasRef}
             data={treeData}
             onPersonClick={handlePersonClick}
             onAddMember={handleAddMember}

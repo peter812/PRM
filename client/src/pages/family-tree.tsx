@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Loader2, ZoomIn, ZoomOut, Maximize, RotateCcw, UserSearch } from "lucide-react";
-import { FamilyTreeCanvas, FamilyTreeData, fitToScreenFn } from "@/components/family-tree-canvas";
+import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle } from "@/components/family-tree-canvas";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
 
@@ -15,7 +15,8 @@ interface PersonBasic {
 }
 
 export default function FamilyTreePage() {
-  const [location, navigate] = useLocation();
+  const [, navigate] = useLocation();
+  const canvasRef = useRef<FamilyTreeCanvasHandle>(null);
 
   // Read initial state from URL params
   const params = new URLSearchParams(window.location.search);
@@ -36,10 +37,7 @@ export default function FamilyTreePage() {
       const newParams = new URLSearchParams();
       newParams.set("person", selectedPersonId);
       newParams.set("depth", String(depth));
-      const newUrl = `/family-tree?${newParams.toString()}`;
-      if (location !== newUrl) {
-        window.history.replaceState(null, "", newUrl);
-      }
+      window.history.replaceState(null, "", `/family-tree?${newParams.toString()}`);
     }
   }, [selectedPersonId, depth]);
 
@@ -114,10 +112,7 @@ export default function FamilyTreePage() {
             variant="outline"
             size="icon"
             className="h-8 w-8"
-            onClick={() => {
-              const container = document.querySelector("[tabindex='0']") as HTMLElement;
-              container?.dispatchEvent(new KeyboardEvent("keydown", { key: "+" }));
-            }}
+            onClick={() => canvasRef.current?.zoomIn()}
             title="Zoom in"
           >
             <ZoomIn className="h-4 w-4" />
@@ -126,10 +121,7 @@ export default function FamilyTreePage() {
             variant="outline"
             size="icon"
             className="h-8 w-8"
-            onClick={() => {
-              const container = document.querySelector("[tabindex='0']") as HTMLElement;
-              container?.dispatchEvent(new KeyboardEvent("keydown", { key: "-" }));
-            }}
+            onClick={() => canvasRef.current?.zoomOut()}
             title="Zoom out"
           >
             <ZoomOut className="h-4 w-4" />
@@ -138,7 +130,7 @@ export default function FamilyTreePage() {
             variant="outline"
             size="icon"
             className="h-8 w-8"
-            onClick={() => fitToScreenFn()}
+            onClick={() => canvasRef.current?.fitToScreen()}
             title="Fit to screen"
           >
             <Maximize className="h-4 w-4" />
@@ -183,6 +175,7 @@ export default function FamilyTreePage() {
 
         {selectedPersonId && treeData && !isTreeLoading && (
           <FamilyTreeCanvas
+            ref={canvasRef}
             data={treeData}
             onPersonClick={handlePersonClick}
             onAddMember={handleAddMember}
