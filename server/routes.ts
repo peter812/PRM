@@ -22,6 +22,10 @@ import {
   insertSocialAccountTypeSchema,
   insertSocialAccountPostSchema,
   insertPhotoSchema,
+  FAMILY_RELATIONSHIP_TYPES,
+  FAMILY_RELATIONSHIP_LABELS,
+  FAMILY_RELATIONSHIP_INVERSES,
+  FAMILY_RELATIONSHIP_CATEGORIES,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -3065,6 +3069,186 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error deleting relationship:", error);
       res.status(500).json({ error: "Failed to delete relationship" });
+    }
+  });
+
+  // Family relationship type list — must come before parameterised routes
+  app.get("/api/family-relationships/types", async (_req, res) => {
+    try {
+      const types = FAMILY_RELATIONSHIP_TYPES.map(value => ({
+        value,
+        label: FAMILY_RELATIONSHIP_LABELS[value] ?? value,
+        category: FAMILY_RELATIONSHIP_CATEGORIES[value] ?? "other",
+        inverse: FAMILY_RELATIONSHIP_INVERSES[value] ?? value,
+      }));
+      res.json({ types });
+    } catch (error) {
+      console.error("Error fetching family relationship types:", error);
+      res.status(500).json({ error: "Failed to fetch family relationship types" });
+    }
+  });
+
+  // Manually trigger propagation for a person's tree
+  app.post("/api/family-relationships/propagate", async (req, res) => {
+    try {
+      const { personId } = z.object({ personId: z.string() }).parse(req.body);
+      const familyRels = await storage.getFamilyRelationshipsForPerson(personId);
+      const allPropagated = [];
+      for (const rel of familyRels) {
+        const propagated = await storage.propagateFamilyRelationship(rel.id);
+        allPropagated.push(...propagated);
+      }
+      res.json({ propagated: allPropagated, total: allPropagated.length });
+    } catch (error) {
+      console.error("Error propagating family relationships:", error);
+      res.status(400).json({ error: "Failed to propagate family relationships" });
+    }
+  });
+
+  // Create a family relationship (with automatic inverse + propagation)
+  app.post("/api/family-relationships", async (req, res) => {
+    try {
+      const bodySchema = z.object({
+        fromPersonId: z.string(),
+        toPersonId: z.string(),
+        familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES),
+        notes: z.string().nullable().optional(),
+      });
+      const body = bodySchema.parse(req.body);
+
+      // Find or use the existing "Family" relationship type for typeId
+      const allTypes = await storage.getAllRelationshipTypes();
+      const familyType = allTypes.find(t => t.name.toLowerCase() === "family");
+
+      const result = await storage.createFamilyRelationshipWithInverse({
+        fromPersonId: body.fromPersonId,
+        toPersonId: body.toPersonId,
+        familyRelationshipType: body.familyRelationshipType,
+        typeId: familyType?.id ?? null,
+        notes: body.notes ?? null,
+      });
+
+      res.status(201).json(result);
+    } catch (error) {
+      console.error("Error creating family relationship:", error);
+      res.status(400).json({ error: "Failed to create family relationship" });
+    }
+  });
+
+  // Update a family relationship (updates both directions)
+  app.patch("/api/family-relationships/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const bodySchema = z.object({
+        familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES).optional(),
+        notes: z.string().nullable().optional(),
+      });
+      const body = bodySchema.parse(req.body);
+
+      const updated = await storage.updateRelationship(id, body);
+      if (!updated) {
+        return res.status(404).json({ error: "Relationship not found" });
+      }
+
+      // Update the inverse direction if type changed
+      if (body.familyRelationshipType && updated.toPersonId && updated.fromPersonId) {
+        const inverseType = FAMILY_RELATIONSHIP_INVERSES[body.familyRelationshipType];
+        if (inverseType) {
+          const inverse = await storage.findFamilyRelationship(updated.toPersonId, updated.fromPersonId);
+          if (inverse) {
+            await storage.updateRelationship(inverse.id, { familyRelationshipType: inverseType });
+          }
+        }
+        // Re-run propagation
+        await storage.propagateFamilyRelationship(updated.id);
+      }
+
+      res.json({ relationship: updated });
+    } catch (error) {
+      console.error("Error updating family relationship:", error);
+      res.status(400).json({ error: "Failed to update family relationship" });
+    }
+  });
+
+  // Delete a family relationship (removes both directions)
+  app.delete("/api/family-relationships/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const rel = await storage.getRelationshipById(id);
+      if (!rel) {
+        return res.status(404).json({ error: "Relationship not found" });
+      }
+
+      // Delete the inverse if it exists
+      if (rel.familyRelationshipType) {
+        const inverse = await storage.findFamilyRelationship(rel.toPersonId, rel.fromPersonId);
+        if (inverse) {
+          await storage.deleteRelationship(inverse.id);
+        }
+      }
+
+      await storage.deleteRelationship(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting family relationship:", error);
+      res.status(500).json({ error: "Failed to delete family relationship" });
+    }
+  });
+
+  // Get family tree for a person
+  app.get("/api/family-tree/:personId", async (req, res) => {
+    try {
+      const { personId } = req.params;
+      const depth = Math.min(parseInt((req.query.depth as string) ?? "6", 10) || 6, 10);
+
+      const person = await storage.getPersonById(personId);
+      if (!person) {
+        return res.status(404).json({ error: "Person not found" });
+      }
+
+      const tree = await storage.getFamilyTree(personId, depth);
+      res.json({ rootPersonId: personId, ...tree });
+    } catch (error) {
+      console.error("Error fetching family tree:", error);
+      res.status(500).json({ error: "Failed to fetch family tree" });
+    }
+  });
+
+  // Get suggested family connections for a person
+  app.get("/api/family-tree/:personId/suggestions", async (req, res) => {
+    try {
+      const { personId } = req.params;
+      const person = await storage.getPersonById(personId);
+      if (!person) {
+        return res.status(404).json({ error: "Person not found" });
+      }
+      const suggestions = await storage.getSuggestedFamilyConnections(personId);
+      res.json({ suggestions });
+    } catch (error) {
+      console.error("Error fetching family suggestions:", error);
+      res.status(500).json({ error: "Failed to fetch family suggestions" });
+    }
+  });
+
+  // Find people by last name (for family connection suggestions)
+  app.get("/api/people/by-last-name/:lastName", async (req, res) => {
+    try {
+      const { lastName } = req.params;
+      if (!lastName?.trim()) {
+        return res.status(400).json({ error: "Last name is required" });
+      }
+      const found = await storage.getPeopleByLastName(lastName.trim());
+      res.json({
+        people: found.map(p => ({
+          id: p.id,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          avatarUrl: p.imageUrl ?? null,
+        })),
+      });
+    } catch (error) {
+      console.error("Error fetching people by last name:", error);
+      res.status(500).json({ error: "Failed to fetch people by last name" });
     }
   });
 

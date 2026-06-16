@@ -394,6 +394,9 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
       },
+      relationships: {
+        family_relationship_type: "VARCHAR(50)",
+      },
     };
 
     // Check and add missing columns
