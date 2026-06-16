@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import { Loader2, Maximize, ExternalLink } from "lucide-react";
 import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle } from "@/components/family-tree-canvas";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
+import { apiRequest } from "@/lib/queryClient";
 
 interface FamilyTreeTabProps {
   personId: string;
@@ -24,10 +25,7 @@ export function FamilyTreeTab({ personId, personName }: FamilyTreeTabProps) {
   const { data: treeData, isLoading } = useQuery<FamilyTreeData>({
     queryKey: ["/api/family-tree", personId, depth],
     queryFn: async () => {
-      const res = await fetch(`/api/family-tree/${personId}?depth=${depth}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch family tree");
+      const res = await apiRequest("GET", `/api/family-tree/${personId}?depth=${depth}`);
       return res.json();
     },
     enabled: !!personId,
