@@ -97,6 +97,12 @@ function formatRelationshipLabel(type: string): string {
   return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function getInverseParentRole(childType: string): string {
+  if (childType === "son") return "father";
+  if (childType === "daughter") return "mother";
+  return "parent";
+}
+
 // Build tree structure from flat API data
 function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: RenderEdge[] } {
   const { rootPersonId, people, relationships, missingLinks } = data;
@@ -273,15 +279,11 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
       } else {
         // Root IS the type to this person — we need the inverse perspective
         // e.g. root is "father" of this person → this person is "child" of root
-        const cat = getRelationshipCategory(relToRoot.familyRelationshipType);
-        if (cat === "parent") {
+        const category = getRelationshipCategory(relToRoot.familyRelationshipType);
+        if (category === "parent") {
           roleLabel = "Child";
-        } else if (cat === "child") {
-          roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType === "son" ? "father" :
-            relToRoot.familyRelationshipType === "daughter" ? "mother" :
-            "parent");
-        } else if (cat === "spouse") {
-          roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
+        } else if (category === "child") {
+          roleLabel = formatRelationshipLabel(getInverseParentRole(relToRoot.familyRelationshipType));
         } else {
           roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
         }
