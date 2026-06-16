@@ -5,6 +5,7 @@ import {
   AtSign,
   Trophy,
   Share2,
+  GitBranch,
   Link2,
   Settings,
   LogOut,
@@ -51,6 +52,11 @@ const menuItems = [
     title: "People",
     url: "/",
     icon: Users,
+  },
+  {
+    title: "Family Tree",
+    url: "/family-tree",
+    icon: GitBranch,
   },
   {
     title: "Groups",
