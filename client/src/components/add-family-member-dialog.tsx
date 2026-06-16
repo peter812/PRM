@@ -55,10 +55,12 @@ export function AddFamilyMemberDialog({
 
   const { data: people = [] } = useQuery<Person[]>({
     queryKey: ["/api/people"],
+    enabled: open,
   });
 
   const { data: typesData } = useQuery<{ types: FamilyRelType[] }>({
     queryKey: ["/api/family-relationships/types"],
+    enabled: open,
   });
 
   const types = typesData?.types ?? [];

@@ -97,6 +97,12 @@ function formatRelationshipLabel(type: string): string {
   return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function getInverseParentRole(childType: string): string {
+  if (childType === "son") return "father";
+  if (childType === "daughter") return "mother";
+  return "parent";
+}
+
 // Build tree structure from flat API data
 function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: RenderEdge[] } {
   const { rootPersonId, people, relationships, missingLinks } = data;
@@ -265,10 +271,22 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     );
     let roleLabel = "";
     if (relToRoot) {
+      // fromPerson's type describes what fromPerson is to toPerson
+      // e.g. fromPersonId=Dad, toPersonId=Root, type="father" means "Dad is father of Root"
       if (relToRoot.fromPersonId === person.id) {
+        // This person IS the type to root (e.g., person is "father" of root)
         roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
       } else {
-        roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
+        // Root IS the type to this person — we need the inverse perspective
+        // e.g. root is "father" of this person → this person is "child" of root
+        const category = getRelationshipCategory(relToRoot.familyRelationshipType);
+        if (category === "parent") {
+          roleLabel = "Child";
+        } else if (category === "child") {
+          roleLabel = formatRelationshipLabel(getInverseParentRole(relToRoot.familyRelationshipType));
+        } else {
+          roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
+        }
       }
     }
 
@@ -476,7 +494,7 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
           const x2 = Math.max(fromNode.x, toNode.x) - LAYOUT.NODE_WIDTH / 2;
 
           if (edge.style === "dashed") {
-            drawDashedLine(edgeGraphics, x1, y, x2, y, color, 2, 8);
+            drawDashedLine(edgeGraphics, x1, y, x2, y, color, 2, 5);
           } else {
             edgeGraphics.moveTo(x1, y);
             edgeGraphics.lineTo(x2, y);
@@ -532,7 +550,7 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
         // Name text
         const nameStyle = new TextStyle({
           fontFamily: "Inter, system-ui, sans-serif",
-          fontSize: 13,
+          fontSize: 14,
           fontWeight: "600",
           fill: node.isMissing ? COLORS.MISSING_TEXT : (isDarkMode ? 0xf9fafb : 0x111827),
           wordWrap: true,

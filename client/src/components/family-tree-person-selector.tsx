@@ -34,6 +34,7 @@ export function FamilyTreePersonSelector({
 
   const { data: people = [], isLoading } = useQuery<Person[]>({
     queryKey: ["/api/people"],
+    enabled: open,
   });
 
   const filteredPeople = searchTerm.trim()

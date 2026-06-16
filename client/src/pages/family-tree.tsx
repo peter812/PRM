@@ -7,6 +7,7 @@ import { Loader2, ZoomIn, ZoomOut, Maximize, RotateCcw, UserSearch } from "lucid
 import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle } from "@/components/family-tree-canvas";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
+import { apiRequest } from "@/lib/queryClient";
 
 interface PersonBasic {
   id: string;
@@ -45,10 +46,7 @@ export default function FamilyTreePage() {
   const { data: treeData, isLoading: isTreeLoading, isError } = useQuery<FamilyTreeData>({
     queryKey: ["/api/family-tree", selectedPersonId, depth],
     queryFn: async () => {
-      const res = await fetch(`/api/family-tree/${selectedPersonId}?depth=${depth}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch family tree");
+      const res = await apiRequest("GET", `/api/family-tree/${selectedPersonId}?depth=${depth}`);
       return res.json();
     },
     enabled: !!selectedPersonId,
