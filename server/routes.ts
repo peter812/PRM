@@ -26,6 +26,7 @@ import {
   FAMILY_RELATIONSHIP_LABELS,
   FAMILY_RELATIONSHIP_INVERSES,
   FAMILY_RELATIONSHIP_CATEGORIES,
+  type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
@@ -3091,7 +3092,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Manually trigger propagation for a person's tree
   app.post("/api/family-relationships/propagate", async (req, res) => {
     try {
-      const { personId } = z.object({ personId: z.string() }).parse(req.body);
+      const { personId } = z.object({ personId: z.string().min(1) }).parse(req.body);
+
+      const person = await storage.getPersonById(personId);
+      if (!person) {
+        return res.status(404).json({ error: "Person not found" });
+      }
+
       const familyRels = await storage.getFamilyRelationshipsForPerson(personId);
       const allPropagated = [];
       for (const rel of familyRels) {
@@ -3109,12 +3116,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/family-relationships", async (req, res) => {
     try {
       const bodySchema = z.object({
-        fromPersonId: z.string(),
-        toPersonId: z.string(),
+        fromPersonId: z.string().min(1),
+        toPersonId: z.string().min(1),
         familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES),
         notes: z.string().nullable().optional(),
       });
       const body = bodySchema.parse(req.body);
+
+      if (body.fromPersonId === body.toPersonId) {
+        return res.status(400).json({ error: "Cannot create a relationship from a person to themselves" });
+      }
+
+      // Verify both people exist
+      const [fromPerson, toPerson] = await Promise.all([
+        storage.getPersonById(body.fromPersonId),
+        storage.getPersonById(body.toPersonId),
+      ]);
+      if (!fromPerson) {
+        return res.status(404).json({ error: "From person not found" });
+      }
+      if (!toPerson) {
+        return res.status(404).json({ error: "To person not found" });
+      }
+
+      // Check if a family relationship already exists between these two people
+      const existing = await storage.findFamilyRelationship(body.fromPersonId, body.toPersonId);
+      if (existing) {
+        return res.status(409).json({ error: "A family relationship already exists between these people" });
+      }
 
       // Find or use the existing "Family" relationship type for typeId
       const allTypes = await storage.getAllRelationshipTypes();
@@ -3156,7 +3185,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (inverseType) {
           const inverse = await storage.findFamilyRelationship(updated.toPersonId, updated.fromPersonId);
           if (inverse) {
-            await storage.updateRelationship(inverse.id, { familyRelationshipType: inverseType });
+            await storage.updateRelationship(inverse.id, { familyRelationshipType: inverseType as FamilyRelationshipType });
           }
         }
         // Re-run propagation
@@ -3199,7 +3228,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/family-tree/:personId", async (req, res) => {
     try {
       const { personId } = req.params;
-      const depth = Math.min(parseInt((req.query.depth as string) ?? "6", 10) || 6, 10);
+      const depth = Math.max(1, Math.min(parseInt((req.query.depth as string) ?? "6", 10) || 6, 10));
 
       const person = await storage.getPersonById(personId);
       if (!person) {

@@ -91,6 +91,7 @@ import {
   type Photo,
   type InsertPhoto,
   FAMILY_RELATIONSHIP_INVERSES,
+  type FamilyRelationshipType,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull } from "drizzle-orm";
@@ -149,7 +150,6 @@ export interface FamilyTreePersonEntry {
   firstName: string;
   lastName: string;
   avatarUrl: string | null;
-  birthday: string | null;
   depth: number;
 }
 
@@ -212,7 +212,7 @@ export interface IStorage {
   getFamilyRelationshipsForPerson(personId: string): Promise<Relationship[]>;
   findFamilyRelationship(fromPersonId: string, toPersonId: string): Promise<Relationship | undefined>;
   getFamilyTree(personId: string, maxDepth: number): Promise<FamilyTreeResult>;
-  detectMissingFamilyLinks(personIds: string[], rels: Relationship[]): MissingLink[];
+  detectMissingFamilyLinks(personIds: string[], rels: Array<{ fromPersonId: string; toPersonId: string; familyRelationshipType: string | null }>): MissingLink[];
   propagateFamilyRelationship(relationshipId: string): Promise<Relationship[]>;
   createFamilyRelationshipWithInverse(data: InsertRelationship): Promise<{ relationship: Relationship; inverseRelationship: Relationship | null; propagated: Relationship[] }>;
   getPeopleByLastName(lastName: string): Promise<Person[]>;
@@ -741,6 +741,7 @@ export class DatabaseStorage implements IStorage {
           toPersonId: relationships.toPersonId,
           typeId: relationships.typeId,
           notes: relationships.notes,
+          familyRelationshipType: relationships.familyRelationshipType,
           createdAt: relationships.createdAt,
           toPerson: people,
           type: relationshipTypes,
@@ -756,6 +757,7 @@ export class DatabaseStorage implements IStorage {
           toPersonId: relationships.toPersonId,
           typeId: relationships.typeId,
           notes: relationships.notes,
+          familyRelationshipType: relationships.familyRelationshipType,
           createdAt: relationships.createdAt,
           toPerson: people,
           type: relationshipTypes,
@@ -1057,16 +1059,15 @@ export class DatabaseStorage implements IStorage {
       firstName: p.firstName,
       lastName: p.lastName ?? "",
       avatarUrl: p.imageUrl ?? null,
-      birthday: p.birthday ?? null,
       depth: visitedPeople.get(p.id) ?? 0,
     }));
 
-    const missingLinks = this.detectMissingFamilyLinks(personIds, treeRelationships as any);
+    const missingLinks = this.detectMissingFamilyLinks(personIds, treeRelationships);
 
     return { people: treePeople, relationships: treeRelationships, missingLinks };
   }
 
-  detectMissingFamilyLinks(personIds: string[], rels: Relationship[]): MissingLink[] {
+  detectMissingFamilyLinks(personIds: string[], rels: Array<{ fromPersonId: string; toPersonId: string; familyRelationshipType: string | null }>): MissingLink[] {
     const missing: MissingLink[] = [];
     const seen = new Set<string>();
 
@@ -1077,25 +1078,30 @@ export class DatabaseStorage implements IStorage {
         (r.fromPersonId === pid || r.toPersonId === pid) && r.familyRelationshipType
       );
 
-      const asFromTypes = personRels.filter(r => r.fromPersonId === pid).map(r => r.familyRelationshipType!);
+      // asToTypes: relationship types where this person is the "to" person
+      // meaning "fromPerson is [type] of this person"
       const asToTypes = personRels.filter(r => r.toPersonId === pid).map(r => r.familyRelationshipType!);
+      const asFromTypes = personRels.filter(r => r.fromPersonId === pid).map(r => r.familyRelationshipType!);
 
-      const hasFather = asToTypes.includes("father") || asFromTypes.includes("child") || asToTypes.includes("parent");
+      // A person "has a father" if someone is their father (asToTypes includes "father")
+      // OR they are someone's child via a father relationship (asFromTypes includes "child" with a father as the target doesn't help - we need to check the inverse row)
+      const hasFather = asToTypes.includes("father") || asToTypes.includes("parent");
       const hasMother = asToTypes.includes("mother") || asToTypes.includes("parent");
+      const hasAnyParent = hasFather || hasMother;
       const hasGrandparent = asToTypes.some(t => t === "grandfather" || t === "grandmother" || t === "grandparent");
-      const hasParent = hasFather || hasMother;
       const hasChildren = asFromTypes.some(t => t === "father" || t === "mother" || t === "parent") ||
         asToTypes.some(t => t === "child" || t === "son" || t === "daughter");
       const hasSpouse = asFromTypes.includes("spouse") || asToTypes.includes("spouse");
 
-      if (!hasFather) {
+      // Only flag missing parent when the OTHER parent exists (partial family info)
+      if (hasMother && !hasFather) {
         const key = `${pid}:father`;
         if (!seen.has(key) && personIdSet.has(pid)) {
           seen.add(key);
           missing.push({ personId: pid, missingRole: "father", context: `Father of person ${pid}`, relatedPersonId: pid });
         }
       }
-      if (!hasMother) {
+      if (hasFather && !hasMother) {
         const key = `${pid}:mother`;
         if (!seen.has(key) && personIdSet.has(pid)) {
           seen.add(key);
@@ -1103,7 +1109,8 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      if (hasGrandparent && !hasParent) {
+      // Generation gap: grandparent exists but no intermediate parent
+      if (hasGrandparent && !hasAnyParent) {
         const key = `${pid}:parent_gap`;
         if (!seen.has(key)) {
           seen.add(key);
@@ -1111,6 +1118,7 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      // Spouse missing: has children but no spouse
       if (hasChildren && !hasSpouse) {
         const key = `${pid}:spouse`;
         if (!seen.has(key)) {
@@ -1144,7 +1152,7 @@ export class DatabaseStorage implements IStorage {
           inverseRelationship = await this.createRelationship({
             fromPersonId: data.toPersonId,
             toPersonId: data.fromPersonId,
-            familyRelationshipType: inverseType,
+            familyRelationshipType: inverseType as FamilyRelationshipType,
             typeId: data.typeId,
             notes: data.notes,
           });
@@ -1160,7 +1168,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getPeopleByLastName(lastName: string): Promise<Person[]> {
-    return db.select().from(people).where(ilike(people.lastName, lastName));
+    // Escape ILIKE special characters: backslash first, then wildcards
+    const escapedName = lastName
+      .replace(/\\/g, '\\\\')
+      .replace(/%/g, '\\%')
+      .replace(/_/g, '\\_');
+    return db.select().from(people).where(ilike(people.lastName, escapedName));
   }
 
   async getSuggestedFamilyConnections(personId: string): Promise<SuggestedFamilyConnection[]> {
@@ -1184,16 +1197,8 @@ export class DatabaseStorage implements IStorage {
       for (const p of sameLastName) {
         if (connectedIds.has(p.id)) continue;
 
-        let confidence: "high" | "medium" | "low" = "low";
-        let reason = `Same last name: ${person.lastName}`;
-
-        if (person.birthday && p.birthday) {
-          const diff = Math.abs(new Date(person.birthday).getFullYear() - new Date(p.birthday).getFullYear());
-          if (diff <= 5) {
-            confidence = "medium";
-            reason += ", similar age (possible sibling)";
-          }
-        }
+        const confidence: "high" | "medium" | "low" = "low";
+        const reason = `Same last name: ${person.lastName}`;
 
         suggestions.push({
           personId: p.id,
@@ -1369,6 +1374,7 @@ export class DatabaseStorage implements IStorage {
         toPersonId: relationships.toPersonId,
         typeId: relationships.typeId,
         notes: relationships.notes,
+        familyRelationshipType: relationships.familyRelationshipType,
         createdAt: relationships.createdAt,
         toPerson: people,
         type: relationshipTypes,
@@ -1385,6 +1391,7 @@ export class DatabaseStorage implements IStorage {
         toPersonId: relationships.toPersonId,
         typeId: relationships.typeId,
         notes: relationships.notes,
+        familyRelationshipType: relationships.familyRelationshipType,
         createdAt: relationships.createdAt,
         toPerson: people,
         type: relationshipTypes,
@@ -1401,6 +1408,7 @@ export class DatabaseStorage implements IStorage {
         toPersonId: rel.toPersonId,
         typeId: rel.typeId,
         notes: rel.notes,
+        familyRelationshipType: rel.familyRelationshipType,
         createdAt: rel.createdAt,
         toPerson: rel.toPerson,
         type: rel.type || undefined,
@@ -1411,6 +1419,7 @@ export class DatabaseStorage implements IStorage {
         toPersonId: rel.toPersonId,
         typeId: rel.typeId,
         notes: rel.notes,
+        familyRelationshipType: rel.familyRelationshipType,
         createdAt: rel.createdAt,
         toPerson: rel.toPerson,
         type: rel.type || undefined,
