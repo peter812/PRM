@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { db } from "./db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "./ai-tools";
+import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "./family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
@@ -3336,6 +3337,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Family Tree AI ─────────────────────────────────────────────────────
+  // Generate proposed relationship changes from a natural-language prompt.
+  app.post("/api/family-tree/ai/generate", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const bodySchema = z.object({
+        personId: z.string().min(1),
+        prompt: z.string().min(1).max(8000),
+        allowDeletions: z.boolean().optional(),
+        askForChanges: z.boolean().optional(),
+      });
+      const body = bodySchema.parse(req.body);
+
+      const ollamaEnabled = (await getOllamaSetting("ollama_enabled")) === "true";
+      if (!ollamaEnabled) return res.status(400).json({ error: "AI is disabled in settings" });
+
+      const ctx = await buildOllamaChatContext();
+      if (!ctx) return res.status(400).json({ error: "Ollama API URL is not configured" });
+
+      const familyTreeModel = ((await getOllamaSetting("ollama_family_tree_model")) ?? "").trim();
+      const textModel = ((await getOllamaSetting("ollama_text_model")) ?? "").trim();
+      const fallbackModel = ((await getOllamaSetting("ollama_model")) ?? "").trim();
+      const model = familyTreeModel || textModel || fallbackModel;
+      if (!model) return res.status(400).json({ error: "No AI model configured. Set one on the Family Tree AI settings page." });
+
+      const result = await generateFamilyTreeChanges({
+        personId: body.personId,
+        prompt: body.prompt,
+        allowDeletions: !!body.allowDeletions,
+        askForChanges: !!body.askForChanges,
+        ollama: ctx,
+        model,
+      });
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error generating family tree changes:", error);
+      res.status(500).json({ error: error?.message ?? "Failed to generate changes" });
+    }
+  });
+
+  // Apply a user-curated subset of changes from the previous step.
+  app.post("/api/family-tree/ai/apply", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      const changes = Array.isArray(req.body?.changes) ? req.body.changes : null;
+      if (!changes) return res.status(400).json({ error: "changes must be an array" });
+      // Trust the client object shape; applyFamilyTreeChanges re-validates each item.
+      const result = await applyFamilyTreeChanges(changes as ProposedFamilyChange[]);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error applying family tree changes:", error);
+      res.status(500).json({ error: error?.message ?? "Failed to apply changes" });
+    }
+  });
+
   // Find people by last name (for family connection suggestions)
   app.get("/api/people/by-last-name/:lastName", async (req, res) => {
     try {
@@ -6023,8 +6079,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const prompt = (await getOllamaSetting("ollama_prompt")) ?? "";
       const eventsModel = (await getOllamaSetting("ollama_events_model")) ?? "";
       const eventsPrompt = (await getOllamaSetting("ollama_events_prompt")) ?? "";
+      const familyTreeModel = (await getOllamaSetting("ollama_family_tree_model")) ?? "";
       const autoDescribeImages = (await getOllamaSetting("ollama_auto_describe_images")) ?? "false";
-      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, autoDescribeImages: autoDescribeImages === "true" });
+      res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true" });
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch Ollama settings" });
     }
@@ -6032,7 +6089,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/ollama/settings", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-    const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, autoDescribeImages } = req.body;
+    const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages } = req.body;
     try {
       if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
       if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
@@ -6044,6 +6101,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (typeof prompt === "string") await setOllamaSetting("ollama_prompt", prompt);
       if (typeof eventsModel === "string") await setOllamaSetting("ollama_events_model", eventsModel);
       if (typeof eventsPrompt === "string") await setOllamaSetting("ollama_events_prompt", eventsPrompt);
+      if (typeof familyTreeModel === "string") await setOllamaSetting("ollama_family_tree_model", familyTreeModel);
       if (typeof autoDescribeImages === "boolean") await setOllamaSetting("ollama_auto_describe_images", String(autoDescribeImages));
       res.json({ success: true });
     } catch (error) {
