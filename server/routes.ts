@@ -3360,7 +3360,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const textModel = ((await getOllamaSetting("ollama_text_model")) ?? "").trim();
       const fallbackModel = ((await getOllamaSetting("ollama_model")) ?? "").trim();
       const model = familyTreeModel || textModel || fallbackModel;
-      if (!model) return res.status(400).json({ error: "No AI model configured. Set one on the Family Tree AI settings page." });
+      if (!model) return res.status(400).json({ error: "No AI model configured. Set one at Settings → Intelligence → Family Tree." });
 
       const result = await generateFamilyTreeChanges({
         personId: body.personId,
