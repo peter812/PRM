@@ -1,14 +1,18 @@
 import { useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
-import { Application, Container, Graphics, Text, TextStyle } from "pixi.js";
+import { Application, Assets, Container, Graphics, Sprite, Text, TextStyle, Texture } from "pixi.js";
+
+export type FamilyTreeViewMode = "name" | "avatar-name" | "avatar-circle";
 
 // Layout constants
 const LAYOUT = {
   NODE_WIDTH: 160,
   NODE_HEIGHT: 80,
-  HORIZONTAL_GAP: 24,
-  VERTICAL_GAP: 80,
-  SPOUSE_GAP: 12,
-  COUPLE_LINE_DROP: 30,
+  HORIZONTAL_GAP: 40,
+  VERTICAL_GAP: 100,
+  SPOUSE_GAP: 20,
+  COUPLE_LINE_DROP: 40,
+  AVATAR_SIZE: 56,
+  CIRCLE_DIAMETER: 96,
   NODE_ROUNDING: 16,
 };
 
@@ -80,6 +84,7 @@ interface FamilyTreeCanvasProps {
   onPersonClick?: (personId: string) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   className?: string;
+  viewMode?: FamilyTreeViewMode;
 }
 
 // Relationship type helpers
@@ -303,22 +308,35 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
   }
 
   // Create missing link placeholder nodes
+  // Track per-related-person offsets so multiple placeholders for the same
+  // person don't overlap.
+  const usedSlots = new Map<string, Set<string>>();
   for (const link of missingLinks) {
     const relatedPos = nodePositions.get(link.relatedPersonId);
     if (!relatedPos) continue;
 
     const missingId = `missing-${link.personId}-${link.missingRole}`;
-    const relatedGen = generations.get(link.relatedPersonId) ?? 0;
     let yOffset = 0;
-    if (["father", "mother", "parent"].includes(link.missingRole)) {
+    let xOffset = 0;
+    if (["father", "parent"].includes(link.missingRole)) {
       yOffset = -(LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
+      xOffset = -(LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP);
+    } else if (link.missingRole === "mother") {
+      yOffset = -(LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
+      xOffset = LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP;
     } else if (link.missingRole === "spouse") {
       yOffset = 0;
+      xOffset = LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP;
+    } else if (link.missingRole === "sibling") {
+      // Place siblings on the same row, offset to a free side slot.
+      const slots = usedSlots.get(link.relatedPersonId) ?? new Set<string>();
+      yOffset = 0;
+      xOffset = slots.has("sibling-right")
+        ? -(LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP * 2)
+        : (LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP * 2);
+      slots.add(slots.has("sibling-right") ? "sibling-left" : "sibling-right");
+      usedSlots.set(link.relatedPersonId, slots);
     }
-
-    const xOffset = link.missingRole === "spouse"
-      ? LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP
-      : (link.missingRole === "mother" ? LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP : -(LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP));
 
     nodes.push({
       id: missingId,
@@ -336,6 +354,27 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
   const edges: RenderEdge[] = [];
   const edgeSet = new Set<string>();
 
+  // Determine which spouse-pairs share at least one child. For those couples
+  // we suppress the direct horizontal spouse line, since the parent->child
+  // lines already visually connect them. Childless couples still get the
+  // direct horizontal line so their relationship is visible.
+  const coupleHasSharedChildren = new Set<string>(); // sorted "a:b"
+  for (const [a, spouseSet] of spouses) {
+    for (const b of spouseSet) {
+      const key = [a, b].sort().join(":");
+      if (coupleHasSharedChildren.has(key)) continue;
+      const aChildren = children.get(a);
+      const bChildren = children.get(b);
+      if (aChildren && bChildren) {
+        let shared = false;
+        for (const c of aChildren) {
+          if (bChildren.has(c)) { shared = true; break; }
+        }
+        if (shared) coupleHasSharedChildren.add(key);
+      }
+    }
+  }
+
   for (const rel of relationships) {
     const cat = getRelationshipCategory(rel.familyRelationshipType);
     const edgeKey = [rel.fromPersonId, rel.toPersonId].sort().join(":");
@@ -344,6 +383,10 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     edgeSet.add(edgeKey);
 
     if (cat === "spouse") {
+      // Skip the direct spouse line if the couple shares children — the
+      // parent-child connections already convey the relationship and a direct
+      // line would render as a duplicate connector.
+      if (coupleHasSharedChildren.has(edgeKey)) continue;
       edges.push({
         from: rel.fromPersonId,
         to: rel.toPersonId,
@@ -377,7 +420,7 @@ export interface FamilyTreeCanvasHandle {
 }
 
 export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCanvasProps>(
-  function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className }, ref) {
+  function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className, viewMode = "name" }, ref) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const containerRef = useRef<Container | null>(null);
@@ -452,7 +495,7 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
       await app.init({
         width: canvasRef.current.clientWidth || 800,
         height: canvasRef.current.clientHeight || 600,
-        backgroundColor: isDarkMode ? COLORS.CANVAS_BG_DARK : COLORS.CANVAS_BG,
+        backgroundAlpha: 0,
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
@@ -517,6 +560,49 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
         }
       }
 
+      // Helper to redraw a node's background according to its current state.
+      const drawNodeBg = (
+        bg: Graphics,
+        node: typeof nodes[number],
+        state: "normal" | "hover",
+      ) => {
+        bg.clear();
+        const isCircle = viewMode === "avatar-circle";
+        const w = LAYOUT.NODE_WIDTH;
+        const h = LAYOUT.NODE_HEIGHT;
+        const isRoot = !node.isMissing && node.id === data.rootPersonId;
+        const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
+        const fillColor = node.isMissing
+          ? (state === "hover" ? 0x374151 : COLORS.MISSING_BG)
+          : (state === "hover"
+            ? (isDarkMode ? 0x4b5563 : 0xf3f4f6)
+            : (isDarkMode ? 0x374151 : COLORS.PERSON_BG));
+        const strokeColor = node.isMissing || state === "hover"
+          ? (state === "hover" ? COLORS.HOVER_SHADOW : COLORS.LINE_DASHED)
+          : (isDarkMode ? 0x4b5563 : COLORS.PERSON_BORDER);
+        const strokeWidth = node.isMissing || state === "hover" ? 2 : 1;
+
+        if (isCircle && !node.isMissing) {
+          // Circle-only view: draw a circle centered within the slot
+          const cx = w / 2;
+          const cy = h / 2;
+          const radius = LAYOUT.CIRCLE_DIAMETER / 2;
+          bg.circle(cx, cy, radius);
+          bg.fill({ color: fillColor });
+          bg.circle(cx, cy, radius);
+          bg.stroke({ color: state === "hover" ? COLORS.HOVER_SHADOW : accentColor, width: state === "hover" ? 3 : 2 });
+        } else {
+          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
+          bg.fill({ color: fillColor });
+          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
+          bg.stroke({ color: strokeColor, width: strokeWidth });
+          if (!node.isMissing) {
+            bg.roundRect(0, 0, w, 4, 4);
+            bg.fill({ color: accentColor });
+          }
+        }
+      };
+
       // Draw nodes
       for (const node of nodes) {
         const nodeContainer = new Container();
@@ -524,56 +610,102 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
         nodeContainer.y = node.y;
 
         const bg = new Graphics();
-
-        if (node.isMissing) {
-          // Missing person - dark background with dashed border
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-          bg.fill({ color: COLORS.MISSING_BG });
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-          bg.stroke({ color: COLORS.LINE_DASHED, width: 2 });
-        } else {
-          // Regular person box
-          const isRoot = node.id === data.rootPersonId;
-          const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
-
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-          bg.fill({ color: isDarkMode ? 0x374151 : COLORS.PERSON_BG });
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-          bg.stroke({ color: isDarkMode ? 0x4b5563 : COLORS.PERSON_BORDER, width: 1 });
-
-          // Top accent bar
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, 4, 4);
-          bg.fill({ color: accentColor });
-        }
-
+        drawNodeBg(bg, node, "normal");
         nodeContainer.addChild(bg);
 
-        // Name text
-        const nameStyle = new TextStyle({
-          fontFamily: "Inter, system-ui, sans-serif",
-          fontSize: 14,
-          fontWeight: "600",
-          fill: node.isMissing ? COLORS.MISSING_TEXT : (isDarkMode ? 0xf9fafb : 0x111827),
-          wordWrap: true,
-          wordWrapWidth: LAYOUT.NODE_WIDTH - 20,
-        });
-        const nameText = new Text({ text: node.label, style: nameStyle });
-        nameText.x = 12;
-        nameText.y = node.sublabel ? 16 : 28;
-        nodeContainer.addChild(nameText);
+        const isCircleView = viewMode === "avatar-circle" && !node.isMissing;
+        const showAvatar = (viewMode === "avatar-name" || viewMode === "avatar-circle") && !node.isMissing;
 
-        // Sublabel text
-        if (node.sublabel) {
-          const subStyle = new TextStyle({
-            fontFamily: "Inter, system-ui, sans-serif",
-            fontSize: 11,
-            fontWeight: node.isMissing ? "500" : "400",
-            fill: node.isMissing ? 0x93c5fd : (isDarkMode ? 0x9ca3af : 0x6b7280),
+        // Avatar (sprite or initials placeholder)
+        let avatarContainer: Container | null = null;
+        if (showAvatar && node.person) {
+          avatarContainer = new Container();
+          const size = isCircleView ? LAYOUT.CIRCLE_DIAMETER : LAYOUT.AVATAR_SIZE;
+          const cx = isCircleView ? LAYOUT.NODE_WIDTH / 2 : 12 + size / 2;
+          const cy = isCircleView ? LAYOUT.NODE_HEIGHT / 2 : LAYOUT.NODE_HEIGHT / 2;
+
+          // Initials placeholder (always drawn first; replaced by image when loaded)
+          const initials = `${(node.person.firstName || "").charAt(0)}${(node.person.lastName || "").charAt(0)}`.toUpperCase() || "?";
+          const placeholder = new Graphics();
+          placeholder.circle(cx, cy, size / 2);
+          placeholder.fill({ color: isDarkMode ? 0x4b5563 : 0xe5e7eb });
+          avatarContainer.addChild(placeholder);
+
+          const initialsText = new Text({
+            text: initials,
+            style: new TextStyle({
+              fontFamily: "Inter, system-ui, sans-serif",
+              fontSize: isCircleView ? 24 : 18,
+              fontWeight: "600",
+              fill: isDarkMode ? 0xf9fafb : 0x4b5563,
+              align: "center",
+            }),
           });
-          const subText = new Text({ text: node.sublabel, style: subStyle });
-          subText.x = 12;
-          subText.y = 44;
-          nodeContainer.addChild(subText);
+          initialsText.anchor.set(0.5);
+          initialsText.x = cx;
+          initialsText.y = cy;
+          avatarContainer.addChild(initialsText);
+
+          if (node.person.avatarUrl) {
+            const url = node.person.avatarUrl;
+            // Load avatar asynchronously and swap in once available.
+            Assets.load<Texture>(url)
+              .then((texture) => {
+                if (!isMountedRef.current || !appRef.current) return;
+                const sprite = new Sprite(texture);
+                sprite.width = size;
+                sprite.height = size;
+                sprite.x = cx - size / 2;
+                sprite.y = cy - size / 2;
+
+                // Circular clip via mask
+                const mask = new Graphics();
+                mask.circle(cx, cy, size / 2);
+                mask.fill({ color: 0xffffff });
+                avatarContainer!.addChild(mask);
+                sprite.mask = mask;
+                avatarContainer!.addChild(sprite);
+
+                appRef.current.renderer.render(appRef.current.stage);
+              })
+              .catch(() => {
+                // Keep initials placeholder on failure.
+              });
+          }
+
+          nodeContainer.addChild(avatarContainer);
+        }
+
+        // Text labels (skip in circle-only view for non-missing nodes)
+        if (!isCircleView) {
+          const textX = showAvatar ? 12 + LAYOUT.AVATAR_SIZE + 8 : 12;
+          const textWrapWidth = LAYOUT.NODE_WIDTH - textX - 8;
+
+          const nameStyle = new TextStyle({
+            fontFamily: "Inter, system-ui, sans-serif",
+            fontSize: 14,
+            fontWeight: "600",
+            fill: node.isMissing ? COLORS.MISSING_TEXT : (isDarkMode ? 0xf9fafb : 0x111827),
+            wordWrap: true,
+            wordWrapWidth: textWrapWidth,
+          });
+          const nameText = new Text({ text: node.label, style: nameStyle });
+          nameText.x = textX;
+          nameText.y = node.sublabel ? 16 : 28;
+          nodeContainer.addChild(nameText);
+
+          if (node.sublabel) {
+            const subStyle = new TextStyle({
+              fontFamily: "Inter, system-ui, sans-serif",
+              fontSize: 11,
+              fontWeight: node.isMissing ? "500" : "400",
+              fill: node.isMissing ? 0x93c5fd : (isDarkMode ? 0x9ca3af : 0x6b7280),
+            });
+            const subText = new Text({ text: node.sublabel, style: subStyle });
+            subText.x = textX;
+            subText.y = 44;
+            nodeContainer.addChild(subText);
+          }
         }
 
         // Make interactive
@@ -581,42 +713,12 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
         nodeContainer.cursor = "pointer";
 
         nodeContainer.on("pointerover", () => {
-          bg.clear();
-          if (node.isMissing) {
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.fill({ color: 0x374151 });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.stroke({ color: COLORS.HOVER_SHADOW, width: 2 });
-          } else {
-            const isRoot = node.id === data.rootPersonId;
-            const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.fill({ color: isDarkMode ? 0x4b5563 : 0xf3f4f6 });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.stroke({ color: COLORS.HOVER_SHADOW, width: 2 });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, 4, 4);
-            bg.fill({ color: accentColor });
-          }
+          drawNodeBg(bg, node, "hover");
           app.renderer.render(app.stage);
         });
 
         nodeContainer.on("pointerout", () => {
-          bg.clear();
-          if (node.isMissing) {
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.fill({ color: COLORS.MISSING_BG });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.stroke({ color: COLORS.LINE_DASHED, width: 2 });
-          } else {
-            const isRoot = node.id === data.rootPersonId;
-            const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.fill({ color: isDarkMode ? 0x374151 : COLORS.PERSON_BG });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
-            bg.stroke({ color: isDarkMode ? 0x4b5563 : COLORS.PERSON_BORDER, width: 1 });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, 4, 4);
-            bg.fill({ color: accentColor });
-          }
+          drawNodeBg(bg, node, "normal");
           app.renderer.render(app.stage);
         });
 
@@ -756,7 +858,7 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
       cleanup?.();
       destroyApp();
     };
-  }, [data, isDarkMode, onPersonClick, onAddMember, destroyApp, fitToScreen]);
+  }, [data, isDarkMode, onPersonClick, onAddMember, destroyApp, fitToScreen, viewMode]);
 
   return (
     <div

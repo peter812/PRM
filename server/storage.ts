@@ -212,7 +212,7 @@ export interface IStorage {
   getFamilyRelationshipsForPerson(personId: string): Promise<Relationship[]>;
   findFamilyRelationship(fromPersonId: string, toPersonId: string): Promise<Relationship | undefined>;
   getFamilyTree(personId: string, maxDepth: number): Promise<FamilyTreeResult>;
-  detectMissingFamilyLinks(personIds: string[], rels: Array<{ fromPersonId: string; toPersonId: string; familyRelationshipType: string | null }>): MissingLink[];
+  detectMissingFamilyLinks(personIds: string[], rels: Array<{ fromPersonId: string; toPersonId: string; familyRelationshipType: string | null }>, rootPersonId?: string): MissingLink[];
   propagateFamilyRelationship(relationshipId: string): Promise<Relationship[]>;
   createFamilyRelationshipWithInverse(data: InsertRelationship): Promise<{ relationship: Relationship; inverseRelationship: Relationship | null; propagated: Relationship[] }>;
   getPeopleByLastName(lastName: string): Promise<Person[]>;
@@ -1062,16 +1062,42 @@ export class DatabaseStorage implements IStorage {
       depth: visitedPeople.get(p.id) ?? 0,
     }));
 
-    const missingLinks = this.detectMissingFamilyLinks(personIds, treeRelationships);
+    const missingLinks = this.detectMissingFamilyLinks(personIds, treeRelationships, personId);
 
     return { people: treePeople, relationships: treeRelationships, missingLinks };
   }
 
-  detectMissingFamilyLinks(personIds: string[], rels: Array<{ fromPersonId: string; toPersonId: string; familyRelationshipType: string | null }>): MissingLink[] {
+  detectMissingFamilyLinks(personIds: string[], rels: Array<{ fromPersonId: string; toPersonId: string; familyRelationshipType: string | null }>, rootPersonId?: string): MissingLink[] {
     const missing: MissingLink[] = [];
     const seen = new Set<string>();
 
     const personIdSet = new Set(personIds);
+
+    // Determine which people are "central" enough to warrant sibling/parent
+    // suggestions: the root, the root's parents, the root's spouse(s), and
+    // the root's children. This keeps suggestions focused on the immediate
+    // family without flooding the tree with placeholders.
+    const centralPeople = new Set<string>();
+    if (rootPersonId && personIdSet.has(rootPersonId)) {
+      centralPeople.add(rootPersonId);
+      for (const r of rels) {
+        if (!r.familyRelationshipType) continue;
+        const t = r.familyRelationshipType;
+        // root's parents
+        if (r.toPersonId === rootPersonId && (t === "father" || t === "mother" || t === "parent")) {
+          centralPeople.add(r.fromPersonId);
+        }
+        // root's children (root is parent of the other)
+        if (r.fromPersonId === rootPersonId && (t === "father" || t === "mother" || t === "parent")) {
+          centralPeople.add(r.toPersonId);
+        }
+        // root's spouse
+        if (t === "spouse") {
+          if (r.fromPersonId === rootPersonId) centralPeople.add(r.toPersonId);
+          if (r.toPersonId === rootPersonId) centralPeople.add(r.fromPersonId);
+        }
+      }
+    }
 
     for (const pid of personIds) {
       const personRels = rels.filter(r =>
@@ -1083,8 +1109,6 @@ export class DatabaseStorage implements IStorage {
       const asToTypes = personRels.filter(r => r.toPersonId === pid).map(r => r.familyRelationshipType!);
       const asFromTypes = personRels.filter(r => r.fromPersonId === pid).map(r => r.familyRelationshipType!);
 
-      // A person "has a father" if someone is their father (asToTypes includes "father")
-      // OR they are someone's child via a father relationship (asFromTypes includes "child" with a father as the target doesn't help - we need to check the inverse row)
       const hasFather = asToTypes.includes("father") || asToTypes.includes("parent");
       const hasMother = asToTypes.includes("mother") || asToTypes.includes("parent");
       const hasAnyParent = hasFather || hasMother;
@@ -1092,16 +1116,26 @@ export class DatabaseStorage implements IStorage {
       const hasChildren = asFromTypes.some(t => t === "father" || t === "mother" || t === "parent") ||
         asToTypes.some(t => t === "child" || t === "son" || t === "daughter");
       const hasSpouse = asFromTypes.includes("spouse") || asToTypes.includes("spouse");
+      const hasSibling = personRels.some(r =>
+        ["sibling", "brother", "sister", "half_sibling", "half_brother", "half_sister"].includes(r.familyRelationshipType!)
+      );
 
-      // Only flag missing parent when the OTHER parent exists (partial family info)
-      if (hasMother && !hasFather) {
+      const isCentral = centralPeople.has(pid);
+      const isParentInTree = hasChildren;
+
+      // Suggest missing parents (e.g., Sarah/Wyatt's parents = grandparents of root)
+      // for the root and anyone who is a parent in the tree. Previously we only
+      // flagged a missing parent when the OTHER parent existed; now we also
+      // surface them when neither parent is recorded so the user can fill them in.
+      const shouldSuggestParents = isCentral || isParentInTree;
+      if (shouldSuggestParents && !hasFather) {
         const key = `${pid}:father`;
         if (!seen.has(key) && personIdSet.has(pid)) {
           seen.add(key);
           missing.push({ personId: pid, missingRole: "father", context: `Father of person ${pid}`, relatedPersonId: pid });
         }
       }
-      if (hasFather && !hasMother) {
+      if (shouldSuggestParents && !hasMother) {
         const key = `${pid}:mother`;
         if (!seen.has(key) && personIdSet.has(pid)) {
           seen.add(key);
@@ -1124,6 +1158,16 @@ export class DatabaseStorage implements IStorage {
         if (!seen.has(key)) {
           seen.add(key);
           missing.push({ personId: pid, missingRole: "spouse", context: `Spouse of person with children ${pid}`, relatedPersonId: pid });
+        }
+      }
+
+      // Suggest siblings for central people who don't have any siblings recorded.
+      // This lets the user quickly add e.g. another sibling when only one is known.
+      if (isCentral && !hasSibling) {
+        const key = `${pid}:sibling`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          missing.push({ personId: pid, missingRole: "sibling", context: `Sibling of person ${pid}`, relatedPersonId: pid });
         }
       }
     }

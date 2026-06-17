@@ -36,9 +36,11 @@ export function FamilyTreeTab({ personId, personName }: FamilyTreeTabProps) {
   });
 
   const handlePersonClick = (pid: string) => {
-    if (pid !== personId) {
-      navigate(`/person/${pid}?from=family-tree`);
-    }
+    // Per UX request, clicking a person in the family tree should not navigate
+    // to that person's profile page. Within the embedded tab the easiest way
+    // to "explore" another person is via the Full Tree page, so we intentionally
+    // make this a no-op here.
+    void pid;
   };
 
   const handleAddMember = (relatedPersonId: string, suggestedRole: string) => {
@@ -84,7 +86,7 @@ export function FamilyTreeTab({ personId, personName }: FamilyTreeTabProps) {
       </div>
 
       {/* Canvas */}
-      <div className="flex-1 relative min-h-[300px]">
+      <div className="flex-1 relative min-h-[300px] bg-background">
         {isLoading && (
           <div className="flex items-center justify-center h-full">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />

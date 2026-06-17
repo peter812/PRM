@@ -3,8 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Loader2, ZoomIn, ZoomOut, Maximize, RotateCcw, UserSearch } from "lucide-react";
-import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle } from "@/components/family-tree-canvas";
+import { Loader2, ZoomIn, ZoomOut, Maximize, RotateCcw, UserSearch, User, Image as ImageIcon, Circle } from "lucide-react";
+import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle, FamilyTreeViewMode } from "@/components/family-tree-canvas";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
 import { apiRequest } from "@/lib/queryClient";
@@ -15,6 +15,13 @@ interface PersonBasic {
   lastName: string;
 }
 
+const VIEW_MODE_CYCLE: FamilyTreeViewMode[] = ["name", "avatar-name", "avatar-circle"];
+const VIEW_MODE_LABELS: Record<FamilyTreeViewMode, string> = {
+  "name": "Name & relation",
+  "avatar-name": "Photo & name",
+  "avatar-circle": "Photo only",
+};
+
 export default function FamilyTreePage() {
   const [, navigate] = useLocation();
   const canvasRef = useRef<FamilyTreeCanvasHandle>(null);
@@ -23,9 +30,14 @@ export default function FamilyTreePage() {
   const params = new URLSearchParams(window.location.search);
   const initialPersonId = params.get("person") || null;
   const initialDepth = parseInt(params.get("depth") ?? "6", 10) || 6;
+  const initialViewParam = params.get("view") as FamilyTreeViewMode | null;
+  const initialView: FamilyTreeViewMode = initialViewParam && VIEW_MODE_CYCLE.includes(initialViewParam)
+    ? initialViewParam
+    : "name";
 
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(initialPersonId);
   const [depth, setDepth] = useState(initialDepth);
+  const [viewMode, setViewMode] = useState<FamilyTreeViewMode>(initialView);
   const [showPersonSelector, setShowPersonSelector] = useState(false);
   const [addMemberContext, setAddMemberContext] = useState<{
     relatedPersonId: string;
@@ -44,15 +56,16 @@ export default function FamilyTreePage() {
     }
   }, [meUser, selectedPersonId]);
 
-  // Update URL when person/depth changes
+  // Update URL when person/depth/view changes
   useEffect(() => {
     if (selectedPersonId) {
       const newParams = new URLSearchParams();
       newParams.set("person", selectedPersonId);
       newParams.set("depth", String(depth));
+      newParams.set("view", viewMode);
       window.history.replaceState(null, "", `/family-tree?${newParams.toString()}`);
     }
-  }, [selectedPersonId, depth]);
+  }, [selectedPersonId, depth, viewMode]);
 
   // Fetch tree data
   const { data: treeData, isLoading: isTreeLoading, isError } = useQuery<FamilyTreeData>({
@@ -80,8 +93,21 @@ export default function FamilyTreePage() {
   };
 
   const handlePersonClick = (personId: string) => {
-    navigate(`/person/${personId}?from=family-tree`);
+    // Re-root the tree on the clicked person instead of navigating to the
+    // profile page. This keeps the user inside the tree view so they can keep
+    // exploring connections without losing their place.
+    if (personId !== selectedPersonId) {
+      setSelectedPersonId(personId);
+    }
   };
+
+  const cycleViewMode = () => {
+    const idx = VIEW_MODE_CYCLE.indexOf(viewMode);
+    const next = VIEW_MODE_CYCLE[(idx + 1) % VIEW_MODE_CYCLE.length];
+    setViewMode(next);
+  };
+
+  const ViewIcon = viewMode === "name" ? User : viewMode === "avatar-name" ? ImageIcon : Circle;
 
   const handleAddMember = (relatedPersonId: string, suggestedRole: string) => {
     setAddMemberContext({ relatedPersonId, suggestedRole });
@@ -122,6 +148,16 @@ export default function FamilyTreePage() {
             variant="outline"
             size="icon"
             className="h-8 w-8"
+            onClick={cycleViewMode}
+            title={`View: ${VIEW_MODE_LABELS[viewMode]} (click to change)`}
+            data-testid="button-view-mode"
+          >
+            <ViewIcon className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
             onClick={() => canvasRef.current?.zoomIn()}
             title="Zoom in"
           >
@@ -149,7 +185,7 @@ export default function FamilyTreePage() {
       </div>
 
       {/* Canvas area */}
-      <div className="flex-1 relative overflow-hidden">
+      <div className="flex-1 relative overflow-hidden bg-background">
         {(isMeLoading || (selectedPersonId && isTreeLoading)) && (
           <div className="flex items-center justify-center h-full">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -189,6 +225,7 @@ export default function FamilyTreePage() {
             data={treeData}
             onPersonClick={handlePersonClick}
             onAddMember={handleAddMember}
+            viewMode={viewMode}
           />
         )}
       </div>
