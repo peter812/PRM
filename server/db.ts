@@ -1,6 +1,12 @@
 import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from "@shared/schema";
+import fs from 'fs';
+import dotenv from 'dotenv';
+
+if (!fs.existsSync('/.dockerenv')) {
+  dotenv.config({ override: true });
+}
 
 const { Pool } = pg;
 

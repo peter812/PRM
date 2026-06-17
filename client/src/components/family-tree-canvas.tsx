@@ -5,10 +5,11 @@ import { Application, Container, Graphics, Text, TextStyle } from "pixi.js";
 const LAYOUT = {
   NODE_WIDTH: 160,
   NODE_HEIGHT: 80,
-  HORIZONTAL_GAP: 40,
-  VERTICAL_GAP: 100,
-  SPOUSE_GAP: 20,
-  COUPLE_LINE_DROP: 40,
+  HORIZONTAL_GAP: 24,
+  VERTICAL_GAP: 80,
+  SPOUSE_GAP: 12,
+  COUPLE_LINE_DROP: 30,
+  NODE_ROUNDING: 16,
 };
 
 // Colors
@@ -526,22 +527,22 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
 
         if (node.isMissing) {
           // Missing person - dark background with dashed border
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
           bg.fill({ color: COLORS.MISSING_BG });
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
           bg.stroke({ color: COLORS.LINE_DASHED, width: 2 });
         } else {
           // Regular person box
           const isRoot = node.id === data.rootPersonId;
           const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
 
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
           bg.fill({ color: isDarkMode ? 0x374151 : COLORS.PERSON_BG });
-          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
           bg.stroke({ color: isDarkMode ? 0x4b5563 : COLORS.PERSON_BORDER, width: 1 });
 
-          // Left accent bar
-          bg.roundRect(0, 0, 4, LAYOUT.NODE_HEIGHT, 4);
+          // Top accent bar
+          bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, 4, 4);
           bg.fill({ color: accentColor });
         }
 
@@ -582,18 +583,18 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
         nodeContainer.on("pointerover", () => {
           bg.clear();
           if (node.isMissing) {
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.fill({ color: 0x374151 });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.stroke({ color: COLORS.HOVER_SHADOW, width: 2 });
           } else {
             const isRoot = node.id === data.rootPersonId;
             const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.fill({ color: isDarkMode ? 0x4b5563 : 0xf3f4f6 });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.stroke({ color: COLORS.HOVER_SHADOW, width: 2 });
-            bg.roundRect(0, 0, 4, LAYOUT.NODE_HEIGHT, 4);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, 4, 4);
             bg.fill({ color: accentColor });
           }
           app.renderer.render(app.stage);
@@ -602,18 +603,18 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
         nodeContainer.on("pointerout", () => {
           bg.clear();
           if (node.isMissing) {
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.fill({ color: COLORS.MISSING_BG });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.stroke({ color: COLORS.LINE_DASHED, width: 2 });
           } else {
             const isRoot = node.id === data.rootPersonId;
             const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.fill({ color: isDarkMode ? 0x374151 : COLORS.PERSON_BG });
-            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, 8);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, LAYOUT.NODE_HEIGHT, LAYOUT.NODE_ROUNDING);
             bg.stroke({ color: isDarkMode ? 0x4b5563 : COLORS.PERSON_BORDER, width: 1 });
-            bg.roundRect(0, 0, 4, LAYOUT.NODE_HEIGHT, 4);
+            bg.roundRect(0, 0, LAYOUT.NODE_WIDTH, 4, 4);
             bg.fill({ color: accentColor });
           }
           app.renderer.render(app.stage);

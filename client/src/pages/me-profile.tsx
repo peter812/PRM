@@ -19,6 +19,7 @@ import { PersonSocialAccountsChips } from "@/components/person-social-accounts-c
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
+import { FamilyTreeTab } from "@/components/family-tree-tab";
 import { getInitials } from "@/lib/utils";
 
 export default function MeProfile() {
@@ -275,6 +276,13 @@ export default function MeProfile() {
               Relationships
             </TabsTrigger>
             <TabsTrigger
+              value="tree"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-tree"
+            >
+              Tree
+            </TabsTrigger>
+            <TabsTrigger
               value="groups"
               className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
               data-testid="tab-groups"
@@ -309,6 +317,13 @@ export default function MeProfile() {
               relationships={person.relationships}
               personId={person.id}
               onAddRelationship={() => setIsAddRelationshipOpen(true)}
+            />
+          </TabsContent>
+
+          <TabsContent value="tree" className="mt-0 h-full">
+            <FamilyTreeTab
+              personId={person.id}
+              personName={`${person.firstName} ${person.lastName}`.trim()}
             />
           </TabsContent>
 

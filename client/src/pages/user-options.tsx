@@ -160,8 +160,8 @@ export default function UserOptionsPage() {
     }
   }, [ssoConfig, ssoForm, redirectUrl]);
 
-  const handleCopyRedirectUrl = () => {
-    navigator.clipboard.writeText(redirectUrl);
+  const handleCopyRedirectUrl = (url: string) => {
+    navigator.clipboard.writeText(url);
     setCopiedRedirectUrl(true);
     setTimeout(() => setCopiedRedirectUrl(false), 2000);
   };
@@ -524,9 +524,7 @@ export default function UserOptionsPage() {
                         <div className="relative">
                           <Input 
                             {...field} 
-                            value={field.value || redirectUrl}
-                            readOnly
-                            className="pr-10 bg-muted"
+                            className="pr-10"
                             data-testid="input-sso-redirect-url" 
                           />
                           <Button
@@ -534,7 +532,7 @@ export default function UserOptionsPage() {
                             variant="ghost"
                             size="icon"
                             className="absolute right-0 top-0 h-full"
-                            onClick={handleCopyRedirectUrl}
+                            onClick={() => handleCopyRedirectUrl(field.value || redirectUrl)}
                             data-testid="button-copy-redirect-url"
                           >
                             {copiedRedirectUrl ? (

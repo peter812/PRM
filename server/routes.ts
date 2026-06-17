@@ -3037,6 +3037,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/relationships", async (req, res) => {
     try {
       const validatedData = insertRelationshipSchema.parse(req.body);
+
+      // If it's a family relationship, use the family-specific creation logic
+      if (validatedData.familyRelationshipType) {
+        if (validatedData.fromPersonId === validatedData.toPersonId) {
+          return res.status(400).json({ error: "Cannot create a relationship from a person to themselves" });
+        }
+
+        // Check if a family relationship already exists
+        const existing = await storage.findFamilyRelationship(validatedData.fromPersonId, validatedData.toPersonId);
+        if (existing) {
+          return res.status(409).json({ error: "A family relationship already exists between these people" });
+        }
+
+        // Find "Family" relationship type
+        const allTypes = await storage.getAllRelationshipTypes();
+        const familyType = allTypes.find(t => t.name.toLowerCase() === "family");
+
+        const result = await storage.createFamilyRelationshipWithInverse({
+          fromPersonId: validatedData.fromPersonId,
+          toPersonId: validatedData.toPersonId,
+          familyRelationshipType: validatedData.familyRelationshipType as FamilyRelationshipType,
+          typeId: familyType?.id ?? validatedData.typeId ?? null,
+          notes: validatedData.notes ?? null,
+        });
+
+        return res.status(201).json(result.relationship);
+      }
+
       const relationship = await storage.createRelationship(validatedData);
       res.status(201).json(relationship);
     } catch (error) {
@@ -3049,10 +3077,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const id = req.params.id;
       const validatedData = insertRelationshipSchema.partial().parse(req.body);
-      const relationship = await storage.updateRelationship(id, validatedData);
 
+      const existingRel = await storage.getRelationshipById(id);
+      if (!existingRel) {
+        return res.status(404).json({ error: "Relationship not found" });
+      }
+
+      const wasFamily = !!existingRel.familyRelationshipType;
+      const isFamily = 'familyRelationshipType' in validatedData ? !!validatedData.familyRelationshipType : wasFamily;
+
+      let typeId = validatedData.typeId;
+      if (isFamily && !typeId) {
+        const allTypes = await storage.getAllRelationshipTypes();
+        const familyType = allTypes.find(t => t.name.toLowerCase() === "family");
+        if (familyType) {
+          typeId = familyType.id;
+        }
+      }
+
+      const updateData = {
+        ...validatedData,
+        ...(isFamily ? { typeId } : {}),
+      };
+
+      const relationship = await storage.updateRelationship(id, updateData);
       if (!relationship) {
         return res.status(404).json({ error: "Relationship not found" });
+      }
+
+      // If family relationship changed, update the inverse direction and propagate
+      if (updateData.familyRelationshipType && relationship.toPersonId && relationship.fromPersonId) {
+        const inverseType = FAMILY_RELATIONSHIP_INVERSES[updateData.familyRelationshipType];
+        if (inverseType) {
+          const inverse = await storage.findFamilyRelationship(relationship.toPersonId, relationship.fromPersonId);
+          if (inverse) {
+            await storage.updateRelationship(inverse.id, { familyRelationshipType: inverseType as FamilyRelationshipType });
+          } else {
+            await storage.createRelationship({
+              fromPersonId: relationship.toPersonId,
+              toPersonId: relationship.fromPersonId,
+              familyRelationshipType: inverseType as FamilyRelationshipType,
+              typeId: typeId ?? null,
+              notes: relationship.notes,
+            });
+          }
+        }
+        await storage.propagateFamilyRelationship(relationship.id);
       }
 
       res.json(relationship);
@@ -3065,6 +3135,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.delete("/api/relationships/:id", async (req, res) => {
     try {
       const id = req.params.id;
+      const rel = await storage.getRelationshipById(id);
+      if (rel && rel.familyRelationshipType) {
+        const inverse = await storage.findFamilyRelationship(rel.toPersonId, rel.fromPersonId);
+        if (inverse) {
+          await storage.deleteRelationship(inverse.id);
+        }
+      }
       await storage.deleteRelationship(id);
       res.json({ success: true });
     } catch (error) {

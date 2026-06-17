@@ -26,11 +26,23 @@ export default function FamilyTreePage() {
 
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(initialPersonId);
   const [depth, setDepth] = useState(initialDepth);
-  const [showPersonSelector, setShowPersonSelector] = useState(!initialPersonId);
+  const [showPersonSelector, setShowPersonSelector] = useState(false);
   const [addMemberContext, setAddMemberContext] = useState<{
     relatedPersonId: string;
     suggestedRole: string;
   } | null>(null);
+
+  // Fetch current user (ME user) to use as default if no person param in URL
+  const { data: meUser, isLoading: isMeLoading } = useQuery<PersonBasic>({
+    queryKey: ["/api/me"],
+  });
+
+  // If no person is selected in URL, default to the current logged-in user
+  useEffect(() => {
+    if (!selectedPersonId && meUser?.id) {
+      setSelectedPersonId(meUser.id);
+    }
+  }, [meUser, selectedPersonId]);
 
   // Update URL when person/depth changes
   useEffect(() => {
@@ -138,7 +150,13 @@ export default function FamilyTreePage() {
 
       {/* Canvas area */}
       <div className="flex-1 relative overflow-hidden">
-        {!selectedPersonId && (
+        {(isMeLoading || (selectedPersonId && isTreeLoading)) && (
+          <div className="flex items-center justify-center h-full">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        )}
+
+        {!selectedPersonId && !isMeLoading && (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
             <UserSearch className="h-12 w-12 mb-4 opacity-50" />
             <p className="text-lg font-medium">Select a person to view their family tree</p>
@@ -148,12 +166,6 @@ export default function FamilyTreePage() {
             >
               Select Person
             </Button>
-          </div>
-        )}
-
-        {selectedPersonId && isTreeLoading && (
-          <div className="flex items-center justify-center h-full">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
           </div>
         )}
 
