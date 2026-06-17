@@ -42,7 +42,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertRelationshipSchema, type InsertRelationship, type Person, type RelationshipType, type RelationshipWithPerson } from "@shared/schema";
+import { insertRelationshipSchema, type InsertRelationship, type Person, type RelationshipType, type RelationshipWithPerson, type FamilyRelationshipType } from "@shared/schema";
 import { z } from "zod";
 import { Check, ChevronsUpDown, X } from "lucide-react";
 
@@ -53,9 +53,15 @@ interface AddRelationshipDialogProps {
   existingRelationships?: RelationshipWithPerson[];
 }
 
-const relationshipFormSchema = insertRelationshipSchema.extend({
-  typeId: z.string().min(1, "Relationship type is required"),
-}).omit({ toPersonId: true });
+const relationshipFormSchema = z.object({
+  fromPersonId: z.string().min(1),
+  typeId: z.string().optional().nullable(),
+  familyRelationshipType: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+}).refine((data) => data.typeId || data.familyRelationshipType, {
+  message: "Relationship type is required",
+  path: ["typeId"],
+});
 
 type RelationshipForm = z.infer<typeof relationshipFormSchema> & {
   selectedPeopleIds: string[];
@@ -70,6 +76,7 @@ export function AddRelationshipDialog({
   const { toast } = useToast();
   const [selectedPeopleIds, setSelectedPeopleIds] = useState<string[]>([]);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [typePopoverOpen, setTypePopoverOpen] = useState(false);
 
   const { data: allPeople } = useQuery<Person[]>({
     queryKey: ["/api/people"],
@@ -85,6 +92,13 @@ export function AddRelationshipDialog({
     queryKey: ["/api/relationship-types"],
     enabled: open,
   });
+
+  const { data: familyTypesData } = useQuery<{ types: { value: string; label: string }[] }>({
+    queryKey: ["/api/family-relationships/types"],
+    enabled: open,
+  });
+
+  const familyTypes = familyTypesData?.types ?? [];
 
   // Check if ME user already has a relationship with this person
   const meHasRelationship = meUser ? existingRelationships.some(
@@ -104,6 +118,7 @@ export function AddRelationshipDialog({
     defaultValues: {
       fromPersonId: personId,
       typeId: "",
+      familyRelationshipType: null,
       notes: "",
       selectedPeopleIds: [],
     },
@@ -124,7 +139,7 @@ export function AddRelationshipDialog({
         title: "Success",
         description: `${count} relationship${count > 1 ? 's' : ''} added successfully`,
       });
-      form.reset({ fromPersonId: personId, typeId: "", notes: "", selectedPeopleIds: [] });
+      form.reset({ fromPersonId: personId, typeId: "", familyRelationshipType: null, notes: "", selectedPeopleIds: [] });
       setSelectedPeopleIds([]);
       onOpenChange(false);
     },
@@ -151,7 +166,8 @@ export function AddRelationshipDialog({
     const relationships: InsertRelationship[] = selectedPeopleIds.map(toPersonId => ({
       fromPersonId: data.fromPersonId,
       toPersonId,
-      typeId: data.typeId,
+      typeId: data.typeId || null,
+      familyRelationshipType: (data.familyRelationshipType as FamilyRelationshipType) || null,
       notes: data.notes || "",
     }));
 
@@ -178,6 +194,7 @@ export function AddRelationshipDialog({
       if (!newOpen) {
         setSelectedPeopleIds([]);
         setPopoverOpen(false);
+        setTypePopoverOpen(false);
       }
     }}>
       <DialogContent className="max-w-lg">
@@ -271,32 +288,124 @@ export function AddRelationshipDialog({
             <FormField
               control={form.control}
               name="typeId"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Relationship Type</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl>
-                      <SelectTrigger data-testid="select-relationship-type">
-                        <SelectValue placeholder="Select relationship type" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {relationshipTypes?.map((type) => (
-                        <SelectItem key={type.id} value={type.id}>
-                          <div className="flex items-center gap-2">
-                            <div
-                              className="w-3 h-3 rounded-full"
-                              style={{ backgroundColor: type.color }}
-                            />
-                            {type.name}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )}
+              render={() => {
+                const currentTypeId = form.watch("typeId");
+                const currentFamilyType = form.watch("familyRelationshipType");
+
+                const getSelectedTypeLabel = () => {
+                  if (currentFamilyType) {
+                    const fType = familyTypes.find(t => t.value === currentFamilyType);
+                    return fType ? fType.label : currentFamilyType;
+                  }
+                  const sType = relationshipTypes?.find(t => t.id === currentTypeId);
+                  return sType ? sType.name : "Select relationship type";
+                };
+
+                const getSelectedTypeColor = () => {
+                  if (currentFamilyType) {
+                    return "#ef4444";
+                  }
+                  const sType = relationshipTypes?.find(t => t.id === currentTypeId);
+                  return sType?.color ?? null;
+                };
+
+                const selectedColor = getSelectedTypeColor();
+                const selectedLabel = getSelectedTypeLabel();
+
+                return (
+                  <FormItem className="flex flex-col">
+                    <FormLabel>Relationship Type</FormLabel>
+                    <Popover open={typePopoverOpen} onOpenChange={setTypePopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <FormControl>
+                          <Button
+                            variant="outline"
+                            role="combobox"
+                            aria-expanded={typePopoverOpen}
+                            className="w-full justify-between"
+                            data-testid="select-relationship-type"
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              {selectedColor && (
+                                <div
+                                  className="w-3 h-3 rounded-full shrink-0"
+                                  style={{ backgroundColor: selectedColor }}
+                                />
+                              )}
+                              <span className="truncate">{selectedLabel}</span>
+                            </div>
+                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                          </Button>
+                        </FormControl>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search relationship types..." data-testid="input-search-relationship-type" />
+                          <CommandList className="max-h-64 overflow-y-auto" onWheel={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()} onTouchMove={(e) => e.stopPropagation()}>
+                            <CommandEmpty>No relationship type found.</CommandEmpty>
+                            <CommandGroup heading="Standard Relationship Types">
+                              {relationshipTypes?.map((type) => {
+                                const isSelected = currentTypeId === type.id && !currentFamilyType;
+                                return (
+                                  <CommandItem
+                                    key={type.id}
+                                    value={type.name}
+                                    onSelect={() => {
+                                      form.setValue("typeId", type.id);
+                                      form.setValue("familyRelationshipType", null);
+                                      setTypePopoverOpen(false);
+                                    }}
+                                    data-testid={`relationship-type-option-${type.id}`}
+                                    className="flex items-center justify-between font-normal"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <div
+                                        className="w-3 h-3 rounded-full"
+                                        style={{ backgroundColor: type.color }}
+                                      />
+                                      {type.name}
+                                    </div>
+                                    {isSelected && <Check className="h-4 w-4 shrink-0 opacity-100" />}
+                                  </CommandItem>
+                                );
+                              })}
+                            </CommandGroup>
+                            <CommandGroup heading="Family Relationship Types">
+                              {familyTypes.map((ft) => {
+                                const isSelected = currentFamilyType === ft.value;
+                                return (
+                                  <CommandItem
+                                    key={ft.value}
+                                    value={ft.label}
+                                    onSelect={() => {
+                                      const familyDbType = relationshipTypes?.find(t => t.name.toLowerCase() === "family");
+                                      form.setValue("typeId", familyDbType?.id || null);
+                                      form.setValue("familyRelationshipType", ft.value);
+                                      setTypePopoverOpen(false);
+                                    }}
+                                    data-testid={`family-relationship-type-option-${ft.value}`}
+                                    className="flex items-center justify-between font-normal"
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <div
+                                        className="w-3 h-3 rounded-full"
+                                        style={{ backgroundColor: "#ef4444" }}
+                                      />
+                                      {ft.label}
+                                    </div>
+                                    {isSelected && <Check className="h-4 w-4 shrink-0 opacity-100" />}
+                                  </CommandItem>
+                                );
+                              })}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                    <FormMessage />
+                  </FormItem>
+                );
+              }}
             />
 
             <FormField

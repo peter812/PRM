@@ -13,6 +13,7 @@ const LAYOUT = {
   COUPLE_LINE_DROP: 40,
   AVATAR_SIZE: 56,
   CIRCLE_DIAMETER: 96,
+  NODE_ROUNDING: 16,
 };
 
 // Colors
@@ -591,12 +592,12 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
           bg.circle(cx, cy, radius);
           bg.stroke({ color: state === "hover" ? COLORS.HOVER_SHADOW : accentColor, width: state === "hover" ? 3 : 2 });
         } else {
-          bg.roundRect(0, 0, w, h, 8);
+          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
           bg.fill({ color: fillColor });
-          bg.roundRect(0, 0, w, h, 8);
+          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
           bg.stroke({ color: strokeColor, width: strokeWidth });
           if (!node.isMissing) {
-            bg.roundRect(0, 0, 4, h, 4);
+            bg.roundRect(0, 0, w, 4, 4);
             bg.fill({ color: accentColor });
           }
         }
