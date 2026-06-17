@@ -4,6 +4,8 @@ import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Trash2, ChevronLeft, ChevronRight, RefreshCw, Image as ImageIcon, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
@@ -31,6 +33,39 @@ function formatDate(d: string | Date | null | undefined): string {
   return format(new Date(d), "MMM d, yy HH:mm:ss");
 }
 
+/** Condensed date: time-of-day if today, "Month Day" if this year, "Month Year" if older. */
+function formatCondensed(d: string | Date | null | undefined): string {
+  if (!d) return "—";
+  const date = new Date(d);
+  const now = new Date();
+  const isToday =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  if (isToday) {
+    // e.g. "4:20 am" or "2:14 pm"
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase();
+  }
+  const isThisYear = date.getFullYear() === now.getFullYear();
+  if (isThisYear) {
+    // e.g. "April 14, 2:14 pm"
+    const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase();
+    return `${format(date, "MMMM d")}, ${time}`;
+  }
+  // e.g. "January 2023"
+  return format(date, "MMMM yyyy");
+}
+
+/** Format a duration in milliseconds as "Xm Ys" or "Xs" */
+function formatDuration(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 function TypeLabel({ type }: { type: string }) {
   const labels: Record<string, string> = {
     download_img_instagram: "DL Instagram",
@@ -48,6 +83,7 @@ export default function ImageTasksSettingsPage() {
   const [page, setPage] = useState(1);
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [advancedTimestamps, setAdvancedTimestamps] = useState(false);
 
   const params = new URLSearchParams({ page: String(page), limit: "25" });
   if (typeFilter && typeFilter !== "all") params.set("type", typeFilter);
@@ -138,7 +174,18 @@ export default function ImageTasksSettingsPage() {
           {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
         </Button>
 
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch
+              id="advanced-timestamps"
+              checked={advancedTimestamps}
+              onCheckedChange={setAdvancedTimestamps}
+              data-testid="switch-advanced-timestamps"
+            />
+            <Label htmlFor="advanced-timestamps" className="text-sm cursor-pointer">
+              Advanced timestamps
+            </Label>
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -170,9 +217,18 @@ export default function ImageTasksSettingsPage() {
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Progress</th>
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Photo</th>
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Parent Task</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Created</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Started</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Completed</th>
+                {advancedTimestamps ? (
+                  <>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Created</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Started</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Completed</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Started</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">Time Spent</th>
+                  </>
+                )}
                 <th className="px-3 py-2"></th>
               </tr>
             </thead>
@@ -237,15 +293,33 @@ export default function ImageTasksSettingsPage() {
                       <span className="text-muted-foreground">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                    {formatDate(task.createdAt)}
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                    {formatDate(task.startedAt)}
-                  </td>
-                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                    {formatDate(task.completedAt)}
-                  </td>
+                  {advancedTimestamps ? (
+                    <>
+                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                        {formatDate(task.createdAt)}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                        {formatDate(task.startedAt)}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                        {formatDate(task.completedAt)}
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                        {formatCondensed(task.startedAt)}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                        {task.startedAt && task.completedAt
+                          ? formatDuration(
+                              new Date(task.completedAt).getTime() -
+                              new Date(task.startedAt).getTime()
+                            )
+                          : "—"}
+                      </td>
+                    </>
+                  )}
                   <td className="px-3 py-2">
                     {(task.status === "pending" || task.status === "in_progress") && (
                       <Button

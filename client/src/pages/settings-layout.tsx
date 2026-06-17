@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Heart, Book, MessageSquare, Key, AtSign, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -22,9 +22,7 @@ import {
 } from "@/components/ui/collapsible";
 import UserOptionsPage from "@/pages/user-options";
 import AppOptionsPage from "@/pages/app-options";
-import RelationshipTypesList from "@/pages/relationship-types-list";
-import InteractionTypesList from "@/pages/interaction-types-list";
-import SocialAccountTypesList from "@/pages/social-account-types-list";
+import DataTypesPage from "@/pages/data-types";
 import ApiSettingsPage from "@/pages/api-settings";
 import ChromeExtensionSettingsPage from "@/pages/chrome-extension-settings";
 import ApiDocs from "@/pages/api-docs";
@@ -83,11 +81,6 @@ const settingsMenuItems: MenuItem[] = [
     title: "Data Types",
     url: "/data-types",
     icon: Layers,
-    subItems: [
-      { title: "Relationship Types", url: "/data-types/relationship-types", icon: Heart },
-      { title: "Interaction Types", url: "/data-types/interaction-types", icon: MessageSquare },
-      { title: "Social Account Types", url: "/data-types/social-account-types", icon: AtSign },
-    ],
   },
   {
     title: "Image Storage",
@@ -267,9 +260,7 @@ export default function SettingsLayout() {
               <Route path="/" component={() => <Redirect to="/user" />} />
               <Route path="/user" component={UserOptionsPage} />
               <Route path="/app" component={AppOptionsPage} />
-              <Route path="/data-types/relationship-types" component={RelationshipTypesList} />
-              <Route path="/data-types/interaction-types" component={InteractionTypesList} />
-              <Route path="/data-types/social-account-types" component={SocialAccountTypesList} />
+              <Route path="/data-types" component={DataTypesPage} />
               <Route path="/image-tasks" component={ImageTasksSettingsPage} />
               <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
               <Route path="/image-storage/table" component={ImageTablePage} />
