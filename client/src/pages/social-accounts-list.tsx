@@ -153,43 +153,24 @@ export default function SocialAccountsList() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-4 md:px-6 py-3 md:py-4">
-        <div className="flex items-center justify-between gap-2 md:gap-4 mb-2 md:mb-4">
-          <h1 className="text-xl md:text-3xl font-semibold truncate" data-testid="text-page-title">
+      <div className="border-b px-4 md:px-6 py-2 md:py-2">
+        <div className="flex items-center gap-2 md:gap-3 flex-wrap md:flex-nowrap">
+          <h1 className="text-xl md:text-2xl font-semibold truncate flex-1 md:flex-initial md:shrink-0" data-testid="text-page-title">
             Social Accounts
           </h1>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="icon"
-              className="hidden md:inline-flex"
-              onClick={() => setShowMassExportDialog(true)}
-              data-testid="button-mass-export"
-            >
-              <Download className="h-4 w-4" />
-            </Button>
-            <Button onClick={() => setIsAddDialogOpen(true)} size="icon" className="md:hidden shrink-0" data-testid="button-add-account-mobile">
-              <Plus className="h-4 w-4" />
-            </Button>
-            <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex" data-testid="button-add-account">
-              <Plus className="h-4 w-4" />
-              Add Account
-            </Button>
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-2 md:gap-4 flex-wrap">
-          <div className="hidden md:block flex-1 min-w-[200px]">
+          <Button onClick={() => setIsAddDialogOpen(true)} size="icon" className="md:hidden shrink-0" data-testid="button-add-account-mobile">
+            <Plus className="h-4 w-4" />
+          </Button>
+          <div className="hidden md:block flex-1 min-w-[200px] max-w-md">
             <Input
               placeholder="Search accounts..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               data-testid="input-search-accounts"
-              className="max-w-md"
             />
           </div>
           <Select value={selectedTypeId || "all"} onValueChange={handleTypeChange}>
-            <SelectTrigger className="w-[140px] md:w-[180px]" data-testid="select-type-filter">
+            <SelectTrigger className="w-[140px] md:w-[180px] shrink-0" data-testid="select-type-filter">
               <SelectValue placeholder="All Types" />
             </SelectTrigger>
             <SelectContent>
@@ -209,27 +190,40 @@ export default function SocialAccountsList() {
               ))}
             </SelectContent>
           </Select>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <Switch
               id="follows-you"
               checked={showFollowsYou}
               onCheckedChange={setShowFollowsYou}
               data-testid="switch-follows-you"
             />
-            <Label htmlFor="follows-you" className="cursor-pointer">
+            <Label htmlFor="follows-you" className="cursor-pointer whitespace-nowrap">
               Follows you
             </Label>
           </div>
+          <Button
+            variant="outline"
+            size="icon"
+            className="hidden md:inline-flex shrink-0"
+            onClick={() => setShowMassExportDialog(true)}
+            data-testid="button-mass-export"
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+          <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex shrink-0" data-testid="button-add-account">
+            <Plus className="h-4 w-4" />
+            Add Account
+          </Button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-6" ref={scrollContainerRef}>
+      <div className="flex-1 overflow-auto px-4 py-3" ref={scrollContainerRef}>
         {isLoading ? (
-          <div className="flex flex-col gap-[5px]">
+          <div className="flex flex-col gap-1">
             {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-4 animate-pulse">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-full bg-muted" />
+              <Card key={i} className="p-2 animate-pulse">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-muted" />
                   <div className="flex-1 space-y-2">
                     <div className="h-4 bg-muted rounded w-1/3" />
                     <div className="h-3 bg-muted rounded w-1/4" />
@@ -252,7 +246,7 @@ export default function SocialAccountsList() {
             </Button>
           </div>
         ) : accounts.length > 0 ? (
-          <div className="flex flex-col gap-[5px]">
+          <div className="flex flex-col gap-1">
             {accounts.map((account) => {
               const isFollowingYou = meAccountIds.some((meId) =>
                 account.latestState?.followers?.includes(meId)
@@ -268,11 +262,11 @@ export default function SocialAccountsList() {
                   className="cursor-pointer"
                 >
                   <Card
-                    className="p-4 hover-elevate transition-all"
+                    className="p-2 hover-elevate transition-all"
                     data-testid={`card-account-${account.id}`}
                   >
-                    <div className="flex items-center gap-4">
-                      <Avatar className="w-12 h-12">
+                    <div className="flex items-center gap-3">
+                      <Avatar className="w-10 h-10">
                         {account.currentProfile?.imageUrl && (
                           <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
                         )}
@@ -395,11 +389,11 @@ export default function SocialAccountsList() {
               );
             })}
             {isFetchingNextPage && (
-              <div className="flex flex-col gap-[5px]">
+              <div className="flex flex-col gap-1">
                 {[1, 2].map((i) => (
-                  <Card key={`loading-${i}`} className="p-4 animate-pulse">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 rounded-full bg-muted" />
+                  <Card key={`loading-${i}`} className="p-2 animate-pulse">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-muted" />
                       <div className="flex-1 space-y-2">
                         <div className="h-4 bg-muted rounded w-1/3" />
                         <div className="h-3 bg-muted rounded w-1/4" />
