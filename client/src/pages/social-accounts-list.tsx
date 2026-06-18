@@ -153,7 +153,7 @@ export default function SocialAccountsList() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-4 md:px-6 py-2 md:py-2">
+      <div className="border-b px-4 md:px-6 py-2">
         <div className="flex items-center gap-2 md:gap-3 flex-wrap md:flex-nowrap">
           <h1 className="text-xl md:text-2xl font-semibold truncate flex-1 md:flex-initial md:shrink-0" data-testid="text-page-title">
             Social Accounts
