@@ -87,6 +87,7 @@ export function AddFamilyMemberDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       toast({ title: "Family member added", description: "The family relationship has been created." });
       onSuccess?.();
       handleClose();

@@ -965,6 +965,7 @@ export type FlowItem = {
   type: FlowItemType;
   date: Date;
   content: string;
+  imageUuid?: string | null;
   // Note-specific
   imageUrl?: string | null;
   // Interaction-specific

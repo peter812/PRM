@@ -3133,6 +3133,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.delete("/api/relationships/family", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      const count = await storage.deleteAllFamilyRelationships();
+      res.json({ success: true, deleted: count });
+    } catch (error) {
+      console.error("Error deleting all family relationships:", error);
+      res.status(500).json({ error: "Failed to delete all family relationships" });
+    }
+  });
+
   app.delete("/api/relationships/:id", async (req, res) => {
     try {
       const id = req.params.id;

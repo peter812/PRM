@@ -17,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { isValidHexColor } from "@/lib/utils";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialProfileVersion } from "@shared/schema";
 import { Link } from "wouter";
 import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";

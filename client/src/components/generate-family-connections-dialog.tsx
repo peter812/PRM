@@ -173,6 +173,7 @@ export function GenerateFamilyConnectionsDialog({
       });
       queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       if (personId) {
         queryClient.invalidateQueries({ queryKey: [`/api/relationships/${personId}`] });
         queryClient.invalidateQueries({ queryKey: [`/api/people/${personId}/relationships-grouped`] });

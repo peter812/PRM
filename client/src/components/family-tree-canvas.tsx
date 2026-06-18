@@ -22,7 +22,12 @@ const COLORS = {
   PERSON_BORDER: 0xe5e7eb,
   PERSON_ACCENT: 0xef4444,
   ROOT_ACCENT: 0x3b82f6,
-  MISSING_BG: 0x1f2937,
+  // "Unknown" = definitely exists but not yet recorded (blue-tinted dark)
+  UNKNOWN_BG: 0x1e3a4c,
+  UNKNOWN_ACCENT: 0x38bdf8,
+  // "Add" = optional extension (neutral dark)
+  ADD_BG: 0x1f2937,
+  ADD_ACCENT: 0x6b7280,
   MISSING_TEXT: 0xf9fafb,
   LINE_COLOR: 0x6b7280,
   LINE_DASHED: 0x9ca3af,
@@ -66,6 +71,9 @@ interface RenderNode {
   x: number;
   y: number;
   isMissing: boolean;
+  /** "unknown" = person definitely exists but is not yet recorded.
+   *  "add"     = person may or may not exist (optional extension). */
+  missingKind?: "unknown" | "add";
   missingRole?: string;
   relatedPersonId?: string;
   label: string;
@@ -85,6 +93,8 @@ interface FamilyTreeCanvasProps {
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   className?: string;
   viewMode?: FamilyTreeViewMode;
+  /** When false, all placeholder / unknown / add-person nodes are hidden. Default true. */
+  showAddOptions?: boolean;
 }
 
 // Relationship type helpers
@@ -109,21 +119,27 @@ function getInverseParentRole(childType: string): string {
   return "parent";
 }
 
+// ---------------------------------------------------------------------------
 // Build tree structure from flat API data
-function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: RenderEdge[] } {
-  const { rootPersonId, people, relationships, missingLinks } = data;
-  const personMap = new Map(people.map((p) => [p.id, p]));
+// ---------------------------------------------------------------------------
+function buildRenderTree(
+  data: FamilyTreeData,
+  showAddOptions: boolean = true,
+): { nodes: RenderNode[]; edges: RenderEdge[] } {
+  const { rootPersonId, people, relationships } = data;
 
-  // Build adjacency - who is parent/child/spouse of whom
+  // Apply the global toggle — treat missingLinks as empty when disabled.
+  const missingLinks = showAddOptions ? data.missingLinks : [];
+
+  // Build adjacency maps
   const spouses = new Map<string, Set<string>>();
-  const parents = new Map<string, Set<string>>(); // child -> parents
-  const children = new Map<string, Set<string>>(); // parent -> children
-  const relTypeMap = new Map<string, string>(); // `from:to` -> type
+  const parents = new Map<string, Set<string>>(); // child -> set of parent IDs
+  const children = new Map<string, Set<string>>(); // parent -> set of child IDs
+  const relTypeMap = new Map<string, string>(); // "from:to" -> type
 
   for (const rel of relationships) {
     const cat = getRelationshipCategory(rel.familyRelationshipType);
-    const key = `${rel.fromPersonId}:${rel.toPersonId}`;
-    relTypeMap.set(key, rel.familyRelationshipType);
+    relTypeMap.set(`${rel.fromPersonId}:${rel.toPersonId}`, rel.familyRelationshipType);
 
     if (cat === "spouse") {
       if (!spouses.has(rel.fromPersonId)) spouses.set(rel.fromPersonId, new Set());
@@ -145,7 +161,7 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     }
   }
 
-  // Assign generations using BFS from root
+  // BFS to assign generations from root
   const generations = new Map<string, number>();
   generations.set(rootPersonId, 0);
   const queue = [rootPersonId];
@@ -155,29 +171,21 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     const current = queue.shift()!;
     const gen = generations.get(current)!;
 
-    // Parents are generation - 1
-    const parentSet = parents.get(current) ?? new Set();
-    for (const parentId of parentSet) {
+    for (const parentId of parents.get(current) ?? []) {
       if (!visited.has(parentId)) {
         visited.add(parentId);
         generations.set(parentId, gen - 1);
         queue.push(parentId);
       }
     }
-
-    // Children are generation + 1
-    const childSet = children.get(current) ?? new Set();
-    for (const childId of childSet) {
+    for (const childId of children.get(current) ?? []) {
       if (!visited.has(childId)) {
         visited.add(childId);
         generations.set(childId, gen + 1);
         queue.push(childId);
       }
     }
-
-    // Spouses are same generation
-    const spouseSet = spouses.get(current) ?? new Set();
-    for (const spouseId of spouseSet) {
+    for (const spouseId of spouses.get(current) ?? []) {
       if (!visited.has(spouseId)) {
         visited.add(spouseId);
         generations.set(spouseId, gen);
@@ -186,24 +194,71 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     }
   }
 
-  // Handle people not reached by BFS
+  // People not reachable by BFS fall back to their stored depth
   for (const p of people) {
-    if (!generations.has(p.id)) {
-      generations.set(p.id, p.depth);
+    if (!generations.has(p.id)) generations.set(p.id, p.depth);
+  }
+
+  // -------------------------------------------------------------------------
+  // Inject virtual missing-link nodes into the generation layout
+  // -------------------------------------------------------------------------
+  const missingKindMap = new Map<string, "unknown" | "add">();
+
+  for (const link of missingLinks) {
+    const virtualId = `missing-${link.personId}-${link.missingRole}`;
+    const relatedGen = generations.get(link.relatedPersonId);
+    if (relatedGen === undefined) continue;
+
+    // Determine semantic kind ------------------------------------------------
+    let kind: "unknown" | "add" = "add";
+
+    if (link.missingRole === "spouse") {
+      kind = "unknown"; // co-parent definitely exists biologically
+    } else if (link.missingRole === "father") {
+      // "Unknown" only when a real mother already exists in the tree
+      const hasRealMother = Array.from(parents.get(link.relatedPersonId) ?? []).some((pid) => {
+        const t = relTypeMap.get(`${pid}:${link.relatedPersonId}`);
+        return t === "mother";
+      });
+      kind = hasRealMother ? "unknown" : "add";
+    } else if (link.missingRole === "mother") {
+      // "Unknown" only when a real father already exists in the tree
+      const hasRealFather = Array.from(parents.get(link.relatedPersonId) ?? []).some((pid) => {
+        const t = relTypeMap.get(`${pid}:${link.relatedPersonId}`);
+        return t === "father" || t === "parent";
+      });
+      kind = hasRealFather ? "unknown" : "add";
+    }
+    // sibling / parent -> always "add"
+
+    missingKindMap.set(virtualId, kind);
+
+    // Assign generation for layout -------------------------------------------
+    if (link.missingRole === "father" || link.missingRole === "mother" || link.missingRole === "parent") {
+      generations.set(virtualId, relatedGen - 1);
+    } else if (link.missingRole === "spouse") {
+      generations.set(virtualId, relatedGen);
+      // Register as spouse pair so couple-layout positions them side-by-side
+      if (!spouses.has(link.relatedPersonId)) spouses.set(link.relatedPersonId, new Set());
+      if (!spouses.has(virtualId)) spouses.set(virtualId, new Set());
+      spouses.get(link.relatedPersonId)!.add(virtualId);
+      spouses.get(virtualId)!.add(link.relatedPersonId);
+    } else if (link.missingRole === "sibling") {
+      generations.set(virtualId, relatedGen);
     }
   }
 
-  // Group people by generation
+  // Group all IDs (real + virtual) by generation
   const genGroups = new Map<number, string[]>();
-  for (const [personId, gen] of generations) {
+  for (const [id, gen] of generations) {
     if (!genGroups.has(gen)) genGroups.set(gen, []);
-    genGroups.get(gen)!.push(personId);
+    genGroups.get(gen)!.push(id);
   }
 
   // Sort generations
   const sortedGens = Array.from(genGroups.keys()).sort((a, b) => a - b);
 
-  // Identify couples
+  // Identify couples (real + virtual spouses)
   const coupleSet = new Set<string>(); // "a:b" sorted pair
   const personCouple = new Map<string, string>(); // personId -> coupleKey
   for (const [personId, spouseIds] of spouses) {
@@ -217,10 +272,93 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     }
   }
 
+  // ---- Reorder: sibling virtual nodes should appear adjacent to their relative ----
+  for (const link of missingLinks) {
+    if (link.missingRole !== "sibling") continue;
+    const virtualId = `missing-${link.personId}-${link.missingRole}`;
+    const gen = generations.get(virtualId);
+    if (gen === undefined) continue;
+    const group = genGroups.get(gen);
+    if (!group) continue;
+    const curIdx = group.indexOf(virtualId);
+    const relIdx = group.indexOf(link.relatedPersonId);
+    if (curIdx !== -1 && relIdx !== -1) {
+      // Determine if the relative is part of a couple in this generation
+      const coupleKey = personCouple.get(link.relatedPersonId);
+      let isLeftSpouse = false;
+      let hasSpouse = false;
+      if (coupleKey) {
+        hasSpouse = true;
+        const [a] = coupleKey.split(":");
+        if (link.relatedPersonId === a) {
+          isLeftSpouse = true;
+        }
+      }
+
+      group.splice(curIdx, 1);
+      const newRelIdx = group.indexOf(link.relatedPersonId);
+      if (hasSpouse && isLeftSpouse) {
+        // Left spouse's sibling goes to the left
+        group.splice(newRelIdx, 0, virtualId);
+      } else {
+        // Right spouse's sibling (or single person sibling) goes to the right
+        group.splice(newRelIdx + 1, 0, virtualId);
+      }
+    }
+  }
+
+  // ---- Reorder: parents in each generation G to align with the order of children in G+1 ----
+  for (const gen of sortedGens) {
+    const group = genGroups.get(gen);
+    if (!group) continue;
+    const childrenList = genGroups.get(gen + 1) ?? [];
+
+    const orderedParents: string[] = [];
+    const visitedParents = new Set<string>();
+
+    const getParentScore = (pid: string, childId: string) => {
+      if (pid.includes("-father")) return 1;
+      if (pid.includes("-mother")) return 2;
+      const type = relTypeMap.get(`${pid}:${childId}`);
+      if (type === "father" || type === "stepfather") return 1;
+      if (type === "mother" || type === "stepmother") return 2;
+      return 3;
+    };
+
+    for (const childId of childrenList) {
+      const realParents = Array.from(parents.get(childId) ?? []).filter(
+        (pid) => generations.get(pid) === gen,
+      );
+      const virtualParents = [
+        `missing-${childId}-father`,
+        `missing-${childId}-mother`,
+        `missing-${childId}-parent`,
+      ].filter((pid) => group.includes(pid));
+
+      const parentsOfC = [...realParents, ...virtualParents];
+      parentsOfC.sort((x, y) => getParentScore(x, childId) - getParentScore(y, childId));
+
+      for (const p of parentsOfC) {
+        if (!visitedParents.has(p)) {
+          visitedParents.add(p);
+          orderedParents.push(p);
+        }
+      }
+    }
+
+    let parentInsertIdx = 0;
+    const newGroup = group.map((pid) => {
+      if (visitedParents.has(pid)) {
+        return orderedParents[parentInsertIdx++];
+      }
+      return pid;
+    });
+    genGroups.set(gen, newGroup);
+  }
+
   // Position nodes generation by generation
   const nodes: RenderNode[] = [];
   const nodePositions = new Map<string, { x: number; y: number }>();
-
   const minGen = sortedGens.length > 0 ? sortedGens[0] : 0;
 
   for (const gen of sortedGens) {
@@ -241,16 +379,14 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
         const [a, b] = coupleKey.split(":");
         processed.add(a);
         processed.add(b);
-        units.push({
-          ids: [a, b],
-          width: LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP,
-        });
+        units.push({ ids: [a, b], width: LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP });
       } else {
         units.push({ ids: [pid], width: LAYOUT.NODE_WIDTH });
       }
     }
 
-    const totalWidth = units.reduce((sum, u) => sum + u.width, 0) + (units.length - 1) * LAYOUT.HORIZONTAL_GAP;
+    const totalWidth =
+      units.reduce((sum, u) => sum + u.width, 0) + (units.length - 1) * LAYOUT.HORIZONTAL_GAP;
     let currentX = -totalWidth / 2;
 
     for (const unit of units) {
@@ -268,23 +404,19 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     }
   }
 
-  // Create render nodes
+  // ---- Real person render nodes -------------------------------------------
   for (const person of people) {
     const pos = nodePositions.get(person.id) ?? { x: 0, y: 0 };
     const relToRoot = relationships.find(
-      (r) => (r.fromPersonId === person.id && r.toPersonId === rootPersonId) ||
-             (r.toPersonId === person.id && r.fromPersonId === rootPersonId)
+      (r) =>
+        (r.fromPersonId === person.id && r.toPersonId === rootPersonId) ||
+        (r.toPersonId === person.id && r.fromPersonId === rootPersonId),
     );
     let roleLabel = "";
     if (relToRoot) {
-      // fromPerson's type describes what fromPerson is to toPerson
-      // e.g. fromPersonId=Dad, toPersonId=Root, type="father" means "Dad is father of Root"
       if (relToRoot.fromPersonId === person.id) {
-        // This person IS the type to root (e.g., person is "father" of root)
         roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
       } else {
-        // Root IS the type to this person — we need the inverse perspective
-        // e.g. root is "father" of this person → this person is "child" of root
         const category = getRelationshipCategory(relToRoot.familyRelationshipType);
         if (category === "parent") {
           roleLabel = "Child";
@@ -307,58 +439,36 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
     });
   }
 
-  // Create missing link placeholder nodes
-  // Track per-related-person offsets so multiple placeholders for the same
-  // person don't overlap.
-  const usedSlots = new Map<string, Set<string>>();
+  // ---- Virtual / placeholder render nodes ---------------------------------
   for (const link of missingLinks) {
-    const relatedPos = nodePositions.get(link.relatedPersonId);
-    if (!relatedPos) continue;
+    const virtualId = `missing-${link.personId}-${link.missingRole}`;
+    const pos = nodePositions.get(virtualId);
+    if (!pos) continue;
 
-    const missingId = `missing-${link.personId}-${link.missingRole}`;
-    let yOffset = 0;
-    let xOffset = 0;
-    if (["father", "parent"].includes(link.missingRole)) {
-      yOffset = -(LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
-      xOffset = -(LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP);
-    } else if (link.missingRole === "mother") {
-      yOffset = -(LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
-      xOffset = LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP;
-    } else if (link.missingRole === "spouse") {
-      yOffset = 0;
-      xOffset = LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP;
-    } else if (link.missingRole === "sibling") {
-      // Place siblings on the same row, offset to a free side slot.
-      const slots = usedSlots.get(link.relatedPersonId) ?? new Set<string>();
-      yOffset = 0;
-      xOffset = slots.has("sibling-right")
-        ? -(LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP * 2)
-        : (LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP * 2);
-      slots.add(slots.has("sibling-right") ? "sibling-left" : "sibling-right");
-      usedSlots.set(link.relatedPersonId, slots);
-    }
+    const kind = missingKindMap.get(virtualId) ?? "add";
+    const roleLabel = formatRelationshipLabel(link.missingRole);
+    const label = kind === "unknown" ? `Unknown ${roleLabel}` : `+ Add ${roleLabel}`;
+    const sublabel = kind === "unknown" ? "Click to add" : "Optional";
 
     nodes.push({
-      id: missingId,
-      x: relatedPos.x + xOffset,
-      y: relatedPos.y + yOffset,
+      id: virtualId,
+      x: pos.x,
+      y: pos.y,
       isMissing: true,
+      missingKind: kind,
       missingRole: link.missingRole,
       relatedPersonId: link.relatedPersonId,
-      label: `Unknown ${formatRelationshipLabel(link.missingRole)}`,
-      sublabel: "+ Add Person",
+      label,
+      sublabel,
     });
   }
 
-  // Create render edges
+  // ---- Edges from real relationships --------------------------------------
   const edges: RenderEdge[] = [];
   const edgeSet = new Set<string>();
 
-  // Determine which spouse-pairs share at least one child. For those couples
-  // we suppress the direct horizontal spouse line, since the parent->child
-  // lines already visually connect them. Childless couples still get the
-  // direct horizontal line so their relationship is visible.
-  const coupleHasSharedChildren = new Set<string>(); // sorted "a:b"
+  // Couples with shared REAL children suppress their direct spouse line
+  const coupleHasSharedChildren = new Set<string>();
   for (const [a, spouseSet] of spouses) {
     for (const b of spouseSet) {
       const key = [a, b].sort().join(":");
@@ -366,11 +476,12 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
       const aChildren = children.get(a);
       const bChildren = children.get(b);
       if (aChildren && bChildren) {
-        let shared = false;
         for (const c of aChildren) {
-          if (bChildren.has(c)) { shared = true; break; }
+          if (bChildren.has(c) && !c.startsWith("missing-")) {
+            coupleHasSharedChildren.add(key);
+            break;
+          }
         }
-        if (shared) coupleHasSharedChildren.add(key);
       }
     }
   }
@@ -378,14 +489,10 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
   for (const rel of relationships) {
     const cat = getRelationshipCategory(rel.familyRelationshipType);
     const edgeKey = [rel.fromPersonId, rel.toPersonId].sort().join(":");
-
     if (edgeSet.has(edgeKey)) continue;
     edgeSet.add(edgeKey);
 
     if (cat === "spouse") {
-      // Skip the direct spouse line if the couple shares children — the
-      // parent-child connections already convey the relationship and a direct
-      // line would render as a duplicate connector.
       if (coupleHasSharedChildren.has(edgeKey)) continue;
       edges.push({
         from: rel.fromPersonId,
@@ -394,19 +501,32 @@ function buildRenderTree(data: FamilyTreeData): { nodes: RenderNode[]; edges: Re
         style: rel.familyRelationshipType === "ex_spouse" ? "dashed" : "solid",
       });
     } else if (cat === "parent") {
-      edges.push({
-        from: rel.fromPersonId,
-        to: rel.toPersonId,
-        type: "parent-child",
-        style: "solid",
-      });
+      edges.push({ from: rel.fromPersonId, to: rel.toPersonId, type: "parent-child", style: "solid" });
     } else if (cat === "child") {
-      edges.push({
-        from: rel.toPersonId,
-        to: rel.fromPersonId,
-        type: "parent-child",
-        style: "solid",
-      });
+      edges.push({ from: rel.toPersonId, to: rel.fromPersonId, type: "parent-child", style: "solid" });
+    }
+  }
+
+  // ---- Edges for virtual / placeholder nodes ------------------------------
+  for (const link of missingLinks) {
+    const virtualId = `missing-${link.personId}-${link.missingRole}`;
+    if (!nodePositions.has(virtualId)) continue;
+
+    if (link.missingRole === "father" || link.missingRole === "mother" || link.missingRole === "parent") {
+      // Dashed parent -> child elbow
+      edges.push({ from: virtualId, to: link.relatedPersonId, type: "parent-child", style: "dashed" });
+    } else if (link.missingRole === "spouse") {
+      // Dashed spouse line (positioned as a couple so it is short and correct)
+      const pairKey = [virtualId, link.relatedPersonId].sort().join(":");
+      if (!coupleHasSharedChildren.has(pairKey)) {
+        edges.push({ from: virtualId, to: link.relatedPersonId, type: "spouse", style: "dashed" });
+      }
+    } else if (link.missingRole === "sibling") {
+      // Connect virtual sibling to each real shared parent with dashed lines
+      for (const parentId of parents.get(link.relatedPersonId) ?? []) {
+        edges.push({ from: parentId, to: virtualId, type: "parent-child", style: "dashed" });
+      }
+      // If no parents in tree, positional proximity conveys the relationship
     }
   }
 
@@ -420,7 +540,10 @@ export interface FamilyTreeCanvasHandle {
 }
 
 export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCanvasProps>(
-  function FamilyTreeCanvas({ data, onPersonClick, onAddMember, className, viewMode = "name" }, ref) {
+  function FamilyTreeCanvas(
+    { data, onPersonClick, onAddMember, className, viewMode = "name", showAddOptions = true },
+    ref,
+  ) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<Application | null>(null);
   const containerRef = useRef<Container | null>(null);
@@ -432,6 +555,9 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
   const isDarkMode = document.documentElement.classList.contains("dark");
 
   const destroyApp = useCallback(() => {
+    isDraggingRef.current = false;
+    dragStartRef.current = null;
+    lastPanRef.current = null;
     if (appRef.current) {
       try {
         appRef.current.destroy(true);
@@ -487,6 +613,9 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
     if (!canvasRef.current || !data) return;
 
     const initCanvas = async () => {
+      isDraggingRef.current = false;
+      dragStartRef.current = null;
+      lastPanRef.current = null;
       destroyApp();
 
       if (!canvasRef.current || !isMountedRef.current) return;
@@ -515,8 +644,8 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
       app.stage.addChild(container);
       containerRef.current = container;
 
-      // Build tree
-      const { nodes, edges } = buildRenderTree(data);
+      // Build tree (includes virtual placeholder nodes when showAddOptions=true)
+      const { nodes, edges } = buildRenderTree(data, showAddOptions);
 
       const nodeGraphicsMap = new Map<string, { graphics: Graphics; x: number; y: number }>();
 
@@ -545,25 +674,91 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
             edgeGraphics.stroke({ color, width: 2 });
           }
         } else {
-          // Parent to child line
+          // Parent -> child elbow line with 12px rounded corners
           const parentY = fromNode.y + LAYOUT.NODE_HEIGHT;
           const childY = toNode.y;
           const parentX = fromNode.x;
           const childX = toNode.x;
           const midY = parentY + (childY - parentY) / 2;
 
-          edgeGraphics.moveTo(parentX, parentY);
-          edgeGraphics.lineTo(parentX, midY);
-          edgeGraphics.lineTo(childX, midY);
-          edgeGraphics.lineTo(childX, childY);
-          edgeGraphics.stroke({ color, width: 2 });
+          if (parentX === childX) {
+            // Straight vertical line
+            if (edge.style === "dashed") {
+              const state = { isDash: true, rem: 5 };
+              drawDashedSegment(edgeGraphics, parentX, parentY, childX, childY, color, 2, 5, state);
+            } else {
+              edgeGraphics.moveTo(parentX, parentY);
+              edgeGraphics.lineTo(childX, childY);
+              edgeGraphics.stroke({ color, width: 2 });
+            }
+          } else {
+            const sign = parentX < childX ? 1 : -1;
+            const r = Math.min(12, Math.abs(childX - parentX) / 2, Math.abs(midY - parentY), Math.abs(childY - midY));
+
+            if (edge.style === "dashed") {
+              const state = { isDash: true, rem: 5 };
+
+              // Segment 1 (vertical down to start of Corner 1 curve)
+              drawDashedSegment(edgeGraphics, parentX, parentY, parentX, midY - r, color, 2, 5, state);
+
+              // Corner 1 curve (approximated)
+              const steps = 10;
+              let prevX = parentX;
+              let prevY = midY - r;
+              const cx1 = parentX;
+              const cy1 = midY;
+              const endX1 = parentX + sign * r;
+              const endY1 = midY;
+              for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+                const mt = 1 - t;
+                const x = mt * mt * parentX + 2 * mt * t * cx1 + t * t * endX1;
+                const y = mt * mt * (midY - r) + 2 * mt * t * cy1 + t * t * endY1;
+                drawDashedSegment(edgeGraphics, prevX, prevY, x, y, color, 2, 5, state);
+                prevX = x;
+                prevY = y;
+              }
+
+              // Segment 2 (horizontal to start of Corner 2 curve)
+              drawDashedSegment(edgeGraphics, parentX + sign * r, midY, childX - sign * r, midY, color, 2, 5, state);
+
+              // Corner 2 curve (approximated)
+              prevX = childX - sign * r;
+              prevY = midY;
+              const cx2 = childX;
+              const cy2 = midY;
+              const endX2 = childX;
+              const endY2 = midY + r;
+              for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+                const mt = 1 - t;
+                const x = mt * mt * (childX - sign * r) + 2 * mt * t * cx2 + t * t * endX2;
+                const y = mt * mt * midY + 2 * mt * t * cy2 + t * t * endY2;
+                drawDashedSegment(edgeGraphics, prevX, prevY, x, y, color, 2, 5, state);
+                prevX = x;
+                prevY = y;
+              }
+
+              // Segment 3 (vertical down to child)
+              drawDashedSegment(edgeGraphics, childX, midY + r, childX, childY, color, 2, 5, state);
+            } else {
+              // Solid line with quadraticCurveTo
+              edgeGraphics.moveTo(parentX, parentY);
+              edgeGraphics.lineTo(parentX, midY - r);
+              edgeGraphics.quadraticCurveTo(parentX, midY, parentX + sign * r, midY);
+              edgeGraphics.lineTo(childX - sign * r, midY);
+              edgeGraphics.quadraticCurveTo(childX, midY, childX, midY + r);
+              edgeGraphics.lineTo(childX, childY);
+              edgeGraphics.stroke({ color, width: 2 });
+            }
+          }
         }
       }
 
-      // Helper to redraw a node's background according to its current state.
+      // Helper to draw a node background
       const drawNodeBg = (
         bg: Graphics,
-        node: typeof nodes[number],
+        node: (typeof nodes)[number],
         state: "normal" | "hover",
       ) => {
         bg.clear();
@@ -572,33 +767,48 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
         const h = LAYOUT.NODE_HEIGHT;
         const isRoot = !node.isMissing && node.id === data.rootPersonId;
         const accentColor = isRoot ? COLORS.ROOT_ACCENT : COLORS.PERSON_ACCENT;
-        const fillColor = node.isMissing
-          ? (state === "hover" ? 0x374151 : COLORS.MISSING_BG)
-          : (state === "hover"
-            ? (isDarkMode ? 0x4b5563 : 0xf3f4f6)
-            : (isDarkMode ? 0x374151 : COLORS.PERSON_BG));
-        const strokeColor = node.isMissing || state === "hover"
-          ? (state === "hover" ? COLORS.HOVER_SHADOW : COLORS.LINE_DASHED)
-          : (isDarkMode ? 0x4b5563 : COLORS.PERSON_BORDER);
-        const strokeWidth = node.isMissing || state === "hover" ? 2 : 1;
 
-        if (isCircle && !node.isMissing) {
-          // Circle-only view: draw a circle centered within the slot
-          const cx = w / 2;
-          const cy = h / 2;
-          const radius = LAYOUT.CIRCLE_DIAMETER / 2;
-          bg.circle(cx, cy, radius);
+        if (node.isMissing) {
+          const isUnknown = node.missingKind === "unknown";
+          const baseBg = isUnknown ? COLORS.UNKNOWN_BG : COLORS.ADD_BG;
+          const hoverBg = isUnknown ? 0x1e4a62 : 0x374151;
+          const fillColor = state === "hover" ? hoverBg : baseBg;
+          const strokeColor = state === "hover"
+            ? COLORS.HOVER_SHADOW
+            : isUnknown ? COLORS.UNKNOWN_ACCENT : COLORS.ADD_ACCENT;
+
+          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
           bg.fill({ color: fillColor });
-          bg.circle(cx, cy, radius);
-          bg.stroke({ color: state === "hover" ? COLORS.HOVER_SHADOW : accentColor, width: state === "hover" ? 3 : 2 });
+          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
+          bg.stroke({ color: strokeColor, width: state === "hover" ? 2 : 1.5 });
         } else {
-          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
-          bg.fill({ color: fillColor });
-          bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
-          bg.stroke({ color: strokeColor, width: strokeWidth });
-          if (!node.isMissing) {
-            bg.roundRect(0, 0, w, 4, 4);
-            bg.fill({ color: accentColor });
+          const fillColor = state === "hover"
+            ? isDarkMode ? 0x4b5563 : 0xf3f4f6
+            : isDarkMode ? 0x374151 : COLORS.PERSON_BG;
+          const strokeColor =
+            state === "hover"
+              ? COLORS.HOVER_SHADOW
+              : isRoot
+              ? COLORS.ROOT_ACCENT
+              : isDarkMode ? 0x4b5563 : COLORS.PERSON_BORDER;
+          const strokeWidth = state === "hover" || isRoot ? 2 : 1;
+
+          if (isCircle) {
+            const cx = w / 2;
+            const cy = h / 2;
+            const radius = LAYOUT.CIRCLE_DIAMETER / 2;
+            bg.circle(cx, cy, radius);
+            bg.fill({ color: fillColor });
+            bg.circle(cx, cy, radius);
+            bg.stroke({
+              color: state === "hover" ? COLORS.HOVER_SHADOW : accentColor,
+              width: state === "hover" ? 3 : 2,
+            });
+          } else {
+            bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
+            bg.fill({ color: fillColor });
+            bg.roundRect(0, 0, w, h, LAYOUT.NODE_ROUNDING);
+            bg.stroke({ color: strokeColor, width: strokeWidth });
           }
         }
       };
@@ -697,9 +907,15 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
           if (node.sublabel) {
             const subStyle = new TextStyle({
               fontFamily: "Inter, system-ui, sans-serif",
-              fontSize: 11,
-              fontWeight: node.isMissing ? "500" : "400",
-              fill: node.isMissing ? 0x93c5fd : (isDarkMode ? 0x9ca3af : 0x6b7280),
+              fontSize: 10,
+              fontWeight: "400",
+              fill: node.isMissing
+                ? node.missingKind === "unknown"
+                  ? COLORS.UNKNOWN_ACCENT
+                  : 0x9ca3af
+                : isDarkMode
+                ? 0x9ca3af
+                : 0x6b7280,
             });
             const subText = new Text({ text: node.sublabel, style: subStyle });
             subText.x = textX;
@@ -777,6 +993,11 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
 
       const handlePointerMove = (e: PointerEvent) => {
         if (!isDraggingRef.current || !dragStartRef.current || !lastPanRef.current) return;
+        // If the primary mouse button is no longer pressed, cancel dragging
+        if ((e.buttons & 1) !== 1) {
+          handlePointerUp();
+          return;
+        }
         const dx = e.clientX - dragStartRef.current.x;
         const dy = e.clientY - dragStartRef.current.y;
         container.x = lastPanRef.current.x + dx;
@@ -851,14 +1072,20 @@ export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCan
     };
 
     let cleanup: (() => void) | undefined;
-    initCanvas().then((c) => { cleanup = c; });
+    initCanvas().then((c) => {
+      if (!isMountedRef.current) {
+        c?.();
+        return;
+      }
+      cleanup = c;
+    });
 
     return () => {
       isMountedRef.current = false;
       cleanup?.();
       destroyApp();
     };
-  }, [data, isDarkMode, onPersonClick, onAddMember, destroyApp, fitToScreen, viewMode]);
+  }, [data, isDarkMode, onPersonClick, onAddMember, destroyApp, fitToScreen, viewMode, showAddOptions]);
 
   return (
     <div
@@ -895,5 +1122,46 @@ function drawDashedLine(
     g.moveTo(sx, sy);
     g.lineTo(ex, ey);
     g.stroke({ color, width });
+  }
+}
+
+interface DashState {
+  isDash: boolean;
+  rem: number;
+}
+
+function drawDashedSegment(
+  g: Graphics,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  color: number,
+  width: number,
+  dashLength: number,
+  state: DashState,
+) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const totalLen = Math.sqrt(dx * dx + dy * dy);
+  if (totalLen === 0) return;
+
+  const ux = dx / totalLen;
+  const uy = dy / totalLen;
+
+  let currentDist = 0;
+  while (currentDist < totalLen) {
+    const step = Math.min(state.rem, totalLen - currentDist);
+    if (state.isDash) {
+      g.moveTo(x1 + ux * currentDist, y1 + uy * currentDist);
+      g.lineTo(x1 + ux * (currentDist + step), y1 + uy * (currentDist + step));
+      g.stroke({ color, width });
+    }
+    currentDist += step;
+    state.rem -= step;
+    if (state.rem <= 0) {
+      state.isDash = !state.isDash;
+      state.rem = dashLength;
+    }
   }
 }

@@ -70,6 +70,7 @@ export function PersonFlowTab({
         personId,
         content: item.content,
         imageUrl: item.imageUrl || null,
+        imageUuid: item.imageUuid || null,
         createdAt: new Date(item.date),
       });
     } else if (item.type === "interaction") {
@@ -82,6 +83,7 @@ export function PersonFlowTab({
         date: new Date(item.date),
         description: item.description || null,
         imageUrl: item.imageUrl || null,
+        imageUuid: item.imageUuid || null,
         createdAt: new Date(item.date),
       });
     }

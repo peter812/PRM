@@ -134,6 +134,7 @@ export function AddRelationshipDialog({
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", String(personId)] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       const count = variables.relationships.length;
       toast({
         title: "Success",
