@@ -63,6 +63,36 @@ export const people = pgTable("people", {
   isStarred: integer("is_starred").notNull().default(0), // 0 = not starred, 1 = starred (SQLite compatibility)
   eloScore: integer("elo_score").notNull().default(1200),
   noSocialMedia: integer("no_social_media").notNull().default(0),
+  isLiving: integer("is_living").notNull().default(1), // 1=living (PII masked publicly), 0=deceased
+  rawGedcom: jsonb("raw_gedcom"), // lossless GEDCOM tag backup for roundtrips
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Union-centric family graph (see family-tree-next-steps.md §2.A–D)
+export const unions = pgTable("unions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  unionType: varchar("union_type", { length: 50 }).notNull().default("marriage"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+export const personUnions = pgTable("person_unions", {
+  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  unionId: varchar("union_id").notNull().references(() => unions.id, { onDelete: "cascade" }),
+  role: varchar("role", { length: 50 }).notNull().default("partner"),
+});
+export const unionChildren = pgTable("union_children", {
+  childId: varchar("child_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  unionId: varchar("union_id").notNull().references(() => unions.id, { onDelete: "cascade" }),
+  relType: varchar("rel_type", { length: 50 }).notNull().default("biological"),
+});
+export const events = pgTable("events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: varchar("person_id").references(() => people.id, { onDelete: "cascade" }),
+  unionId: varchar("union_id").references(() => unions.id, { onDelete: "cascade" }),
+  eventType: varchar("event_type", { length: 50 }).notNull(),
+  placeName: text("place_name"),
+  dateString: text("date_string").notNull(),
+  dateSort: timestamp("date_sort").notNull(),
+  datePrecision: varchar("date_precision", { length: 20 }).notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

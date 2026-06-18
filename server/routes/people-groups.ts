@@ -30,6 +30,7 @@ import {
   FAMILY_RELATIONSHIP_CATEGORIES,
   type FamilyRelationshipType,
 } from "@shared/schema";
+import { parseFuzzyDate } from "@shared/date-utils";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
@@ -1004,6 +1005,17 @@ export function registerRoutes(app: Express) {
         }
   
         const tree = await storage.getFamilyTree(personId, depth);
+        // GDPR (§4.C.2): mask PII of living individuals for unauthenticated requests.
+        if (!req.isAuthenticated()) {
+          const ids = tree.people.map(p => p.id);
+          if (ids.length) {
+            const rows = await db.select({ id: people.id, isLiving: people.isLiving }).from(people).where(inArray(people.id, ids));
+            const living = new Set(rows.filter(r => (r.isLiving ?? 1) === 1).map(r => r.id));
+            tree.people = tree.people.map(p => living.has(p.id)
+              ? { ...p, firstName: "Living", lastName: "Person", avatarUrl: null }
+              : p);
+          }
+        }
         res.json({ rootPersonId: personId, ...tree });
       } catch (error) {
         console.error("Error fetching family tree:", error);
@@ -1027,6 +1039,81 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    // ── Hourglass traversal via recursive CTE (§3.A) ──────────────────────
+    app.get("/api/family-tree/:personId/hourglass", async (req, res) => {
+      try {
+        const a = Math.max(0, Math.min(parseInt(String(req.query.ancestors ?? "4"), 10) || 4, 10));
+        const d = Math.max(0, Math.min(parseInt(String(req.query.descendants ?? "4"), 10) || 4, 10));
+        const nodes = await storage.fetchHourglassGraph(req.params.personId, a, d);
+        res.json({ rootPersonId: req.params.personId, nodes });
+      } catch (e) { console.error(e); res.status(500).json({ error: "Failed to fetch hourglass" }); }
+    });
+
+    // ── GDPR right-to-erasure (§4.C.3) ────────────────────────────────────
+    app.post("/api/people/:id/erase", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try { await storage.anonymizePerson(req.params.id); res.json({ success: true }); }
+      catch (e: any) { console.error(e); res.status(500).json({ error: e?.message ?? "Failed to erase" }); }
+    });
+
+    // ── Lossless GEDCOM 5.5.1/7.0 import (§4.B) ───────────────────────────
+    app.post("/api/import-gedcom", upload.single("file"), async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      try {
+        type Rec = { id: string; tag: string; value: string; children: Rec[] };
+        const lines = req.file.buffer.toString("utf-8").split(/\r?\n/).filter(Boolean);
+        const root: Rec[] = []; const stack: { level: number; rec: Rec }[] = [];
+        for (const ln of lines) {
+          const m = ln.match(/^(\d+)\s+(@[^@]+@\s+)?(\S+)(?:\s+(.*))?$/);
+          if (!m) continue;
+          const lvl = +m[1]; const idTok = m[2]?.trim() ?? ""; const tag = m[3]; const val = m[4] ?? "";
+          const rec: Rec = { id: idTok, tag, value: val, children: [] };
+          while (stack.length && stack[stack.length - 1].level >= lvl) stack.pop();
+          if (stack.length) stack[stack.length - 1].rec.children.push(rec); else root.push(rec);
+          stack.push({ level: lvl, rec });
+        }
+        const find = (r: Rec, t: string) => r.children.find(c => c.tag === t);
+        const dateOf = (r: Rec | undefined) => find(r ?? ({} as Rec), "DATE")?.value;
+        const idMap = new Map<string, string>();
+        const userId = req.user?.id;
+        const indis = root.filter(r => r.tag === "INDI");
+        for (const i of indis) {
+          const nameRaw = find(i, "NAME")?.value ?? "";
+          const nm = nameRaw.match(/^(.*?)\s*\/(.*?)\//);
+          const first = (nm?.[1] ?? nameRaw).trim() || "Unknown";
+          const last = (nm?.[2] ?? "").trim();
+          const [p] = await db.insert(people).values({
+            userId, firstName: first, lastName: last,
+            rawGedcom: i as any,
+          } as any).returning();
+          idMap.set(i.id, p.id);
+          for (const evTag of ["BIRT", "DEAT"] as const) {
+            const ev = find(i, evTag); const ds = dateOf(ev);
+            if (ev && ds) {
+              const pd = parseFuzzyDate(ds);
+              await storage.createEvent({ personId: p.id, eventType: evTag === "BIRT" ? "birth" : "death",
+                placeName: find(ev, "PLAC")?.value, ...pd });
+            }
+          }
+        }
+        for (const f of root.filter(r => r.tag === "FAM")) {
+          const uid = await storage.createUnion("marriage");
+          for (const [tag, role] of [["HUSB", "husband"], ["WIFE", "wife"]] as const) {
+            const ref = find(f, tag)?.value; const pid = ref && idMap.get(ref);
+            if (pid) await storage.createPersonUnion(pid, uid, role);
+          }
+          for (const ch of f.children.filter(c => c.tag === "CHIL")) {
+            const cid = idMap.get(ch.value); if (cid) await storage.createUnionChild(cid, uid, "biological");
+          }
+          const marr = find(f, "MARR"); const md = dateOf(marr);
+          if (marr && md) { const pd = parseFuzzyDate(md);
+            await storage.createEvent({ unionId: uid, eventType: "marriage", placeName: find(marr, "PLAC")?.value, ...pd }); }
+        }
+        res.json({ success: true, individuals: indis.length, families: root.filter(r => r.tag === "FAM").length });
+      } catch (e: any) { console.error(e); res.status(500).json({ error: e?.message ?? "GEDCOM import failed" }); }
+    });
+
     // ── Family Tree AI ─────────────────────────────────────────────────────
     // Generate proposed relationship changes from a natural-language prompt.
     app.post("/api/family-tree/ai/generate", async (req, res) => {

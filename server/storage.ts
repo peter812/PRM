@@ -6,6 +6,10 @@ import {
   interactionTypes,
   relationships,
   relationshipTypes,
+  unions,
+  personUnions,
+  unionChildren,
+  events as familyEvents,
   users,
   groups,
   groupNotes,
@@ -3452,6 +3456,69 @@ export class DatabaseStorage implements IStorage {
       sql`INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
     );
+  }
+
+  // ── Union-centric family graph (family-tree-next-steps.md §2–§5) ────────
+  async createUnion(unionType = "marriage"): Promise<string> {
+    const [u] = await db.insert(unions).values({ unionType }).returning();
+    return u.id;
+  }
+  async createPersonUnion(personId: string, unionId: string, role = "partner"): Promise<void> {
+    await db.insert(personUnions).values({ personId, unionId, role });
+  }
+  async createUnionChild(childId: string, unionId: string, relType = "biological"): Promise<void> {
+    await db.insert(unionChildren).values({ childId, unionId, relType });
+  }
+  async createEvent(e: { personId?: string; unionId?: string; eventType: string; placeName?: string;
+    dateString: string; dateSort: Date; datePrecision: string }): Promise<void> {
+    await db.insert(familyEvents).values(e);
+    // Auto-determine is_living (§4.C.1)
+    if (e.personId && (e.eventType === "death" ||
+        (e.eventType === "birth" && e.dateSort.getTime() < Date.now() - 110 * 365.25 * 86400_000))) {
+      await db.update(people).set({ isLiving: 0 } as any).where(eq(people.id, e.personId));
+    }
+  }
+
+  // Recursive CTE hourglass traversal with visited-path cycle break (§3.A).
+  async fetchHourglassGraph(rootId: string, ancestorDepth = 4, descendantDepth = 4):
+      Promise<Array<{ personId: string; depth: number; direction: "ancestor" | "descendant" | "root" }>> {
+    const r = await db.execute(sql`
+      WITH RECURSIVE
+      anc AS (
+        SELECT id AS person_id, 0 AS depth, ARRAY[id::text] AS path FROM people WHERE id = ${rootId}
+        UNION ALL
+        SELECT pu.person_id, anc.depth - 1, anc.path || pu.person_id::text
+        FROM anc
+        JOIN union_children uc ON uc.child_id = anc.person_id
+        JOIN person_unions pu ON pu.union_id = uc.union_id
+        WHERE anc.depth > ${-ancestorDepth} AND NOT (pu.person_id::text = ANY(anc.path))
+      ),
+      desc_t AS (
+        SELECT id AS person_id, 0 AS depth, ARRAY[id::text] AS path FROM people WHERE id = ${rootId}
+        UNION ALL
+        SELECT uc.child_id, desc_t.depth + 1, desc_t.path || uc.child_id::text
+        FROM desc_t
+        JOIN person_unions pu ON pu.person_id = desc_t.person_id
+        JOIN union_children uc ON uc.union_id = pu.union_id
+        WHERE desc_t.depth < ${descendantDepth} AND NOT (uc.child_id::text = ANY(desc_t.path))
+      )
+      SELECT person_id, depth, CASE WHEN depth < 0 THEN 'ancestor' WHEN depth > 0 THEN 'descendant' ELSE 'root' END AS direction
+      FROM anc WHERE depth < 0
+      UNION
+      SELECT person_id, depth, CASE WHEN depth < 0 THEN 'ancestor' WHEN depth > 0 THEN 'descendant' ELSE 'root' END
+      FROM desc_t;
+    `);
+    return r.rows as any;
+  }
+
+  // GDPR right-to-erasure: anonymize PII but preserve graph topology (§4.C.3).
+  async anonymizePerson(personId: string): Promise<void> {
+    await db.update(people).set({
+      firstName: "Redacted", lastName: "Person", email: null, phone: null,
+      company: null, title: null, imageUrl: null,
+      socialAccountUuids: [] as any, isLiving: 0,
+    } as any).where(eq(people.id, personId));
+    await db.delete(familyEvents).where(eq(familyEvents.personId, personId));
   }
 }
 

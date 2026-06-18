@@ -379,6 +379,8 @@ async function validateAndSyncSchema(): Promise<void> {
       },
       people: {
         social_account_uuids: "TEXT[]",
+        is_living: "INTEGER NOT NULL DEFAULT 1",
+        raw_gedcom: "JSONB",
       },
       photos: {
         og_metadata: "JSONB",
@@ -524,6 +526,36 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("daily_notes tables created successfully");
     }
+
+    // Ensure union-centric family tables exist (see family-tree-next-steps.md §2)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS unions (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        union_type VARCHAR(50) NOT NULL DEFAULT 'marriage',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS person_unions (
+        person_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        union_id VARCHAR NOT NULL REFERENCES unions(id) ON DELETE CASCADE,
+        role VARCHAR(50) NOT NULL DEFAULT 'partner'
+      );
+      CREATE TABLE IF NOT EXISTS union_children (
+        child_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        union_id VARCHAR NOT NULL REFERENCES unions(id) ON DELETE CASCADE,
+        rel_type VARCHAR(50) NOT NULL DEFAULT 'biological'
+      );
+      CREATE TABLE IF NOT EXISTS events (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        person_id VARCHAR REFERENCES people(id) ON DELETE CASCADE,
+        union_id VARCHAR REFERENCES unions(id) ON DELETE CASCADE,
+        event_type VARCHAR(50) NOT NULL,
+        place_name TEXT,
+        date_string TEXT NOT NULL,
+        date_sort TIMESTAMP NOT NULL,
+        date_precision VARCHAR(20) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+    `);
 
     // Migrate social_accounts to historical model (v2)
     await migrateSocialAccountsToHistorical();
