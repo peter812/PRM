@@ -861,7 +861,7 @@ function SocialGraphContent({
           <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
 
         {isOptionsOpen && (
-          <div className="absolute top-4 right-4 w-80 bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg p-4 space-y-3 z-50">
+          <div className="absolute top-4 right-4 w-80 max-h-[calc(100%-2rem)] overflow-y-auto overscroll-contain bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg p-4 space-y-3 z-50">
             <div className="flex items-center justify-between">
               <h3 className="font-semibold">Graph Options</h3>
               <Button
