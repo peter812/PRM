@@ -1062,12 +1062,23 @@ export function registerRoutes(app: Express) {
       if (!req.file) return res.status(400).json({ error: "No file uploaded" });
       try {
         type Rec = { id: string; tag: string; value: string; children: Rec[] };
-        const lines = req.file.buffer.toString("utf-8").split(/\r?\n/).filter(Boolean);
+        const lines = req.file.buffer.toString("utf-8").split(/\r?\n/);
         const root: Rec[] = []; const stack: { level: number; rec: Rec }[] = [];
-        for (const ln of lines) {
-          const m = ln.match(/^(\d+)\s+(@[^@]+@\s+)?(\S+)(?:\s+(.*))?$/);
-          if (!m) continue;
-          const lvl = +m[1]; const idTok = m[2]?.trim() ?? ""; const tag = m[3]; const val = m[4] ?? "";
+        for (const raw of lines) {
+          // GEDCOM line: "<level> [@xref@] <tag> [value]"
+          const ln = raw.replace(/^\uFEFF/, "").trimEnd();
+          if (!ln) continue;
+          const sp1 = ln.indexOf(" "); if (sp1 < 0) continue;
+          const lvl = parseInt(ln.slice(0, sp1), 10); if (!Number.isFinite(lvl)) continue;
+          let rest = ln.slice(sp1 + 1).trimStart();
+          let idTok = "";
+          if (rest.startsWith("@")) {
+            const end = rest.indexOf("@", 1);
+            if (end > 0) { idTok = rest.slice(0, end + 1); rest = rest.slice(end + 1).trimStart(); }
+          }
+          const sp2 = rest.indexOf(" ");
+          const tag = sp2 < 0 ? rest : rest.slice(0, sp2);
+          const val = sp2 < 0 ? "" : rest.slice(sp2 + 1);
           const rec: Rec = { id: idTok, tag, value: val, children: [] };
           while (stack.length && stack[stack.length - 1].level >= lvl) stack.pop();
           if (stack.length) stack[stack.length - 1].rec.children.push(rec); else root.push(rec);
