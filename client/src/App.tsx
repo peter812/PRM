@@ -11,7 +11,7 @@ import { useState, useEffect, useRef } from "react";
 import { toast } from "@/hooks/use-toast";
 import { GlobalSearch } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
-import { AddPersonDialog } from "@/components/add-person-dialog";
+import { PersonDialog } from "@/components/person-dialog";
 import { getPageTitle } from "@/lib/page-title";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
@@ -193,7 +193,7 @@ function AppLayout() {
       {user && (
         <>
           <MobileBottomNav onAddPersonClick={() => setIsAddPersonDialogOpen(true)} />
-          <AddPersonDialog open={isAddPersonDialogOpen} onOpenChange={setIsAddPersonDialogOpen} />
+          <PersonDialog open={isAddPersonDialogOpen} onOpenChange={setIsAddPersonDialogOpen} />
         </>
       )}
     </SidebarProvider>

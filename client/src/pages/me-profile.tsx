@@ -10,9 +10,9 @@ import { queryClient } from "@/lib/queryClient";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { AddNoteDialog } from "@/components/add-note-dialog";
-import { AddInteractionDialog } from "@/components/add-interaction-dialog";
-import { EditPersonDialog } from "@/components/edit-person-dialog";
-import { AddRelationshipDialog } from "@/components/add-relationship-dialog";
+import { InteractionDialog } from "@/components/interaction-dialog";
+import { PersonDialog } from "@/components/person-dialog";
+import { RelationshipDialog } from "@/components/relationship-dialog";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
@@ -347,17 +347,17 @@ export default function MeProfile() {
         onOpenChange={setIsAddNoteOpen}
         personId={person.id}
       />
-      <AddInteractionDialog
+      <InteractionDialog
         open={isAddInteractionOpen}
         onOpenChange={setIsAddInteractionOpen}
         personId={person.id}
       />
-      <AddRelationshipDialog
+      <RelationshipDialog
         open={isAddRelationshipOpen}
         onOpenChange={setIsAddRelationshipOpen}
         personId={person.id}
       />
-      <EditPersonDialog
+      <PersonDialog
         open={isEditPersonOpen}
         onOpenChange={setIsEditPersonOpen}
         person={person}

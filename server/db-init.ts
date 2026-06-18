@@ -68,7 +68,6 @@ async function seedRelationshipTypes(): Promise<void> {
       { name: 'Best Friend', color: '#ec4899', value: 80, notes: 'Your best friend' },
       { name: 'Colleague', color: '#f59e0b', value: 30, notes: 'Someone you work with' },
       { name: 'Family', color: '#ef4444', value: 90, notes: 'Family member' },
-      { name: 'Partner', color: '#06b6d4', value: 100, notes: 'Romantic partner' },
     ];
     
     for (const type of defaultTypes) {
@@ -723,8 +722,87 @@ export async function initializeDatabase(): Promise<void> {
       // Validate schema and add missing columns if needed
       await validateAndSyncSchema();
     }
+
+    // Migrate Partner relationship types to spouse role if needed
+    await migratePartnerToSpouse();
   } catch (error) {
     log(`Database initialization failed: ${error}`);
     throw error;
+  }
+}
+
+/**
+ * Migrates existing 'Partner' relationship types to 'Family' relationship type
+ * with 'spouse' family relationship type role, then deletes the 'Partner' type.
+ */
+async function migratePartnerToSpouse(): Promise<void> {
+  log("Migrating 'Partner' relationship type to family 'spouse'...");
+  try {
+    // 1. Get 'Partner' type ID
+    const partnerTypeRes = await pool.query(
+      "SELECT id FROM relationship_types WHERE LOWER(name) = 'partner'"
+    );
+    if (partnerTypeRes.rows.length === 0) {
+      log("'Partner' relationship type not found. Skipping migration.");
+      return;
+    }
+    const partnerTypeId = partnerTypeRes.rows[0].id;
+
+    // 2. Get or create 'Family' type ID
+    let familyTypeId;
+    const familyTypeRes = await pool.query(
+      "SELECT id FROM relationship_types WHERE LOWER(name) = 'family'"
+    );
+    if (familyTypeRes.rows.length === 0) {
+      log("'Family' relationship type not found. Creating it...");
+      const insertRes = await pool.query(
+        `INSERT INTO relationship_types (name, color, value, notes)
+         VALUES ('Family', '#ef4444', 90, 'Family member')
+         RETURNING id`
+      );
+      familyTypeId = insertRes.rows[0].id;
+    } else {
+      familyTypeId = familyTypeRes.rows[0].id;
+    }
+
+    // 3. Find all relationships of type 'Partner'
+    const partnerRels = await pool.query(
+      "SELECT id, from_person_id, to_person_id FROM relationships WHERE type_id = $1",
+      [partnerTypeId]
+    );
+
+    log(`Found ${partnerRels.rows.length} relationships of type 'Partner' to migrate.`);
+
+    for (const rel of partnerRels.rows) {
+      // Check if a family relationship already exists between these people
+      const existingFamilyRes = await pool.query(
+        `SELECT id FROM relationships 
+         WHERE from_person_id = $1 AND to_person_id = $2 
+           AND family_relationship_type IS NOT NULL`,
+        [rel.from_person_id, rel.to_person_id]
+      );
+
+      if (existingFamilyRes.rows.length > 0) {
+        // Duplicate relationship: delete the partner one
+        log(`Deleting duplicate partner relationship (ID: ${rel.id}) between ${rel.from_person_id} and ${rel.to_person_id}`);
+        await pool.query("DELETE FROM relationships WHERE id = $1", [rel.id]);
+      } else {
+        // Update to Family with familyRelationshipType = 'spouse'
+        log(`Migrating relationship (ID: ${rel.id}) to Family ('spouse')`);
+        await pool.query(
+          `UPDATE relationships 
+           SET type_id = $1, family_relationship_type = 'spouse' 
+           WHERE id = $2`,
+          [familyTypeId, rel.id]
+        );
+      }
+    }
+
+    // 4. Delete the 'Partner' relationship type
+    await pool.query("DELETE FROM relationship_types WHERE id = $1", [partnerTypeId]);
+    log("Removed 'Partner' relationship type from database.");
+
+  } catch (error) {
+    log(`Error migrating Partner to spouse: ${error}`);
   }
 }

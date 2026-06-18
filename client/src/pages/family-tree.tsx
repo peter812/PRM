@@ -3,10 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Loader2, ZoomIn, ZoomOut, Maximize, RotateCcw, UserSearch, User, Image as ImageIcon, Circle } from "lucide-react";
+import { Loader2, ZoomIn, ZoomOut, Maximize, RotateCcw, UserSearch, User, Image as ImageIcon, Circle, Sparkles, Eye, EyeOff } from "lucide-react";
 import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle, FamilyTreeViewMode } from "@/components/family-tree-canvas";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
+import { GenerateFamilyConnectionsDialog } from "@/components/generate-family-connections-dialog";
 import { apiRequest } from "@/lib/queryClient";
 
 interface PersonBasic {
@@ -39,6 +40,8 @@ export default function FamilyTreePage() {
   const [depth, setDepth] = useState(initialDepth);
   const [viewMode, setViewMode] = useState<FamilyTreeViewMode>(initialView);
   const [showPersonSelector, setShowPersonSelector] = useState(false);
+  const [showGenerateDialog, setShowGenerateDialog] = useState(false);
+  const [showAddOptions, setShowAddOptions] = useState(true);
   const [addMemberContext, setAddMemberContext] = useState<{
     relatedPersonId: string;
     suggestedRole: string;
@@ -146,6 +149,27 @@ export default function FamilyTreePage() {
         <div className="flex items-center gap-1">
           <Button
             variant="outline"
+            size="sm"
+            onClick={() => setShowGenerateDialog(true)}
+            disabled={!selectedPersonId}
+            title="Generate connections with AI"
+            data-testid="button-generate-connections"
+          >
+            <Sparkles className="h-4 w-4 mr-1" />
+            Generate
+          </Button>
+          <Button
+            variant={showAddOptions ? "default" : "outline"}
+            size="sm"
+            onClick={() => setShowAddOptions((v) => !v)}
+            title={showAddOptions ? "Hide unknown/add person boxes" : "Show unknown/add person boxes"}
+            data-testid="button-toggle-add-options"
+          >
+            {showAddOptions ? <Eye className="h-4 w-4 mr-1" /> : <EyeOff className="h-4 w-4 mr-1" />}
+            {showAddOptions ? "Unknowns on" : "Unknowns off"}
+          </Button>
+          <Button
+            variant="outline"
             size="icon"
             className="h-8 w-8"
             onClick={cycleViewMode}
@@ -226,6 +250,7 @@ export default function FamilyTreePage() {
             onPersonClick={handlePersonClick}
             onAddMember={handleAddMember}
             viewMode={viewMode}
+            showAddOptions={showAddOptions}
           />
         )}
       </div>
@@ -257,6 +282,13 @@ export default function FamilyTreePage() {
           }}
         />
       )}
+      {/* Generate connections (AI) dialog */}
+      <GenerateFamilyConnectionsDialog
+        open={showGenerateDialog}
+        onOpenChange={setShowGenerateDialog}
+        personId={selectedPersonId}
+        personName={selectedPersonName || undefined}
+      />
     </div>
   );
 }

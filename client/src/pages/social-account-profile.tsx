@@ -17,13 +17,12 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { isValidHexColor } from "@/lib/utils";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialProfileVersion } from "@shared/schema";
 import { Link } from "wouter";
-import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
+import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
-import { AddPersonDialog } from "@/components/add-person-dialog";
-import { AddPostDialog } from "@/components/add-post-dialog";
-import { EditPostDialog } from "@/components/edit-post-dialog";
+import { PersonDialog } from "@/components/person-dialog";
+import { PostDialog } from "@/components/post-dialog";
 import { PostDetailDialog } from "@/components/post-detail-dialog";
 import { SiInstagram } from "react-icons/si";
 import {
@@ -960,7 +959,7 @@ export default function SocialAccountProfile() {
         </Tabs>
       </div>
 
-      <EditSocialAccountDialog
+      <SocialAccountDialog
         open={isEditDialogOpen}
         onOpenChange={setIsEditDialogOpen}
         account={account}
@@ -1102,7 +1101,7 @@ export default function SocialAccountProfile() {
         </DialogContent>
       </Dialog>
 
-      <AddPersonDialog
+      <PersonDialog
         open={isCreatePersonOpen}
         onOpenChange={setIsCreatePersonOpen}
         onPersonCreated={(person) => {
@@ -1116,7 +1115,7 @@ export default function SocialAccountProfile() {
         }}
       />
 
-      <AddPostDialog
+      <PostDialog
         open={isAddPostOpen}
         onOpenChange={setIsAddPostOpen}
         socialAccountId={uuid!}
@@ -1138,7 +1137,7 @@ export default function SocialAccountProfile() {
             }}
           />
 
-          <EditPostDialog
+          <PostDialog
             open={isEditPostOpen}
             onOpenChange={setIsEditPostOpen}
             post={selectedPost}

@@ -18,6 +18,7 @@ import {
   socialNetworkChanges,
   socialAccountPosts,
   photos,
+  appSettings,
   imageTasks,
   dailyNotes,
   dailyNoteEvents,
@@ -174,6 +175,9 @@ export interface SuggestedFamilyConnection {
 }
 
 export interface IStorage {
+  getAppSetting(key: string): Promise<string | null>;
+  setAppSetting(key: string, value: string): Promise<void>;
+
   // Graph operations
   getGraphData(): Promise<{
     people: Array<{ id: string; firstName: string; lastName: string; company: string | null; imageUrl: string | null; socialAccountUuids: string[] }>;
@@ -217,6 +221,7 @@ export interface IStorage {
   createFamilyRelationshipWithInverse(data: InsertRelationship): Promise<{ relationship: Relationship; inverseRelationship: Relationship | null; propagated: Relationship[] }>;
   getPeopleByLastName(lastName: string): Promise<Person[]>;
   getSuggestedFamilyConnections(personId: string): Promise<SuggestedFamilyConnection[]>;
+  deleteAllFamilyRelationships(): Promise<number>;
 
   // Relationship type operations
   getAllRelationshipTypes(): Promise<RelationshipType[]>;
@@ -1001,6 +1006,26 @@ export class DatabaseStorage implements IStorage {
         )
       );
     return rel || undefined;
+  }
+
+  async deleteAllFamilyRelationships(): Promise<number> {
+    const [familyType] = await db
+      .select()
+      .from(relationshipTypes)
+      .where(ilike(relationshipTypes.name, "family"));
+
+    const deletedRels = await db
+      .delete(relationships)
+      .where(
+        familyType
+          ? or(
+              isNotNull(relationships.familyRelationshipType),
+              eq(relationships.typeId, familyType.id)
+            )
+          : isNotNull(relationships.familyRelationshipType)
+      )
+      .returning();
+    return deletedRels.length;
   }
 
   async getFamilyTree(personId: string, maxDepth: number): Promise<FamilyTreeResult> {
@@ -2831,6 +2856,7 @@ export class DatabaseStorage implements IStorage {
           date: interactions.date,
           description: interactions.description,
           imageUrl: interactions.imageUrl,
+          imageUuid: interactions.imageUuid,
           createdAt: interactions.createdAt,
           type: interactionTypes,
         })
@@ -2851,6 +2877,7 @@ export class DatabaseStorage implements IStorage {
       date: note.createdAt,
       content: note.content,
       imageUrl: note.imageUrl,
+      imageUuid: note.imageUuid,
     }));
 
     const interactionItems: FlowItem[] = personInteractions.map(interaction => ({
@@ -2864,6 +2891,7 @@ export class DatabaseStorage implements IStorage {
       peopleIds: interaction.peopleIds || [],
       groupIds: interaction.groupIds || [],
       imageUrl: interaction.imageUrl,
+      imageUuid: interaction.imageUuid,
     }));
 
     // Merge and sort all items by date descending
@@ -3412,6 +3440,18 @@ export class DatabaseStorage implements IStorage {
       postsCleared: postsResult.length,
       photosDeleted: photosResult.length,
     };
+  }
+
+  async getAppSetting(key: string): Promise<string | null> {
+    const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
+    return row?.value ?? null;
+  }
+
+  async setAppSetting(key: string, value: string): Promise<void> {
+    await db.execute(
+      sql`INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
+          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    );
   }
 }
 

@@ -24,7 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { Person } from "@shared/schema";
-import { AddPersonDialog } from "@/components/add-person-dialog";
+import { PersonDialog } from "@/components/person-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -344,7 +344,7 @@ export default function PeopleList() {
         )}
       </div>
 
-      <AddPersonDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+      <PersonDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
 
       <AlertDialog open={!!personToDelete} onOpenChange={(open) => !open && setPersonToDelete(null)}>
         <AlertDialogContent>

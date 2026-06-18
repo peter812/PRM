@@ -45,6 +45,7 @@ import IntelligenceSettingsPage from "@/pages/intelligence-settings";
 import IntelligenceToolsSettingsPage from "@/pages/intelligence-tools-settings";
 import IntelligenceExternalToolsSettingsPage from "@/pages/intelligence-external-tools-settings";
 import IntelligenceImagesSettingsPage from "@/pages/intelligence-images-settings";
+import IntelligenceFamilyTreeSettingsPage from "@/pages/intelligence-family-tree-settings";
 import VectorSettingsPage from "@/pages/vector-settings";
 import TaskDetailPage from "@/pages/task-detail";
 import NotFound from "@/pages/not-found";
@@ -99,6 +100,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Tools", url: "/intelligence/tools", icon: Wrench },
       { title: "External Tools", url: "/intelligence/external-tools", icon: Plug },
       { title: "Images", url: "/intelligence/images", icon: ImageIcon },
+      { title: "Family Tree", url: "/intelligence/family-tree", icon: Network },
       { title: "Vector Storage", url: "/vector", icon: Database },
     ],
   },
@@ -268,6 +270,7 @@ export default function SettingsLayout() {
               <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
               <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
               <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
+              <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
               <Route path="/intelligence" component={IntelligenceSettingsPage} />
               <Route path="/vector" component={VectorSettingsPage} />
               <Route path="/instagram" component={InstagramSettingsPage} />

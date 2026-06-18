@@ -5,18 +5,14 @@ import { db } from "./db";
 import { dailyNotes, type DailyNoteWithDetails } from "@shared/schema";
 import { storage } from "./storage";
 
-// ── Settings helpers (key/value app_settings, mirrors getOllamaSetting) ─────
+// ── Settings helpers (delegates to storage) ─────────────────────────────────
 
 export async function getVectorSetting(key: string): Promise<string | null> {
-  const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
-  return row?.value ?? null;
+  return storage.getAppSetting(key);
 }
 
 export async function setVectorSetting(key: string, value: string): Promise<void> {
-  await db.execute(
-    sql`INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
-  );
+  await storage.setAppSetting(key, value);
 }
 
 export type VectorConfig = {
@@ -43,8 +39,7 @@ export async function loadVectorConfig(): Promise<VectorConfig> {
 // Reuse the same app_settings keys the Intelligence settings page writes.
 
 async function getOllamaSetting(key: string): Promise<string | null> {
-  const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
-  return row?.value ?? null;
+  return storage.getAppSetting(key);
 }
 
 async function getOllamaAuthHeaders(): Promise<Record<string, string>> {

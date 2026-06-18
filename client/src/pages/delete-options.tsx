@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertCircle, Trash2, Users } from "lucide-react";
+import { AlertCircle, Trash2, Users, Network } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -31,11 +31,14 @@ export default function DeleteOptionsPage() {
   const [confirmSwitch1, setConfirmSwitch1] = useState(false);
   const [confirmSwitch2, setConfirmSwitch2] = useState(false);
   const [confirmSwitch3, setConfirmSwitch3] = useState(false);
+  const [confirmFamilySwitch1, setConfirmFamilySwitch1] = useState(false);
+  const [confirmFamilySwitch2, setConfirmFamilySwitch2] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
 
   const allSwitchesOn = confirmSwitch1 && confirmSwitch2 && confirmSwitch3;
+  const allFamilySwitchesOn = confirmFamilySwitch1 && confirmFamilySwitch2;
 
   const resetDatabaseMutation = useMutation({
     mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
@@ -125,6 +128,45 @@ export default function DeleteOptionsPage() {
     }
   };
 
+  const deleteAllFamilyRelationshipsMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/relationships/family", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to delete family relationships");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Family Relationships Deleted",
+        description: `Successfully deleted ${data.deleted} family relationships.`,
+      });
+
+      setConfirmFamilySwitch1(false);
+      setConfirmFamilySwitch2(false);
+
+      queryClient.invalidateQueries();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Delete Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDeleteAllFamilyRelationships = () => {
+    if (allFamilySwitchesOn) {
+      deleteAllFamilyRelationshipsMutation.mutate();
+    }
+  };
+
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="mb-8">
@@ -211,6 +253,79 @@ export default function DeleteOptionsPage() {
               <>
                 <Trash2 className="h-4 w-4" />
                 Remove All Social Accounts
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6 border-destructive/50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <Network className="h-5 w-5" />
+            Remove All Family Relationships
+          </CardTitle>
+          <CardDescription>Permanently delete all family-type relationships from the database</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                  <li>All family-type relationships (e.g., spouse, parent, child, sibling, etc.) will be permanently deleted</li>
+                  <li>Custom relationship types (e.g., Friend, Colleague) will not be affected</li>
+                  <li>Family propagation structure will be cleared</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-sm font-medium">Confirm by enabling both switches:</p>
+            
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-family-switch-1" className="text-sm font-normal">
+                I understand I am about to delete all family tree relationships
+              </Label>
+              <Switch
+                id="confirm-family-switch-1"
+                checked={confirmFamilySwitch1}
+                onCheckedChange={setConfirmFamilySwitch1}
+                data-testid="switch-confirm-family-1"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-family-switch-2" className="text-sm font-normal">
+                I understand that this action cannot be undone
+              </Label>
+              <Switch
+                id="confirm-family-switch-2"
+                checked={confirmFamilySwitch2}
+                onCheckedChange={setConfirmFamilySwitch2}
+                data-testid="switch-confirm-family-2"
+              />
+            </div>
+          </div>
+
+          <Button
+            variant="destructive"
+            onClick={handleDeleteAllFamilyRelationships}
+            disabled={!allFamilySwitchesOn || deleteAllFamilyRelationshipsMutation.isPending}
+            className="gap-2"
+            data-testid="button-delete-all-family-relationships"
+          >
+            {deleteAllFamilyRelationshipsMutation.isPending ? (
+              <>
+                <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
+                Deleting...
+              </>
+            ) : (
+              <>
+                <Trash2 className="h-4 w-4" />
+                Remove All Family Relationships
               </>
             )}
           </Button>
