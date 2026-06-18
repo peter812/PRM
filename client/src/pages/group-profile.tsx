@@ -7,10 +7,10 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { Group, Person, Interaction } from "@shared/schema";
-import { EditGroupDialog } from "@/components/edit-group-dialog";
+import { GroupDialog } from "@/components/group-dialog";
 import { MembersTab } from "@/components/members-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
-import { AddInteractionDialog } from "@/components/add-interaction-dialog";
+import { InteractionDialog } from "@/components/interaction-dialog";
 import { getInitials } from "@/lib/utils";
 
 type GroupWithMembers = Group & {
@@ -191,13 +191,13 @@ export default function GroupProfile() {
         </div>
       </Tabs>
 
-      <EditGroupDialog
+      <GroupDialog
         open={isEditGroupOpen}
         onOpenChange={setIsEditGroupOpen}
         group={group}
       />
 
-      <AddInteractionDialog
+      <InteractionDialog
         open={isAddInteractionOpen}
         onOpenChange={setIsAddInteractionOpen}
         personId=""

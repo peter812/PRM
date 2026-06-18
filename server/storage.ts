@@ -18,6 +18,7 @@ import {
   socialNetworkChanges,
   socialAccountPosts,
   photos,
+  appSettings,
   imageTasks,
   dailyNotes,
   dailyNoteEvents,
@@ -174,6 +175,9 @@ export interface SuggestedFamilyConnection {
 }
 
 export interface IStorage {
+  getAppSetting(key: string): Promise<string | null>;
+  setAppSetting(key: string, value: string): Promise<void>;
+
   // Graph operations
   getGraphData(): Promise<{
     people: Array<{ id: string; firstName: string; lastName: string; company: string | null; imageUrl: string | null; socialAccountUuids: string[] }>;
@@ -3436,6 +3440,18 @@ export class DatabaseStorage implements IStorage {
       postsCleared: postsResult.length,
       photosDeleted: photosResult.length,
     };
+  }
+
+  async getAppSetting(key: string): Promise<string | null> {
+    const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
+    return row?.value ?? null;
+  }
+
+  async setAppSetting(key: string, value: string): Promise<void> {
+    await db.execute(
+      sql`INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
+          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    );
   }
 }
 

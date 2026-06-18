@@ -36,76 +36,105 @@ import { insertPersonSchema, type Person } from "@shared/schema";
 import { z } from "zod";
 import { ImageUpload } from "./image-upload";
 
-interface EditPersonDialogProps {
+const updatePersonSchema = insertPersonSchema.partial();
+type FormValues = z.infer<typeof updatePersonSchema>;
+
+interface PersonDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  person: Person;
+  person?: Person;
+  onPersonCreated?: (person: Person) => void;
   onDelete?: () => void;
 }
 
-const updatePersonSchema = insertPersonSchema.partial();
-type UpdatePerson = z.infer<typeof updatePersonSchema>;
-
-export function EditPersonDialog({
+export function PersonDialog({
   open,
   onOpenChange,
   person,
+  onPersonCreated,
   onDelete,
-}: EditPersonDialogProps) {
+}: PersonDialogProps) {
+  const isEdit = !!person;
   const { toast } = useToast();
   const [tagInput, setTagInput] = useState("");
-  const [imageUrl, setImageUrl] = useState<string | null>(person.imageUrl || null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const form = useForm<UpdatePerson>({
-    resolver: zodResolver(updatePersonSchema),
+  const form = useForm<FormValues>({
+    resolver: zodResolver(isEdit ? updatePersonSchema : insertPersonSchema),
     defaultValues: {
-      firstName: person.firstName,
-      lastName: person.lastName,
-      email: person.email || "",
-      phone: person.phone || "",
-      company: person.company || "",
-      title: person.title || "",
-      tags: person.tags || [],
-      imageUrl: person.imageUrl || null,
-      noSocialMedia: person.noSocialMedia || 0,
+      firstName: "",
+      lastName: "",
+      email: "",
+      phone: "",
+      company: "",
+      title: "",
+      tags: [],
+      imageUrl: null,
+      noSocialMedia: 0,
     },
   });
 
   useEffect(() => {
     if (open) {
-      setImageUrl(person.imageUrl || null);
-      form.reset({
-        firstName: person.firstName,
-        lastName: person.lastName,
-        email: person.email || "",
-        phone: person.phone || "",
-        company: person.company || "",
-        title: person.title || "",
-        tags: person.tags || [],
-        imageUrl: person.imageUrl || null,
-        noSocialMedia: person.noSocialMedia || 0,
-      });
+      if (person) {
+        setImageUrl(person.imageUrl || null);
+        form.reset({
+          firstName: person.firstName,
+          lastName: person.lastName,
+          email: person.email || "",
+          phone: person.phone || "",
+          company: person.company || "",
+          title: person.title || "",
+          tags: person.tags || [],
+          imageUrl: person.imageUrl || null,
+          noSocialMedia: person.noSocialMedia || 0,
+        });
+      } else {
+        setImageUrl(null);
+        form.reset({
+          firstName: "",
+          lastName: "",
+          email: "",
+          phone: "",
+          company: "",
+          title: "",
+          tags: [],
+          imageUrl: null,
+          noSocialMedia: 0,
+        });
+      }
+      setTagInput("");
     }
   }, [open, person, form]);
 
-  const updateMutation = useMutation({
-    mutationFn: async (data: UpdatePerson) => {
-      return await apiRequest("PATCH", `/api/people/${person.id}`, data);
+  const mutation = useMutation({
+    mutationFn: async (data: FormValues) => {
+      if (isEdit && person) {
+        return await apiRequest("PATCH", `/api/people/${person.id}`, data);
+      } else {
+        const res = await apiRequest("POST", "/api/people", data);
+        return res.json();
+      }
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/people", String(person.id)] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      if (isEdit && person) {
+        queryClient.invalidateQueries({ queryKey: ["/api/people", String(person.id)] });
+      }
       toast({
         title: "Success",
-        description: "Person updated successfully",
+        description: isEdit ? "Person updated successfully" : "Person added successfully",
       });
+      form.reset();
       onOpenChange(false);
+      if (!isEdit && onPersonCreated) onPersonCreated(data);
     },
     onError: () => {
       toast({
         title: "Error",
-        description: "Failed to update person",
+        description: `Failed to ${isEdit ? "update" : "add"} person`,
         variant: "destructive",
       });
     },
@@ -113,7 +142,7 @@ export function EditPersonDialog({
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      return await apiRequest("DELETE", `/api/people/${person.id}`);
+      return await apiRequest("DELETE", `/api/people/${person!.id}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
@@ -156,15 +185,15 @@ export function EditPersonDialog({
     );
   };
 
-  const onSubmit = (data: UpdatePerson) => {
-    updateMutation.mutate({ ...data, imageUrl });
+  const onSubmit = (data: FormValues) => {
+    mutation.mutate({ ...data, imageUrl });
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Edit Person</DialogTitle>
+          <DialogTitle>{isEdit ? "Edit Person" : "Add Person"}</DialogTitle>
         </DialogHeader>
 
         <Form {...form}>
@@ -186,9 +215,12 @@ export function EditPersonDialog({
                 name="firstName"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>First Name</FormLabel>
+                    <FormLabel>First Name *</FormLabel>
                     <FormControl>
-                      <Input {...field} data-testid="input-edit-first-name" />
+                      <Input
+                        {...field}
+                        data-testid={isEdit ? "input-edit-first-name" : "input-first-name"}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -200,9 +232,12 @@ export function EditPersonDialog({
                 name="lastName"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Last Name</FormLabel>
+                    <FormLabel>Last Name *</FormLabel>
                     <FormControl>
-                      <Input {...field} data-testid="input-edit-last-name" />
+                      <Input
+                        {...field}
+                        data-testid={isEdit ? "input-edit-last-name" : "input-last-name"}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -221,7 +256,7 @@ export function EditPersonDialog({
                       type="email"
                       {...field}
                       value={field.value || ""}
-                      data-testid="input-edit-email"
+                      data-testid={isEdit ? "input-edit-email" : "input-email"}
                     />
                   </FormControl>
                   <FormMessage />
@@ -240,7 +275,7 @@ export function EditPersonDialog({
                       type="tel"
                       {...field}
                       value={field.value || ""}
-                      data-testid="input-edit-phone"
+                      data-testid={isEdit ? "input-edit-phone" : "input-phone"}
                     />
                   </FormControl>
                   <FormMessage />
@@ -258,7 +293,7 @@ export function EditPersonDialog({
                     <Input
                       {...field}
                       value={field.value || ""}
-                      data-testid="input-edit-company"
+                      data-testid={isEdit ? "input-edit-company" : "input-company"}
                     />
                   </FormControl>
                   <FormMessage />
@@ -276,7 +311,7 @@ export function EditPersonDialog({
                     <Input
                       {...field}
                       value={field.value || ""}
-                      data-testid="input-edit-title"
+                      data-testid={isEdit ? "input-edit-title" : "input-title"}
                     />
                   </FormControl>
                   <FormMessage />
@@ -295,7 +330,7 @@ export function EditPersonDialog({
                       checked={field.value === 1}
                       onChange={(e) => field.onChange(e.target.checked ? 1 : 0)}
                       className="h-4 w-4 rounded border-input"
-                      data-testid="input-edit-no-social-media"
+                      data-testid={isEdit ? "input-edit-no-social-media" : "input-no-social-media"}
                     />
                   </FormControl>
                   <FormLabel className="font-normal">No social media</FormLabel>
@@ -316,13 +351,13 @@ export function EditPersonDialog({
                     }
                   }}
                   placeholder="Add a tag..."
-                  data-testid="input-edit-tag"
+                  data-testid={isEdit ? "input-edit-tag" : "input-tag"}
                 />
                 <Button
                   type="button"
                   variant="outline"
                   onClick={addTag}
-                  data-testid="button-edit-add-tag"
+                  data-testid={isEdit ? "button-edit-add-tag" : "button-add-tag"}
                 >
                   Add
                 </Button>
@@ -336,7 +371,7 @@ export function EditPersonDialog({
                         type="button"
                         onClick={() => removeTag(tag)}
                         className="hover:text-destructive"
-                        data-testid={`button-edit-remove-tag-${idx}`}
+                        data-testid={isEdit ? `button-edit-remove-tag-${idx}` : `button-remove-tag-${idx}`}
                       >
                         <X className="h-3 w-3" />
                       </button>
@@ -346,32 +381,40 @@ export function EditPersonDialog({
               )}
             </div>
 
-            <div className="flex gap-2 justify-between pt-4 border-t">
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => setShowDeleteConfirm(true)}
-                data-testid="button-delete-person"
-                className="gap-2"
-              >
-                <Trash2 className="h-4 w-4" />
-                Delete Person
-              </Button>
+            <div className={`flex gap-2 pt-4 ${isEdit ? "justify-between border-t" : "justify-end"}`}>
+              {isEdit && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => setShowDeleteConfirm(true)}
+                  data-testid="button-delete-person"
+                  className="gap-2"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete Person
+                </Button>
+              )}
               <div className="flex gap-2">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={() => onOpenChange(false)}
-                  data-testid="button-edit-cancel"
+                  data-testid={isEdit ? "button-edit-cancel" : "button-cancel"}
                 >
                   Cancel
                 </Button>
                 <Button
                   type="submit"
-                  disabled={updateMutation.isPending}
-                  data-testid="button-edit-submit"
+                  disabled={mutation.isPending}
+                  data-testid={isEdit ? "button-edit-submit" : "button-submit"}
                 >
-                  {updateMutation.isPending ? "Saving..." : "Save Changes"}
+                  {mutation.isPending
+                    ? isEdit
+                      ? "Saving..."
+                      : "Adding..."
+                    : isEdit
+                    ? "Save Changes"
+                    : "Add Person"}
                 </Button>
               </div>
             </div>
@@ -379,29 +422,31 @@ export function EditPersonDialog({
         </Form>
       </DialogContent>
 
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Person</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete {person.firstName} {person.lastName}? 
-              This will permanently remove this person and all their associated data (notes, interactions, relationships). 
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteMutation.mutate()}
-              disabled={deleteMutation.isPending}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="button-delete-confirm"
-            >
-              {deleteMutation.isPending ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {isEdit && person && (
+        <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Person</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete {person.firstName} {person.lastName}? 
+                This will permanently remove this person and all their associated data (notes, interactions, relationships). 
+                This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="button-delete-cancel">Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                data-testid="button-delete-confirm"
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </Dialog>
   );
 }

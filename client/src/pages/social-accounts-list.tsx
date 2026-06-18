@@ -31,8 +31,7 @@ import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getInitials, isValidHexColor } from "@/lib/utils";
 import type { SocialAccount, SocialAccountWithCurrentProfile, Person, SocialAccountType } from "@shared/schema";
-import { AddSocialAccountDialog } from "@/components/add-social-account-dialog";
-import { EditSocialAccountDialog } from "@/components/edit-social-account-dialog";
+import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
 
 const PAGE_SIZE = 30;
@@ -437,10 +436,10 @@ export default function SocialAccountsList() {
         )}
       </div>
 
-      <AddSocialAccountDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+      <SocialAccountDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
 
       {accountToEdit && (
-        <EditSocialAccountDialog
+        <SocialAccountDialog
           open={!!accountToEdit}
           onOpenChange={(open) => !open && setAccountToEdit(null)}
           account={accountToEdit}

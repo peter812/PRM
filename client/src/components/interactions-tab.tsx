@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { EditInteractionDialog } from "@/components/edit-interaction-dialog";
+import { InteractionDialog } from "@/components/interaction-dialog";
 import type { Interaction, Person, Group, InteractionType } from "@shared/schema";
 import { format } from "date-fns";
 import { Link } from "wouter";
@@ -261,7 +261,7 @@ export function InteractionsTab({
       )}
 
       {editingInteraction && (
-        <EditInteractionDialog
+        <InteractionDialog
           open={!!editingInteraction}
           onOpenChange={(open) => !open && setEditingInteraction(null)}
           interaction={editingInteraction}

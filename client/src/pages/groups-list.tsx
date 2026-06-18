@@ -17,7 +17,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { AddGroupDialog } from "@/components/add-group-dialog";
+import { GroupDialog } from "@/components/group-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import type { Group } from "@shared/schema";
@@ -268,7 +268,7 @@ export default function GroupsList() {
         )}
       </div>
 
-      <AddGroupDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+      <GroupDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
 
       <AlertDialog open={!!groupToDelete} onOpenChange={(open) => !open && setGroupToDelete(null)}>
         <AlertDialogContent>

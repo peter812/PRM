@@ -5,7 +5,7 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { EditRelationshipDialog } from "@/components/edit-relationship-dialog";
+import { RelationshipDialog } from "@/components/relationship-dialog";
 import { MiniPersonGraph } from "@/components/mini-person-graph";
 import {
   DropdownMenu,
@@ -254,7 +254,7 @@ export function RelationshipsTab({
       </div>
 
       {editingRelationship && (
-        <EditRelationshipDialog
+        <RelationshipDialog
           open={!!editingRelationship}
           onOpenChange={(open) => !open && setEditingRelationship(null)}
           relationship={editingRelationship}
