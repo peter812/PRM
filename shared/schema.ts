@@ -1054,4 +1054,12 @@ export type MegaSearchResult = {
   interactions: Interaction[];
   notes: Note[];
   socialProfiles: SocialAccountWithCurrentProfile[];
+  dailyNotes: DailyNote[];
+  chats: AiChat[];
+};
+
+export type UuidLookupResult = {
+  type: 'person' | 'social_account' | 'photo';
+  id: string;
+  route: string;
 };

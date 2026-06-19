@@ -1741,6 +1741,8 @@ export function registerRoutes(app: Express) {
           includeInteractions: z.enum(['true', 'false']).optional(),
           includeNotes: z.enum(['true', 'false']).optional(),
           includeSocialProfiles: z.enum(['true', 'false']).optional(),
+          includeDailyNotes: z.enum(['true', 'false']).optional(),
+          includeChats: z.enum(['true', 'false']).optional(),
         });
   
         const parsed = querySchema.safeParse(req.query);
@@ -1757,6 +1759,8 @@ export function registerRoutes(app: Express) {
             interactions: [],
             notes: [],
             socialProfiles: [],
+            dailyNotes: [],
+            chats: [],
           });
         }
   
@@ -1766,6 +1770,8 @@ export function registerRoutes(app: Express) {
           includeInteractions: parsed.data.includeInteractions !== 'false',
           includeNotes: parsed.data.includeNotes !== 'false',
           includeSocialProfiles: parsed.data.includeSocialProfiles !== 'false',
+          includeDailyNotes: parsed.data.includeDailyNotes !== 'false',
+          includeChats: parsed.data.includeChats !== 'false',
         };
   
         const results = await storage.megaSearch(query, options);
@@ -1774,6 +1780,25 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error mega searching:", error);
         res.status(500).json({ error: "Failed to search" });
+      }
+    });
+
+    app.get("/api/uuid-lookup/:uuid", async (req, res) => {
+      try {
+        const uuid = req.params.uuid;
+        // Validate UUID format
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(uuid)) {
+          return res.status(400).json({ error: "Invalid UUID format" });
+        }
+        const result = await storage.lookupUuid(uuid);
+        if (!result) {
+          return res.status(404).json({ error: "UUID not found" });
+        }
+        res.json(result);
+      } catch (error) {
+        console.error("Error looking up UUID:", error);
+        res.status(500).json({ error: "Failed to lookup UUID" });
       }
     });
   
