@@ -23,6 +23,7 @@ import {
   dailyNotes,
   dailyNoteEvents,
   dailyNoteInvolvedParties,
+  aiChats,
   dailyNoteAuditLogs,
   type DailyNote,
   type InsertDailyNote,
@@ -85,6 +86,7 @@ import {
   type FlowItem,
   type FlowResponse,
   type MegaSearchResult,
+  type UuidLookupResult,
   type SocialGraphSettings,
   type SocialGraphData,
   type SocialGraphNode,
@@ -93,6 +95,7 @@ import {
   type PersonGraphPerson,
   type Photo,
   type InsertPhoto,
+  type AiChat,
   FAMILY_RELATIONSHIP_INVERSES,
   type FamilyRelationshipType,
 } from "@shared/schema";
@@ -2924,6 +2927,8 @@ export class DatabaseStorage implements IStorage {
     includeInteractions?: boolean;
     includeNotes?: boolean;
     includeSocialProfiles?: boolean;
+    includeDailyNotes?: boolean;
+    includeChats?: boolean;
   }): Promise<MegaSearchResult> {
     const searchPattern = `%${query}%`;
     const startPattern = `${query}%`;
@@ -2934,6 +2939,8 @@ export class DatabaseStorage implements IStorage {
       interactions: [],
       notes: [],
       socialProfiles: [],
+      dailyNotes: [],
+      chats: [],
     };
 
     const searchPromises: Promise<void>[] = [];
@@ -3031,9 +3038,63 @@ export class DatabaseStorage implements IStorage {
       );
     }
 
+    if (options.includeDailyNotes !== false) {
+      searchPromises.push(
+        db.select().from(dailyNotes)
+          .where(or(
+            ilike(dailyNotes.userTitle, searchPattern),
+            ilike(dailyNotes.body, searchPattern)
+          ))
+          .orderBy(desc(dailyNotes.date))
+          .limit(10)
+          .then(res => { results.dailyNotes = res; })
+      );
+    }
+
+    if (options.includeChats !== false) {
+      searchPromises.push(
+        db.select().from(aiChats)
+          .where(ilike(aiChats.title, searchPattern))
+          .orderBy(desc(aiChats.updatedAt))
+          .limit(10)
+          .then(res => { results.chats = res; })
+      );
+    }
+
     await Promise.all(searchPromises);
 
     return results;
+  }
+
+  async lookupUuid(uuid: string): Promise<UuidLookupResult | null> {
+    // Check social accounts first
+    const [socialAccount] = await db.select({ id: socialAccounts.id })
+      .from(socialAccounts)
+      .where(eq(socialAccounts.id, uuid))
+      .limit(1);
+    if (socialAccount) {
+      return { type: 'social_account', id: uuid, route: `/social-accounts/${uuid}` };
+    }
+
+    // Check people
+    const [person] = await db.select({ id: people.id })
+      .from(people)
+      .where(eq(people.id, uuid))
+      .limit(1);
+    if (person) {
+      return { type: 'person', id: uuid, route: `/person/${uuid}` };
+    }
+
+    // Check photos/images
+    const [photo] = await db.select({ id: photos.id })
+      .from(photos)
+      .where(eq(photos.id, uuid))
+      .limit(1);
+    if (photo) {
+      return { type: 'photo', id: uuid, route: `/image/${uuid}` };
+    }
+
+    return null;
   }
 
   // Task operations

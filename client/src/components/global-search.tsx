@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Search as SearchIcon, Users, Users2, MoreVertical, GripVertical, FileText, Calendar, AtSign, ChevronUp, ChevronDown } from "lucide-react";
+import { Search as SearchIcon, Users, Users2, MoreVertical, GripVertical, FileText, Calendar, AtSign, ChevronUp, ChevronDown, BookOpen, MessageSquare } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -10,9 +10,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useLocation } from "wouter";
 import { getInitials } from "@/lib/utils";
-import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, MegaSearchResult } from "@shared/schema";
+import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, DailyNote, AiChat, MegaSearchResult, UuidLookupResult } from "@shared/schema";
 
-type SearchCategory = 'people' | 'groups' | 'interactions' | 'notes' | 'socialProfiles';
+type SearchCategory = 'people' | 'groups' | 'interactions' | 'notes' | 'socialProfiles' | 'dailyNotes' | 'chats';
 
 interface SearchPreferences {
   order: SearchCategory[];
@@ -20,13 +20,15 @@ interface SearchPreferences {
 }
 
 const DEFAULT_PREFERENCES: SearchPreferences = {
-  order: ['people', 'groups', 'interactions', 'notes', 'socialProfiles'],
+  order: ['people', 'groups', 'interactions', 'notes', 'socialProfiles', 'dailyNotes', 'chats'],
   enabled: {
     people: true,
     groups: true,
     interactions: true,
     notes: true,
     socialProfiles: true,
+    dailyNotes: true,
+    chats: true,
   },
 };
 
@@ -36,6 +38,8 @@ const CATEGORY_LABELS: Record<SearchCategory, string> = {
   interactions: 'Interactions',
   notes: 'Notes',
   socialProfiles: 'Social Profiles',
+  dailyNotes: 'Daily Notes',
+  chats: 'Chats',
 };
 
 const CATEGORY_ICONS: Record<SearchCategory, typeof Users> = {
@@ -44,6 +48,8 @@ const CATEGORY_ICONS: Record<SearchCategory, typeof Users> = {
   interactions: Calendar,
   notes: FileText,
   socialProfiles: AtSign,
+  dailyNotes: BookOpen,
+  chats: MessageSquare,
 };
 
 function loadPreferences(): SearchPreferences {
@@ -187,6 +193,10 @@ export function GlobalSearch() {
   const [, setLocation] = useLocation();
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // UUID detection regex
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const isUuidQuery = UUID_REGEX.test(searchQuery.trim());
+
   const queryParams = new URLSearchParams();
   queryParams.set('q', searchQuery);
   Object.entries(preferences.enabled).forEach(([key, value]) => {
@@ -194,13 +204,21 @@ export function GlobalSearch() {
       key === 'groups' ? 'includeGroups' :
         key === 'interactions' ? 'includeInteractions' :
           key === 'notes' ? 'includeNotes' :
-            'includeSocialProfiles';
+            key === 'dailyNotes' ? 'includeDailyNotes' :
+              key === 'chats' ? 'includeChats' :
+                'includeSocialProfiles';
     queryParams.set(paramName, value.toString());
   });
 
   const { data: results } = useQuery<MegaSearchResult>({
-    queryKey: searchQuery.length > 0 ? [`/api/mega-search?${queryParams.toString()}`] : ["/api/mega-search"],
-    enabled: searchQuery.length > 0,
+    queryKey: searchQuery.length > 0 && !isUuidQuery ? [`/api/mega-search?${queryParams.toString()}`] : ["/api/mega-search"],
+    enabled: searchQuery.length > 0 && !isUuidQuery,
+  });
+
+  // UUID lookup query
+  const { data: uuidResult } = useQuery<UuidLookupResult>({
+    queryKey: [`/api/uuid-lookup/${searchQuery.trim()}`],
+    enabled: isUuidQuery,
   });
 
   useEffect(() => {
@@ -241,7 +259,9 @@ export function GlobalSearch() {
     (results?.groups?.length || 0) +
     (results?.interactions?.length || 0) +
     (results?.notes?.length || 0) +
-    (results?.socialProfiles?.length || 0);
+    (results?.socialProfiles?.length || 0) +
+    (results?.dailyNotes?.length || 0) +
+    (results?.chats?.length || 0);
 
   const renderCategory = (category: SearchCategory) => {
     if (!preferences.enabled[category]) return null;
@@ -450,6 +470,73 @@ export function GlobalSearch() {
           </div>
         );
       }
+      case 'dailyNotes': {
+        const items = results?.dailyNotes?.slice(0, 4) || [];
+        if (items.length === 0) return null;
+        return (
+          <div key={category}>
+            <div className="px-3 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2 border-t">
+              <Icon className="h-3 w-3" />
+              {label}
+            </div>
+            {items.map((dailyNote) => (
+              <button
+                key={dailyNote.id}
+                onClick={() => handleNavigate(`/daily-notes/${dailyNote.id}`)}
+                className="w-full px-3 py-2 hover-elevate active-elevate-2 text-left"
+                data-testid={`result-daily-note-${dailyNote.id}`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
+                    <BookOpen className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm truncate">
+                      {dailyNote.userTitle || dailyNote.date}
+                    </div>
+                    {dailyNote.body && (
+                      <div className="text-xs text-muted-foreground truncate">
+                        {dailyNote.body}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        );
+      }
+      case 'chats': {
+        const items = results?.chats?.slice(0, 4) || [];
+        if (items.length === 0) return null;
+        return (
+          <div key={category}>
+            <div className="px-3 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2 border-t">
+              <Icon className="h-3 w-3" />
+              {label}
+            </div>
+            {items.map((chat) => (
+              <button
+                key={chat.id}
+                onClick={() => handleNavigate(`/ai-chat-demo?chatId=${chat.id}`)}
+                className="w-full px-3 py-2 hover-elevate active-elevate-2 text-left"
+                data-testid={`result-chat-${chat.id}`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
+                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm truncate">
+                      {chat.title}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        );
+      }
       default:
         return null;
     }
@@ -475,7 +562,42 @@ export function GlobalSearch() {
 
       {isOpen && searchQuery.length > 0 && (
         <Card className="absolute top-full mt-1 w-full max-h-96 overflow-auto z-50" data-testid="card-search-results">
-          {totalResults === 0 ? (
+          {isUuidQuery ? (
+            uuidResult ? (
+              <div className="py-2">
+                <div className="px-3 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2">
+                  <SearchIcon className="h-3 w-3" />
+                  UUID Match
+                </div>
+                <button
+                  onClick={() => handleNavigate(uuidResult.route)}
+                  className="w-full px-3 py-2 hover-elevate active-elevate-2 text-left"
+                  data-testid="result-uuid-match"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
+                      <SearchIcon className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm truncate">
+                        {uuidResult.type === 'person' ? 'Person' : uuidResult.type === 'social_account' ? 'Social Account' : 'Image'}
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {uuidResult.id}
+                      </div>
+                    </div>
+                    <Badge variant="secondary" className="text-xs">
+                      {uuidResult.type.replace('_', ' ')}
+                    </Badge>
+                  </div>
+                </button>
+              </div>
+            ) : (
+              <div className="p-4 text-center text-sm text-muted-foreground">
+                No match found for this UUID
+              </div>
+            )
+          ) : totalResults === 0 ? (
             <div className="p-4 text-center text-sm text-muted-foreground">
               No results found
             </div>
