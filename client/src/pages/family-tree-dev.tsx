@@ -77,7 +77,7 @@ const RELATIONSHIP_CATEGORIES = [
   "uncle/aunt",
   "nephew/niece",
   "cousin",
-  "step",
+  "extended",
 ] as const;
 
 type RelationshipCategory = (typeof RELATIONSHIP_CATEGORIES)[number];
@@ -93,7 +93,7 @@ function categorizeRelType(type: string): RelationshipCategory {
   if (["uncle", "aunt", "uncle_or_aunt"].includes(type)) return "uncle/aunt";
   if (["nephew", "niece", "nephew_or_niece"].includes(type)) return "nephew/niece";
   if (["cousin"].includes(type)) return "cousin";
-  if (type.startsWith("step") || type.startsWith("great_")) return "step";
+  if (type.startsWith("step") || type.startsWith("great_")) return "extended";
   return "parent"; // fallback
 }
 
@@ -299,7 +299,7 @@ export default function FamilyTreeDevPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `family-tree-${selectedPersonName || "export"}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `family-tree-${(selectedPersonName || "export").replace(/[^a-z0-9]/gi, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -628,7 +628,10 @@ export default function FamilyTreeDevPage() {
               />
 
               <Collapsible>
-                <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground w-full">
+                <CollapsibleTrigger
+                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground w-full"
+                  aria-label="Toggle relationship breakdown details"
+                >
                   <ChevronDown className="h-3 w-3 transition-transform data-[state=open]:rotate-180" />
                   Relationship Breakdown
                 </CollapsibleTrigger>
