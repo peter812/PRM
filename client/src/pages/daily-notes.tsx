@@ -4,11 +4,12 @@ import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { DailyNoteModal } from "@/components/daily-note-modal";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
 import { format, parseISO } from "date-fns";
-import { Plus, Lock, CalendarDays, List } from "lucide-react";
+import { Plus, Lock, CalendarDays, List, KeyRound, Settings } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertDialog,
@@ -21,6 +22,13 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Trash2 } from "lucide-react";
 
 function getTodayDate(): string {
@@ -37,11 +45,24 @@ export default function DailyNotesList() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [pinDialogOpen, setPinDialogOpen] = useState(false);
+  const [newPin, setNewPin] = useState("");
+  const [currentPin, setCurrentPin] = useState("");
+  const [pinError, setPinError] = useState("");
 
   const today = getTodayDate();
 
   const { data: notes = [], isLoading } = useQuery<DailyNoteWithDetails[]>({
     queryKey: ["/api/daily-notes"],
+  });
+
+  const { data: pinStatus } = useQuery<{ pinSet: boolean }>({
+    queryKey: ["/api/daily-notes-pin/status"],
+    queryFn: async () => {
+      const res = await fetch("/api/daily-notes-pin/status");
+      if (!res.ok) return { pinSet: false };
+      return res.json();
+    },
   });
 
   const todayNote = notes.find(n => n.date === today);
@@ -57,6 +78,31 @@ export default function DailyNotesList() {
       toast({ title: "Cannot delete", description: msg, variant: "destructive" });
     },
   });
+
+  const handleSavePin = async () => {
+    try {
+      const body: any = { pin: newPin };
+      if (pinStatus?.pinSet) body.currentPin = currentPin;
+      const res = await fetch("/api/daily-notes-pin/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast({ title: "PIN Saved", description: "Your daily notes PIN has been set." });
+        setPinDialogOpen(false);
+        setNewPin("");
+        setCurrentPin("");
+        setPinError("");
+        queryClient.invalidateQueries({ queryKey: ["/api/daily-notes-pin/status"] });
+      } else {
+        setPinError(data.error || "Failed to set PIN");
+      }
+    } catch {
+      setPinError("Failed to set PIN");
+    }
+  };
 
   const handleOpenToday = () => {
     if (todayNote) {
@@ -74,13 +120,29 @@ export default function DailyNotesList() {
           <div>
             <h1 className="text-2xl font-semibold">Daily Notes</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Date-anchored journal entries. Editable for 2 days, then read-only.
+              Date-anchored journal entries. Editable for 2 days, then requires PIN.
             </p>
           </div>
-          <Button onClick={handleOpenToday} data-testid="button-open-today">
-            <CalendarDays className="h-4 w-4 mr-2" />
-            {todayNote ? "Open Today's Note" : "New Note for Today"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setNewPin("");
+                setCurrentPin("");
+                setPinError("");
+                setPinDialogOpen(true);
+              }}
+              data-testid="button-set-pin"
+            >
+              <KeyRound className="h-4 w-4 mr-1.5" />
+              {pinStatus?.pinSet ? "Change PIN" : "Set PIN"}
+            </Button>
+            <Button onClick={handleOpenToday} data-testid="button-open-today">
+              <CalendarDays className="h-4 w-4 mr-2" />
+              {todayNote ? "Open Today's Note" : "New Note for Today"}
+            </Button>
+          </div>
         </div>
 
         {/* Notes list */}
@@ -126,7 +188,13 @@ export default function DailyNotesList() {
                           <span className="text-xs font-medium text-muted-foreground">
                             {format(parseISO(note.date), "EEEE, MMMM d, yyyy")}
                           </span>
-                          {!note.isEditable && (
+                          {!note.isEditable && note.isLockedEditable && (
+                            <Badge variant="secondary" className="gap-1 text-xs py-0">
+                              <KeyRound className="h-2.5 w-2.5" />
+                              PIN Required
+                            </Badge>
+                          )}
+                          {!note.isEditable && !note.isLockedEditable && (
                             <Badge variant="secondary" className="gap-1 text-xs py-0">
                               <Lock className="h-2.5 w-2.5" />
                               Read-only
@@ -237,6 +305,50 @@ export default function DailyNotesList() {
         note={null}
         defaultDate={today}
       />
+
+      {/* PIN Setup Dialog */}
+      <Dialog open={pinDialogOpen} onOpenChange={setPinDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{pinStatus?.pinSet ? "Change PIN" : "Set Daily Notes PIN"}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {pinStatus?.pinSet
+              ? "Enter your current PIN and a new PIN to update it."
+              : "Set a 4-8 character PIN to authorize editing notes older than two days."}
+          </p>
+          {pinStatus?.pinSet && (
+            <Input
+              type="password"
+              placeholder="Current PIN"
+              value={currentPin}
+              onChange={(e) => setCurrentPin(e.target.value)}
+              data-testid="input-current-pin"
+            />
+          )}
+          <Input
+            type="password"
+            placeholder="New PIN (4-8 characters)"
+            value={newPin}
+            onChange={(e) => {
+              setNewPin(e.target.value);
+              setPinError("");
+            }}
+            data-testid="input-new-pin"
+          />
+          {pinError && <p className="text-sm text-destructive">{pinError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPinDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={handleSavePin}
+              disabled={newPin.length < 4 || newPin.length > 8 || (pinStatus?.pinSet && !currentPin)}
+              data-testid="button-save-pin"
+            >
+              Save PIN
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

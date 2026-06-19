@@ -23,6 +23,7 @@ import {
   dailyNotes,
   dailyNoteEvents,
   dailyNoteInvolvedParties,
+  dailyNoteAuditLogs,
   type DailyNote,
   type InsertDailyNote,
   type DailyNoteEvent,
@@ -30,6 +31,7 @@ import {
   type DailyNoteInvolvedParty,
   type InsertDailyNoteInvolvedParty,
   type DailyNoteInvolvedPartyWithLabel,
+  type DailyNoteAuditLog,
   type DailyNoteWithDetails,
   type ImageTask,
   type InsertImageTask,
@@ -405,6 +407,8 @@ export interface IStorage {
   deleteDailyNote(id: string): Promise<void>;
   replaceDailyNoteEvents(dailyNoteId: string, events: Array<{ text: string; position: number }>): Promise<DailyNoteEvent[]>;
   replaceDailyNoteParties(dailyNoteId: string, parties: Array<{ partyType: string; refId: string }>): Promise<DailyNoteInvolvedParty[]>;
+  addDailyNoteAuditLog(dailyNoteId: string, action: string, pinUsed: boolean): Promise<DailyNoteAuditLog>;
+  getDailyNoteAuditLogs(dailyNoteId: string): Promise<DailyNoteAuditLog[]>;
 
   // Session store
   sessionStore: session.Store;
@@ -3321,10 +3325,20 @@ export class DatabaseStorage implements IStorage {
     return diffDays <= 1;
   }
 
+  private isDailyNoteLockedEditable(dateStr: string): boolean {
+    // Notes that are 2 or more days old can still be edited with PIN authorization
+    const today = new Date();
+    const noteDate = new Date(dateStr + "T00:00:00");
+    const diffMs = today.getTime() - noteDate.getTime();
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    return diffDays >= 2;
+  }
+
   private async buildDailyNoteWithDetails(note: DailyNote): Promise<DailyNoteWithDetails> {
-    const [events, parties] = await Promise.all([
+    const [events, parties, auditLogs] = await Promise.all([
       db.select().from(dailyNoteEvents).where(eq(dailyNoteEvents.dailyNoteId, note.id)).orderBy(dailyNoteEvents.position),
       db.select().from(dailyNoteInvolvedParties).where(eq(dailyNoteInvolvedParties.dailyNoteId, note.id)),
+      db.select().from(dailyNoteAuditLogs).where(eq(dailyNoteAuditLogs.dailyNoteId, note.id)).orderBy(dailyNoteAuditLogs.timestamp),
     ]);
 
     // Resolve human-readable labels for each party
@@ -3356,7 +3370,14 @@ export class DatabaseStorage implements IStorage {
       label: labelMap[p.refId] ?? p.refId,
     }));
 
-    return { ...note, events, involvedParties, isEditable: this.isDailyNoteEditable(note.date) };
+    return {
+      ...note,
+      events,
+      involvedParties,
+      auditLogs,
+      isEditable: this.isDailyNoteEditable(note.date),
+      isLockedEditable: this.isDailyNoteLockedEditable(note.date),
+    };
   }
 
   async listDailyNotes(): Promise<DailyNoteWithDetails[]> {
@@ -3378,11 +3399,13 @@ export class DatabaseStorage implements IStorage {
 
   async createDailyNote(data: InsertDailyNote): Promise<DailyNoteWithDetails> {
     const [note] = await db.insert(dailyNotes).values(data).returning();
+    // Add audit log entry for creation
+    await db.insert(dailyNoteAuditLogs).values({ dailyNoteId: note.id, action: "created", pinUsed: false });
     return this.buildDailyNoteWithDetails(note);
   }
 
   async updateDailyNote(id: string, data: Partial<InsertDailyNote>): Promise<DailyNoteWithDetails | undefined> {
-    const [updated] = await db.update(dailyNotes).set(data).where(eq(dailyNotes.id, id)).returning();
+    const [updated] = await db.update(dailyNotes).set({ ...data, updatedAt: new Date() }).where(eq(dailyNotes.id, id)).returning();
     if (!updated) return undefined;
     return this.buildDailyNoteWithDetails(updated);
   }
@@ -3403,6 +3426,15 @@ export class DatabaseStorage implements IStorage {
     if (parties.length === 0) return [];
     const inserted = await db.insert(dailyNoteInvolvedParties).values(parties.map(p => ({ dailyNoteId, partyType: p.partyType, refId: p.refId }))).returning();
     return inserted;
+  }
+
+  async addDailyNoteAuditLog(dailyNoteId: string, action: string, pinUsed: boolean): Promise<DailyNoteAuditLog> {
+    const [log] = await db.insert(dailyNoteAuditLogs).values({ dailyNoteId, action, pinUsed }).returning();
+    return log;
+  }
+
+  async getDailyNoteAuditLogs(dailyNoteId: string): Promise<DailyNoteAuditLog[]> {
+    return db.select().from(dailyNoteAuditLogs).where(eq(dailyNoteAuditLogs.dailyNoteId, dailyNoteId)).orderBy(dailyNoteAuditLogs.timestamp);
   }
 
   async deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }> {
