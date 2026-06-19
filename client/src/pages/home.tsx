@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   GripVertical,
@@ -13,8 +13,10 @@ import {
   Link2,
   BookOpen,
   Plus,
+  MessageSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getInitials, cn } from "@/lib/utils";
@@ -27,6 +29,7 @@ import type {
 
 type CardId =
   | "things-to-do"
+  | "quick-chat"
   | "recent-people"
   | "recent-social"
   | "recent-photos"
@@ -34,6 +37,7 @@ type CardId =
 
 const DEFAULT_ORDER: CardId[] = [
   "things-to-do",
+  "quick-chat",
   "recent-people",
   "recent-social",
   "recent-photos",
@@ -408,6 +412,39 @@ function ThingsToDoContent() {
   );
 }
 
+function QuickChatContent() {
+  const [message, setMessage] = useState("");
+  const [, navigate] = useLocation();
+
+  const handleGo = () => {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    navigate(`/ai-chat-demo?message=${encodeURIComponent(trimmed)}`);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Input
+        placeholder="What's on your mind?"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") handleGo();
+        }}
+        data-testid="home-quick-chat-input"
+      />
+      <Button
+        onClick={handleGo}
+        disabled={!message.trim()}
+        className="self-end"
+        data-testid="home-quick-chat-go"
+      >
+        Go
+      </Button>
+    </div>
+  );
+}
+
 const CARD_DEFINITIONS: Record<
   CardId,
   { title: string; icon: React.ReactNode; render: () => React.ReactNode }
@@ -416,6 +453,11 @@ const CARD_DEFINITIONS: Record<
     title: "Things to do",
     icon: <ListTodo className="h-4 w-4" />,
     render: () => <ThingsToDoContent />,
+  },
+  "quick-chat": {
+    title: "Start a Chat",
+    icon: <MessageSquare className="h-4 w-4" />,
+    render: () => <QuickChatContent />,
   },
   "recent-people": {
     title: "Recently added people",
