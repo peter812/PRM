@@ -152,8 +152,8 @@ export default function SocialAccountsList() {
   }, [handleScroll]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="border-b px-4 md:px-6 py-2">
+    <div className="flex flex-col h-full overflow-auto" ref={scrollContainerRef}>
+      <div className="border-b px-4 md:px-6 py-2 sticky top-0 z-10 backdrop-blur-xl bg-background/70">
         <div className="flex items-center gap-2 md:gap-3 flex-wrap md:flex-nowrap">
           <h1 className="text-xl md:text-2xl font-semibold truncate flex-1 md:flex-initial md:shrink-0" data-testid="text-page-title">
             Social Accounts
@@ -217,7 +217,7 @@ export default function SocialAccountsList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-4 py-3" ref={scrollContainerRef}>
+      <div className="flex-1 px-4 py-3">
         {isLoading ? (
           <div className="flex flex-col gap-1">
             {[1, 2, 3, 4].map((i) => (

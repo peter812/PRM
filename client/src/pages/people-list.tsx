@@ -148,8 +148,8 @@ export default function PeopleList() {
   const showEloBadge = sortBy === "elo_high" || sortBy === "elo_low";
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-4">
+    <div className="flex flex-col h-full overflow-auto" ref={scrollContainerRef}>
+      <div className="border-b px-6 py-4 sticky top-0 z-10 backdrop-blur-xl bg-background/70">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-3xl font-semibold" data-testid="text-page-title">
             People
@@ -181,7 +181,7 @@ export default function PeopleList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-3 md:px-6 py-6" ref={scrollContainerRef}>
+      <div className="flex-1 px-3 md:px-6 py-6">
         {isLoading ? (
           <div className="flex flex-col gap-[5px]">
             {[1, 2, 3, 4].map((i) => (
