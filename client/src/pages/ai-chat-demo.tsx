@@ -239,7 +239,10 @@ function attachmentTypeFor(file: File): string {
 export default function AiChatDemoPage() {
   const { toast } = useToast();
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("message") ?? "";
+  });
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [systemMessageDraft, setSystemMessageDraft] = useState("");
