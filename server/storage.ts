@@ -859,7 +859,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db
       .select()
       .from(people)
-      .where(sql`${people.userId} IS NULL`)
+      .where(sql`${people.userId} IS NULL AND ${people.eloRankable} = 1`)
       .orderBy(sql`RANDOM()`)
       .limit(2);
     return result;

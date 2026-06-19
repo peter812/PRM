@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
@@ -35,6 +37,7 @@ export default function PersonProfile() {
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
   const [isAddSocialAccountOpen, setIsAddSocialAccountOpen] = useState(false);
+  const [isAccountInfoOpen, setIsAccountInfoOpen] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
@@ -247,6 +250,20 @@ export default function PersonProfile() {
                   </TooltipTrigger>
                   <TooltipContent>Open in graph</TooltipContent>
                 </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => setIsAccountInfoOpen(true)}
+                      data-testid="button-account-info"
+                      aria-label="Account info"
+                    >
+                      <Info className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Account info</TooltipContent>
+                </Tooltip>
                 <Button
                   variant="outline"
                   onClick={() => setIsEditPersonOpen(true)}
@@ -443,6 +460,50 @@ export default function PersonProfile() {
           e.target.value = "";
         }}
       />
+
+      {/* Account Info Dialog */}
+      <Dialog open={isAccountInfoOpen} onOpenChange={setIsAccountInfoOpen}>
+        <DialogContent className="max-w-sm" data-testid="dialog-account-info">
+          <DialogHeader>
+            <DialogTitle>Account Info</DialogTitle>
+            <DialogDescription>
+              Technical metadata for {person?.firstName} {person?.lastName}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">Created</span>
+                <span className="text-right font-medium" data-testid="info-created-at">
+                  {person?.createdAt ? new Date(person.createdAt).toLocaleString() : "—"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">ID</span>
+                <span className="text-right font-medium font-mono text-xs" data-testid="info-person-id">
+                  {person?.id || "—"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">ELO Score</span>
+                <span className="text-right font-medium" data-testid="info-elo-score">
+                  {person?.eloScore ?? "—"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">ELO Ranking</span>
+                <Badge
+                  variant={person?.eloRankable === 1 ? "default" : "destructive"}
+                  className={person?.eloRankable === 1 ? "bg-green-600 hover:bg-green-700" : ""}
+                  data-testid="info-elo-rankable"
+                >
+                  {person?.eloRankable === 1 ? "Rankable" : "Not Rankable"}
+                </Badge>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
