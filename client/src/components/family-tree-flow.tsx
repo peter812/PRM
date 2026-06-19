@@ -31,6 +31,7 @@ const LAYOUT = {
   HORIZONTAL_GAP: 60,
   VERTICAL_GAP: 140,
   SPOUSE_GAP: 30,
+  GROUP_PADDING: 10,
 };
 
 // Relationship type helpers
@@ -58,6 +59,16 @@ function getInverseParentRole(childType: string): string {
 // ---------------------------------------------------------------------------
 // Custom node components
 // ---------------------------------------------------------------------------
+
+/** Group node that wraps a spouse couple – provides a bottom handle for offspring edges. */
+function CoupleGroupNode({ id }: { id: string; data: Record<string, unknown> }) {
+  return (
+    <div className="w-full h-full rounded-2xl border-2 border-dashed border-pink-300 dark:border-pink-700 bg-pink-50/40 dark:bg-pink-950/20">
+      <Handle type="target" position={Position.Top} className="!bg-pink-400 !w-2 !h-2 !border-0" />
+      <Handle type="source" position={Position.Bottom} className="!bg-pink-400 !w-2 !h-2 !border-0" />
+    </div>
+  );
+}
 
 interface PersonNodeData {
   label: string;
@@ -134,7 +145,7 @@ function PersonNode({ data, id }: { data: PersonNodeData; id: string }) {
   );
 }
 
-const nodeTypes = { person: PersonNode };
+const nodeTypes = { person: PersonNode, coupleGroup: CoupleGroupNode };
 
 // ---------------------------------------------------------------------------
 // Build React Flow nodes/edges from FamilyTreeData
@@ -282,13 +293,17 @@ function buildFlowElements(
   const nodePositions = new Map<string, { x: number; y: number }>();
   const minGen = sortedGens.length > 0 ? sortedGens[0] : 0;
 
+  // Track couple group positions for later group node creation
+  // coupleKey -> { x, y } of the group's top-left corner
+  const coupleGroupPositions = new Map<string, { x: number; y: number }>();
+
   for (const gen of sortedGens) {
     const members = genGroups.get(gen) ?? [];
     const row = gen - minGen;
     const y = row * (LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
 
     const processed = new Set<string>();
-    const units: Array<{ ids: string[]; width: number }> = [];
+    const units: Array<{ ids: string[]; width: number; coupleKey?: string }> = [];
 
     for (const pid of members) {
       if (processed.has(pid)) continue;
@@ -299,7 +314,9 @@ function buildFlowElements(
         const [a, b] = coupleKey.split(":");
         processed.add(a);
         processed.add(b);
-        units.push({ ids: [a, b], width: LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP });
+        // Group width = padding + node + gap + node + padding
+        const groupWidth = LAYOUT.GROUP_PADDING * 2 + LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP;
+        units.push({ ids: [a, b], width: groupWidth, coupleKey });
       } else {
         units.push({ ids: [pid], width: LAYOUT.NODE_WIDTH });
       }
@@ -310,11 +327,19 @@ function buildFlowElements(
     let currentX = -totalWidth / 2;
 
     for (const unit of units) {
-      if (unit.ids.length === 2) {
-        const x1 = currentX;
-        const x2 = currentX + LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP;
-        nodePositions.set(unit.ids[0], { x: x1, y });
-        nodePositions.set(unit.ids[1], { x: x2, y });
+      if (unit.ids.length === 2 && unit.coupleKey) {
+        // Store the group's top-left position
+        coupleGroupPositions.set(unit.coupleKey, { x: currentX, y });
+
+        // Person positions are relative to the group node
+        const x1Rel = LAYOUT.GROUP_PADDING;
+        const x2Rel = LAYOUT.GROUP_PADDING + LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP;
+        const yRel = LAYOUT.GROUP_PADDING;
+
+        // Store absolute positions (for edge routing debug / fallback) but mark them
+        // as relative positions since they'll be children of the group
+        nodePositions.set(unit.ids[0], { x: x1Rel, y: yRel });
+        nodePositions.set(unit.ids[1], { x: x2Rel, y: yRel });
         currentX += unit.width + LAYOUT.HORIZONTAL_GAP;
       } else {
         nodePositions.set(unit.ids[0], { x: currentX, y });
@@ -323,10 +348,38 @@ function buildFlowElements(
     }
   }
 
+  // Build a reverse lookup: personId -> coupleGroupId (for edge routing)
+  const personToGroupId = new Map<string, string>();
+  for (const coupleKey of coupleSet) {
+    const [a, b] = coupleKey.split(":");
+    const groupId = `couple-${coupleKey}`;
+    personToGroupId.set(a, groupId);
+    personToGroupId.set(b, groupId);
+  }
+
   // Build React Flow nodes
   const flowNodes: Node[] = [];
   const personMap = new Map(people.map((p) => [p.id, p]));
 
+  // 1. Create couple group nodes first (they must appear before their children in the array)
+  for (const coupleKey of coupleSet) {
+    const groupId = `couple-${coupleKey}`;
+    const groupPos = coupleGroupPositions.get(coupleKey);
+    if (!groupPos) continue;
+
+    const groupWidth = LAYOUT.GROUP_PADDING * 2 + LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP;
+    const groupHeight = LAYOUT.GROUP_PADDING * 2 + LAYOUT.NODE_HEIGHT;
+
+    flowNodes.push({
+      id: groupId,
+      type: "coupleGroup",
+      position: groupPos,
+      data: {},
+      style: { width: groupWidth, height: groupHeight },
+    });
+  }
+
+  // 2. Create person nodes (with parentId for coupled people)
   for (const person of people) {
     const pos = nodePositions.get(person.id) ?? { x: 0, y: 0 };
     const relToRoot = relationships.find(
@@ -350,10 +403,13 @@ function buildFlowElements(
       }
     }
 
+    const groupId = personToGroupId.get(person.id);
+
     flowNodes.push({
       id: person.id,
       type: "person",
       position: pos,
+      ...(groupId ? { parentId: groupId, extent: "parent" as const } : {}),
       data: {
         label: `${person.firstName} ${person.lastName}`.trim(),
         sublabel: roleLabel,
@@ -378,10 +434,13 @@ function buildFlowElements(
     const label = kind === "unknown" ? `Unknown ${roleLabel}` : `+ Add ${roleLabel}`;
     const sublabel = kind === "unknown" ? "Click to add" : "Optional";
 
+    const groupId = personToGroupId.get(virtualId);
+
     flowNodes.push({
       id: virtualId,
       type: "person",
       position: pos,
+      ...(groupId ? { parentId: groupId, extent: "parent" as const } : {}),
       data: {
         label,
         sublabel,
@@ -408,6 +467,12 @@ function buildFlowElements(
     edgeSet.add(edgeKey);
 
     if (cat === "spouse") {
+      // Spouses in a group don't need an explicit edge – the group box shows the coupling.
+      // Only draw a spouse edge if they are NOT in a couple group (shouldn't happen, but safe fallback).
+      const groupA = personToGroupId.get(rel.fromPersonId);
+      const groupB = personToGroupId.get(rel.toPersonId);
+      if (groupA && groupA === groupB) continue; // same group – skip edge
+
       flowEdges.push({
         id: `edge-${edgeKey}`,
         source: rel.fromPersonId,
@@ -422,19 +487,42 @@ function buildFlowElements(
         targetHandle: null,
       });
     } else if (cat === "parent") {
+      // fromPerson is parent of toPerson.
+      // If the parent is in a couple group, route edge from the group node.
+      const sourceGroupId = personToGroupId.get(rel.fromPersonId);
+      const sourceId = sourceGroupId ?? rel.fromPersonId;
+      // If the child is in a couple group, route edge to the group node.
+      const targetGroupId = personToGroupId.get(rel.toPersonId);
+      const targetId = targetGroupId ?? rel.toPersonId;
+
+      // Deduplicate: multiple parents in the same group → only one edge from group to child
+      const routedKey = [sourceId, targetId].sort().join(":");
+      if (edgeSet.has(routedKey)) continue;
+      edgeSet.add(routedKey);
+
       flowEdges.push({
-        id: `edge-${edgeKey}`,
-        source: rel.fromPersonId,
-        target: rel.toPersonId,
+        id: `edge-${routedKey}`,
+        source: sourceId,
+        target: targetId,
         type: "smoothstep",
         style: { stroke: "#6b7280", strokeWidth: 2 },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
       });
     } else if (cat === "child") {
+      // fromPerson is child of toPerson.
+      const sourceGroupId = personToGroupId.get(rel.toPersonId);
+      const sourceId = sourceGroupId ?? rel.toPersonId;
+      const targetGroupId = personToGroupId.get(rel.fromPersonId);
+      const targetId = targetGroupId ?? rel.fromPersonId;
+
+      const routedKey = [sourceId, targetId].sort().join(":");
+      if (edgeSet.has(routedKey)) continue;
+      edgeSet.add(routedKey);
+
       flowEdges.push({
-        id: `edge-${edgeKey}`,
-        source: rel.toPersonId,
-        target: rel.fromPersonId,
+        id: `edge-${routedKey}`,
+        source: sourceId,
+        target: targetId,
         type: "smoothstep",
         style: { stroke: "#6b7280", strokeWidth: 2 },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
@@ -448,15 +536,29 @@ function buildFlowElements(
     if (!nodePositions.has(virtualId)) continue;
 
     if (link.missingRole === "father" || link.missingRole === "mother" || link.missingRole === "parent") {
-      const edgeKey = `${virtualId}:${link.relatedPersonId}`;
-      flowEdges.push({
-        id: `edge-${edgeKey}`,
-        source: virtualId,
-        target: link.relatedPersonId,
-        type: "smoothstep",
-        style: { stroke: "#9ca3af", strokeDasharray: "5,5", strokeWidth: 1.5 },
-      });
+      // Route from the virtual parent (or its group) to the child (or its group)
+      const sourceGroupId = personToGroupId.get(virtualId);
+      const sourceId = sourceGroupId ?? virtualId;
+      const targetGroupId = personToGroupId.get(link.relatedPersonId);
+      const targetId = targetGroupId ?? link.relatedPersonId;
+
+      const routedKey = `${sourceId}:${targetId}`;
+      if (!edgeSet.has(routedKey)) {
+        edgeSet.add(routedKey);
+        flowEdges.push({
+          id: `edge-${routedKey}`,
+          source: sourceId,
+          target: targetId,
+          type: "smoothstep",
+          style: { stroke: "#9ca3af", strokeDasharray: "5,5", strokeWidth: 1.5 },
+        });
+      }
     } else if (link.missingRole === "spouse") {
+      // If both are in the same group, no edge needed
+      const virtualGroupId = personToGroupId.get(virtualId);
+      const relatedGroupId = personToGroupId.get(link.relatedPersonId);
+      if (virtualGroupId && virtualGroupId === relatedGroupId) continue;
+
       const edgeKey = [virtualId, link.relatedPersonId].sort().join(":");
       if (!edgeSet.has(edgeKey)) {
         flowEdges.push({
@@ -469,14 +571,22 @@ function buildFlowElements(
       }
     } else if (link.missingRole === "sibling") {
       for (const parentId of parents.get(link.relatedPersonId) ?? []) {
-        const edgeKey = `${parentId}:${virtualId}`;
-        flowEdges.push({
-          id: `edge-${edgeKey}`,
-          source: parentId,
-          target: virtualId,
-          type: "smoothstep",
-          style: { stroke: "#9ca3af", strokeDasharray: "5,5", strokeWidth: 1.5 },
-        });
+        const sourceGroupId = personToGroupId.get(parentId);
+        const sourceId = sourceGroupId ?? parentId;
+        const targetGroupId = personToGroupId.get(virtualId);
+        const targetId = targetGroupId ?? virtualId;
+
+        const routedKey = `${sourceId}:${targetId}`;
+        if (!edgeSet.has(routedKey)) {
+          edgeSet.add(routedKey);
+          flowEdges.push({
+            id: `edge-${routedKey}`,
+            source: sourceId,
+            target: targetId,
+            type: "smoothstep",
+            style: { stroke: "#9ca3af", strokeDasharray: "5,5", strokeWidth: 1.5 },
+          });
+        }
       }
     }
   }
