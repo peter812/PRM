@@ -96,26 +96,31 @@ const menuItems = [
     icon: Trophy,
   },
   {
-    title: "PRM-Face Demo",
-    url: "/prm-face-demo",
-    icon: Scan,
+    title: "Demos",
+    url: "/demos",
+    icon: Sparkles,
     subItems: [
       {
-        title: "PRM-Face Save Demo",
+        title: "PRM Face Demo",
+        url: "/prm-face-demo",
+        icon: Scan,
+      },
+      {
+        title: "PRM Face Save Demo",
         url: "/prm-face-save-demo",
         icon: Scan,
       },
+      {
+        title: "AI Description Demo",
+        url: "/ai-desc-demo",
+        icon: Sparkles,
+      },
+      {
+        title: "Chat",
+        url: "/ai-chat-demo",
+        icon: MessagesSquare,
+      },
     ],
-  },
-  {
-    title: "AI desc demo",
-    url: "/ai-desc-demo",
-    icon: Sparkles,
-  },
-  {
-    title: "Chat",
-    url: "/ai-chat-demo",
-    icon: MessagesSquare,
   },
 ];
 
@@ -157,7 +162,7 @@ export function AppSidebar() {
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton
                     asChild
-                    isActive={location === item.url}
+                    isActive={location === item.url || (item.subItems?.some(sub => location === sub.url) ?? false)}
                     tooltip={item.title}
                   >
                     <Link
