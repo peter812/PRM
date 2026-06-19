@@ -26,11 +26,11 @@ import {
   Info,
 } from "lucide-react";
 import {
-  FamilyTreeCanvas,
+  FamilyTreeFlow,
   FamilyTreeData,
   FamilyTreeCanvasHandle,
   FamilyTreeViewMode,
-} from "@/components/family-tree-canvas";
+} from "@/components/family-tree-flow";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
 import { GenerateFamilyConnectionsDialog } from "@/components/generate-family-connections-dialog";
@@ -313,7 +313,7 @@ export default function FamilyTreeDevPage() {
         <Info className="h-3 w-3" />
         <span className="font-medium">Development Version</span>
         <span className="hidden sm:inline">
-          — This page uses the same API endpoints and PixiJS canvas with additional dev tools.
+          — This page uses React Flow for interactive graph visualization with additional dev tools.
         </span>
         <Button
           variant="link"
@@ -561,7 +561,7 @@ export default function FamilyTreeDevPage() {
           )}
 
           {selectedPersonId && filteredTreeData && !isTreeLoading && (
-            <FamilyTreeCanvas
+            <FamilyTreeFlow
               ref={canvasRef}
               data={filteredTreeData}
               onPersonClick={handlePersonClick}
