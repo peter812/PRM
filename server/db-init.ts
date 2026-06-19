@@ -379,6 +379,7 @@ async function validateAndSyncSchema(): Promise<void> {
       },
       people: {
         social_account_uuids: "TEXT[]",
+        elo_rankable: "INTEGER NOT NULL DEFAULT 1",
       },
       photos: {
         og_metadata: "JSONB",

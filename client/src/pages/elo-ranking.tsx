@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Trophy, RefreshCw, ArrowLeft, ArrowRight, X } from "lucide-react";
+import { Trophy, RefreshCw, ArrowLeft, ArrowRight, MoreVertical, Trash2, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -22,6 +22,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { Person, RelationshipType, RelationshipWithPerson } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
@@ -60,6 +66,7 @@ interface PersonCardContentProps {
   hasRelationship: boolean;
   relationshipTypes: RelationshipType[] | undefined;
   onDelete: (person: Person) => void;
+  onDontRank: (person: Person) => void;
   onAddRelationship: (personId: string, typeId: string) => void;
   isAddingRelationship: boolean;
   size: "sm" | "lg";
@@ -72,6 +79,7 @@ function PersonCardContent({
   hasRelationship,
   relationshipTypes,
   onDelete,
+  onDontRank,
   onAddRelationship,
   isAddingRelationship,
   size,
@@ -84,20 +92,46 @@ function PersonCardContent({
 
   return (
     <>
-      <Button
-        size="icon"
-        variant="ghost"
-        className="absolute top-1 left-1 h-7 w-7 text-destructive z-20"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete(person);
-        }}
-        onTouchStart={(e) => e.stopPropagation()}
-        onTouchEnd={(e) => e.stopPropagation()}
-        data-testid={`button-delete-elo-${testIdSuffix}`}
-      >
-        <X className="h-4 w-4" />
-      </Button>
+      <div className="absolute top-1 right-1 z-20">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              onClick={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              data-testid={`button-elo-menu-${testIdSuffix}`}
+            >
+              <MoreVertical className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+            <DropdownMenuItem
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(person);
+              }}
+              className="text-destructive"
+              data-testid={`menu-item-delete-${testIdSuffix}`}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete Account
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={(e) => {
+                e.stopPropagation();
+                onDontRank(person);
+              }}
+              data-testid={`menu-item-dont-rank-${testIdSuffix}`}
+            >
+              <EyeOff className="h-4 w-4" />
+              Don't rank this account
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       <div className={`flex flex-col items-center ${gap} flex-1 justify-center`}>
         <Avatar className={avatarSize}>
           {person.imageUrl && (
@@ -165,6 +199,7 @@ function MobileSwipeableView({
   meUserId,
   relationshipTypes,
   onDelete,
+  onDontRank,
   onAddRelationship,
   isAddingRelationship,
 }: {
@@ -175,6 +210,7 @@ function MobileSwipeableView({
   meUserId: string | undefined;
   relationshipTypes: RelationshipType[] | undefined;
   onDelete: (person: Person) => void;
+  onDontRank: (person: Person) => void;
   onAddRelationship: (personId: string, typeId: string) => void;
   isAddingRelationship: boolean;
 }) {
@@ -306,6 +342,7 @@ function MobileSwipeableView({
               hasRelationship={leftRel.hasRelationship}
               relationshipTypes={relationshipTypes}
               onDelete={onDelete}
+              onDontRank={onDontRank}
               onAddRelationship={onAddRelationship}
               isAddingRelationship={isAddingRelationship}
               size="sm"
@@ -343,6 +380,7 @@ function MobileSwipeableView({
               hasRelationship={rightRel.hasRelationship}
               relationshipTypes={relationshipTypes}
               onDelete={onDelete}
+              onDontRank={onDontRank}
               onAddRelationship={onAddRelationship}
               isAddingRelationship={isAddingRelationship}
               size="sm"
@@ -456,6 +494,29 @@ export default function EloRanking() {
     },
   });
 
+  const dontRankMutation = useMutation({
+    mutationFn: async (personId: string) => {
+      await apiRequest("PATCH", `/api/people/${personId}/elo-rankable`, { eloRankable: 0 });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people/elo/pair"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      toast({
+        title: "Person excluded from rankings",
+        description: "This person will no longer appear in ELO rankings.",
+      });
+      refetch();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update ranking status",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleVote = useCallback((winnerId: string, loserId: string) => {
     if (isVoting || voteMutation.isPending) return;
     setIsVoting(true);
@@ -465,6 +526,10 @@ export default function EloRanking() {
   const handleDelete = useCallback((person: Person) => {
     setPersonToDelete(person);
   }, []);
+
+  const handleDontRank = useCallback((person: Person) => {
+    dontRankMutation.mutate(person.id);
+  }, [dontRankMutation]);
 
   const handleAddRelationship = useCallback((personId: string, typeId: string) => {
     if (!meUser) return;
@@ -560,6 +625,7 @@ export default function EloRanking() {
                 meUserId={meUser?.id}
                 relationshipTypes={relationshipTypes}
                 onDelete={handleDelete}
+                onDontRank={handleDontRank}
                 onAddRelationship={handleAddRelationship}
                 isAddingRelationship={addRelationshipMutation.isPending}
               />
@@ -587,6 +653,7 @@ export default function EloRanking() {
                   hasRelationship={leftRel.hasRelationship}
                   relationshipTypes={relationshipTypes}
                   onDelete={handleDelete}
+                  onDontRank={handleDontRank}
                   onAddRelationship={handleAddRelationship}
                   isAddingRelationship={addRelationshipMutation.isPending}
                   size="lg"
@@ -618,6 +685,7 @@ export default function EloRanking() {
                   hasRelationship={rightRel.hasRelationship}
                   relationshipTypes={relationshipTypes}
                   onDelete={handleDelete}
+                  onDontRank={handleDontRank}
                   onAddRelationship={handleAddRelationship}
                   isAddingRelationship={addRelationshipMutation.isPending}
                   size="lg"
