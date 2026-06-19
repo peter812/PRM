@@ -238,7 +238,9 @@ function attachmentTypeFor(file: File): string {
 
 export default function AiChatDemoPage() {
   const { toast } = useToast();
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  // Support deep-linking via ?chatId= query parameter
+  const initialChatId = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('chatId') : null;
+  const [activeChatId, setActiveChatId] = useState<string | null>(initialChatId);
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
