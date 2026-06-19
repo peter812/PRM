@@ -162,7 +162,7 @@ export function AppSidebar() {
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton
                     asChild
-                   isActive={location === item.url || (item.subItems?.some(sub => location === sub.url) ?? false)}
+                    isActive={location === item.url || (item.subItems?.some(sub => location === sub.url) ?? false)}
                     tooltip={item.title}
                   >
                     <Link
