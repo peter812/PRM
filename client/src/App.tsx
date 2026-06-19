@@ -47,6 +47,7 @@ import ImagesListPage from "@/pages/images-list";
 import DailyNotesList from "@/pages/daily-notes";
 import DailyNoteDetail from "@/pages/daily-note-detail";
 import FamilyTreePage from "@/pages/family-tree";
+import FamilyTreeDevPage from "@/pages/family-tree-dev";
 import NotFound from "@/pages/not-found";
 
 const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
@@ -121,6 +122,7 @@ function Router() {
       <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
       <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
       <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
+      <ProtectedRoute path="/family-tree-dev-version" component={FamilyTreeDevPage} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
       <ProtectedRoute path="/demos" component={DemosPage} />
