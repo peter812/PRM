@@ -33,6 +33,7 @@ import PrmFaceDemo from "@/pages/prm-face-demo";
 import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
 import AiDescDemo from "@/pages/ai-desc-demo";
 import AiChatDemo from "@/pages/ai-chat-demo";
+import DemosPage from "@/pages/demos";
 import ImageDetailPage from "@/pages/image-detail";
 import ImagesListPage from "@/pages/images-list";
 import DailyNotesList from "@/pages/daily-notes";
@@ -114,6 +115,7 @@ function Router() {
       <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
+      <ProtectedRoute path="/demos" component={DemosPage} />
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
