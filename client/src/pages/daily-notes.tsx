@@ -315,7 +315,7 @@ export default function DailyNotesList() {
           <p className="text-sm text-muted-foreground">
             {pinStatus?.pinSet
               ? "Enter your current PIN and a new PIN to update it."
-              : "Set a 4-8 digit PIN to authorize editing notes older than two days."}
+              : "Set a 4-8 character PIN to authorize editing notes older than two days."}
           </p>
           {pinStatus?.pinSet && (
             <Input

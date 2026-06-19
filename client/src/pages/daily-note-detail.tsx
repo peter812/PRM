@@ -319,7 +319,7 @@ export default function DailyNoteDetail() {
                 <span>{format(new Date(note.createdAt), "PPp")}</span>
               </div>
             )}
-            {note.updatedAt && (
+            {note.updatedAt && !(note.auditLogs && note.auditLogs.length > 0) && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-medium">Last edited</span>
                 <span>—</span>

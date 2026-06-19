@@ -3326,7 +3326,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   private isDailyNoteLockedEditable(dateStr: string): boolean {
-    // Notes older than 1 day can still be edited with PIN authorization
+    // Notes that are 2 or more days old can still be edited with PIN authorization
     const today = new Date();
     const noteDate = new Date(dateStr + "T00:00:00");
     const diffMs = today.getTime() - noteDate.getTime();
