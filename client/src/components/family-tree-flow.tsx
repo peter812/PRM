@@ -3,8 +3,7 @@ import {
   ReactFlow,
   Node,
   Edge,
-  useNodesState,
-  useEdgesState,
+  Connection,
   useReactFlow,
   ReactFlowProvider,
   Background,
@@ -28,11 +27,16 @@ export type { FamilyTreeData, FamilyTreePerson, FamilyTreeViewMode, FamilyTreeCa
 const LAYOUT = {
   NODE_WIDTH: 180,
   NODE_HEIGHT: 80,
+  // Optional / "+ Add" placeholder boxes are slightly smaller and greyed out
+  ADD_NODE_WIDTH: 140,
+  ADD_NODE_HEIGHT: 60,
   HORIZONTAL_GAP: 60,
   VERTICAL_GAP: 140,
   SPOUSE_GAP: 30,
   GROUP_PADDING: 10,
 };
+
+export type CoupleGroupColor = "together" | "dating";
 
 // Relationship type helpers
 const PARENT_TYPES = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
@@ -60,12 +64,38 @@ function getInverseParentRole(childType: string): string {
 // Custom node components
 // ---------------------------------------------------------------------------
 
-/** Group node that wraps a spouse couple – provides a bottom handle for offspring edges. */
-function CoupleGroupNode({ id }: { id: string; data: Record<string, unknown> }) {
+/**
+ * Group node that wraps a spouse couple. Provides handles on all four sides
+ * so edges can be routed to/from any direction. Color reflects relationship
+ * status: green for "together" (default for spouse), orange for "dating".
+ */
+function CoupleGroupNode({ data }: { id: string; data: { color?: CoupleGroupColor } }) {
+  const color: CoupleGroupColor = data.color ?? "together";
+  const palette =
+    color === "dating"
+      ? {
+          border: "border-orange-400 dark:border-orange-600",
+          bg: "bg-orange-50/40 dark:bg-orange-950/20",
+          handle: "!bg-orange-400",
+        }
+      : {
+          border: "border-emerald-500 dark:border-emerald-600",
+          bg: "bg-emerald-50/40 dark:bg-emerald-950/20",
+          handle: "!bg-emerald-500",
+        };
+
+  const handleClass = `${palette.handle} !w-2 !h-2 !border-0`;
+
   return (
-    <div className="w-full h-full rounded-2xl border-2 border-dashed border-pink-300 dark:border-pink-700 bg-pink-50/40 dark:bg-pink-950/20">
-      <Handle type="target" position={Position.Top} className="!bg-pink-400 !w-2 !h-2 !border-0" />
-      <Handle type="source" position={Position.Bottom} className="!bg-pink-400 !w-2 !h-2 !border-0" />
+    <div className={`w-full h-full rounded-2xl border-2 ${palette.border} ${palette.bg}`}>
+      <Handle id="top" type="source" position={Position.Top} className={handleClass} />
+      <Handle id="top-target" type="target" position={Position.Top} className={handleClass} />
+      <Handle id="bottom" type="source" position={Position.Bottom} className={handleClass} />
+      <Handle id="bottom-target" type="target" position={Position.Bottom} className={handleClass} />
+      <Handle id="left" type="source" position={Position.Left} className={handleClass} />
+      <Handle id="left-target" type="target" position={Position.Left} className={handleClass} />
+      <Handle id="right" type="source" position={Position.Right} className={handleClass} />
+      <Handle id="right-target" type="target" position={Position.Right} className={handleClass} />
     </div>
   );
 }
@@ -78,30 +108,30 @@ interface PersonNodeData {
   isMissing: boolean;
   missingKind?: "unknown" | "add";
   viewMode: FamilyTreeViewMode;
-  onPersonClick?: (personId: string) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   relatedPersonId?: string;
   missingRole?: string;
 }
 
-function PersonNode({ data, id }: { data: PersonNodeData; id: string }) {
-  const handleClick = () => {
-    if (data.isMissing && data.onAddMember && data.relatedPersonId && data.missingRole) {
-      data.onAddMember(data.relatedPersonId, data.missingRole);
-    } else if (!data.isMissing && data.onPersonClick) {
-      data.onPersonClick(id);
-    }
-  };
+function PersonNode({ data }: { data: PersonNodeData; id: string }) {
+  // Only the "+ Add" / "Unknown" placeholder boxes have a built-in click
+  // handler — real person nodes rely on ReactFlow's onNodeClick at the
+  // graph level (so the dev page can wire single/double/right click).
+  const handleClick =
+    data.isMissing && data.onAddMember && data.relatedPersonId && data.missingRole
+      ? () => data.onAddMember!(data.relatedPersonId!, data.missingRole!)
+      : undefined;
 
   const baseClasses =
-    "rounded-xl border-2 px-3 py-2 shadow-sm cursor-pointer transition-all hover:shadow-md flex flex-col items-center justify-center text-center w-full h-full";
+    "rounded-xl border-2 px-3 py-2 shadow-sm transition-all hover:shadow-md flex flex-col items-center justify-center text-center w-full h-full";
 
-  let nodeClasses = baseClasses;
+  let nodeClasses = baseClasses + (handleClick ? " cursor-pointer" : " cursor-pointer");
   if (data.isMissing) {
+    // Optional / placeholder nodes are visually de-emphasised (greyed out).
     if (data.missingKind === "unknown") {
-      nodeClasses += " bg-sky-950 border-sky-400 text-sky-100";
+      nodeClasses += " bg-sky-950/70 border-sky-700 text-sky-100 opacity-80";
     } else {
-      nodeClasses += " bg-gray-800 border-gray-500 text-gray-100";
+      nodeClasses += " bg-gray-700/60 border-gray-500 text-gray-200 opacity-70";
     }
   } else if (data.isRoot) {
     nodeClasses += " bg-white dark:bg-gray-900 border-blue-500 ring-2 ring-blue-200 dark:ring-blue-800";
@@ -113,9 +143,19 @@ function PersonNode({ data, id }: { data: PersonNodeData; id: string }) {
   const showName = data.viewMode !== "avatar-circle";
   const isCircle = data.viewMode === "avatar-circle";
 
+  // Each side gets both a source and a target handle so edges can be drawn
+  // and connected in either direction. Same id space across sides keeps
+  // markup compact.
+  const handleClass = "!bg-gray-400 !w-2 !h-2 !border-0";
+
   return (
     <div className={nodeClasses} onClick={handleClick}>
-      <Handle type="target" position={Position.Top} className="!bg-gray-400 !w-2 !h-2 !border-0" />
+      <Handle id="top" type="target" position={Position.Top} className={handleClass} />
+      <Handle id="top-source" type="source" position={Position.Top} className={handleClass} />
+      <Handle id="left" type="target" position={Position.Left} className={handleClass} />
+      <Handle id="left-source" type="source" position={Position.Left} className={handleClass} />
+      <Handle id="right" type="target" position={Position.Right} className={handleClass} />
+      <Handle id="right-source" type="source" position={Position.Right} className={handleClass} />
       {showAvatar && (
         <img
           src={data.avatarUrl ?? ""}
@@ -140,7 +180,8 @@ function PersonNode({ data, id }: { data: PersonNodeData; id: string }) {
           {data.label}
         </span>
       )}
-      <Handle type="source" position={Position.Bottom} className="!bg-gray-400 !w-2 !h-2 !border-0" />
+      <Handle id="bottom" type="source" position={Position.Bottom} className={handleClass} />
+      <Handle id="bottom-target" type="target" position={Position.Bottom} className={handleClass} />
     </div>
   );
 }
@@ -154,7 +195,6 @@ function buildFlowElements(
   data: FamilyTreeData,
   viewMode: FamilyTreeViewMode,
   showAddOptions: boolean,
-  onPersonClick?: (personId: string) => void,
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void,
 ): { nodes: Node[]; edges: Edge[] } {
   const { rootPersonId, people, relationships } = data;
@@ -278,6 +318,10 @@ function buildFlowElements(
   // Identify couples
   const coupleSet = new Set<string>();
   const personCouple = new Map<string, string>();
+  // Track colour: green ("together") for active spouse, orange ("dating") for ex_spouse
+  // (the data model doesn't have a dedicated "dating" type, so ex_spouse is the
+  // best surrogate for a non-active coupling).
+  const coupleColor = new Map<string, CoupleGroupColor>();
   for (const [personId, spouseIds] of spouses) {
     for (const spouseId of spouseIds) {
       const key = [personId, spouseId].sort().join(":");
@@ -285,6 +329,10 @@ function buildFlowElements(
         coupleSet.add(key);
         personCouple.set(personId, key);
         personCouple.set(spouseId, key);
+        const relType =
+          relTypeMap.get(`${personId}:${spouseId}`) ??
+          relTypeMap.get(`${spouseId}:${personId}`);
+        coupleColor.set(key, relType === "ex_spouse" ? "dating" : "together");
       }
     }
   }
@@ -374,7 +422,7 @@ function buildFlowElements(
       id: groupId,
       type: "coupleGroup",
       position: groupPos,
-      data: {},
+      data: { color: coupleColor.get(coupleKey) ?? "together" },
       style: { width: groupWidth, height: groupHeight },
     });
   }
@@ -417,7 +465,6 @@ function buildFlowElements(
         isRoot: person.id === rootPersonId,
         isMissing: false,
         viewMode,
-        onPersonClick,
       } satisfies PersonNodeData,
       style: { width: LAYOUT.NODE_WIDTH, height: LAYOUT.NODE_HEIGHT },
     });
@@ -452,10 +499,15 @@ function buildFlowElements(
         relatedPersonId: link.relatedPersonId,
         missingRole: link.missingRole,
       } satisfies PersonNodeData,
-      style: { width: LAYOUT.NODE_WIDTH, height: LAYOUT.NODE_HEIGHT },
+      style: {
+        width: LAYOUT.ADD_NODE_WIDTH,
+        height: LAYOUT.ADD_NODE_HEIGHT,
+        // Center smaller add nodes in the layout slot they were assigned.
+        marginLeft: (LAYOUT.NODE_WIDTH - LAYOUT.ADD_NODE_WIDTH) / 2,
+        marginTop: (LAYOUT.NODE_HEIGHT - LAYOUT.ADD_NODE_HEIGHT) / 2,
+      },
     });
   }
-
   // Build React Flow edges
   const flowEdges: Edge[] = [];
   const edgeSet = new Set<string>();
@@ -477,23 +529,21 @@ function buildFlowElements(
         id: `edge-${edgeKey}`,
         source: rel.fromPersonId,
         target: rel.toPersonId,
-        type: "straight",
+        type: "default",
         style: {
           stroke: rel.familyRelationshipType === "ex_spouse" ? "#9ca3af" : "#6b7280",
           strokeDasharray: rel.familyRelationshipType === "ex_spouse" ? "5,5" : undefined,
           strokeWidth: 2,
         },
-        sourceHandle: null,
-        targetHandle: null,
       });
     } else if (cat === "parent") {
       // fromPerson is parent of toPerson.
-      // If the parent is in a couple group, route edge from the group node.
+      // If the parent is in a couple group, route the edge from the group node so
+      // a single line drops out of the couple box. Per the spec, edges always
+      // terminate on the single child node — never on the child's couple group.
       const sourceGroupId = personToGroupId.get(rel.fromPersonId);
       const sourceId = sourceGroupId ?? rel.fromPersonId;
-      // If the child is in a couple group, route edge to the group node.
-      const targetGroupId = personToGroupId.get(rel.toPersonId);
-      const targetId = targetGroupId ?? rel.toPersonId;
+      const targetId = rel.toPersonId;
 
       // Deduplicate: multiple parents in the same group → only one edge from group to child
       const routedKey = [sourceId, targetId].sort().join(":");
@@ -504,16 +554,15 @@ function buildFlowElements(
         id: `edge-${routedKey}`,
         source: sourceId,
         target: targetId,
-        type: "smoothstep",
+        type: "default",
         style: { stroke: "#6b7280", strokeWidth: 2 },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
       });
     } else if (cat === "child") {
-      // fromPerson is child of toPerson.
+      // fromPerson is child of toPerson (i.e. toPerson is the parent).
       const sourceGroupId = personToGroupId.get(rel.toPersonId);
       const sourceId = sourceGroupId ?? rel.toPersonId;
-      const targetGroupId = personToGroupId.get(rel.fromPersonId);
-      const targetId = targetGroupId ?? rel.fromPersonId;
+      const targetId = rel.fromPersonId;
 
       const routedKey = [sourceId, targetId].sort().join(":");
       if (edgeSet.has(routedKey)) continue;
@@ -523,7 +572,7 @@ function buildFlowElements(
         id: `edge-${routedKey}`,
         source: sourceId,
         target: targetId,
-        type: "smoothstep",
+        type: "default",
         style: { stroke: "#6b7280", strokeWidth: 2 },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
       });
@@ -536,11 +585,10 @@ function buildFlowElements(
     if (!nodePositions.has(virtualId)) continue;
 
     if (link.missingRole === "father" || link.missingRole === "mother" || link.missingRole === "parent") {
-      // Route from the virtual parent (or its group) to the child (or its group)
+      // Route from the virtual parent (or its group) to the related child individual node.
       const sourceGroupId = personToGroupId.get(virtualId);
       const sourceId = sourceGroupId ?? virtualId;
-      const targetGroupId = personToGroupId.get(link.relatedPersonId);
-      const targetId = targetGroupId ?? link.relatedPersonId;
+      const targetId = link.relatedPersonId;
 
       const routedKey = `${sourceId}:${targetId}`;
       if (!edgeSet.has(routedKey)) {
@@ -549,7 +597,7 @@ function buildFlowElements(
           id: `edge-${routedKey}`,
           source: sourceId,
           target: targetId,
-          type: "smoothstep",
+          type: "default",
           style: { stroke: "#9ca3af", strokeDasharray: "5,5", strokeWidth: 1.5 },
         });
       }
@@ -565,16 +613,16 @@ function buildFlowElements(
           id: `edge-${edgeKey}`,
           source: virtualId,
           target: link.relatedPersonId,
-          type: "straight",
+          type: "default",
           style: { stroke: "#9ca3af", strokeDasharray: "5,5", strokeWidth: 1.5 },
         });
       }
     } else if (link.missingRole === "sibling") {
+      // The virtual sibling is treated like a real child of each known parent.
       for (const parentId of parents.get(link.relatedPersonId) ?? []) {
         const sourceGroupId = personToGroupId.get(parentId);
         const sourceId = sourceGroupId ?? parentId;
-        const targetGroupId = personToGroupId.get(virtualId);
-        const targetId = targetGroupId ?? virtualId;
+        const targetId = virtualId;
 
         const routedKey = `${sourceId}:${targetId}`;
         if (!edgeSet.has(routedKey)) {
@@ -583,7 +631,7 @@ function buildFlowElements(
             id: `edge-${routedKey}`,
             source: sourceId,
             target: targetId,
-            type: "smoothstep",
+            type: "default",
             style: { stroke: "#9ca3af", strokeDasharray: "5,5", strokeWidth: 1.5 },
           });
         }
@@ -602,16 +650,36 @@ interface FamilyTreeFlowInnerProps {
   viewMode: FamilyTreeViewMode;
   showAddOptions: boolean;
   onPersonClick?: (personId: string) => void;
+  onPersonDoubleClick?: (personId: string) => void;
+  onPersonContextMenu?: (personId: string, x: number, y: number) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
+  onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
+}
+
+/** Returns true when a node id refers to a real person (not a couple group or virtual placeholder). */
+function isRealPersonId(nodeId: string): boolean {
+  return !nodeId.startsWith("couple-") && !nodeId.startsWith("missing-");
 }
 
 const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInnerProps>(
-  function FamilyTreeFlowInner({ data, viewMode, showAddOptions, onPersonClick, onAddMember }, ref) {
+  function FamilyTreeFlowInner(
+    {
+      data,
+      viewMode,
+      showAddOptions,
+      onPersonClick,
+      onPersonDoubleClick,
+      onPersonContextMenu,
+      onAddMember,
+      onConnectPersons,
+    },
+    ref,
+  ) {
     const { fitView, zoomIn, zoomOut } = useReactFlow();
 
     const { nodes: initialNodes, edges: initialEdges } = useMemo(
-      () => buildFlowElements(data, viewMode, showAddOptions, onPersonClick, onAddMember),
-      [data, viewMode, showAddOptions, onPersonClick, onAddMember],
+      () => buildFlowElements(data, viewMode, showAddOptions, onAddMember),
+      [data, viewMode, showAddOptions, onAddMember],
     );
 
     useImperativeHandle(ref, () => ({
@@ -619,6 +687,40 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
       zoomIn: () => zoomIn({ duration: 200 }),
       zoomOut: () => zoomOut({ duration: 200 }),
     }));
+
+    const handleNodeClick = useCallback(
+      (_event: React.MouseEvent, node: Node) => {
+        if (onPersonClick && isRealPersonId(node.id)) onPersonClick(node.id);
+      },
+      [onPersonClick],
+    );
+
+    const handleNodeDoubleClick = useCallback(
+      (_event: React.MouseEvent, node: Node) => {
+        if (onPersonDoubleClick && isRealPersonId(node.id)) onPersonDoubleClick(node.id);
+      },
+      [onPersonDoubleClick],
+    );
+
+    const handleNodeContextMenu = useCallback(
+      (event: React.MouseEvent, node: Node) => {
+        if (!onPersonContextMenu || !isRealPersonId(node.id)) return;
+        event.preventDefault();
+        onPersonContextMenu(node.id, event.clientX, event.clientY);
+      },
+      [onPersonContextMenu],
+    );
+
+    const handleConnect = useCallback(
+      (connection: Connection) => {
+        if (!onConnectPersons || !connection.source || !connection.target) return;
+        // Only allow drawing relationships between real people.
+        if (!isRealPersonId(connection.source) || !isRealPersonId(connection.target)) return;
+        if (connection.source === connection.target) return;
+        onConnectPersons(connection.source, connection.target);
+      },
+      [onConnectPersons],
+    );
 
     return (
       <ReactFlow
@@ -630,9 +732,13 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         minZoom={0.1}
         maxZoom={3}
         nodesDraggable={true}
-        nodesConnectable={false}
+        nodesConnectable={!!onConnectPersons}
         elementsSelectable={true}
         proOptions={{ hideAttribution: true }}
+        onNodeClick={handleNodeClick}
+        onNodeDoubleClick={handleNodeDoubleClick}
+        onNodeContextMenu={handleNodeContextMenu}
+        onConnect={handleConnect}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#e5e7eb" />
       </ReactFlow>
@@ -646,7 +752,10 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
 interface FamilyTreeFlowProps {
   data: FamilyTreeData | null;
   onPersonClick?: (personId: string) => void;
+  onPersonDoubleClick?: (personId: string) => void;
+  onPersonContextMenu?: (personId: string, x: number, y: number) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
+  onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
   className?: string;
   viewMode?: FamilyTreeViewMode;
   showAddOptions?: boolean;
@@ -654,7 +763,17 @@ interface FamilyTreeFlowProps {
 
 export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowProps>(
   function FamilyTreeFlow(
-    { data, onPersonClick, onAddMember, className, viewMode = "name", showAddOptions = true },
+    {
+      data,
+      onPersonClick,
+      onPersonDoubleClick,
+      onPersonContextMenu,
+      onAddMember,
+      onConnectPersons,
+      className,
+      viewMode = "name",
+      showAddOptions = true,
+    },
     ref,
   ) {
     if (!data) return null;
@@ -668,7 +787,10 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
             viewMode={viewMode}
             showAddOptions={showAddOptions}
             onPersonClick={onPersonClick}
+            onPersonDoubleClick={onPersonDoubleClick}
+            onPersonContextMenu={onPersonContextMenu}
             onAddMember={onAddMember}
+            onConnectPersons={onConnectPersons}
           />
         </ReactFlowProvider>
       </div>

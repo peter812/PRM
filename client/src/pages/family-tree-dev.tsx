@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -24,6 +24,10 @@ import {
   ChevronDown,
   ChevronUp,
   Info,
+  X,
+  Trash2,
+  Crosshair,
+  ExternalLink,
 } from "lucide-react";
 import {
   FamilyTreeFlow,
@@ -34,7 +38,45 @@ import {
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
 import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
 import { GenerateFamilyConnectionsDialog } from "@/components/generate-family-connections-dialog";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "@/components/ui/avatar";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  FAMILY_RELATIONSHIP_TYPES,
+  FAMILY_RELATIONSHIP_LABELS,
+  FAMILY_RELATIONSHIP_CATEGORIES,
+  FAMILY_RELATIONSHIP_INVERSES,
+} from "@shared/schema";
 import {
   Collapsible,
   CollapsibleContent,
@@ -163,6 +205,17 @@ export default function FamilyTreeDevPage() {
     new Set(RELATIONSHIP_CATEGORIES),
   );
 
+  // Single-click info panel, right-click context menu, drag-to-connect dialog
+  const [infoPanelPersonId, setInfoPanelPersonId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<
+    { personId: string; x: number; y: number } | null
+  >(null);
+  const [connectRequest, setConnectRequest] = useState<
+    { sourcePersonId: string; targetPersonId: string } | null
+  >(null);
+  const [removeRelsConfirm, setRemoveRelsConfirm] = useState<string | null>(null);
+  const { toast } = useToast();
+
   // Fetch current user (ME user) to use as default if no person param in URL
   const { data: meUser, isLoading: isMeLoading } = useQuery<PersonBasic>({
     queryKey: ["/api/me"],
@@ -256,11 +309,166 @@ export default function FamilyTreeDevPage() {
     setShowPersonSelector(false);
   };
 
-  const handlePersonClick = (personId: string) => {
+  const handlePersonSingleClick = (personId: string) => {
+    // Single click opens the left-side info panel (mirroring the social graph
+    // behaviour); it does NOT change the selected/root person.
+    setInfoPanelPersonId(personId);
+    setContextMenu(null);
+  };
+
+  const handlePersonDoubleClick = (personId: string) => {
+    // Double click selects this person as the root of the tree.
     if (personId !== selectedPersonId) {
       setSelectedPersonId(personId);
     }
+    setContextMenu(null);
   };
+
+  const handlePersonContextMenu = (personId: string, x: number, y: number) => {
+    setContextMenu({ personId, x, y });
+  };
+
+  // Close the floating context menu on any outside interaction.
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [contextMenu]);
+
+  // ---- User-drawable links ------------------------------------------------
+  // Validation rules (kept simple but sufficient to catch obviously impossible
+  // proposals like cycles or duplicates). The UI shows a toast for invalid
+  // picks (per the spec) and a confirmation dialog for valid ones.
+  const validateProposedLink = (
+    sourcePersonId: string,
+    targetPersonId: string,
+    relationshipType: string,
+  ): string | null => {
+    if (!treeData) return "Tree not loaded";
+    if (sourcePersonId === targetPersonId) return "A person cannot be related to themselves";
+
+    // Reject duplicates of the same direction.
+    const exact = treeData.relationships.find(
+      (r) =>
+        r.fromPersonId === sourcePersonId &&
+        r.toPersonId === targetPersonId &&
+        r.familyRelationshipType === relationshipType,
+    );
+    if (exact) return "That relationship already exists";
+
+    const cat = FAMILY_RELATIONSHIP_CATEGORIES[relationshipType];
+
+    // Walk the existing parent graph from a starting node and return whether
+    // `targetId` is reachable as an ancestor.
+    const isAncestor = (descendantId: string, ancestorCandidateId: string) => {
+      const stack = [descendantId];
+      const seen = new Set<string>();
+      while (stack.length) {
+        const cur = stack.pop()!;
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        for (const rel of treeData.relationships) {
+          if (rel.toPersonId === cur) {
+            const c = FAMILY_RELATIONSHIP_CATEGORIES[rel.familyRelationshipType];
+            if (c === "parent") {
+              if (rel.fromPersonId === ancestorCandidateId) return true;
+              stack.push(rel.fromPersonId);
+            }
+          }
+        }
+      }
+      return false;
+    };
+
+    if (cat === "parent") {
+      // Source claims to be parent of target. Target must not already be an
+      // ancestor of source — that would create a cycle.
+      if (isAncestor(sourcePersonId, targetPersonId)) {
+        return "That would create a cycle (the proposed parent is already a descendant)";
+      }
+    } else if (cat === "child") {
+      // Source claims to be child of target. Source must not already be an
+      // ancestor of target.
+      if (isAncestor(targetPersonId, sourcePersonId)) {
+        return "That would create a cycle (the proposed child is already an ancestor)";
+      }
+    }
+
+    return null;
+  };
+
+  const handleConnectPersons = (sourcePersonId: string, targetPersonId: string) => {
+    setConnectRequest({ sourcePersonId, targetPersonId });
+  };
+
+  const submitProposedLink = useMutation({
+    mutationFn: async ({
+      sourcePersonId,
+      targetPersonId,
+      relationshipType,
+    }: {
+      sourcePersonId: string;
+      targetPersonId: string;
+      relationshipType: string;
+    }) => {
+      const res = await apiRequest("POST", "/api/relationships", {
+        fromPersonId: sourcePersonId,
+        toPersonId: targetPersonId,
+        familyRelationshipType: relationshipType,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Relationship added", description: "The new family link was saved." });
+      queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
+      setConnectRequest(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Could not add relationship",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // ---- Remove all family relationships for a single person ---------------
+  const removeAllFamilyRelsForPerson = useMutation({
+    mutationFn: async (personId: string) => {
+      if (!treeData) throw new Error("Tree not loaded");
+      const toDelete = treeData.relationships.filter(
+        (r) => r.fromPersonId === personId || r.toPersonId === personId,
+      );
+      // Server already deletes the inverse for each id, so dedup by id is fine.
+      const ids = Array.from(new Set(toDelete.map((r) => r.id)));
+      for (const id of ids) {
+        await apiRequest("DELETE", `/api/relationships/${id}`);
+      }
+      return ids.length;
+    },
+    onSuccess: (count) => {
+      toast({
+        title: "Family relationships removed",
+        description: `Deleted ${count} relationship${count === 1 ? "" : "s"}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
+      setRemoveRelsConfirm(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Failed to remove relationships",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   const cycleViewMode = () => {
     const idx = VIEW_MODE_CYCLE.indexOf(viewMode);
@@ -564,11 +772,75 @@ export default function FamilyTreeDevPage() {
             <FamilyTreeFlow
               ref={canvasRef}
               data={filteredTreeData}
-              onPersonClick={handlePersonClick}
+              onPersonClick={handlePersonSingleClick}
+              onPersonDoubleClick={handlePersonDoubleClick}
+              onPersonContextMenu={handlePersonContextMenu}
               onAddMember={handleAddMember}
+              onConnectPersons={handleConnectPersons}
               viewMode={viewMode}
               showAddOptions={showAddOptions}
             />
+          )}
+
+          {/* Single-click person info panel */}
+          {infoPanelPersonId && filteredTreeData && (
+            <PersonInfoPanel
+              personId={infoPanelPersonId}
+              data={filteredTreeData}
+              onClose={() => setInfoPanelPersonId(null)}
+              onSetAsRoot={(id) => {
+                setSelectedPersonId(id);
+                setInfoPanelPersonId(null);
+              }}
+              onGoToProfile={(id) => navigate(`/person/${id}`)}
+            />
+          )}
+
+          {/* Right-click context menu */}
+          {contextMenu && (
+            <div
+              className="fixed z-50 min-w-[14rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
+              data-testid="family-tree-context-menu"
+            >
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+                onClick={() => {
+                  setRemoveRelsConfirm(contextMenu.personId);
+                  setContextMenu(null);
+                }}
+                data-testid="context-menu-remove-rels"
+              >
+                <Trash2 className="h-4 w-4" />
+                Remove all family relationships
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+                onClick={() => {
+                  setSelectedPersonId(contextMenu.personId);
+                  setContextMenu(null);
+                }}
+                data-testid="context-menu-highlight"
+              >
+                <Crosshair className="h-4 w-4" />
+                Highlight (set as root)
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+                onClick={() => {
+                  navigate(`/person/${contextMenu.personId}`);
+                  setContextMenu(null);
+                }}
+                data-testid="context-menu-go-to-person"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Go to person page
+              </button>
+            </div>
           )}
 
           {/* Debug overlay */}
@@ -702,6 +974,81 @@ export default function FamilyTreeDevPage() {
         personId={selectedPersonId}
         personName={selectedPersonName || undefined}
       />
+
+      {/* User-drawn relationship confirmation dialog */}
+      {connectRequest && (
+        <ConnectRelationshipDialog
+          open={!!connectRequest}
+          onOpenChange={(open) => {
+            if (!open) setConnectRequest(null);
+          }}
+          sourcePerson={
+            allPeople?.find((p) => p.id === connectRequest.sourcePersonId) ?? null
+          }
+          targetPerson={
+            allPeople?.find((p) => p.id === connectRequest.targetPersonId) ?? null
+          }
+          validate={(rt) =>
+            validateProposedLink(
+              connectRequest.sourcePersonId,
+              connectRequest.targetPersonId,
+              rt,
+            )
+          }
+          onInvalid={(reason) =>
+            toast({
+              title: "Invalid pick",
+              description: `${reason}. Please try again.`,
+              variant: "destructive",
+            })
+          }
+          onConfirm={(rt) =>
+            submitProposedLink.mutate({
+              sourcePersonId: connectRequest.sourcePersonId,
+              targetPersonId: connectRequest.targetPersonId,
+              relationshipType: rt,
+            })
+          }
+          submitting={submitProposedLink.isPending}
+        />
+      )}
+
+      {/* Remove all family relationships confirmation */}
+      <AlertDialog
+        open={!!removeRelsConfirm}
+        onOpenChange={(open) => {
+          if (!open) setRemoveRelsConfirm(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove all family relationships?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will delete every family relationship that involves{" "}
+              <span className="font-medium">
+                {(() => {
+                  const p = allPeople?.find((x) => x.id === removeRelsConfirm);
+                  return p ? `${p.firstName} ${p.lastName}`.trim() : "this person";
+                })()}
+              </span>
+              . This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (removeRelsConfirm) {
+                  removeAllFamilyRelsForPerson.mutate(removeRelsConfirm);
+                }
+              }}
+              data-testid="confirm-remove-family-rels"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -726,5 +1073,242 @@ function StatItem({
         {value}
       </span>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Single-click info panel (mirrors the social-graph-3d sidebar layout)
+// ---------------------------------------------------------------------------
+function getInitials(firstName: string, lastName: string): string {
+  return `${(firstName ?? "").charAt(0)}${(lastName ?? "").charAt(0)}`.toUpperCase();
+}
+
+function PersonInfoPanel({
+  personId,
+  data,
+  onClose,
+  onSetAsRoot,
+  onGoToProfile,
+}: {
+  personId: string;
+  data: FamilyTreeData;
+  onClose: () => void;
+  onSetAsRoot: (id: string) => void;
+  onGoToProfile: (id: string) => void;
+}) {
+  const person = data.people.find((p) => p.id === personId);
+  if (!person) return null;
+
+  // Collect every relationship that involves this person, deduplicated by id.
+  const relsForPerson = data.relationships.filter(
+    (r) => r.fromPersonId === personId || r.toPersonId === personId,
+  );
+
+  // For each relationship row, render the *other* person and the role they
+  // play relative to the selected person.
+  const rows = relsForPerson.map((rel) => {
+    const isOutgoing = rel.fromPersonId === personId;
+    const otherId = isOutgoing ? rel.toPersonId : rel.fromPersonId;
+    const otherPerson = data.people.find((p) => p.id === otherId);
+    const otherRole = isOutgoing
+      ? FAMILY_RELATIONSHIP_INVERSES[rel.familyRelationshipType] ?? rel.familyRelationshipType
+      : rel.familyRelationshipType;
+    return {
+      id: rel.id,
+      otherId,
+      otherPerson,
+      roleLabel: FAMILY_RELATIONSHIP_LABELS[otherRole] ?? otherRole,
+    };
+  });
+
+  return (
+    <div
+      className="absolute top-4 left-4 w-72 max-h-[calc(100%-2rem)] overflow-y-auto bg-background/90 backdrop-blur-sm border rounded-lg shadow-lg z-40"
+      data-testid="family-tree-info-panel"
+    >
+      <div className="p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm">Person Info</h3>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            data-testid="button-close-info-panel"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex flex-col items-center gap-3">
+          <Avatar className="h-20 w-20">
+            {person.avatarUrl && (
+              <AvatarImage
+                src={person.avatarUrl}
+                alt={`${person.firstName} ${person.lastName}`}
+              />
+            )}
+            <AvatarFallback className="text-lg">
+              {getInitials(person.firstName, person.lastName)}
+            </AvatarFallback>
+          </Avatar>
+          <div className="text-center space-y-0.5">
+            <p className="font-medium" data-testid="text-info-panel-name">
+              {`${person.firstName} ${person.lastName}`.trim()}
+            </p>
+            {person.id === data.rootPersonId && (
+              <p className="text-xs text-muted-foreground">Root of this tree</p>
+            )}
+          </div>
+        </div>
+
+        {rows.length > 0 && (
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Relationships</Label>
+            <div className="flex flex-col gap-1" data-testid="info-panel-relationships">
+              {rows.map((row) => (
+                <div
+                  key={row.id}
+                  className="flex items-center gap-2 rounded-md border px-2 py-1"
+                >
+                  <Avatar className="h-6 w-6">
+                    {row.otherPerson?.avatarUrl && (
+                      <AvatarImage
+                        src={row.otherPerson.avatarUrl}
+                        alt={`${row.otherPerson.firstName} ${row.otherPerson.lastName}`}
+                      />
+                    )}
+                    <AvatarFallback className="text-[10px]">
+                      {row.otherPerson
+                        ? getInitials(row.otherPerson.firstName, row.otherPerson.lastName)
+                        : "?"}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm truncate">
+                      {row.otherPerson
+                        ? `${row.otherPerson.firstName} ${row.otherPerson.lastName}`.trim()
+                        : "Unknown"}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">{row.roleLabel}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="pt-2 border-t flex flex-col gap-2">
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => onSetAsRoot(person.id)}
+            data-testid="button-info-panel-set-root"
+          >
+            Set as root
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => onGoToProfile(person.id)}
+            data-testid="button-info-panel-go-to-profile"
+          >
+            Go to profile
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// User-drawn relationship confirmation dialog
+// ---------------------------------------------------------------------------
+function ConnectRelationshipDialog({
+  open,
+  onOpenChange,
+  sourcePerson,
+  targetPerson,
+  validate,
+  onInvalid,
+  onConfirm,
+  submitting,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  sourcePerson: PersonBasic | null;
+  targetPerson: PersonBasic | null;
+  validate: (relationshipType: string) => string | null;
+  onInvalid: (reason: string) => void;
+  onConfirm: (relationshipType: string) => void;
+  submitting: boolean;
+}) {
+  const [relationshipType, setRelationshipType] = useState<string>("spouse");
+
+  const sourceName = sourcePerson
+    ? `${sourcePerson.firstName} ${sourcePerson.lastName}`.trim()
+    : "Person A";
+  const targetName = targetPerson
+    ? `${targetPerson.firstName} ${targetPerson.lastName}`.trim()
+    : "Person B";
+
+  const handleConfirm = () => {
+    const reason = validate(relationshipType);
+    if (reason) {
+      onInvalid(reason);
+      return;
+    }
+    onConfirm(relationshipType);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>New family relationship</DialogTitle>
+          <DialogDescription>
+            <span className="font-medium">{sourceName}</span> will become{" "}
+            <span className="font-medium">{targetName}</span>'s{" "}
+            <span className="font-medium">
+              {FAMILY_RELATIONSHIP_LABELS[
+                FAMILY_RELATIONSHIP_INVERSES[relationshipType] ?? relationshipType
+              ] ?? relationshipType}
+            </span>
+            .
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 py-2">
+          <Label className="text-xs text-muted-foreground">Relationship type</Label>
+          <Select value={relationshipType} onValueChange={setRelationshipType}>
+            <SelectTrigger data-testid="select-relationship-type">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="max-h-60">
+              {FAMILY_RELATIONSHIP_TYPES.map((t) => (
+                <SelectItem key={t} value={t}>
+                  {FAMILY_RELATIONSHIP_LABELS[t] ?? t}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+            data-testid="button-deny-relationship"
+          >
+            Deny
+          </Button>
+          <Button
+            onClick={handleConfirm}
+            disabled={submitting}
+            data-testid="button-confirm-relationship"
+          >
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+            Confirm
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
