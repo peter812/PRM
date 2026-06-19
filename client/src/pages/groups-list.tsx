@@ -71,8 +71,8 @@ export default function GroupsList() {
   });
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="border-b px-4 py-3">
+    <div className="flex flex-col h-full overflow-auto">
+      <div className="border-b px-4 py-3 sticky top-0 z-10 backdrop-blur-xl bg-background/70">
         <div className="flex items-center justify-between gap-4 mb-4">
           <h1 className="text-3xl font-semibold" data-testid="text-page-title">
             Groups
@@ -106,7 +106,7 @@ export default function GroupsList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-6">
+      <div className="flex-1 px-6 py-6">
         {isLoading ? (
           <div className={viewMode === "list" ? "flex flex-col gap-[5px]" : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"}>
             {[1, 2, 3, 4].map((i) => (

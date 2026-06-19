@@ -241,7 +241,10 @@ export default function AiChatDemoPage() {
   // Support deep-linking via ?chatId= query parameter
   const initialChatId = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('chatId') : null;
   const [activeChatId, setActiveChatId] = useState<string | null>(initialChatId);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("message") ?? "";
+  });
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [systemMessageDraft, setSystemMessageDraft] = useState("");

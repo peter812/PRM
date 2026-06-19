@@ -66,7 +66,7 @@ export default function ImagesListPage() {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       <div
-        className="flex items-center gap-3 px-4 py-3 border-b sticky top-0 bg-background z-20"
+        className="flex items-center gap-3 px-4 py-3 border-b sticky top-0 backdrop-blur-xl bg-background/70 z-20"
         data-testid="header-images-list"
       >
         <div>

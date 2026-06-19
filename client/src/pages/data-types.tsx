@@ -20,7 +20,7 @@ export default function DataTypesPage() {
 
       <div className="flex-1 overflow-auto px-3 md:px-6 py-4">
         <Tabs defaultValue="relationship-types" className="h-full flex flex-col">
-          <TabsList className="mb-4 w-full md:w-auto">
+          <TabsList className="mb-4 w-auto">
             <TabsTrigger value="relationship-types" className="flex items-center gap-2" data-testid="tab-relationship-types">
               <Heart className="h-4 w-4" />
               <span>Relationship Types</span>

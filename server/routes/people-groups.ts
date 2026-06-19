@@ -200,6 +200,24 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to update ELO scores" });
       }
     });
+
+    app.patch("/api/people/:id/elo-rankable", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { eloRankable } = req.body;
+        if (typeof eloRankable !== "number" || (eloRankable !== 0 && eloRankable !== 1)) {
+          return res.status(400).json({ error: "eloRankable must be 0 or 1" });
+        }
+        const person = await storage.updatePerson(id, { eloRankable });
+        if (!person) {
+          return res.status(404).json({ error: "Person not found" });
+        }
+        res.json(person);
+      } catch (error) {
+        console.error("Error updating ELO rankable status:", error);
+        res.status(500).json({ error: "Failed to update ELO rankable status" });
+      }
+    });
   
     app.get("/api/people/search", async (req, res) => {
       try {

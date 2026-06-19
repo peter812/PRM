@@ -3,11 +3,12 @@ import { useRoute, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { DailyNoteModal } from "@/components/daily-note-modal";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
 import { format, parseISO } from "date-fns";
-import { ArrowLeft, Edit2, Lock, List, Users, Trash2, CalendarDays } from "lucide-react";
+import { ArrowLeft, Edit2, Lock, List, Users, Trash2, CalendarDays, KeyRound, Clock } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useToast } from "@/hooks/use-toast";
@@ -22,6 +23,13 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 const partyTypeLabel: Record<string, string> = {
   person: "Person",
@@ -40,6 +48,9 @@ export default function DailyNoteDetail() {
   const id = params?.id;
   const { toast } = useToast();
   const [editOpen, setEditOpen] = useState(false);
+  const [pinDialogOpen, setPinDialogOpen] = useState(false);
+  const [pinValue, setPinValue] = useState("");
+  const [pinError, setPinError] = useState("");
 
   const { data: note, isLoading } = useQuery<DailyNoteWithDetails>({
     queryKey: ["/api/daily-notes", id],
@@ -83,6 +94,25 @@ export default function DailyNoteDetail() {
       }
       return { partyType: p.partyType, refId: p.refId, label };
     });
+  };
+
+  const handlePinSubmit = async () => {
+    try {
+      const res = await fetch("/api/daily-notes-pin/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: pinValue }),
+      });
+      const data = await res.json();
+      if (data.valid) {
+        setPinDialogOpen(false);
+        setEditOpen(true);
+      } else {
+        setPinError(data.error || "Incorrect PIN");
+      }
+    } catch {
+      setPinError("Failed to verify PIN");
+    }
   };
 
   if (isLoading) {
@@ -140,6 +170,21 @@ export default function DailyNoteDetail() {
                 Edit
               </Button>
             )}
+            {!note.isEditable && note.isLockedEditable && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setPinValue("");
+                  setPinError("");
+                  setPinDialogOpen(true);
+                }}
+                data-testid="button-pin-edit-daily-note"
+              >
+                <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+                Edit with PIN
+              </Button>
+            )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="ghost" size="icon" className="text-muted-foreground" data-testid="button-delete-daily-note">
@@ -173,7 +218,13 @@ export default function DailyNoteDetail() {
             <span className="text-sm text-muted-foreground font-medium">
               {format(parseISO(note.date), "EEEE, MMMM d, yyyy")}
             </span>
-            {!note.isEditable && (
+            {!note.isEditable && note.isLockedEditable && (
+              <Badge variant="secondary" className="gap-1">
+                <KeyRound className="h-3 w-3" />
+                PIN Required
+              </Badge>
+            )}
+            {!note.isEditable && !note.isLockedEditable && (
               <Badge variant="secondary" className="gap-1">
                 <Lock className="h-3 w-3" />
                 Read-only
@@ -238,11 +289,84 @@ export default function DailyNoteDetail() {
           </div>
         )}
 
-        {/* Metadata */}
-        <p className="text-xs text-muted-foreground border-t pt-3">
-          Created {format(new Date(note.createdAt), "PPp")}
-        </p>
+        {/* Audit Log */}
+        <div className="space-y-2 border-t pt-3" data-testid="div-audit-log">
+          <div className="flex items-center gap-2">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Audit Log
+            </h2>
+          </div>
+          <div className="space-y-1">
+            {note.auditLogs && note.auditLogs.length > 0 ? (
+              note.auditLogs.map((log) => (
+                <div key={log.id} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="capitalize font-medium">{log.action}</span>
+                  <span>—</span>
+                  <span>{format(new Date(log.timestamp), "PPp")}</span>
+                  {log.pinUsed && (
+                    <Badge variant="outline" className="text-[10px] px-1 py-0">
+                      <KeyRound className="h-2.5 w-2.5 mr-0.5" />
+                      PIN
+                    </Badge>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-medium">Created</span>
+                <span>—</span>
+                <span>{format(new Date(note.createdAt), "PPp")}</span>
+              </div>
+            )}
+            {note.updatedAt && !(note.auditLogs && note.auditLogs.length > 0) && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-medium">Last edited</span>
+                <span>—</span>
+                <span>{format(new Date(note.updatedAt), "PPp")}</span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* PIN Dialog */}
+      <Dialog open={pinDialogOpen} onOpenChange={setPinDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Enter PIN to Edit</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This note is older than two days. Enter your PIN to authorize editing.
+          </p>
+          <Input
+            type="password"
+            placeholder="Enter PIN"
+            value={pinValue}
+            onChange={(e) => {
+              setPinValue(e.target.value);
+              setPinError("");
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && pinValue.length >= 4) {
+                handlePinSubmit();
+              }
+            }}
+            data-testid="input-pin"
+          />
+          {pinError && <p className="text-sm text-destructive">{pinError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPinDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={handlePinSubmit}
+              disabled={pinValue.length < 4}
+              data-testid="button-pin-submit"
+            >
+              Unlock & Edit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <DailyNoteModal
         open={editOpen}
@@ -253,6 +377,7 @@ export default function DailyNoteDetail() {
           }
         }}
         note={note}
+        pinOverride={!note.isEditable && note.isLockedEditable ? pinValue : undefined}
       />
     </div>
   );

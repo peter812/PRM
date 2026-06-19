@@ -12,7 +12,15 @@ import { toast } from "@/hooks/use-toast";
 import { GlobalSearch } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
 import { PersonDialog } from "@/components/person-dialog";
-import { getPageTitle } from "@/lib/page-title";
+import { SocialAccountDialog } from "@/components/social-account-dialog";
+import { RelationshipDialog } from "@/components/relationship-dialog";
+import { DailyNoteModal } from "@/components/daily-note-modal";
+import { InteractionDialog } from "@/components/interaction-dialog";
+import { AddNoteDialog } from "@/components/add-note-dialog";
+import { UniversalAddButton } from "@/components/universal-add-button";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { Button } from "@/components/ui/button";
+import { Settings, LogOut } from "lucide-react";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import MeProfile from "@/pages/me-profile";
@@ -33,6 +41,7 @@ import PrmFaceDemo from "@/pages/prm-face-demo";
 import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
 import AiDescDemo from "@/pages/ai-desc-demo";
 import AiChatDemo from "@/pages/ai-chat-demo";
+import DemosPage from "@/pages/demos";
 import ImageDetailPage from "@/pages/image-detail";
 import ImagesListPage from "@/pages/images-list";
 import DailyNotesList from "@/pages/daily-notes";
@@ -114,6 +123,7 @@ function Router() {
       <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
+      <ProtectedRoute path="/demos" component={DemosPage} />
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
@@ -129,9 +139,14 @@ function Router() {
 }
 
 function AppLayout() {
-  const [location] = useLocation();
-  const { user } = useAuth();
+  const [location, navigate] = useLocation();
+  const { user, logoutMutation } = useAuth();
   const [isAddPersonDialogOpen, setIsAddPersonDialogOpen] = useState(false);
+  const [isAddSocialAccountDialogOpen, setIsAddSocialAccountDialogOpen] = useState(false);
+  const [isAddRelationshipDialogOpen, setIsAddRelationshipDialogOpen] = useState(false);
+  const [isAddDailyNoteDialogOpen, setIsAddDailyNoteDialogOpen] = useState(false);
+  const [isAddInteractionDialogOpen, setIsAddInteractionDialogOpen] = useState(false);
+  const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
   useExportNotifier();
   const isAuthPage = location === "/auth" || location === "/auth-direct";
   const isWelcomePage = location === "/welcome";
@@ -157,8 +172,6 @@ function AppLayout() {
     return <Router />;
   }
 
-  const pageTitle = getPageTitle(location);
-
   return (
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
@@ -167,23 +180,56 @@ function AppLayout() {
           <header className="flex items-center gap-3 px-3 py-2 border-b">
             <div className="flex items-center gap-2 min-w-0 shrink-0">
               <SidebarTrigger data-testid="button-sidebar-toggle" />
-              {pageTitle && (
-                <h1
-                  className="text-sm font-semibold truncate"
-                  data-testid="text-page-title"
-                >
-                  {pageTitle}
-                </h1>
-              )}
             </div>
-            <div className="flex-1 min-w-0 flex">
+            <div className="flex-1 min-w-0 flex justify-center">
               <GlobalSearch />
             </div>
             <div
               id="header-contextual-actions"
-              className="flex items-center gap-2 shrink-0 min-w-[2.25rem] justify-end"
+              className="flex items-center gap-2 shrink-0"
               data-testid="contextual-actions"
             />
+            <div className="flex items-center gap-1 shrink-0">
+              {user && (
+                <>
+                  <UniversalAddButton
+                    onAddPerson={() => setIsAddPersonDialogOpen(true)}
+                    onAddSocialAccount={() => setIsAddSocialAccountDialogOpen(true)}
+                    onAddRelationship={() => setIsAddRelationshipDialogOpen(true)}
+                    onAddDailyNote={() => setIsAddDailyNoteDialogOpen(true)}
+                    onAddInteraction={() => setIsAddInteractionDialogOpen(true)}
+                    onAddNote={() => setIsAddNoteDialogOpen(true)}
+                  />
+                  <div className="hidden md:flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => navigate("/settings")}
+                      data-testid="header-button-settings"
+                    >
+                      <Settings className="h-4 w-4" />
+                    </Button>
+                    <ThemeToggle />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => logoutMutation.mutate()}
+                      disabled={logoutMutation.isPending}
+                      data-testid="header-button-logout"
+                    >
+                      <LogOut className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </>
+              )}
+              {!user && (
+                <div className="hidden md:flex items-center">
+                  <ThemeToggle />
+                </div>
+              )}
+            </div>
           </header>
           <main className="flex-1 overflow-hidden pb-16 md:pb-0">
             <Router />
@@ -194,6 +240,11 @@ function AppLayout() {
         <>
           <MobileBottomNav onAddPersonClick={() => setIsAddPersonDialogOpen(true)} />
           <PersonDialog open={isAddPersonDialogOpen} onOpenChange={setIsAddPersonDialogOpen} />
+          <SocialAccountDialog open={isAddSocialAccountDialogOpen} onOpenChange={setIsAddSocialAccountDialogOpen} />
+          <RelationshipDialog open={isAddRelationshipDialogOpen} onOpenChange={setIsAddRelationshipDialogOpen} personId="" />
+          <DailyNoteModal open={isAddDailyNoteDialogOpen} onOpenChange={setIsAddDailyNoteDialogOpen} />
+          <InteractionDialog open={isAddInteractionDialogOpen} onOpenChange={setIsAddInteractionDialogOpen} />
+          <AddNoteDialog open={isAddNoteDialogOpen} onOpenChange={setIsAddNoteDialogOpen} personId="" />
         </>
       )}
     </SidebarProvider>
