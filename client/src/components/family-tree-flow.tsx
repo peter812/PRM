@@ -125,7 +125,7 @@ function PersonNode({ data }: { data: PersonNodeData; id: string }) {
   const baseClasses =
     "rounded-xl border-2 px-3 py-2 shadow-sm transition-all hover:shadow-md flex flex-col items-center justify-center text-center w-full h-full";
 
-  let nodeClasses = baseClasses + (handleClick ? " cursor-pointer" : " cursor-pointer");
+  let nodeClasses = baseClasses + " cursor-pointer";
   if (data.isMissing) {
     // Optional / placeholder nodes are visually de-emphasised (greyed out).
     if (data.missingKind === "unknown") {
@@ -318,7 +318,7 @@ function buildFlowElements(
   // Identify couples
   const coupleSet = new Set<string>();
   const personCouple = new Map<string, string>();
-  // Track colour: green ("together") for active spouse, orange ("dating") for ex_spouse
+  // Track color: green ("together") for active spouse, orange ("dating") for ex_spouse
   // (the data model doesn't have a dedicated "dating" type, so ex_spouse is the
   // best surrogate for a non-active coupling).
   const coupleColor = new Map<string, CoupleGroupColor>();

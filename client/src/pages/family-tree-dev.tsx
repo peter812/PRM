@@ -1080,7 +1080,7 @@ function StatItem({
 // Single-click info panel (mirrors the social-graph-3d sidebar layout)
 // ---------------------------------------------------------------------------
 function getInitials(firstName: string, lastName: string): string {
-  return `${(firstName ?? "").charAt(0)}${(lastName ?? "").charAt(0)}`.toUpperCase();
+  return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
 }
 
 function PersonInfoPanel({
