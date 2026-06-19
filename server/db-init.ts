@@ -392,6 +392,7 @@ async function validateAndSyncSchema(): Promise<void> {
       daily_notes: {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
+        updated_at: "TIMESTAMP",
       },
       relationships: {
         family_relationship_type: "VARCHAR(50)",
@@ -523,6 +524,22 @@ async function validateAndSyncSchema(): Promise<void> {
         )
       `);
       log("daily_notes tables created successfully");
+    }
+
+    // Ensure daily_note_audit_logs table exists
+    const dailyNoteAuditLogsExists = await tableExists("daily_note_audit_logs");
+    if (!dailyNoteAuditLogsExists) {
+      log("Creating daily_note_audit_logs table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS daily_note_audit_logs (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          daily_note_id VARCHAR NOT NULL REFERENCES daily_notes(id) ON DELETE CASCADE,
+          action TEXT NOT NULL,
+          timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+          pin_used BOOLEAN NOT NULL DEFAULT false
+        )
+      `);
+      log("daily_note_audit_logs table created successfully");
     }
 
     // Migrate social_accounts to historical model (v2)

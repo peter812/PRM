@@ -1873,19 +1873,45 @@ export function registerRoutes(app: Express) {
       try {
         const existing = await storage.getDailyNoteById(req.params.id);
         if (!existing) return res.status(404).json({ error: "Not found" });
-        if (!existing.isEditable) return res.status(403).json({ error: "This note is read-only (edit window has passed)" });
+
+        // If the note is beyond the free edit window (>1 day), require PIN
+        const needsPin = !existing.isEditable && existing.isLockedEditable;
+        if (!existing.isEditable && !existing.isLockedEditable) {
+          return res.status(403).json({ error: "This note is read-only (edit window has passed)" });
+        }
+
+        if (needsPin) {
+          const { pin } = req.body;
+          if (!pin) {
+            return res.status(403).json({ error: "PIN required to edit this note", pinRequired: true });
+          }
+          // Verify PIN against stored hashed PIN
+          const storedPin = await storage.getAppSetting("daily_notes_pin");
+          if (!storedPin) {
+            return res.status(403).json({ error: "No PIN has been set. Please set a PIN in settings first.", pinNotSet: true });
+          }
+          const [hashed, salt] = storedPin.split(".");
+          const hashedBuf = Buffer.from(hashed, "hex");
+          const suppliedBuf = (await scryptAsync(pin, salt, 64)) as Buffer;
+          if (!timingSafeEqual(hashedBuf, suppliedBuf)) {
+            return res.status(403).json({ error: "Incorrect PIN", pinIncorrect: true });
+          }
+        }
   
         const schema = z.object({
           userTitle: z.string().optional(),
           body: z.string().optional(),
           events: z.array(z.object({ text: z.string(), position: z.number().int() })).optional(),
           involvedParties: z.array(z.object({ partyType: z.enum(["person", "social_account", "group"]), refId: z.string() })).optional(),
+          pin: z.string().optional(),
         });
         const parsed = schema.parse(req.body);
-        const { events, involvedParties, ...noteData } = parsed;
+        const { events, involvedParties, pin: _pin, ...noteData } = parsed;
         if (Object.keys(noteData).length > 0) await storage.updateDailyNote(req.params.id, noteData);
         if (events !== undefined) await storage.replaceDailyNoteEvents(req.params.id, events);
         if (involvedParties !== undefined) await storage.replaceDailyNoteParties(req.params.id, involvedParties);
+        // Add audit log for the edit
+        await storage.addDailyNoteAuditLog(req.params.id, "edited", needsPin);
         const full = await storage.getDailyNoteById(req.params.id);
         syncDailyNoteInBackground(req.params.id);
         res.json(full);
@@ -1907,6 +1933,67 @@ export function registerRoutes(app: Express) {
         res.json({ success: true });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
+      }
+    });
+
+    // ── Daily Notes PIN management ──────────────────────────────────────────
+    app.get("/api/daily-notes-pin/status", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const storedPin = await storage.getAppSetting("daily_notes_pin");
+        res.json({ pinSet: !!storedPin });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/daily-notes-pin/set", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const schema = z.object({
+          pin: z.string().min(4).max(8),
+          currentPin: z.string().optional(),
+        });
+        const { pin, currentPin } = schema.parse(req.body);
+
+        // If a PIN already exists, verify the current one before changing
+        const existingPin = await storage.getAppSetting("daily_notes_pin");
+        if (existingPin) {
+          if (!currentPin) {
+            return res.status(400).json({ error: "Current PIN required to change PIN" });
+          }
+          const [hashed, salt] = existingPin.split(".");
+          const hashedBuf = Buffer.from(hashed, "hex");
+          const suppliedBuf = (await scryptAsync(currentPin, salt, 64)) as Buffer;
+          if (!timingSafeEqual(hashedBuf, suppliedBuf)) {
+            return res.status(403).json({ error: "Current PIN is incorrect" });
+          }
+        }
+
+        // Hash the new PIN
+        const hashedPin = await hashPassword(pin);
+        await storage.setAppSetting("daily_notes_pin", hashedPin);
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(400).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/daily-notes-pin/verify", async (req, res) => {
+      try {
+        const schema = z.object({ pin: z.string() });
+        const { pin } = schema.parse(req.body);
+        const storedPin = await storage.getAppSetting("daily_notes_pin");
+        if (!storedPin) {
+          return res.status(400).json({ valid: false, error: "No PIN has been set" });
+        }
+        const [hashed, salt] = storedPin.split(".");
+        const hashedBuf = Buffer.from(hashed, "hex");
+        const suppliedBuf = (await scryptAsync(pin, salt, 64)) as Buffer;
+        const valid = timingSafeEqual(hashedBuf, suppliedBuf);
+        res.json({ valid });
+      } catch (error: any) {
+        res.status(400).json({ error: error.message });
       }
     });
   

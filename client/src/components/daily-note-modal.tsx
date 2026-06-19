@@ -48,6 +48,7 @@ interface DailyNoteModalProps {
   onOpenChange: (open: boolean) => void;
   note?: DailyNoteWithDetails | null;
   defaultDate?: string;
+  pinOverride?: string; // PIN to include in update requests for locked notes
 }
 
 function formatModalTitleDate(date: string): string {
@@ -62,10 +63,10 @@ function generateId() {
   return Math.random().toString(36).slice(2);
 }
 
-export function DailyNoteModal({ open, onOpenChange, note, defaultDate }: DailyNoteModalProps) {
+export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverride }: DailyNoteModalProps) {
   const { toast } = useToast();
   const isEditing = !!note;
-  const isReadOnly = isEditing && !note.isEditable;
+  const isReadOnly = isEditing && !note.isEditable && !pinOverride;
 
   const today = defaultDate || format(new Date(), "yyyy-MM-dd");
   const [date] = useState(note?.date || today);
@@ -115,7 +116,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate }: DailyN
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const payload = {
+      const payload: any = {
         date,
         userTitle,
         body,
@@ -123,6 +124,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate }: DailyN
         involvedParties: parties.map(p => ({ partyType: p.partyType, refId: p.refId })),
       };
       if (isEditing && note) {
+        if (pinOverride) payload.pin = pinOverride;
         return apiRequest("PUT", `/api/daily-notes/${note.id}`, payload);
       }
       return apiRequest("POST", "/api/daily-notes", payload);

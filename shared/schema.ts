@@ -268,6 +268,7 @@ export const dailyNotes = pgTable("daily_notes", {
   vectorId: text("vector_id"), // Qdrant point ID (set on first vectorization, reused on edit)
   vectorSyncedAt: timestamp("vector_synced_at"), // Timestamp of last successful vector sync; null = needs sync
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at"), // Timestamp of last edit; null = never edited
 });
 
 export const dailyNoteEvents = pgTable("daily_note_events", {
@@ -283,6 +284,15 @@ export const dailyNoteInvolvedParties = pgTable("daily_note_involved_parties", {
   dailyNoteId: varchar("daily_note_id").notNull().references(() => dailyNotes.id, { onDelete: "cascade" }),
   partyType: text("party_type").notNull(), // 'person' | 'social_account' | 'group'
   refId: varchar("ref_id").notNull(),
+});
+
+// Audit log for daily notes - tracks creation and edit timestamps
+export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  dailyNoteId: varchar("daily_note_id").notNull().references(() => dailyNotes.id, { onDelete: "cascade" }),
+  action: text("action").notNull(), // 'created' | 'edited'
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  pinUsed: boolean("pin_used").notNull().default(false), // whether PIN authorization was required for this edit
 });
 
 // Background tasks table - for long-running operations like image downloads
@@ -441,6 +451,7 @@ export const socialAccountPostsRelations = relations(socialAccountPosts, ({ one 
 export const dailyNotesRelations = relations(dailyNotes, ({ many }) => ({
   events: many(dailyNoteEvents),
   involvedParties: many(dailyNoteInvolvedParties),
+  auditLogs: many(dailyNoteAuditLogs),
 }));
 
 export const dailyNoteEventsRelations = relations(dailyNoteEvents, ({ one }) => ({
@@ -453,6 +464,13 @@ export const dailyNoteEventsRelations = relations(dailyNoteEvents, ({ one }) => 
 export const dailyNoteInvolvedPartiesRelations = relations(dailyNoteInvolvedParties, ({ one }) => ({
   dailyNote: one(dailyNotes, {
     fields: [dailyNoteInvolvedParties.dailyNoteId],
+    references: [dailyNotes.id],
+  }),
+}));
+
+export const dailyNoteAuditLogsRelations = relations(dailyNoteAuditLogs, ({ one }) => ({
+  dailyNote: one(dailyNotes, {
+    fields: [dailyNoteAuditLogs.dailyNoteId],
     references: [dailyNotes.id],
   }),
 }));
@@ -766,6 +784,7 @@ export const insertAiChatSchema = createInsertSchema(aiChats).omit({
 export const insertDailyNoteSchema = createInsertSchema(dailyNotes).omit({
   id: true,
   createdAt: true,
+  updatedAt: true,
 });
 
 export const insertDailyNoteEventSchema = createInsertSchema(dailyNoteEvents).omit({
@@ -775,6 +794,11 @@ export const insertDailyNoteEventSchema = createInsertSchema(dailyNoteEvents).om
 
 export const insertDailyNoteInvolvedPartySchema = createInsertSchema(dailyNoteInvolvedParties).omit({
   id: true,
+});
+
+export const insertDailyNoteAuditLogSchema = createInsertSchema(dailyNoteAuditLogs).omit({
+  id: true,
+  timestamp: true,
 });
 
 export const insertExtensionSessionSchema = createInsertSchema(extensionSessions).omit({
@@ -905,13 +929,17 @@ export type DailyNoteEvent = typeof dailyNoteEvents.$inferSelect;
 export type InsertDailyNoteEvent = z.infer<typeof insertDailyNoteEventSchema>;
 export type DailyNoteInvolvedParty = typeof dailyNoteInvolvedParties.$inferSelect;
 export type InsertDailyNoteInvolvedParty = z.infer<typeof insertDailyNoteInvolvedPartySchema>;
+export type DailyNoteAuditLog = typeof dailyNoteAuditLogs.$inferSelect;
+export type InsertDailyNoteAuditLog = z.infer<typeof insertDailyNoteAuditLogSchema>;
 
 export type DailyNoteInvolvedPartyWithLabel = DailyNoteInvolvedParty & { label: string };
 
 export type DailyNoteWithDetails = DailyNote & {
   events: DailyNoteEvent[];
   involvedParties: DailyNoteInvolvedPartyWithLabel[];
+  auditLogs: DailyNoteAuditLog[];
   isEditable: boolean;
+  isLockedEditable: boolean; // true if older than 1 day but can be edited with PIN
 };
 
 // Extended types for API responses with relations
