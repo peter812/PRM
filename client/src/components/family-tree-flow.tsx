@@ -107,7 +107,7 @@ function PersonNode({ data, id }: { data: PersonNodeData; id: string }) {
       <Handle type="target" position={Position.Top} className="!bg-gray-400 !w-2 !h-2 !border-0" />
       {showAvatar && (
         <img
-          src={data.avatarUrl!}
+          src={data.avatarUrl ?? ""}
           alt={data.label}
           className={`object-cover ${isCircle ? "w-12 h-12 rounded-full" : "w-8 h-8 rounded-full mb-1"}`}
         />
