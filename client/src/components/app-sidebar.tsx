@@ -11,6 +11,7 @@ import {
   LogOut,
   Moon,
   Sun,
+  Monitor,
   Scan,
   Sparkles,
   MessagesSquare,
@@ -127,20 +128,39 @@ const menuItems = [
 export function AppSidebar() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | null;
-    const initialTheme = savedTheme || "light";
+    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | null;
+    const initialTheme = savedTheme || "system";
     setTheme(initialTheme);
-    document.documentElement.classList.toggle("dark", initialTheme === "dark");
+    const effective = initialTheme === "system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : initialTheme;
+    document.documentElement.classList.toggle("dark", effective === "dark");
   }, []);
 
+  // Listen for system theme changes when in system mode
+  useEffect(() => {
+    if (theme !== "system") return;
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => {
+      const effective = mql.matches ? "dark" : "light";
+      document.documentElement.classList.toggle("dark", effective === "dark");
+    };
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, [theme]);
+
   const handleThemeToggle = () => {
-    const newTheme = theme === "light" ? "dark" : "light";
-    setTheme(newTheme);
-    localStorage.setItem("theme", newTheme);
-    document.documentElement.classList.toggle("dark", newTheme === "dark");
+    const order: Array<"light" | "dark" | "system"> = ["light", "dark", "system"];
+    const next = order[(order.indexOf(theme) + 1) % order.length];
+    setTheme(next);
+    localStorage.setItem("theme", next);
+    const effective = next === "system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : next;
+    document.documentElement.classList.toggle("dark", effective === "dark");
   };
 
   const handleSettingsClick = () => {
@@ -199,8 +219,8 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarSeparator />
-      <SidebarFooter>
+      <SidebarSeparator className="md:hidden" />
+      <SidebarFooter className="md:hidden">
         <SidebarMenu>
           {user && (
             <SidebarMenuItem>
@@ -218,11 +238,11 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton
               onClick={handleThemeToggle}
-              tooltip={theme === "light" ? "Dark mode" : "Light mode"}
+              tooltip={theme === "system" ? "System theme" : theme === "light" ? "Dark mode" : "Light mode"}
               data-testid="sidebar-button-theme"
             >
-              {theme === "light" ? <Moon /> : <Sun />}
-              <span>{theme === "light" ? "Dark mode" : "Light mode"}</span>
+              {theme === "system" ? <Monitor /> : theme === "light" ? <Moon /> : <Sun />}
+              <span>{theme === "system" ? "System theme" : theme === "light" ? "Dark mode" : "Light mode"}</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           {user && (
