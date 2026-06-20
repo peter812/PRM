@@ -500,6 +500,15 @@ export default function PersonProfile() {
                   {person?.eloRankable === 1 ? "Rankable" : "Not Rankable"}
                 </Badge>
               </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground shrink-0">Sex</span>
+                <Badge
+                  variant="secondary"
+                  data-testid="info-sex"
+                >
+                  {person?.sex ? person.sex.charAt(0).toUpperCase() + person.sex.slice(1) : "Unknown"}
+                </Badge>
+              </div>
             </div>
           </div>
         </DialogContent>
