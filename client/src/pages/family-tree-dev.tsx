@@ -340,9 +340,31 @@ export default function FamilyTreeDevPage() {
   const deleteEdgeRelationships = useMutation({
     mutationFn: async (edgeId: string) => {
       if (!treeData) throw new Error("Tree not loaded");
-      // Edge id format: "edge-personA:personB" — extract the two node ids
+      // Edge id format: "edge-personA:personB" or "edge-couple-X:Y:personC"
+      // Couple group IDs contain ":" internally (e.g. "couple-X:Y"), so we
+      // cannot simply split on ":". Instead, detect couple- prefixes and parse
+      // accordingly.
       const key = edgeId.replace(/^edge-/, "");
-      const [idA, idB] = key.split(":");
+
+      let idA: string;
+      let idB: string;
+
+      if (key.startsWith("couple-")) {
+        // Format: "couple-X:Y:personC" — first two segments form the group id
+        const parts = key.split(":");
+        idA = `${parts[0]}:${parts[1]}`;
+        idB = parts[2];
+      } else if (key.includes(":couple-")) {
+        // Format: "personC:couple-X:Y" — last two segments form the group id
+        const idx = key.indexOf(":couple-");
+        idA = key.slice(0, idx);
+        idB = key.slice(idx + 1);
+      } else {
+        // Simple: "personA:personB"
+        const parts = key.split(":");
+        idA = parts[0];
+        idB = parts[1];
+      }
       if (!idA || !idB) throw new Error("Invalid edge id");
 
       // Find all relationships between these two entities (could be couple group)
