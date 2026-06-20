@@ -357,8 +357,8 @@ export default function FamilyTreeDevPage() {
         const spouseIds = idA.replace(/^couple-/, "").split(":").filter(Boolean);
         for (const rel of treeData.relationships) {
           if (
-            spouseIds.includes(rel.fromPersonId) && rel.toPersonId === idB ||
-            spouseIds.includes(rel.toPersonId) && rel.fromPersonId === idB
+            (spouseIds.includes(rel.fromPersonId) && rel.toPersonId === idB) ||
+            (spouseIds.includes(rel.toPersonId) && rel.fromPersonId === idB)
           ) {
             relIds.push(rel.id);
           }
@@ -367,8 +367,8 @@ export default function FamilyTreeDevPage() {
         const spouseIds = idB.replace(/^couple-/, "").split(":").filter(Boolean);
         for (const rel of treeData.relationships) {
           if (
-            spouseIds.includes(rel.fromPersonId) && rel.toPersonId === idA ||
-            spouseIds.includes(rel.toPersonId) && rel.fromPersonId === idA
+            (spouseIds.includes(rel.fromPersonId) && rel.toPersonId === idA) ||
+            (spouseIds.includes(rel.toPersonId) && rel.fromPersonId === idA)
           ) {
             relIds.push(rel.id);
           }
