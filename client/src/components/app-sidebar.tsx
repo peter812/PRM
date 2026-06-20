@@ -19,6 +19,8 @@ import {
   Home,
   Image,
   HelpCircle,
+  Gamepad2,
+  ChevronRight,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
@@ -37,6 +39,11 @@ import {
   SidebarMenuSubButton,
   SidebarSeparator,
 } from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { useAuth } from "@/hooks/use-auth";
 
 const menuItems = [
@@ -59,13 +66,6 @@ const menuItems = [
     title: "Family Tree",
     url: "/family-tree",
     icon: GitBranch,
-    subItems: [
-      {
-        title: "Dev Version",
-        url: "/family-tree-dev-version",
-        icon: GitBranch,
-      },
-    ],
   },
   {
     title: "Groups",
@@ -95,25 +95,37 @@ const menuItems = [
     icon: BookOpen,
   },
   {
-    title: "Images",
-    url: "/images",
-    icon: Image,
-  },
-  {
-    title: "ELO Ranking",
-    url: "/elo-ranking",
-    icon: Trophy,
-  },
-  {
-    title: "Guess the Sex",
-    url: "/guess-the-sex",
-    icon: HelpCircle,
+    title: "Games",
+    url: "/games",
+    icon: Gamepad2,
+    subItems: [
+      {
+        title: "ELO Ranking",
+        url: "/elo-ranking",
+        icon: Trophy,
+      },
+      {
+        title: "Guess the Sex",
+        url: "/guess-the-sex",
+        icon: HelpCircle,
+      },
+    ],
   },
   {
     title: "Demos",
     url: "/demos",
     icon: Sparkles,
     subItems: [
+      {
+        title: "Images",
+        url: "/images",
+        icon: Image,
+      },
+      {
+        title: "Family Tree (Dev)",
+        url: "/family-tree-dev-version",
+        icon: GitBranch,
+      },
       {
         title: "PRM Face Demo",
         url: "/prm-face-demo",
@@ -191,43 +203,77 @@ export function AppSidebar() {
           <SidebarGroupLabel>PRM 2.0</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={location === item.url || (item.subItems?.some(sub => location === sub.url) ?? false)}
-                    tooltip={item.title}
-                  >
-                    <Link
-                      href={item.url}
-                      data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
+              {menuItems.map((item) => {
+                const isActive = location === item.url || (item.subItems?.some(sub => location === sub.url) ?? false);
+                
+                if (item.subItems) {
+                  return (
+                    <Collapsible
+                      key={item.title}
+                      asChild
+                      defaultOpen={isActive}
+                      className="group/collapsible"
                     >
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                  {item.subItems && (
-                    <SidebarMenuSub>
-                      {item.subItems.map((sub) => (
-                        <SidebarMenuSubItem key={sub.title}>
-                          <SidebarMenuSubButton
+                      <SidebarMenuItem>
+                        <CollapsibleTrigger asChild>
+                          <SidebarMenuButton
                             asChild
-                            isActive={location === sub.url}
+                            isActive={isActive}
+                            tooltip={item.title}
                           >
                             <Link
-                              href={sub.url}
-                              data-testid={`link-${sub.title.toLowerCase().replace(/\s+/g, "-")}`}
+                              href={item.url}
+                              data-testid={`link-${item.title.toLowerCase().replace(/\\s+/g, "-")}`}
                             >
-                              <sub.icon className="h-4 w-4" />
-                              <span>{sub.title}</span>
+                              <item.icon />
+                              <span>{item.title}</span>
+                              <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
                             </Link>
-                          </SidebarMenuSubButton>
-                        </SidebarMenuSubItem>
-                      ))}
-                    </SidebarMenuSub>
-                  )}
-                </SidebarMenuItem>
-              ))}
+                          </SidebarMenuButton>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <SidebarMenuSub>
+                            {item.subItems.map((sub) => (
+                              <SidebarMenuSubItem key={sub.title}>
+                                <SidebarMenuSubButton
+                                  asChild
+                                  isActive={location === sub.url}
+                                >
+                                  <Link
+                                    href={sub.url}
+                                    data-testid={`link-${sub.title.toLowerCase().replace(/\\s+/g, "-")}`}
+                                  >
+                                    <sub.icon className="h-4 w-4" />
+                                    <span>{sub.title}</span>
+                                  </Link>
+                                </SidebarMenuSubButton>
+                              </SidebarMenuSubItem>
+                            ))}
+                          </SidebarMenuSub>
+                        </CollapsibleContent>
+                      </SidebarMenuItem>
+                    </Collapsible>
+                  );
+                }
+
+                return (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={isActive}
+                      tooltip={item.title}
+                    >
+                      <Link
+                        href={item.url}
+                        data-testid={`link-${item.title.toLowerCase().replace(/\\s+/g, "-")}`}
+                      >
+                        <item.icon />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

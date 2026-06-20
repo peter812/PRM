@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getInitials, cn } from "@/lib/utils";
@@ -415,6 +416,7 @@ function ThingsToDoContent() {
 function QuickChatContent() {
   const [message, setMessage] = useState("");
   const [, navigate] = useLocation();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleGo = () => {
     const trimmed = message.trim();
@@ -422,15 +424,29 @@ function QuickChatContent() {
     navigate(`/ai-chat-demo?message=${encodeURIComponent(trimmed)}`);
   };
 
+  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setMessage(e.target.value);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3">
-      <Input
+      <Textarea
+        ref={textareaRef}
         placeholder="What's on your mind?"
         value={message}
-        onChange={(e) => setMessage(e.target.value)}
+        onChange={handleInput}
         onKeyDown={(e) => {
-          if (e.key === "Enter") handleGo();
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleGo();
+          }
         }}
+        className="min-h-[40px] resize-none overflow-y-auto"
+        rows={1}
         data-testid="home-quick-chat-input"
       />
       <Button

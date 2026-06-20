@@ -43,6 +43,7 @@ import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
 import AiDescDemo from "@/pages/ai-desc-demo";
 import AiChatDemo from "@/pages/ai-chat-demo";
 import DemosPage from "@/pages/demos";
+import GamesPage from "@/pages/games";
 import ImageDetailPage from "@/pages/image-detail";
 import ImagesListPage from "@/pages/images-list";
 import DailyNotesList from "@/pages/daily-notes";
@@ -128,6 +129,7 @@ function Router() {
       <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
       <ProtectedRoute path="/demos" component={DemosPage} />
+      <ProtectedRoute path="/games" component={GamesPage} />
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
