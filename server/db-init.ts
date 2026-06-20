@@ -381,15 +381,35 @@ async function validateAndSyncSchema(): Promise<void> {
         social_account_uuids: "TEXT[]",
         elo_rankable: "INTEGER NOT NULL DEFAULT 1",
         sex: "TEXT NOT NULL DEFAULT 'unknown'",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       photos: {
         og_metadata: "JSONB",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       notes: {
         image_uuid: "VARCHAR",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       interactions: {
         image_uuid: "VARCHAR",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
+      },
+      groups: {
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
+      },
+      social_accounts: {
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
+      },
+      ai_chats: {
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       daily_notes: {
         vector_id: "TEXT",

@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -52,6 +52,15 @@ import {
   syncDailyNoteInBackground,
   searchDailyNotes,
 } from "../vector";
+import {
+  syncEntityInBackground,
+  deleteEntityVector,
+  searchUniversal,
+  getUniversalStatus,
+  bulkSyncAll,
+  loadUniversalVectorConfig,
+  type UniversalEntityType,
+} from "../vector-universal";
 
 const scryptAsync = promisify(scrypt);
 
@@ -1368,6 +1377,7 @@ export function registerRoutes(app: Express) {
           model,
           messages: [],
         }).returning();
+        syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1388,6 +1398,7 @@ export function registerRoutes(app: Express) {
         if (typeof req.body.model === "string") patch.model = req.body.model;
         if (req.body.messages !== undefined) patch.messages = sanitizeChatMessages(req.body.messages);
         const [row] = await db.update(aiChats).set(patch).where(eq(aiChats.id, req.params.id)).returning();
+        syncEntityInBackground("ai_chat", req.params.id);
         res.json(row);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1402,7 +1413,9 @@ export function registerRoutes(app: Express) {
           where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
         });
         if (!existing) return res.status(404).json({ error: "Chat not found" });
+        const vectorIdToDelete = existing.vectorId ?? null;
         await db.delete(aiChats).where(eq(aiChats.id, req.params.id));
+        if (vectorIdToDelete) void deleteEntityVector("ai_chat", vectorIdToDelete);
         res.json({ success: true });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1865,6 +1878,7 @@ export function registerRoutes(app: Express) {
         if (involvedParties.length > 0) await storage.replaceDailyNoteParties(created.id, involvedParties);
         const full = await storage.getDailyNoteById(created.id);
         syncDailyNoteInBackground(created.id);
+        syncEntityInBackground("daily_note", created.id);
         res.status(201).json(full);
       } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -1916,6 +1930,7 @@ export function registerRoutes(app: Express) {
         await storage.addDailyNoteAuditLog(req.params.id, "edited", needsPin);
         const full = await storage.getDailyNoteById(req.params.id);
         syncDailyNoteInBackground(req.params.id);
+        syncEntityInBackground("daily_note", req.params.id);
         res.json(full);
       } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -1931,6 +1946,7 @@ export function registerRoutes(app: Express) {
         await storage.deleteDailyNote(req.params.id);
         if (vectorIdToDelete) {
           void deleteDailyNoteVector(req.params.id, vectorIdToDelete);
+          void deleteEntityVector("daily_note", vectorIdToDelete);
         }
         res.json({ success: true });
       } catch (error: any) {
@@ -2182,6 +2198,126 @@ export function registerRoutes(app: Express) {
       try {
         const hits = await searchDailyNotes(q, limit);
         res.json({ hits });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // ── Universal Vector Storage ─────────────────────────────────────────────
+
+    // Status endpoint for the universal vector collection
+    app.get("/api/vector/universal/status", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const status = await getUniversalStatus();
+        res.json(status);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Get/set universal vector settings
+    app.get("/api/vector/universal/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const cfg = await loadUniversalVectorConfig();
+        res.json({
+          enabled: cfg.universalEnabled,
+          collectionName: cfg.universalCollection,
+        });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/vector/universal/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { enabled, collectionName } = req.body ?? {};
+      try {
+        if (typeof enabled === "boolean") await setVectorSetting("vector_universal_enabled", String(enabled));
+        if (typeof collectionName === "string" && collectionName.trim().length > 0) {
+          await setVectorSetting("vector_universal_collection", collectionName.trim());
+        }
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Universal semantic search
+    app.post("/api/vector/universal/search", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { query, limit, typeFilter } = req.body ?? {};
+      if (!query || typeof query !== "string" || !query.trim()) {
+        return res.status(400).json({ error: "Missing 'query' field." });
+      }
+      try {
+        const results = await searchUniversal(
+          query.trim(),
+          Math.min(50, Math.max(1, limit || 20)),
+          typeFilter as UniversalEntityType[] | undefined
+        );
+        res.json({ results });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Bulk vectorize all entities
+    app.post("/api/vector/universal/vectorize-all", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const result = await bulkSyncAll();
+        res.json({ ok: true, ...result });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Reset universal vector sync (clear vector_synced_at on all tables)
+    app.post("/api/vector/universal/reset-sync", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        await db.update(people).set({ vectorSyncedAt: null });
+        await db.update(groups).set({ vectorSyncedAt: null });
+        await db.update(photos).set({ vectorSyncedAt: null });
+        await db.update(notes).set({ vectorSyncedAt: null });
+        await db.update(interactions).set({ vectorSyncedAt: null });
+        await db.update(socialAccounts).set({ vectorSyncedAt: null });
+        await db.update(dailyNotes).set({ vectorSyncedAt: null });
+        await db.update(aiChats).set({ vectorSyncedAt: null });
+        res.json({ ok: true });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Stats for universal vectorization
+    app.get("/api/vector/universal/stats", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const tables = [
+          { name: "people", table: people },
+          { name: "groups", table: groups },
+          { name: "photos", table: photos },
+          { name: "notes", table: notes },
+          { name: "interactions", table: interactions },
+          { name: "social_accounts", table: socialAccounts },
+          { name: "daily_notes", table: dailyNotes },
+          { name: "ai_chats", table: aiChats },
+        ];
+        const stats: Record<string, { total: number; vectorized: number }> = {};
+        for (const { name, table } of tables) {
+          const rows = await db
+            .select({
+              total: sql<number>`COUNT(*)::int`,
+              vectorized: sql<number>`COUNT(*) FILTER (WHERE vector_synced_at IS NOT NULL)::int`,
+            })
+            .from(table);
+          const r = rows[0] ?? { total: 0, vectorized: 0 };
+          stats[name] = { total: r.total ?? 0, vectorized: r.vectorized ?? 0 };
+        }
+        res.json(stats);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
