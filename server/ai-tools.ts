@@ -103,20 +103,29 @@ function trimPerson(p: any) {
     uuid: p.id,
     firstName: p.firstName ?? null,
     lastName: p.lastName ?? null,
-    nickname: p.nickname ?? null,
     email: p.email ?? null,
     phone: p.phone ?? null,
+    company: p.company ?? null,
+    title: p.title ?? null,
+    sex: p.sex ?? null,
+    createdAt: p.createdAt ?? null,
   };
 }
 
 function trimSocialAccount(a: any) {
   const profile = a.currentProfile ?? {};
+  const state = a.latestState ?? {};
   return {
     uuid: a.id,
-    handle: profile.handle ?? a.handle ?? null,
-    displayName: profile.displayName ?? null,
+    handle: profile.handle ?? a.username ?? null,
+    displayName: profile.nickname ?? null,
+    ownerUuid: a.ownerUuid ?? null,
     typeId: a.typeId ?? null,
     bio: profile.bio ? String(profile.bio).slice(0, 280) : null,
+    accountUrl: profile.accountUrl ?? null,
+    followerCount: state.followerCount ?? null,
+    followingCount: state.followingCount ?? null,
+    accountCreatedAt: a.internalAccountCreationDate ?? a.createdAt ?? null,
   };
 }
 
@@ -151,6 +160,21 @@ function trimInteraction(i: any) {
   };
 }
 
+function trimRelationship(r: any) {
+  return {
+    uuid: r.id,
+    fromPersonId: r.fromPersonId ?? null,
+    toPersonId: r.toPersonId ?? null,
+    typeId: r.typeId ?? null,
+    typeName: r.type?.name ?? null,
+    familyRelationshipType: r.familyRelationshipType ?? null,
+    notes: r.notes ? String(r.notes).slice(0, 300) : null,
+    relatedPersonName: r.toPerson
+      ? `${r.toPerson.firstName ?? ""} ${r.toPerson.lastName ?? ""}`.trim()
+      : null,
+  };
+}
+
 function matchesQuery(haystack: string | null | undefined, q: string): boolean {
   if (!haystack) return false;
   return haystack.toLowerCase().includes(q.toLowerCase());
@@ -163,11 +187,11 @@ export const AI_TOOLS: AiToolDefinition[] = [
     icon: "search",
     category: "people",
     description:
-      "Search for people in the user's PRM by name, nickname, or other text. Returns up to 10 matching people with their UUIDs. Use this when the user asks about a person but you don't yet know their UUID.",
+      "Search for people in the user's PRM by first name, last name, full name, email, company, or tags. Returns up to 10 matching people with their UUIDs. Supports full name queries like 'John Smith'. Use this when the user asks about a person but you don't yet know their UUID.",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Free-text search query for the person's name." },
+        query: { type: "string", description: "Free-text search query. Can be a first name, last name, full name (e.g. 'John Smith'), email, or company." },
       },
       required: ["query"],
     },
@@ -185,7 +209,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     icon: "user",
     category: "people",
     description:
-      "Fetch a single person account in full (notes, interactions, relationships) by UUID. Call this after person_search if you need the full record.",
+      "Fetch a single person's full account by UUID, including their profile info, notes, interactions, and relationships. Call this after person_search if you need the complete record. For partial data, use person_pull_flow or person_pull_relationships instead.",
     parameters: {
       type: "object",
       properties: {
@@ -204,6 +228,85 @@ export const AI_TOOLS: AiToolDefinition[] = [
           ...trimPerson(person),
           notes: (person.notes ?? []).slice(0, 10).map(trimNote),
           interactions: (person.interactions ?? []).slice(0, 10).map(trimInteraction),
+          relationships: (person.relationships ?? []).slice(0, 10).map(trimRelationship),
+        },
+      };
+    },
+  },
+  {
+    name: "person_pull_flow",
+    label: "Pull person flow",
+    icon: "user",
+    category: "people",
+    description:
+      "Fetch only the flow section (interactions and notes) for a person by UUID. Use this when you only need to see a person's activity timeline without their full profile or relationships.",
+    parameters: {
+      type: "object",
+      properties: {
+        uuid: { type: "string", description: "UUID of the person." },
+      },
+      required: ["uuid"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.uuid).trim();
+      if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
+      const person = await storage.getPersonById(uuid);
+      if (!person) return { summary: "Person not found", data: { error: "not_found" } };
+      const personName = `${person.firstName ?? ""} ${person.lastName ?? ""}`.trim();
+      return {
+        summary: `Pulled flow for ${personName || "person"}`,
+        data: {
+          uuid: person.id,
+          name: personName,
+          notes: (person.notes ?? []).slice(0, 15).map(trimNote),
+          interactions: (person.interactions ?? []).slice(0, 15).map(trimInteraction),
+        },
+      };
+    },
+  },
+  {
+    name: "person_pull_relationships",
+    label: "Pull person relationships",
+    icon: "user",
+    category: "people",
+    description:
+      "Fetch only the relationships for a person by UUID. Optionally filter by relationship type name (e.g. 'Family', 'Best Friend', 'Friend', 'Acquaintance', 'Colleague'). Pass typeFilter='all' or omit it to get all relationships.",
+    parameters: {
+      type: "object",
+      properties: {
+        uuid: { type: "string", description: "UUID of the person." },
+        typeFilter: {
+          type: "string",
+          description: "Optional relationship type name to filter by (e.g. 'Family', 'Best Friend', 'Friend', 'Acquaintance', 'Colleague'). Omit or pass 'all' to return all relationships.",
+        },
+      },
+      required: ["uuid"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.uuid).trim();
+      if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
+      const person = await storage.getPersonById(uuid);
+      if (!person) return { summary: "Person not found", data: { error: "not_found" } };
+      const personName = `${person.firstName ?? ""} ${person.lastName ?? ""}`.trim();
+
+      let rels = person.relationships ?? [];
+      const typeFilter = asString(args.typeFilter).trim().toLowerCase();
+      if (typeFilter && typeFilter !== "all") {
+        rels = rels.filter((r: any) => {
+          const typeName = (r.type?.name ?? "").toLowerCase();
+          const familyType = (r.familyRelationshipType ?? "").toLowerCase();
+          return typeName.includes(typeFilter) || familyType.includes(typeFilter);
+        });
+      }
+
+      const results = rels.slice(0, 20).map(trimRelationship);
+      return {
+        summary: `Found ${results.length} relationship${results.length === 1 ? "" : "s"} for ${personName || "person"}`,
+        data: {
+          uuid: person.id,
+          name: personName,
+          typeFilter: typeFilter || "all",
+          relationships: results,
         },
       };
     },
@@ -236,7 +339,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     icon: "at-sign",
     category: "social-accounts",
     description:
-      "Fetch a single social account in full (current profile, latest state) by UUID. Call this after social_account_search if you need the full record.",
+      "Fetch a single social account in full by UUID. Returns the account owner UUID, handle, display name, bio, account URL, follower/following counts, and account creation date. Call this after social_account_search if you need the full record.",
     parameters: {
       type: "object",
       properties: {
