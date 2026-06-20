@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useState, useEffect, useCallback } from "react";
-import { HelpCircle, Check, X, Loader2, PartyPopper } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { HelpCircle, Check, X, Loader2, PartyPopper, Clock, Ban } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -17,6 +17,7 @@ type QueueItem = {
   reasoning: string;
   dateAdded: string;
   answered: number;
+  snoozedUntil?: string | null;
   person: Person;
 };
 
@@ -37,15 +38,16 @@ const LOADING_MESSAGES = [
 
 export default function GuessTheSex() {
   const { toast } = useToast();
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [seenPersonIds, setSeenPersonIds] = useState<Set<string>>(new Set());
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
-  const [answeredIds, setAnsweredIds] = useState<Set<string>>(new Set());
+  // Prevent firing the prefetch more than once per batch
+  const prefetchTriggered = useRef(false);
 
-  const { data: queueData, isLoading, refetch } = useQuery<QueueResponse>({
+  const { data: queueData, isLoading, isError, error, refetch } = useQuery<QueueResponse, Error>({
     queryKey: ["/api/guess-sex/queue"],
   });
 
-  // Cycle through loading messages
+  // Cycle through loading messages while waiting
   useEffect(() => {
     if (isLoading || queueData?.status === "loading") {
       const interval = setInterval(() => {
@@ -55,57 +57,148 @@ export default function GuessTheSex() {
     }
   }, [isLoading, queueData?.status]);
 
+  // ── Mutations ─────────────────────────────────────────────────────────────
+
+  const advanceAfterAction = useCallback((personId: string) => {
+    setSeenPersonIds((prev) => {
+      const next = new Set(prev);
+      next.add(personId);
+      return next;
+    });
+  }, []);
+
   const answerMutation = useMutation({
     mutationFn: async ({ queueItemId, correct }: { queueItemId: string; correct: boolean }) => {
       const res = await apiRequest("POST", "/api/guess-sex/answer", { queueItemId, correct });
       return res.json();
     },
     onSuccess: (data, variables) => {
-      setAnsweredIds((prev) => new Set(prev).add(variables.queueItemId));
-      toast({
-        title: "Saved!",
-        description: `Marked as ${data.sex}.`,
-      });
-      // Move to next person
-      setCurrentIndex((prev) => prev + 1);
-      // Invalidate people queries since sex was updated
+      toast({ title: "Saved!", description: `Marked as ${data.sex}.` });
+      advanceAfterAction(currentItem!.personId);
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
     },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
     },
   });
 
-  const handleAnswer = useCallback(
-    (queueItemId: string, correct: boolean) => {
-      answerMutation.mutate({ queueItemId, correct });
+  const skipTempMutation = useMutation({
+    mutationFn: async (queueItemId: string) => {
+      const res = await apiRequest("POST", "/api/guess-sex/skip-temp", { queueItemId });
+      return res.json();
     },
-    [answerMutation]
+    onSuccess: () => {
+      toast({ title: "Snoozed", description: "We'll ask again in 1 day." });
+      advanceAfterAction(currentItem!.personId);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const skipPermMutation = useMutation({
+    mutationFn: async (queueItemId: string) => {
+      const res = await apiRequest("POST", "/api/guess-sex/skip-perm", { queueItemId });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Skipped", description: "This person won't appear again." });
+      advanceAfterAction(currentItem!.personId);
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const isBusy = answerMutation.isPending || skipTempMutation.isPending || skipPermMutation.isPending;
+
+  // ── Derived state ─────────────────────────────────────────────────────────
+
+  // Filter out anyone already seen this session
+  const pendingItems = (queueData?.queue ?? []).filter(
+    (item) => !seenPersonIds.has(item.personId)
   );
 
-  // Filter out already-answered items from local state
-  const pendingItems = (queueData?.queue ?? []).filter((item) => !answeredIds.has(item.id));
-  const currentItem = pendingItems[currentIndex] ?? null;
-  const allDone = queueData?.status === "ready" && pendingItems.length === 0;
+  const currentItem = pendingItems[0] ?? null;
   const isEmpty = queueData?.status === "empty";
 
-  // Loading state
-  if (isLoading) {
+  // We've worked through the local batch — fetch the next one
+  const batchExhausted =
+    !isLoading &&
+    queueData?.status === "ready" &&
+    pendingItems.length === 0 &&
+    (queueData?.queue ?? []).length > 0;
+
+  useEffect(() => {
+    if (batchExhausted) {
+      prefetchTriggered.current = false;
+      refetch();
+    }
+  }, [batchExhausted, refetch]);
+
+  // Compute remaining here (before early returns) so the prefetch effect can use it
+  const remaining = pendingItems.length;
+
+  // When 9 items or fewer remain, silently prefetch the next batch from the LLM
+  useEffect(() => {
+    if (
+      !prefetchTriggered.current &&
+      queueData?.status === "ready" &&
+      remaining > 0 &&
+      remaining <= 9
+    ) {
+      prefetchTriggered.current = true;
+      fetch("/api/guess-sex/prefetch", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.generated > 0) {
+            // LLM generated more items — refresh the queue
+            queryClient.invalidateQueries({ queryKey: ["/api/guess-sex/queue"] });
+            prefetchTriggered.current = false;
+          }
+        })
+        .catch(() => {}); // ignore errors silently
+    }
+  }, [remaining, queueData?.status]);
+
+  // ── Render states ─────────────────────────────────────────────────────────
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
+        <HelpCircle className="h-12 w-12 text-destructive" />
+        <p className="text-lg font-medium">Something went wrong</p>
+        <p className="text-sm text-muted-foreground text-center max-w-md">
+          {error?.message ?? "Unknown error"}
+        </p>
+        <Button onClick={() => refetch()} variant="outline">
+          Try Again
+        </Button>
+      </div>
+    );
+  }
+
+  // Loading — initial fetch or waiting on LLM
+  if (isLoading || !queueData) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
         <Loader2 className="h-12 w-12 animate-spin text-muted-foreground" />
         <p className="text-lg text-muted-foreground animate-pulse">
           {LOADING_MESSAGES[loadingMessageIndex]}
         </p>
+        <p className="text-sm text-muted-foreground">
+          Asking the AI to guess — this may take a moment...
+        </p>
       </div>
     );
   }
 
-  // Error state
+  // Server-side error with partial queue
   if (queueData?.status === "error" && (!queueData.queue || queueData.queue.length === 0)) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
@@ -118,20 +211,18 @@ export default function GuessTheSex() {
     );
   }
 
-  // Empty state - no unknown people
-  if (isEmpty) {
+  // Fetching next batch after exhausting current one
+  if (batchExhausted) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
-        <PartyPopper className="h-12 w-12 text-muted-foreground" />
-        <p className="text-lg text-muted-foreground">
-          {queueData?.message || "No people with unknown sex found."}
-        </p>
+        <Loader2 className="h-12 w-12 animate-spin text-muted-foreground" />
+        <p className="text-lg text-muted-foreground animate-pulse">Loading more people...</p>
       </div>
     );
   }
 
-  // All done state
-  if (allDone || (!currentItem && !isLoading)) {
+  // Server confirmed no more unknown-sex people
+  if (isEmpty) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
         <PartyPopper className="h-12 w-12 text-primary" />
@@ -139,8 +230,7 @@ export default function GuessTheSex() {
         <p className="text-muted-foreground">Come back later for more.</p>
         <Button
           onClick={() => {
-            setCurrentIndex(0);
-            setAnsweredIds(new Set());
+            setSeenPersonIds(new Set());
             refetch();
           }}
           variant="outline"
@@ -151,20 +241,30 @@ export default function GuessTheSex() {
     );
   }
 
-  if (!currentItem) return null;
+  // No current item — LLM generating
+  if (!currentItem) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
+        <Loader2 className="h-12 w-12 animate-spin text-muted-foreground" />
+        <p className="text-lg text-muted-foreground animate-pulse">
+          Asking the AI to guess — this may take a moment...
+        </p>
+      </div>
+    );
+  }
+
+  // ── Main card ─────────────────────────────────────────────────────────────
 
   const person = currentItem.person;
   const guessLabel = currentItem.guessedSex === "male" ? "Male" : "Female";
   const oppositeLabel = currentItem.guessedSex === "male" ? "Female" : "Male";
-  const remaining = pendingItems.length - currentIndex;
-
   return (
     <div className="flex flex-col items-center justify-center h-full p-4 md:p-8">
       <div className="w-full max-w-md space-y-6">
         {/* Progress indicator */}
         <div className="flex items-center justify-between text-sm text-muted-foreground">
           <span>Guess the Sex</span>
-          <span>{remaining} remaining</span>
+          <span>{remaining} remaining in batch</span>
         </div>
 
         {/* Person Card */}
@@ -202,13 +302,13 @@ export default function GuessTheSex() {
           </CardContent>
         </Card>
 
-        {/* Action Buttons */}
+        {/* Confirm buttons */}
         <div className="flex gap-3">
           <Button
             className="flex-1 h-14 text-base"
             variant="default"
-            onClick={() => handleAnswer(currentItem.id, true)}
-            disabled={answerMutation.isPending}
+            onClick={() => answerMutation.mutate({ queueItemId: currentItem.id, correct: true })}
+            disabled={isBusy}
           >
             <Check className="h-5 w-5 mr-2" />
             {guessLabel}
@@ -216,11 +316,35 @@ export default function GuessTheSex() {
           <Button
             className="flex-1 h-14 text-base"
             variant="outline"
-            onClick={() => handleAnswer(currentItem.id, false)}
-            disabled={answerMutation.isPending}
+            onClick={() => answerMutation.mutate({ queueItemId: currentItem.id, correct: false })}
+            disabled={isBusy}
           >
             <X className="h-5 w-5 mr-2" />
-            Incorrect ({oppositeLabel})
+            {oppositeLabel}
+          </Button>
+        </div>
+
+        {/* Skip buttons */}
+        <div className="flex gap-3">
+          <Button
+            className="flex-1 h-10 text-sm"
+            variant="ghost"
+            onClick={() => skipTempMutation.mutate(currentItem.id)}
+            disabled={isBusy}
+            title="Hide for 1 day, then show again"
+          >
+            <Clock className="h-4 w-4 mr-1.5" />
+            Skip (1 Day)
+          </Button>
+          <Button
+            className="flex-1 h-10 text-sm"
+            variant="ghost"
+            onClick={() => skipPermMutation.mutate(currentItem.id)}
+            disabled={isBusy}
+            title="Never ask about this person again"
+          >
+            <Ban className="h-4 w-4 mr-1.5" />
+            Skip (Never)
           </Button>
         </div>
 

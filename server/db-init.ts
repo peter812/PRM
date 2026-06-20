@@ -509,6 +509,8 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("sex_guess_queue table created successfully");
     }
+    // Ensure snooze_until column exists (added in later migration)
+    await addColumnIfNotExists("sex_guess_queue", "snooze_until", "TIMESTAMP");
 
     // Ensure daily_notes tables exist
     const dailyNotesExists = await tableExists("daily_notes");

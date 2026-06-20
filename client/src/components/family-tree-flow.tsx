@@ -170,18 +170,18 @@ function PersonNode({ data }: { data: PersonNodeData; id: string }) {
       )}
       {showName && (
         <>
-          <span className={`font-medium text-xs leading-tight ${data.isMissing ? "" : "text-gray-900 dark:text-gray-100"}`}>
+          <span className={`font-medium text-sm leading-tight ${data.isMissing ? "" : "text-gray-900 dark:text-gray-100"}`}>
             {data.label}
           </span>
           {data.sublabel && (
-            <span className={`text-[10px] leading-tight mt-0.5 ${data.isMissing ? "opacity-70" : "text-muted-foreground"}`}>
+            <span className={`text-xs leading-tight mt-0.5 ${data.isMissing ? "opacity-70" : "text-muted-foreground"}`}>
               {data.sublabel}
             </span>
           )}
         </>
       )}
       {isCircle && !showAvatar && (
-        <span className="font-medium text-xs leading-tight text-gray-900 dark:text-gray-100">
+        <span className="font-medium text-sm leading-tight text-gray-900 dark:text-gray-100">
           {data.label}
         </span>
       )}

@@ -2242,7 +2242,7 @@ export function registerRoutes(app: Express) {
         return { generated: 0 };
       }
 
-      // Take up to 5 candidates
+      // Take up to 5 candidates per LLM call (larger batches cause truncation)
       const batch = candidates.slice(0, 5);
 
       // Build context for each person including their social accounts
@@ -2361,63 +2361,65 @@ Respond with ONLY a JSON array, no other text.`;
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
 
       try {
-        // Clean up stale queue entries (older than 1 day) - revalidate against DB
+        const now = new Date();
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+        // Clean up stale queue entries (older than 1 day and not snoozed) - revalidate against DB
         const staleEntries = await db
           .select()
           .from(sexGuessQueue)
           .where(and(eq(sexGuessQueue.answered, 0), lt(sexGuessQueue.dateAdded, oneDayAgo)));
 
         for (const entry of staleEntries) {
+          // Skip entries that are still snoozed (don't touch them)
+          if (entry.snoozedUntil && entry.snoozedUntil > now) continue;
           // Check if person's sex has been defined since the guess was queued
           const person = await db.select().from(people).where(eq(people.id, entry.personId));
-          if (!person.length || person[0].sex !== "unknown") {
-            // Person was already defined or deleted, remove from queue
+          if (!person.length || (person[0].sex !== "unknown")) {
+            // Person was already defined, skipped perm, or deleted — remove from queue
             await db.delete(sexGuessQueue).where(eq(sexGuessQueue.id, entry.id));
           } else {
-            // Still valid, refresh the date
-            await db.update(sexGuessQueue).set({ dateAdded: new Date() }).where(eq(sexGuessQueue.id, entry.id));
+            // Still valid, refresh the date and clear snooze
+            await db.update(sexGuessQueue).set({ dateAdded: new Date(), snoozedUntil: null }).where(eq(sexGuessQueue.id, entry.id));
           }
         }
 
-        // Get pending (unanswered) queue entries
-        const pending = await db
+        // Get pending (unanswered, not currently snoozed) queue entries
+        const allPending = await db
           .select()
           .from(sexGuessQueue)
           .where(eq(sexGuessQueue.answered, 0));
 
-        if (pending.length < 5) {
-          // Need to generate more - trigger generation
-          const result = await generateSexGuesses();
-          if (result.error) {
-            // Still return what we have, but include the error
-            const refreshedPending = await db
-              .select()
-              .from(sexGuessQueue)
-              .where(eq(sexGuessQueue.answered, 0));
+        // Filter out snoozed items and items for people whose sex is no longer 'unknown'
+        const pending = allPending.filter(
+          (e) => !e.snoozedUntil || e.snoozedUntil <= now
+        );
 
-            if (refreshedPending.length === 0) {
-              return res.json({ status: "error", error: result.error, queue: [] });
-            }
+        if (pending.length < 25) {
+          // Loop generation until we hit 25 pending items or run out of candidates.
+          // Each LLM call handles 5 names (larger batches truncate), so we may need
+          // up to 5 passes to fill a 25-item queue.
+          let lastError: string | undefined;
+          let passes = 0;
+          const MAX_PASSES = 5;
+          while (passes < MAX_PASSES) {
+            passes++;
+            const result = await generateSexGuesses();
+            if (result.error) { lastError = result.error; break; } // LLM error
+            if (result.generated === 0) break; // no more candidates
 
-            // Get person details for the pending items
-            const queueWithPeople = await Promise.all(
-              refreshedPending.map(async (item) => {
-                const person = await db.select().from(people).where(eq(people.id, item.personId));
-                return { ...item, person: person[0] || null };
-              })
-            );
-
-            return res.json({ status: "ready", queue: queueWithPeople.filter((q) => q.person), error: result.error });
+            // Re-check how many active items we now have
+            const nowPending = await db.select().from(sexGuessQueue).where(eq(sexGuessQueue.answered, 0));
+            const nowActive = nowPending.filter((e) => !e.snoozedUntil || e.snoozedUntil <= now);
+            if (nowActive.length >= 25) break; // target reached
           }
 
-          // After generation, get updated pending
-          const refreshedPending = await db
-            .select()
-            .from(sexGuessQueue)
-            .where(eq(sexGuessQueue.answered, 0));
+          // Fetch final pending list (with snooze filter)
+          const allRefreshed = await db.select().from(sexGuessQueue).where(eq(sexGuessQueue.answered, 0));
+          const refreshedPending = allRefreshed.filter((e) => !e.snoozedUntil || e.snoozedUntil <= now);
 
           if (refreshedPending.length === 0) {
+            if (lastError) return res.json({ status: "error", error: lastError, queue: [] });
             return res.json({ status: "empty", queue: [], message: "No people with unknown sex found." });
           }
 
@@ -2427,8 +2429,8 @@ Respond with ONLY a JSON array, no other text.`;
               return { ...item, person: person[0] || null };
             })
           );
-
-          return res.json({ status: "ready", queue: queueWithPeople.filter((q) => q.person) });
+          const validQueue = queueWithPeople.filter((q) => q.person);
+          return res.json({ status: "ready", queue: validQueue, ...(lastError ? { error: lastError } : {}) });
         }
 
         // Already have enough, return them with person details
@@ -2443,6 +2445,18 @@ Respond with ONLY a JSON array, no other text.`;
       } catch (error: any) {
         console.error("Error fetching sex guess queue:", error);
         res.status(500).json({ error: "Failed to fetch sex guess queue" });
+      }
+    });
+
+    // POST /api/guess-sex/prefetch - Generate more guesses, respond when done
+    app.post("/api/guess-sex/prefetch", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const result = await generateSexGuesses();
+        res.json({ success: true, generated: result.generated, error: result.error });
+      } catch (err: any) {
+        // Don't propagate — this is a best-effort background call
+        res.json({ success: false, generated: 0, error: err.message });
       }
     });
 
@@ -2481,6 +2495,53 @@ Respond with ONLY a JSON array, no other text.`;
       } catch (error: any) {
         console.error("Error answering sex guess:", error);
         res.status(500).json({ error: "Failed to process answer" });
+      }
+    });
+
+    // POST /api/guess-sex/skip-temp - Snooze this person for 1 day
+    app.post("/api/guess-sex/skip-temp", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+
+      const { queueItemId } = req.body;
+      if (!queueItemId) return res.status(400).json({ error: "Missing queueItemId" });
+
+      try {
+        const items = await db.select().from(sexGuessQueue).where(eq(sexGuessQueue.id, queueItemId));
+        if (items.length === 0) return res.status(404).json({ error: "Queue item not found" });
+
+        const snoozedUntil = new Date(Date.now() + 24 * 60 * 60 * 1000); // 1 day from now
+        await db.update(sexGuessQueue).set({ snoozedUntil }).where(eq(sexGuessQueue.id, queueItemId));
+
+        res.json({ success: true, snoozedUntil });
+      } catch (error: any) {
+        console.error("Error snoozing sex guess:", error);
+        res.status(500).json({ error: "Failed to snooze item" });
+      }
+    });
+
+    // POST /api/guess-sex/skip-perm - Permanently skip this person (mark sex as 'skipped')
+    app.post("/api/guess-sex/skip-perm", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+
+      const { queueItemId } = req.body;
+      if (!queueItemId) return res.status(400).json({ error: "Missing queueItemId" });
+
+      try {
+        const items = await db.select().from(sexGuessQueue).where(eq(sexGuessQueue.id, queueItemId));
+        if (items.length === 0) return res.status(404).json({ error: "Queue item not found" });
+
+        const item = items[0];
+
+        // Mark person's sex as 'skipped' so they never appear in the guess queue again
+        await db.update(people).set({ sex: "skipped" }).where(eq(people.id, item.personId));
+
+        // Remove from queue
+        await db.delete(sexGuessQueue).where(eq(sexGuessQueue.id, queueItemId));
+
+        res.json({ success: true, personId: item.personId });
+      } catch (error: any) {
+        console.error("Error permanently skipping sex guess:", error);
+        res.status(500).json({ error: "Failed to skip item" });
       }
     });
 }

@@ -347,6 +347,7 @@ export const sexGuessQueue = pgTable("sex_guess_queue", {
   reasoning: text("reasoning").notNull(),
   dateAdded: timestamp("date_added").notNull().defaultNow(),
   answered: integer("answered").notNull().default(0), // 0 = pending, 1 = answered
+  snoozedUntil: timestamp("snooze_until"), // null = not snoozed, otherwise hide until this time
 });
 
 // Relations
