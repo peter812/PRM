@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare } from "lucide-react";
+import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare, HelpCircle } from "lucide-react";
 
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -25,6 +25,7 @@ type OllamaSettings = {
   prompt: string;
   eventsModel: string;
   eventsPrompt: string;
+  sexGuessModel?: string;
 };
 
 type TestResult = {
@@ -48,6 +49,7 @@ export default function IntelligenceSettingsPage() {
   const [selectedTextModel, setSelectedTextModel] = useState("");
   const [selectedEventsModel, setSelectedEventsModel] = useState("");
   const [eventsPrompt, setEventsPrompt] = useState(DEFAULT_EVENTS_PROMPT);
+  const [selectedSexGuessModel, setSelectedSexGuessModel] = useState("");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data: settings, isLoading } = useQuery<OllamaSettings>({
@@ -69,6 +71,7 @@ export default function IntelligenceSettingsPage() {
     setSelectedTextModel(settings.textModel ?? "");
     setSelectedEventsModel(settings.eventsModel ?? "");
     setEventsPrompt(settings.eventsPrompt || DEFAULT_EVENTS_PROMPT);
+    setSelectedSexGuessModel(settings.sexGuessModel ?? "");
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -112,6 +115,10 @@ export default function IntelligenceSettingsPage() {
 
   const handleSaveEventsModel = () => {
     saveMutation.mutate({ eventsModel: selectedEventsModel });
+  };
+
+  const handleSaveSexGuessModel = () => {
+    saveMutation.mutate({ sexGuessModel: selectedSexGuessModel });
   };
 
   const handleSaveEventsPrompt = () => {
@@ -419,6 +426,83 @@ export default function IntelligenceSettingsPage() {
               </p>
             )}
             {!settings?.eventsModel && settings?.textModel && (
+              <p className="text-xs text-muted-foreground">
+                Falls back to the text model (<span className="font-mono">{settings.textModel}</span>) when not set.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-ollama-sex-guess-model">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <HelpCircle className="h-4 w-4" />
+              Sex Guess Model
+            </CardTitle>
+            <CardDescription>
+              {urlConfigured
+                ? "Choose which text model to use when guessing the sex of people with unknown sex. Falls back to the Text Model if not set."
+                : "Configure and save an API URL above to load available models."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1 space-y-2">
+                <Label htmlFor="ollama-sex-guess-model-select">Model</Label>
+                <Select
+                  value={selectedSexGuessModel}
+                  onValueChange={setSelectedSexGuessModel}
+                  disabled={!urlConfigured || isLoadingModels}
+                >
+                  <SelectTrigger id="ollama-sex-guess-model-select" data-testid="select-ollama-sex-guess-model">
+                    <SelectValue placeholder={
+                      !urlConfigured ? "No API URL configured" :
+                      isLoadingModels ? "Loading models…" :
+                      models.length === 0 ? "No models found" :
+                      "Select a model"
+                    } />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {models.map((m) => (
+                      <SelectItem key={m.name} value={m.name} data-testid={`option-sex-guess-model-${m.name}`}>
+                        <span className="font-mono text-sm">{m.name}</span>
+                        {m.parameterSize && (
+                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => refetchModels()}
+                disabled={!urlConfigured || isLoadingModels}
+                title="Refresh model list"
+                data-testid="button-refresh-sex-guess-models"
+              >
+                {isLoadingModels ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                onClick={handleSaveSexGuessModel}
+                disabled={!selectedSexGuessModel || saveMutation.isPending}
+                data-testid="button-save-sex-guess-model"
+              >
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+            </div>
+
+            {settings?.sexGuessModel && (
+              <p className="text-xs text-muted-foreground" data-testid="text-saved-sex-guess-model">
+                Currently saved: <span className="font-mono">{settings.sexGuessModel}</span>
+              </p>
+            )}
+            {!settings?.sexGuessModel && settings?.textModel && (
               <p className="text-xs text-muted-foreground">
                 Falls back to the text model (<span className="font-mono">{settings.textModel}</span>) when not set.
               </p>

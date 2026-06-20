@@ -3,12 +3,12 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray, lt } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -729,7 +729,8 @@ export function registerRoutes(app: Express) {
         const eventsPrompt = (await getOllamaSetting("ollama_events_prompt")) ?? "";
         const familyTreeModel = (await getOllamaSetting("ollama_family_tree_model")) ?? "";
         const autoDescribeImages = (await getOllamaSetting("ollama_auto_describe_images")) ?? "false";
-        res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true" });
+        const sexGuessModel = (await getOllamaSetting("ollama_sex_guess_model")) ?? "";
+        res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true", sexGuessModel });
       } catch (error) {
         res.status(500).json({ error: "Failed to fetch Ollama settings" });
       }
@@ -737,7 +738,7 @@ export function registerRoutes(app: Express) {
   
     app.post("/api/ollama/settings", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages } = req.body;
+      const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages, sexGuessModel } = req.body;
       try {
         if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
         if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
@@ -751,6 +752,7 @@ export function registerRoutes(app: Express) {
         if (typeof eventsPrompt === "string") await setOllamaSetting("ollama_events_prompt", eventsPrompt);
         if (typeof familyTreeModel === "string") await setOllamaSetting("ollama_family_tree_model", familyTreeModel);
         if (typeof autoDescribeImages === "boolean") await setOllamaSetting("ollama_auto_describe_images", String(autoDescribeImages));
+        if (typeof sexGuessModel === "string") await setOllamaSetting("ollama_sex_guess_model", sexGuessModel);
         res.json({ success: true });
       } catch (error) {
         res.status(500).json({ error: "Failed to save Ollama settings" });
@@ -2211,5 +2213,274 @@ export function registerRoutes(app: Express) {
         clearInterval(keepalive);
         sseManager.removeClient(clientId);
       });
+    });
+
+    // ── Guess the Sex ──────────────────────────────────────────────────────────
+
+    // Internal helper: generate sex guesses from LLM for people with unknown sex
+    async function generateSexGuesses(): Promise<{ generated: number; error?: string }> {
+      // 1. Find people whose sex is "unknown" and who don't already have a pending queue entry
+      const unknownPeople = await db
+        .select()
+        .from(people)
+        .where(eq(people.sex, "unknown"));
+
+      if (unknownPeople.length === 0) {
+        return { generated: 0 };
+      }
+
+      // Filter out people who already have unanswered queue entries
+      const existingQueue = await db
+        .select()
+        .from(sexGuessQueue)
+        .where(eq(sexGuessQueue.answered, 0));
+
+      const queuedPersonIds = new Set(existingQueue.map((q) => q.personId));
+      const candidates = unknownPeople.filter((p) => !queuedPersonIds.has(p.id));
+
+      if (candidates.length === 0) {
+        return { generated: 0 };
+      }
+
+      // Take up to 5 candidates
+      const batch = candidates.slice(0, 5);
+
+      // Build context for each person including their social accounts
+      const personContexts: string[] = [];
+      for (const person of batch) {
+        let context = `Name: ${person.firstName} ${person.lastName}`;
+        if (person.email) context += `, Email: ${person.email}`;
+        if (person.company) context += `, Company: ${person.company}`;
+        if (person.title) context += `, Title: ${person.title}`;
+        if (person.tags && person.tags.length > 0) context += `, Tags: ${person.tags.join(", ")}`;
+
+        // Get connected social accounts
+        if (person.socialAccountUuids && person.socialAccountUuids.length > 0) {
+          const accounts = await db
+            .select()
+            .from(socialAccounts)
+            .where(inArray(socialAccounts.id, person.socialAccountUuids));
+          if (accounts.length > 0) {
+            const accountInfo = accounts.map((a) => a.username || "").filter(Boolean).join(", ");
+            if (accountInfo) context += `, Social accounts: ${accountInfo}`;
+          }
+        }
+
+        personContexts.push(`[ID: ${person.id}] ${context}`);
+      }
+
+      // Get LLM settings
+      const sexGuessModel = (await getOllamaSetting("ollama_sex_guess_model")) ?? "";
+      const textModel = sexGuessModel || ((await getOllamaSetting("ollama_text_model")) ?? "");
+      if (!textModel) {
+        return { generated: 0, error: "No text model configured. Set a Sex Guess model or Text model in Intelligence settings." };
+      }
+
+      const ctx = await buildOllamaChatContext();
+      if (!ctx) {
+        return { generated: 0, error: "Ollama API URL not configured." };
+      }
+
+      const prompt = `You are helping classify the sex of people in a personal relationship manager database. Based on their name and account information, guess whether each person is male or female.
+
+For each person, provide your best guess. Respond with valid JSON only - an array of objects with these exact fields:
+- "id": the person ID exactly as provided
+- "sex": either "male" or "female"  
+- "reasoning": a brief one-sentence explanation
+
+People to classify:
+${personContexts.join("\n")}
+
+Respond with ONLY a JSON array, no other text.`;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+      try {
+        const resp = await fetch(`${ctx.base}/api/chat`, {
+          method: "POST",
+          headers: ctx.headers,
+          body: JSON.stringify({
+            model: textModel,
+            messages: [{ role: "user", content: prompt }],
+            stream: false,
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          return { generated: 0, error: `Ollama returned ${resp.status}: ${errText.slice(0, 200)}` };
+        }
+
+        const data = await resp.json() as { message?: { content?: string } };
+        const content = data?.message?.content ?? "";
+
+        // Parse JSON response - try to extract array from response
+        let guesses: Array<{ id: string; sex: string; reasoning: string }> = [];
+        try {
+          // Try direct parse first
+          guesses = JSON.parse(content);
+        } catch {
+          // Try to extract JSON array from response
+          const match = content.match(/\[[\s\S]*\]/);
+          if (match) {
+            guesses = JSON.parse(match[0]);
+          }
+        }
+
+        if (!Array.isArray(guesses) || guesses.length === 0) {
+          return { generated: 0, error: "LLM returned invalid response format." };
+        }
+
+        // Insert valid guesses into the queue
+        let inserted = 0;
+        const validPersonIds = new Set(batch.map((p) => p.id));
+        for (const guess of guesses) {
+          if (!guess.id || !validPersonIds.has(guess.id)) continue;
+          const sex = guess.sex?.toLowerCase();
+          if (sex !== "male" && sex !== "female") continue;
+
+          await db.insert(sexGuessQueue).values({
+            personId: guess.id,
+            guessedSex: sex,
+            reasoning: guess.reasoning || "No reasoning provided",
+          });
+          inserted++;
+        }
+
+        return { generated: inserted };
+      } catch (err: any) {
+        clearTimeout(timeout);
+        return { generated: 0, error: `Failed to reach Ollama: ${err.message}` };
+      }
+    }
+
+    // GET /api/guess-sex/queue - Get the current queue status and next guess
+    app.get("/api/guess-sex/queue", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+
+      try {
+        // Clean up stale queue entries (older than 1 day) - revalidate against DB
+        const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const staleEntries = await db
+          .select()
+          .from(sexGuessQueue)
+          .where(and(eq(sexGuessQueue.answered, 0), lt(sexGuessQueue.dateAdded, oneDayAgo)));
+
+        for (const entry of staleEntries) {
+          // Check if person's sex has been defined since the guess was queued
+          const person = await db.select().from(people).where(eq(people.id, entry.personId));
+          if (!person.length || person[0].sex !== "unknown") {
+            // Person was already defined or deleted, remove from queue
+            await db.delete(sexGuessQueue).where(eq(sexGuessQueue.id, entry.id));
+          } else {
+            // Still valid, refresh the date
+            await db.update(sexGuessQueue).set({ dateAdded: new Date() }).where(eq(sexGuessQueue.id, entry.id));
+          }
+        }
+
+        // Get pending (unanswered) queue entries
+        const pending = await db
+          .select()
+          .from(sexGuessQueue)
+          .where(eq(sexGuessQueue.answered, 0));
+
+        if (pending.length < 5) {
+          // Need to generate more - trigger generation
+          const result = await generateSexGuesses();
+          if (result.error) {
+            // Still return what we have, but include the error
+            const refreshedPending = await db
+              .select()
+              .from(sexGuessQueue)
+              .where(eq(sexGuessQueue.answered, 0));
+
+            if (refreshedPending.length === 0) {
+              return res.json({ status: "error", error: result.error, queue: [] });
+            }
+
+            // Get person details for the pending items
+            const queueWithPeople = await Promise.all(
+              refreshedPending.map(async (item) => {
+                const person = await db.select().from(people).where(eq(people.id, item.personId));
+                return { ...item, person: person[0] || null };
+              })
+            );
+
+            return res.json({ status: "ready", queue: queueWithPeople.filter((q) => q.person), error: result.error });
+          }
+
+          // After generation, get updated pending
+          const refreshedPending = await db
+            .select()
+            .from(sexGuessQueue)
+            .where(eq(sexGuessQueue.answered, 0));
+
+          if (refreshedPending.length === 0) {
+            return res.json({ status: "empty", queue: [], message: "No people with unknown sex found." });
+          }
+
+          const queueWithPeople = await Promise.all(
+            refreshedPending.map(async (item) => {
+              const person = await db.select().from(people).where(eq(people.id, item.personId));
+              return { ...item, person: person[0] || null };
+            })
+          );
+
+          return res.json({ status: "ready", queue: queueWithPeople.filter((q) => q.person) });
+        }
+
+        // Already have enough, return them with person details
+        const queueWithPeople = await Promise.all(
+          pending.map(async (item) => {
+            const person = await db.select().from(people).where(eq(people.id, item.personId));
+            return { ...item, person: person[0] || null };
+          })
+        );
+
+        return res.json({ status: "ready", queue: queueWithPeople.filter((q) => q.person) });
+      } catch (error: any) {
+        console.error("Error fetching sex guess queue:", error);
+        res.status(500).json({ error: "Failed to fetch sex guess queue" });
+      }
+    });
+
+    // POST /api/guess-sex/answer - Answer a guess (correct or incorrect)
+    app.post("/api/guess-sex/answer", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+
+      const { queueItemId, correct } = req.body;
+      if (!queueItemId || typeof correct !== "boolean") {
+        return res.status(400).json({ error: "Missing queueItemId or correct fields" });
+      }
+
+      try {
+        // Get the queue item
+        const items = await db.select().from(sexGuessQueue).where(eq(sexGuessQueue.id, queueItemId));
+        if (items.length === 0) {
+          return res.status(404).json({ error: "Queue item not found" });
+        }
+
+        const item = items[0];
+
+        // Determine the actual sex
+        const actualSex = correct
+          ? item.guessedSex
+          : item.guessedSex === "male"
+            ? "female"
+            : "male";
+
+        // Update the person's sex
+        await db.update(people).set({ sex: actualSex }).where(eq(people.id, item.personId));
+
+        // Mark queue item as answered
+        await db.update(sexGuessQueue).set({ answered: 1 }).where(eq(sexGuessQueue.id, queueItemId));
+
+        res.json({ success: true, personId: item.personId, sex: actualSex });
+      } catch (error: any) {
+        console.error("Error answering sex guess:", error);
+        res.status(500).json({ error: "Failed to process answer" });
+      }
     });
 }

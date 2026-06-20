@@ -493,6 +493,23 @@ async function validateAndSyncSchema(): Promise<void> {
       await addColumnIfNotExists("ai_chats", "model", "TEXT NOT NULL DEFAULT ''");
     }
 
+    // Ensure sex_guess_queue table exists
+    const sexGuessQueueExists = await tableExists("sex_guess_queue");
+    if (!sexGuessQueueExists) {
+      log("Creating sex_guess_queue table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS sex_guess_queue (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          person_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          guessed_sex TEXT NOT NULL,
+          reasoning TEXT NOT NULL,
+          date_added TIMESTAMP NOT NULL DEFAULT NOW(),
+          answered INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      log("sex_guess_queue table created successfully");
+    }
+
     // Ensure daily_notes tables exist
     const dailyNotesExists = await tableExists("daily_notes");
     if (!dailyNotesExists) {
