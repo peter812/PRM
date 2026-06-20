@@ -268,6 +268,7 @@ export default function AiChatDemoPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
+  const autoSentRef = useRef(false);
 
   const { data: chats = [], isLoading: isLoadingChats } = useQuery<ChatSummary[]>({
     queryKey: ["/api/ai-chats"],
@@ -488,6 +489,24 @@ export default function AiChatDemoPage() {
       setStreamingUserMessage(null);
     }
   };
+
+  // Auto-send the message from the URL ?message= query parameter on initial load.
+  useEffect(() => {
+    if (autoSentRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const messageParam = params.get("message");
+    if (messageParam && messageParam.trim()) {
+      autoSentRef.current = true;
+      setInput("");
+      // Remove the message param from the URL so refreshing doesn't re-send.
+      params.delete("message");
+      const newUrl = params.toString()
+        ? `${window.location.pathname}?${params.toString()}`
+        : window.location.pathname;
+      window.history.replaceState({}, "", newUrl);
+      void streamSend({ message: messageParam.trim(), attachments: [] });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const streamRegenerate = async (payload: { message: string; attachments: ChatAttachment[] }) => {
     if (!activeChatId) return;
