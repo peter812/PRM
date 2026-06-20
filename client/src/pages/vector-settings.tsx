@@ -435,7 +435,7 @@ function UniversalVectorizationSection() {
               {Object.entries(universalStats).map(([name, { total, vectorized }]) => (
                 <div key={name} className="rounded-md border p-2">
                   <div className="font-semibold text-sm">{vectorized}/{total}</div>
-                  <div className="text-muted-foreground">{name.replace('_', ' ')}</div>
+                  <div className="text-muted-foreground">{name.replace(/_/g, ' ')}</div>
                 </div>
               ))}
             </div>

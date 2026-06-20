@@ -339,7 +339,7 @@ export function syncEntityInBackground(type: UniversalEntityType, entityId: stri
 
       await upsertEntityVector(type, entityId, data, data.vectorId);
     } catch (err: any) {
-      console.warn(`[vector-universal] background sync for ${type}/${entityId} failed:`, err?.message ?? err);
+      console.warn("[vector-universal] background sync for " + type + "/" + entityId + " failed:", err?.message ?? err);
     }
   })();
 }
