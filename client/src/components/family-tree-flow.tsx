@@ -1,4 +1,4 @@
-import { useMemo, forwardRef, useImperativeHandle, useCallback } from "react";
+import { useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState } from "react";
 import {
   ReactFlow,
   Node,
@@ -11,8 +11,12 @@ import {
   MarkerType,
   Handle,
   Position,
+  EdgeProps,
+  getBezierPath,
+  BaseEdge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Trash2 } from "lucide-react";
 import {
   FamilyTreeData,
   FamilyTreePerson,
@@ -187,7 +191,87 @@ function PersonNode({ data }: { data: PersonNodeData; id: string }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Custom edge with delete button on hover
+// ---------------------------------------------------------------------------
+
+interface DeletableEdgeData {
+  onDeleteEdge?: (edgeId: string) => void;
+  stroke?: string;
+  strokeDasharray?: string;
+  strokeWidth?: number;
+  markerEnd?: { type: MarkerType; color: string; width: number; height: number };
+}
+
+function DeletableEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  data,
+  markerEnd,
+}: EdgeProps & { data?: DeletableEdgeData }) {
+  const [hovered, setHovered] = useState(false);
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+
+  const stroke = data?.stroke ?? "#6b7280";
+  const strokeWidth = data?.strokeWidth ?? 2;
+  const strokeDasharray = data?.strokeDasharray;
+
+  return (
+    <g
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      {/* Invisible wider hit area for easier hover detection */}
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={20}
+      />
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        style={{ stroke, strokeWidth, strokeDasharray }}
+        markerEnd={markerEnd}
+      />
+      {hovered && data?.onDeleteEdge && (
+        <foreignObject
+          x={labelX - 14}
+          y={labelY - 14}
+          width={28}
+          height={28}
+          className="overflow-visible"
+        >
+          <button
+            className="flex items-center justify-center w-7 h-7 rounded-full bg-red-500 hover:bg-red-600 text-white shadow-md border border-red-400 transition-colors cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              data.onDeleteEdge!(id);
+            }}
+            title="Delete connection"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </foreignObject>
+      )}
+    </g>
+  );
+}
+
 const nodeTypes = { person: PersonNode, coupleGroup: CoupleGroupNode };
+const edgeTypes = { deletable: DeletableEdge };
 
 // ---------------------------------------------------------------------------
 // Build React Flow nodes/edges from FamilyTreeData
@@ -197,6 +281,7 @@ function buildFlowElements(
   viewMode: FamilyTreeViewMode,
   showAddOptions: boolean,
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void,
+  onDeleteEdge?: (edgeId: string) => void,
 ): { nodes: Node[]; edges: Edge[] } {
   const { rootPersonId, people, relationships } = data;
   const missingLinks = showAddOptions ? data.missingLinks : [];
@@ -563,12 +648,23 @@ function buildFlowElements(
         id: `edge-${edgeKey}`,
         source: rel.fromPersonId,
         target: rel.toPersonId,
-        type: "default",
-        style: {
-          stroke: rel.familyRelationshipType === "ex_spouse" ? "#9ca3af" : "#6b7280",
-          strokeDasharray: rel.familyRelationshipType === "ex_spouse" ? "5,5" : undefined,
-          strokeWidth: 2,
-        },
+        type: onDeleteEdge ? "deletable" : "default",
+        ...(onDeleteEdge
+          ? {
+              data: {
+                onDeleteEdge,
+                stroke: rel.familyRelationshipType === "ex_spouse" ? "#9ca3af" : "#6b7280",
+                strokeDasharray: rel.familyRelationshipType === "ex_spouse" ? "5,5" : undefined,
+                strokeWidth: 2,
+              },
+            }
+          : {
+              style: {
+                stroke: rel.familyRelationshipType === "ex_spouse" ? "#9ca3af" : "#6b7280",
+                strokeDasharray: rel.familyRelationshipType === "ex_spouse" ? "5,5" : undefined,
+                strokeWidth: 2,
+              },
+            }),
       });
     } else if (cat === "parent") {
       // fromPerson is parent of toPerson.
@@ -590,9 +686,20 @@ function buildFlowElements(
         target: targetId,
         sourceHandle: "bottom",
         targetHandle: "top",
-        type: "default",
-        style: { stroke: "#6b7280", strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+        type: onDeleteEdge ? "deletable" : "default",
+        ...(onDeleteEdge
+          ? {
+              data: {
+                onDeleteEdge,
+                stroke: "#6b7280",
+                strokeWidth: 2,
+                markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+              },
+            }
+          : {
+              style: { stroke: "#6b7280", strokeWidth: 2 },
+              markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+            }),
       });
     } else if (cat === "child") {
       // fromPerson is child of toPerson (i.e. toPerson is the parent).
@@ -610,9 +717,20 @@ function buildFlowElements(
         target: targetId,
         sourceHandle: "bottom",
         targetHandle: "top",
-        type: "default",
-        style: { stroke: "#6b7280", strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+        type: onDeleteEdge ? "deletable" : "default",
+        ...(onDeleteEdge
+          ? {
+              data: {
+                onDeleteEdge,
+                stroke: "#6b7280",
+                strokeWidth: 2,
+                markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+              },
+            }
+          : {
+              style: { stroke: "#6b7280", strokeWidth: 2 },
+              markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+            }),
       });
     }
   }
@@ -635,9 +753,20 @@ function buildFlowElements(
         target: targetId,
         sourceHandle: "bottom",
         targetHandle: "top",
-        type: "default",
-        style: { stroke: "#6b7280", strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+        type: onDeleteEdge ? "deletable" : "default",
+        ...(onDeleteEdge
+          ? {
+              data: {
+                onDeleteEdge,
+                stroke: "#6b7280",
+                strokeWidth: 2,
+                markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+              },
+            }
+          : {
+              style: { stroke: "#6b7280", strokeWidth: 2 },
+              markerEnd: { type: MarkerType.ArrowClosed, color: "#6b7280", width: 12, height: 12 },
+            }),
       });
     }
   }
@@ -724,6 +853,11 @@ interface FamilyTreeFlowInnerProps {
   /** Fired when the user drags from a couple group's bottom handle to a real person node.
    *  The dev page uses this to add the target as a child of both spouses in the group. */
   onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
+  /** Fired when the user drags from a person's side handle and releases without connecting.
+   *  Used to prompt adding a spouse for that person. */
+  onDragEndNoTarget?: (sourcePersonId: string) => void;
+  /** Fired when the user clicks the delete button on an edge. */
+  onDeleteEdge?: (edgeId: string) => void;
 }
 
 /** Returns true when a node id refers to a real person (not a couple group or virtual placeholder). */
@@ -748,14 +882,17 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
       onAddMember,
       onConnectPersons,
       onConnectGroupChild,
+      onDragEndNoTarget,
+      onDeleteEdge,
     },
     ref,
   ) {
     const { fitView, zoomIn, zoomOut } = useReactFlow();
+    const connectingNodeId = useRef<string | null>(null);
 
     const { nodes: initialNodes, edges: initialEdges } = useMemo(
-      () => buildFlowElements(data, viewMode, showAddOptions, onAddMember),
-      [data, viewMode, showAddOptions, onAddMember],
+      () => buildFlowElements(data, viewMode, showAddOptions, onAddMember, onDeleteEdge),
+      [data, viewMode, showAddOptions, onAddMember, onDeleteEdge],
     );
 
     useImperativeHandle(ref, () => ({
@@ -785,6 +922,25 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         onPersonContextMenu(node.id, event.clientX, event.clientY);
       },
       [onPersonContextMenu],
+    );
+
+    const handleConnectStart = useCallback(
+      (_event: MouseEvent | TouchEvent, params: { nodeId: string | null; handleId: string | null }) => {
+        connectingNodeId.current = params.nodeId;
+      },
+      [],
+    );
+
+    const handleConnectEnd = useCallback(
+      (_event: MouseEvent | TouchEvent, connectionState: { isValid: boolean }) => {
+        if (!onDragEndNoTarget || !connectingNodeId.current) return;
+        // If connection was not successfully completed (i.e. didn't land on a valid target)
+        if (!connectionState.isValid && isRealPersonId(connectingNodeId.current)) {
+          onDragEndNoTarget(connectingNodeId.current);
+        }
+        connectingNodeId.current = null;
+      },
+      [onDragEndNoTarget],
     );
 
     const handleConnect = useCallback(
@@ -818,6 +974,7 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         nodes={initialNodes}
         edges={initialEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         fitView
         fitViewOptions={{ padding: 0.1 }}
         minZoom={0.1}
@@ -829,6 +986,8 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         onNodeClick={handleNodeClick}
         onNodeDoubleClick={handleNodeDoubleClick}
         onNodeContextMenu={handleNodeContextMenu}
+        onConnectStart={handleConnectStart}
+        onConnectEnd={handleConnectEnd}
         onConnect={handleConnect}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#e5e7eb" />
@@ -848,6 +1007,8 @@ interface FamilyTreeFlowProps {
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
   onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
+  onDragEndNoTarget?: (sourcePersonId: string) => void;
+  onDeleteEdge?: (edgeId: string) => void;
   className?: string;
   viewMode?: FamilyTreeViewMode;
   showAddOptions?: boolean;
@@ -863,6 +1024,8 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
       onAddMember,
       onConnectPersons,
       onConnectGroupChild,
+      onDragEndNoTarget,
+      onDeleteEdge,
       className,
       viewMode = "name",
       showAddOptions = true,
@@ -885,6 +1048,8 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
             onAddMember={onAddMember}
             onConnectPersons={onConnectPersons}
             onConnectGroupChild={onConnectGroupChild}
+            onDragEndNoTarget={onDragEndNoTarget}
+            onDeleteEdge={onDeleteEdge}
           />
         </ReactFlowProvider>
       </div>

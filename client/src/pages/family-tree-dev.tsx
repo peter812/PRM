@@ -126,6 +126,7 @@ export default function FamilyTreeDevPage() {
     { sourcePersonId: string; targetPersonId: string } | null
   >(null);
   const [removeRelsConfirm, setRemoveRelsConfirm] = useState<string | null>(null);
+  const [deleteEdgeConfirm, setDeleteEdgeConfirm] = useState<string | null>(null);
   const { toast } = useToast();
 
   // Fetch current user to use as default root
@@ -323,6 +324,94 @@ export default function FamilyTreeDevPage() {
   const handleConnectGroupChild = (groupId: string, targetPersonId: string) => {
     addChildToCoupleGroup.mutate({ groupId, targetPersonId });
   };
+
+  // When the user drags from a person and releases without connecting to another node,
+  // prompt them to add a spouse for that person.
+  const handleDragEndNoTarget = (sourcePersonId: string) => {
+    setAddMemberContext({ relatedPersonId: sourcePersonId, suggestedRole: "spouse" });
+  };
+
+  // When the user clicks the trash icon on an edge, prompt to delete that connection.
+  const handleDeleteEdge = (edgeId: string) => {
+    setDeleteEdgeConfirm(edgeId);
+  };
+
+  // Delete relationships associated with an edge
+  const deleteEdgeRelationships = useMutation({
+    mutationFn: async (edgeId: string) => {
+      if (!treeData) throw new Error("Tree not loaded");
+      // Edge id format: "edge-personA:personB" — extract the two node ids
+      const key = edgeId.replace(/^edge-/, "");
+      const [idA, idB] = key.split(":");
+      if (!idA || !idB) throw new Error("Invalid edge id");
+
+      // Find all relationships between these two entities (could be couple group)
+      // For couple groups, the key contains the group id like "couple-X:Y"
+      const isCoupleSource = idA.startsWith("couple-");
+      const isCoupleTarget = idB.startsWith("couple-");
+
+      const relIds: string[] = [];
+
+      if (isCoupleSource) {
+        // Source is a couple group — find relationships from both spouses to the target
+        const spouseIds = idA.replace(/^couple-/, "").split(":").filter(Boolean);
+        for (const rel of treeData.relationships) {
+          if (
+            spouseIds.includes(rel.fromPersonId) && rel.toPersonId === idB ||
+            spouseIds.includes(rel.toPersonId) && rel.fromPersonId === idB
+          ) {
+            relIds.push(rel.id);
+          }
+        }
+      } else if (isCoupleTarget) {
+        const spouseIds = idB.replace(/^couple-/, "").split(":").filter(Boolean);
+        for (const rel of treeData.relationships) {
+          if (
+            spouseIds.includes(rel.fromPersonId) && rel.toPersonId === idA ||
+            spouseIds.includes(rel.toPersonId) && rel.fromPersonId === idA
+          ) {
+            relIds.push(rel.id);
+          }
+        }
+      } else {
+        // Both are person ids — find all relationships between them
+        for (const rel of treeData.relationships) {
+          if (
+            (rel.fromPersonId === idA && rel.toPersonId === idB) ||
+            (rel.fromPersonId === idB && rel.toPersonId === idA)
+          ) {
+            relIds.push(rel.id);
+          }
+        }
+      }
+
+      if (relIds.length === 0) throw new Error("No relationships found for this connection");
+
+      // The server-side DELETE /api/relationships/:id already handles deleting
+      // the inverse family relationship, so we just delete each found relationship.
+      const uniqueIds = Array.from(new Set(relIds));
+      for (const id of uniqueIds) {
+        await apiRequest("DELETE", `/api/relationships/${id}`);
+      }
+      return uniqueIds.length;
+    },
+    onSuccess: (count) => {
+      toast({
+        title: "Connection deleted",
+        description: `Removed ${count} relationship${count === 1 ? "" : "s"}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
+      setDeleteEdgeConfirm(null);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Failed to delete connection",
+        description: err.message,
+        variant: "destructive",
+      });
+      setDeleteEdgeConfirm(null);
+    },
+  });
 
   const submitProposedLink = useMutation({
     mutationFn: async ({
@@ -562,6 +651,8 @@ export default function FamilyTreeDevPage() {
             onAddMember={handleAddMember}
             onConnectPersons={handleConnectPersons}
             onConnectGroupChild={handleConnectGroupChild}
+            onDragEndNoTarget={handleDragEndNoTarget}
+            onDeleteEdge={handleDeleteEdge}
             viewMode={viewMode}
             showAddOptions={showAddOptions}
           />
@@ -732,6 +823,37 @@ export default function FamilyTreeDevPage() {
               data-testid="confirm-remove-family-rels"
             >
               Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete edge connection confirmation */}
+      <AlertDialog
+        open={!!deleteEdgeConfirm}
+        onOpenChange={(open) => {
+          if (!open) setDeleteEdgeConfirm(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this connection?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the family relationship(s) represented by this connection line.
+              For spouse relationships, both directions will be deleted. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (deleteEdgeConfirm) {
+                  deleteEdgeRelationships.mutate(deleteEdgeConfirm);
+                }
+              }}
+              data-testid="confirm-delete-edge"
+            >
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
