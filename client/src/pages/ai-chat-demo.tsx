@@ -497,13 +497,13 @@ export default function AiChatDemoPage() {
     const messageParam = params.get("message");
     if (messageParam && messageParam.trim()) {
       autoSentRef.current = true;
-      setInput("");
       // Remove the message param from the URL so refreshing doesn't re-send.
       params.delete("message");
       const newUrl = params.toString()
         ? `${window.location.pathname}?${params.toString()}`
         : window.location.pathname;
       window.history.replaceState({}, "", newUrl);
+      setInput("");
       void streamSend({ message: messageParam.trim(), attachments: [] });
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
