@@ -84,8 +84,12 @@ const VIEW_MODE_LABELS: Record<FamilyTreeViewMode, string> = {
   "avatar-circle": "Photo only",
 };
 
-function personName(p: PersonBasic | undefined | null): string {
+function personName(p: { firstName: string; lastName: string } | undefined | null): string {
   return p ? `${p.firstName} ${p.lastName}`.trim() : "";
+}
+
+function initials(p: { firstName: string; lastName: string }): string {
+  return `${p.firstName.charAt(0)}${p.lastName.charAt(0)}`.toUpperCase();
 }
 
 export default function FamilyTreeDevPage() {
@@ -355,13 +359,10 @@ export default function FamilyTreeDevPage() {
   const removeAllFamilyRelsForPerson = useMutation({
     mutationFn: async (personId: string) => {
       if (!treeData) throw new Error("Tree not loaded");
-      const ids = Array.from(
-        new Set(
-          treeData.relationships
-            .filter((r) => r.fromPersonId === personId || r.toPersonId === personId)
-            .map((r) => r.id),
-        ),
+      const toDelete = treeData.relationships.filter(
+        (r) => r.fromPersonId === personId || r.toPersonId === personId,
       );
+      const ids = Array.from(new Set(toDelete.map((r) => r.id)));
       for (const id of ids) {
         await apiRequest("DELETE", `/api/relationships/${id}`);
       }
@@ -776,8 +777,6 @@ function PersonInfoPanel({
     };
   });
 
-  const initials = `${person.firstName.charAt(0)}${person.lastName.charAt(0)}`.toUpperCase();
-
   return (
     <div
       className="absolute top-4 left-4 w-72 max-h-[calc(100%-2rem)] overflow-y-auto bg-background/90 backdrop-blur-sm border rounded-lg shadow-lg z-40"
@@ -803,7 +802,7 @@ function PersonInfoPanel({
                 alt={`${person.firstName} ${person.lastName}`}
               />
             )}
-            <AvatarFallback className="text-lg">{initials}</AvatarFallback>
+            <AvatarFallback className="text-lg">{initials(person)}</AvatarFallback>
           </Avatar>
           <div className="text-center space-y-0.5">
             <p className="font-medium" data-testid="text-info-panel-name">
@@ -833,7 +832,7 @@ function PersonInfoPanel({
                     )}
                     <AvatarFallback className="text-[10px]">
                       {row.otherPerson
-                        ? `${row.otherPerson.firstName.charAt(0)}${row.otherPerson.lastName.charAt(0)}`.toUpperCase()
+                        ? initials(row.otherPerson)
                         : "?"}
                     </AvatarFallback>
                   </Avatar>
