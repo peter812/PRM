@@ -654,11 +654,19 @@ interface FamilyTreeFlowInnerProps {
   onPersonContextMenu?: (personId: string, x: number, y: number) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
+  /** Fired when the user drags from a couple group's bottom handle to a real person node.
+   *  The dev page uses this to add the target as a child of both spouses in the group. */
+  onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
 }
 
 /** Returns true when a node id refers to a real person (not a couple group or virtual placeholder). */
 function isRealPersonId(nodeId: string): boolean {
   return !nodeId.startsWith("couple-") && !nodeId.startsWith("missing-");
+}
+
+/** Returns true when a node id refers to a couple group node. */
+function isCoupleGroupId(nodeId: string): boolean {
+  return nodeId.startsWith("couple-");
 }
 
 const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInnerProps>(
@@ -672,6 +680,7 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
       onPersonContextMenu,
       onAddMember,
       onConnectPersons,
+      onConnectGroupChild,
     },
     ref,
   ) {
@@ -713,13 +722,28 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
 
     const handleConnect = useCallback(
       (connection: Connection) => {
-        if (!onConnectPersons || !connection.source || !connection.target) return;
-        // Only allow drawing relationships between real people.
-        if (!isRealPersonId(connection.source) || !isRealPersonId(connection.target)) return;
+        if (!connection.source || !connection.target) return;
         if (connection.source === connection.target) return;
+
+        // Dragging from a couple group's bottom handle to a real person adds
+        // that person as a child of both spouses in the group.
+        if (
+          isCoupleGroupId(connection.source) &&
+          isRealPersonId(connection.target) &&
+          typeof connection.sourceHandle === "string" &&
+          connection.sourceHandle.startsWith("bottom") &&
+          onConnectGroupChild
+        ) {
+          onConnectGroupChild(connection.source, connection.target);
+          return;
+        }
+
+        if (!onConnectPersons) return;
+        // Only allow drawing person-to-person relationships between real people.
+        if (!isRealPersonId(connection.source) || !isRealPersonId(connection.target)) return;
         onConnectPersons(connection.source, connection.target);
       },
-      [onConnectPersons],
+      [onConnectPersons, onConnectGroupChild],
     );
 
     return (
@@ -732,7 +756,7 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         minZoom={0.1}
         maxZoom={3}
         nodesDraggable={true}
-        nodesConnectable={!!onConnectPersons}
+        nodesConnectable={!!onConnectPersons || !!onConnectGroupChild}
         elementsSelectable={true}
         proOptions={{ hideAttribution: true }}
         onNodeClick={handleNodeClick}
@@ -756,6 +780,7 @@ interface FamilyTreeFlowProps {
   onPersonContextMenu?: (personId: string, x: number, y: number) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
+  onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
   className?: string;
   viewMode?: FamilyTreeViewMode;
   showAddOptions?: boolean;
@@ -770,6 +795,7 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
       onPersonContextMenu,
       onAddMember,
       onConnectPersons,
+      onConnectGroupChild,
       className,
       viewMode = "name",
       showAddOptions = true,
@@ -791,6 +817,7 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
             onPersonContextMenu={onPersonContextMenu}
             onAddMember={onAddMember}
             onConnectPersons={onConnectPersons}
+            onConnectGroupChild={onConnectGroupChild}
           />
         </ReactFlowProvider>
       </div>

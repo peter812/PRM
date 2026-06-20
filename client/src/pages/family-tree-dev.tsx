@@ -408,6 +408,71 @@ export default function FamilyTreeDevPage() {
     setConnectRequest({ sourcePersonId, targetPersonId });
   };
 
+  // When the user drags from a couple group's bottom handle to a real person,
+  // add that person as a child of BOTH spouses in the group. We POST two
+  // parent→child relationships (one per spouse), skipping any that would be
+  // duplicates or create cycles per the standard validation rules.
+  const addChildToCoupleGroup = useMutation({
+    mutationFn: async ({
+      groupId,
+      targetPersonId,
+    }: {
+      groupId: string;
+      targetPersonId: string;
+    }) => {
+      if (!treeData) throw new Error("Tree not loaded");
+      // groupId format: "couple-<spouseAId>:<spouseBId>"
+      const stripped = groupId.replace(/^couple-/, "");
+      const spouseIds = stripped.split(":").filter(Boolean);
+      if (spouseIds.length === 0) throw new Error("Invalid couple group");
+      if (spouseIds.includes(targetPersonId)) {
+        throw new Error("A spouse cannot be made their own child");
+      }
+
+      const created: string[] = [];
+      const skipped: { spouseId: string; reason: string }[] = [];
+      for (const spouseId of spouseIds) {
+        const reason = validateProposedLink(spouseId, targetPersonId, "parent");
+        if (reason) {
+          skipped.push({ spouseId, reason });
+          continue;
+        }
+        await apiRequest("POST", "/api/relationships", {
+          fromPersonId: spouseId,
+          toPersonId: targetPersonId,
+          familyRelationshipType: "parent",
+        });
+        created.push(spouseId);
+      }
+
+      if (created.length === 0) {
+        // Nothing was added — surface the first reason so the user knows why.
+        const reason = skipped[0]?.reason ?? "No relationships could be added";
+        throw new Error(reason);
+      }
+      return { created: created.length, skipped: skipped.length };
+    },
+    onSuccess: ({ created, skipped }) => {
+      const desc =
+        skipped > 0
+          ? `Added ${created} parent link${created === 1 ? "" : "s"} (${skipped} skipped).`
+          : `Added ${created} parent link${created === 1 ? "" : "s"} to the couple.`;
+      toast({ title: "Child added to couple", description: desc });
+      queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Invalid pick",
+        description: `${err.message}. Please try again.`,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleConnectGroupChild = (groupId: string, targetPersonId: string) => {
+    addChildToCoupleGroup.mutate({ groupId, targetPersonId });
+  };
+
   const submitProposedLink = useMutation({
     mutationFn: async ({
       sourcePersonId,
@@ -777,6 +842,7 @@ export default function FamilyTreeDevPage() {
               onPersonContextMenu={handlePersonContextMenu}
               onAddMember={handleAddMember}
               onConnectPersons={handleConnectPersons}
+              onConnectGroupChild={handleConnectGroupChild}
               viewMode={viewMode}
               showAddOptions={showAddOptions}
             />
