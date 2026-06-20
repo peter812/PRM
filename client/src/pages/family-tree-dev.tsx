@@ -401,6 +401,8 @@ export default function FamilyTreeDevPage() {
         description: `Removed ${count} relationship${count === 1 ? "" : "s"}.`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/graph"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       setDeleteEdgeConfirm(null);
     },
     onError: (err: Error) => {
