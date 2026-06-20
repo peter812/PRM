@@ -18,6 +18,7 @@ import {
   BookOpen,
   Home,
   Image,
+  HelpCircle,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState } from "react";
@@ -102,6 +103,11 @@ const menuItems = [
     title: "ELO Ranking",
     url: "/elo-ranking",
     icon: Trophy,
+  },
+  {
+    title: "Guess the Sex",
+    url: "/guess-the-sex",
+    icon: HelpCircle,
   },
   {
     title: "Demos",

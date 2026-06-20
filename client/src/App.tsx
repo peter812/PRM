@@ -36,6 +36,7 @@ import AuthDirectPage from "@/pages/auth-direct";
 import WelcomePage from "@/pages/welcome-page";
 import SettingsLayout from "@/pages/settings-layout";
 import EloRanking from "@/pages/elo-ranking";
+import GuessTheSex from "@/pages/guess-the-sex";
 import AccountMatching from "@/pages/account-matching";
 import PrmFaceDemo from "@/pages/prm-face-demo";
 import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
@@ -124,6 +125,7 @@ function Router() {
       <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
       <ProtectedRoute path="/family-tree-dev-version" component={FamilyTreeDevPage} />
       <ProtectedRoute path="/elo-ranking" component={EloRanking} />
+      <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
       <ProtectedRoute path="/account-matching" component={AccountMatching} />
       <ProtectedRoute path="/demos" component={DemosPage} />
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />

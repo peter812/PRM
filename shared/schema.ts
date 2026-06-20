@@ -339,6 +339,16 @@ export const aiChats = pgTable("ai_chats", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// Sex guess queue - LLM-generated guesses for people with unknown sex
+export const sexGuessQueue = pgTable("sex_guess_queue", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  guessedSex: text("guessed_sex").notNull(), // 'male' or 'female'
+  reasoning: text("reasoning").notNull(),
+  dateAdded: timestamp("date_added").notNull().defaultNow(),
+  answered: integer("answered").notNull().default(0), // 0 = pending, 1 = answered
+});
+
 // Relations
 export const usersRelations = relations(users, ({ one }) => ({
   person: one(people, {
@@ -881,6 +891,8 @@ export type InsertTask = z.infer<typeof insertTaskSchema>;
 
 export type ImageTask = typeof imageTasks.$inferSelect;
 export type InsertImageTask = z.infer<typeof insertImageTaskSchema>;
+
+export type SexGuessQueueItem = typeof sexGuessQueue.$inferSelect;
 
 export type AiChatAttachment = {
   name: string;
