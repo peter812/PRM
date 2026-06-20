@@ -1265,7 +1265,7 @@ function ConnectRelationshipDialog({
         <DialogHeader>
           <DialogTitle>New family relationship</DialogTitle>
           <DialogDescription>
-            <span className="font-medium">{sourceName}</span> will become{" "}
+            <span className="font-medium">{sourceName}</span> will now be{" "}
             <span className="font-medium">{targetName}</span>'s{" "}
             <span className="font-medium">
               {FAMILY_RELATIONSHIP_LABELS[
