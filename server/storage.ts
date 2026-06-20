@@ -1193,9 +1193,10 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // Suggest siblings for central people who don't have any siblings recorded.
-      // This lets the user quickly add e.g. another sibling when only one is known.
-      if (isCentral && !hasSibling) {
+      // Suggest siblings only for the root/selected person so the button is
+      // always available (even after siblings already exist) and doesn't clutter
+      // the tree for non-selected people.
+      if (pid === rootPersonId) {
         const key = `${pid}:sibling`;
         if (!seen.has(key)) {
           seen.add(key);
