@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Search as SearchIcon, Users, Users2, MoreVertical, GripVertical, FileText, Calendar, AtSign, ChevronUp, ChevronDown, BookOpen, MessageSquare } from "lucide-react";
+import { Search as SearchIcon, Users, Users2, MoreVertical, GripVertical, FileText, Calendar, AtSign, ChevronUp, ChevronDown, BookOpen, MessageSquare, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLocation } from "wouter";
 import { getInitials } from "@/lib/utils";
 import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, DailyNote, AiChat, MegaSearchResult, UuidLookupResult } from "@shared/schema";
@@ -549,13 +550,42 @@ export function GlobalSearch() {
         <Input
           type="search"
           placeholder="Search..."
-          className="pl-9 pr-10"
+          className="pl-9 pr-20"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => searchQuery.length > 0 && setIsOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && searchQuery.trim()) {
+              setIsOpen(false);
+              setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
+            }
+          }}
           data-testid="input-global-search"
         />
-        <div className="absolute right-1 top-1/2 -translate-y-1/2">
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950"
+                onClick={() => {
+                  if (searchQuery.trim()) {
+                    setIsOpen(false);
+                    setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
+                  } else {
+                    setLocation("/super-search");
+                  }
+                }}
+                data-testid="btn-super-search"
+              >
+                <Sparkles className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Super Search — AI-powered semantic search</p>
+            </TooltipContent>
+          </Tooltip>
           <SearchSettingsButton />
         </div>
       </div>

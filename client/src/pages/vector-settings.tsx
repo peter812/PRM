@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Database, CheckCircle2, Loader2, RefreshCw, AlertCircle } from "lucide-react";
+import { Database, CheckCircle2, Loader2, RefreshCw, AlertCircle, Sparkles } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -26,6 +26,8 @@ type VectorStats = {
   missing: number;
   lastSyncedAt: string | null;
 };
+type UniversalStats = Record<string, { total: number; vectorized: number }>;
+type UniversalStatus = { enabled: boolean; collectionReady: boolean; pointCount: number };
 
 export default function VectorSettingsPage() {
   const { toast } = useToast();
@@ -311,7 +313,163 @@ export default function VectorSettingsPage() {
             )}
           </CardContent>
         </Card>
+
+        <UniversalVectorizationSection />
       </div>
     </div>
+  );
+}
+
+// ── Universal Vectorization Section ──────────────────────────────────────────
+
+function UniversalVectorizationSection() {
+  const { toast } = useToast();
+  const [universalEnabled, setUniversalEnabled] = useState(false);
+
+  const { data: universalSettings } = useQuery<{ enabled: boolean; collectionName: string }>({
+    queryKey: ["/api/vector/universal/settings"],
+  });
+
+  const { data: universalStatus, refetch: refetchStatus } = useQuery<UniversalStatus>({
+    queryKey: ["/api/vector/universal/status"],
+  });
+
+  const { data: universalStats, refetch: refetchUniversalStats } = useQuery<UniversalStats>({
+    queryKey: ["/api/vector/universal/stats"],
+  });
+
+  useEffect(() => {
+    if (universalSettings) {
+      setUniversalEnabled(universalSettings.enabled);
+    }
+  }, [universalSettings]);
+
+  const saveUniversalMutation = useMutation({
+    mutationFn: async (patch: Record<string, unknown>) => {
+      const res = await apiRequest("POST", "/api/vector/universal/settings", patch);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/vector/universal/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/vector/universal/status"] });
+      toast({ title: "Saved" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const vectorizeEverythingMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/vector/universal/vectorize-all", {});
+      return res.json() as Promise<{ ok: boolean; processed: number; failed: number; total: number; errors: string[] }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Vectorize Everything complete",
+        description: `Processed ${data.processed}/${data.total}, ${data.failed} failed.`,
+      });
+      refetchUniversalStats();
+      refetchStatus();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Vectorize Everything failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const totalEntities = universalStats
+    ? Object.values(universalStats).reduce((sum, s) => sum + s.total, 0)
+    : 0;
+  const totalVectorized = universalStats
+    ? Object.values(universalStats).reduce((sum, s) => sum + s.vectorized, 0)
+    : 0;
+
+  return (
+    <Card data-testid="card-universal-vectorization">
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-blue-500" />
+          Universal Vectorization
+        </CardTitle>
+        <CardDescription>
+          Vectorize all entity types (people, groups, notes, interactions, social accounts, daily notes, AI chats, and images) into a single collection for powerful AI-powered "Super Search".
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-0.5">
+            <Label htmlFor="universal-enabled-switch" className="text-sm font-medium">Enable universal vectorization</Label>
+            <p className="text-xs text-muted-foreground">
+              {universalEnabled ? "All entities are synced to the universal collection on create/update." : "Universal vectorization is disabled."}
+            </p>
+          </div>
+          <Switch
+            id="universal-enabled-switch"
+            checked={universalEnabled}
+            onCheckedChange={(v) => { setUniversalEnabled(v); saveUniversalMutation.mutate({ enabled: v }); }}
+            disabled={saveUniversalMutation.isPending}
+            data-testid="switch-universal-enabled"
+          />
+        </div>
+
+        {universalStatus && (
+          <div className="rounded-md border p-3 text-sm space-y-1">
+            <div className="flex items-center gap-2">
+              {universalStatus.collectionReady ? (
+                <CheckCircle2 className="h-4 w-4 text-green-500" />
+              ) : (
+                <AlertCircle className="h-4 w-4 text-muted-foreground" />
+              )}
+              <span>
+                Collection: {universalStatus.collectionReady ? "Ready" : "Not created yet"}
+                {universalStatus.collectionReady && ` (${universalStatus.pointCount} points)`}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {universalStats && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Vectorization Progress</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-center text-xs">
+              {Object.entries(universalStats).map(([name, { total, vectorized }]) => (
+                <div key={name} className="rounded-md border p-2">
+                  <div className="font-semibold text-sm">{vectorized}/{total}</div>
+                  <div className="text-muted-foreground">{name.replace('_', ' ')}</div>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full transition-all"
+                  style={{ width: totalEntities > 0 ? `${(totalVectorized / totalEntities) * 100}%` : "0%" }}
+                />
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {totalVectorized}/{totalEntities}
+              </span>
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2 pt-2">
+          <Button
+            onClick={() => vectorizeEverythingMutation.mutate()}
+            disabled={vectorizeEverythingMutation.isPending || !universalEnabled}
+            data-testid="button-vectorize-everything"
+          >
+            {vectorizeEverythingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
+            Vectorize Everything Now
+          </Button>
+          <Button variant="outline" onClick={() => { refetchUniversalStats(); refetchStatus(); }} data-testid="button-refresh-universal-stats">
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </div>
+        {!universalEnabled && (
+          <p className="text-xs text-muted-foreground">Enable universal vectorization to use Super Search.</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
