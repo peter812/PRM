@@ -1493,6 +1493,7 @@ export function registerRoutes(app: Express) {
           if (titleSource) patch.title = titleSource.slice(0, MAX_CHAT_TITLE_LENGTH);
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
+        syncEntityInBackground("ai_chat", chat.id);
         res.json({ chat: updated, assistant: assistantMessage });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1577,6 +1578,7 @@ export function registerRoutes(app: Express) {
           .set({ messages: updatedMessages, updatedAt: new Date() })
           .where(eq(aiChats.id, chat.id))
           .returning();
+        syncEntityInBackground("ai_chat", chat.id);
         res.json({ chat: updated, assistant: assistantMessage });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1642,6 +1644,7 @@ export function registerRoutes(app: Express) {
           if (titleSource) patch.title = titleSource.slice(0, MAX_CHAT_TITLE_LENGTH);
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
+        syncEntityInBackground("ai_chat", chat.id);
         res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
         res.end();
       } catch (error: any) {
@@ -1713,6 +1716,7 @@ export function registerRoutes(app: Express) {
           .set({ messages: updatedMessages, updatedAt: new Date() })
           .where(eq(aiChats.id, chat.id))
           .returning();
+        syncEntityInBackground("ai_chat", chat.id);
         res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
         res.end();
       } catch (error: any) {
@@ -1740,6 +1744,7 @@ export function registerRoutes(app: Express) {
           model: newModel,
           messages: sanitizeChatMessages(source.messages),
         }).returning();
+        syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
       } catch (error: any) {
         res.status(500).json({ error: error.message });

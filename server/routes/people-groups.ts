@@ -371,8 +371,9 @@ export function registerRoutes(app: Express) {
         await storage.deletePerson(id);
         // Remove vectors asynchronously
         if (personRow?.vectorId) void deleteEntityVector("person", personRow.vectorId);
-        for (const n of childNotes) {
-          if (n.vectorId) void deleteEntityVector("note", n.vectorId);
+        const childNoteVectorIds = childNotes.map((n) => n.vectorId).filter(Boolean) as string[];
+        if (childNoteVectorIds.length > 0) {
+          void deleteEntityVector("note", childNoteVectorIds);
         }
         res.json({ success: true });
       } catch (error) {

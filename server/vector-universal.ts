@@ -273,17 +273,24 @@ export async function upsertEntityVector(
 }
 
 /**
- * Removes an entity's vector from the universal Qdrant collection.
+ * Removes entity vectors from the universal Qdrant collection.
  */
-export async function deleteEntityVector(type: UniversalEntityType, vectorId: string | null | undefined): Promise<void> {
+export async function deleteEntityVector(
+  type: UniversalEntityType,
+  vectorId: string | string[] | null | undefined
+): Promise<void> {
   if (!vectorId) return;
+  const ids = Array.isArray(vectorId) ? vectorId : [vectorId];
+  const validIds = ids.filter(Boolean) as string[];
+  if (validIds.length === 0) return;
+
   const cfg = await loadUniversalVectorConfig();
   if (!cfg.qdrantUrl) return;
   try {
     const client = buildClient(cfg);
-    await client.delete(cfg.universalCollection, { points: [vectorId], wait: true });
+    await client.delete(cfg.universalCollection, { points: validIds, wait: true });
   } catch (err: any) {
-    console.warn(`[vector-universal] deleteEntityVector(${type}, ${vectorId}) failed:`, err?.message ?? err);
+    console.warn(`[vector-universal] deleteEntityVector(${type}, ${validIds.join(",")}) failed:`, err?.message ?? err);
   }
 }
 

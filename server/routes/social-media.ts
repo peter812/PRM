@@ -1785,6 +1785,10 @@ export function registerRoutes(app: Express) {
       }
       try {
         const result = await storage.deleteInstagramImageUrls();
+        const vectorIds = result.deletedPhotos?.map((p) => p.vectorId).filter(Boolean) as string[];
+        if (vectorIds?.length) {
+          void deleteEntityVector("image", vectorIds);
+        }
         res.json(result);
       } catch (error) {
         console.error("Error deleting Instagram image URLs:", error);

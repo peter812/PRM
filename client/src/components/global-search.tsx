@@ -222,6 +222,12 @@ export function GlobalSearch() {
     enabled: isUuidQuery,
   });
 
+  const { data: vectorStatus } = useQuery<{ enabled: boolean; collectionReady: boolean }>({
+    queryKey: ["/api/vector/universal/status"],
+  });
+
+  const isSuperSearchReady = !!(vectorStatus?.enabled && vectorStatus?.collectionReady);
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -550,42 +556,46 @@ export function GlobalSearch() {
         <Input
           type="search"
           placeholder="Search..."
-          className="pl-9 pr-20"
+          className={`pl-9 ${isSuperSearchReady ? "pr-20" : "pr-10"}`}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => searchQuery.length > 0 && setIsOpen(true)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && searchQuery.trim()) {
-              setIsOpen(false);
-              setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
+              if (isSuperSearchReady) {
+                setIsOpen(false);
+                setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
+              }
             }
           }}
           data-testid="input-global-search"
         />
         <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950"
-                onClick={() => {
-                  if (searchQuery.trim()) {
-                    setIsOpen(false);
-                    setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
-                  } else {
-                    setLocation("/super-search");
-                  }
-                }}
-                data-testid="btn-super-search"
-              >
-                <Sparkles className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Super Search — AI-powered semantic search</p>
-            </TooltipContent>
-          </Tooltip>
+          {isSuperSearchReady && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950"
+                  onClick={() => {
+                    if (searchQuery.trim()) {
+                      setIsOpen(false);
+                      setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
+                    } else {
+                      setLocation("/super-search");
+                    }
+                  }}
+                  data-testid="btn-super-search"
+                >
+                  <Sparkles className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Super Search — AI-powered semantic search</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
           <SearchSettingsButton />
         </div>
       </div>

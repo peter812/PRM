@@ -390,7 +390,12 @@ export interface IStorage {
   updatePhotoMeta(id: string, data: Partial<Pick<Photo, 'fileHash' | 'widthPx' | 'heightPx' | 'metadata' | 'imageDescription' | 'imageDescriptionAt' | 'faceUuids' | 'faceIdAt' | 'processedAt'>>): Promise<void>;
   getPhotoByHash(fileHash: string): Promise<Photo | undefined>;
   getPhotoParent(subImageId: string): Promise<Photo | undefined>;
-  deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }>;
+  deleteInstagramImageUrls(): Promise<{
+    profileVersionsCleared: number;
+    postsCleared: number;
+    photosDeleted: number;
+    deletedPhotos?: { id: string; vectorId: string | null }[];
+  }>;
 
   // Image task operations
   createImageTask(task: InsertImageTask): Promise<ImageTask>;
@@ -3499,7 +3504,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(dailyNoteAuditLogs).where(eq(dailyNoteAuditLogs.dailyNoteId, dailyNoteId)).orderBy(dailyNoteAuditLogs.timestamp);
   }
 
-  async deleteInstagramImageUrls(): Promise<{ profileVersionsCleared: number; postsCleared: number; photosDeleted: number }> {
+  async deleteInstagramImageUrls(): Promise<{
+    profileVersionsCleared: number;
+    postsCleared: number;
+    photosDeleted: number;
+    deletedPhotos?: { id: string; vectorId: string | null }[];
+  }> {
     const igPattern = '(cdninstagram\\.com|fbcdn\\.net)';
 
     const [imgUrlResult, extImgUrlResult, postsResult, photosResult] = await Promise.all([
@@ -3521,7 +3531,7 @@ export class DatabaseStorage implements IStorage {
       db
         .delete(photos)
         .where(sql`${photos.location} ~ ${igPattern}`)
-        .returning({ id: photos.id }),
+        .returning({ id: photos.id, vectorId: photos.vectorId }),
     ]);
 
     const clearedProfileVersionIds = new Set([
@@ -3533,6 +3543,7 @@ export class DatabaseStorage implements IStorage {
       profileVersionsCleared: clearedProfileVersionIds.size,
       postsCleared: postsResult.length,
       photosDeleted: photosResult.length,
+      deletedPhotos: photosResult,
     };
   }
 
