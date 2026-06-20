@@ -58,6 +58,13 @@ const menuItems = [
     title: "Family Tree",
     url: "/family-tree",
     icon: GitBranch,
+    subItems: [
+      {
+        title: "Dev Version",
+        url: "/family-tree-dev-version",
+        icon: GitBranch,
+      },
+    ],
   },
   {
     title: "Groups",

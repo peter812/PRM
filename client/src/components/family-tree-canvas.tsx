@@ -101,6 +101,7 @@ interface FamilyTreeCanvasProps {
 const PARENT_TYPES = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
 const CHILD_TYPES = ["child", "son", "daughter", "stepchild", "stepson", "stepdaughter"];
 const SPOUSE_TYPES = ["spouse", "ex_spouse"];
+const SIBLING_TYPES = ["sibling", "brother", "sister", "half_sibling", "half_brother", "half_sister"];
 
 function getRelationshipCategory(type: string): "parent" | "child" | "spouse" | "other" {
   if (PARENT_TYPES.includes(type)) return "parent";
@@ -135,6 +136,7 @@ function buildRenderTree(
   const spouses = new Map<string, Set<string>>();
   const parents = new Map<string, Set<string>>(); // child -> set of parent IDs
   const children = new Map<string, Set<string>>(); // parent -> set of child IDs
+  const siblings = new Map<string, Set<string>>();
   const relTypeMap = new Map<string, string>(); // "from:to" -> type
 
   for (const rel of relationships) {
@@ -158,6 +160,29 @@ function buildRenderTree(
       parents.get(rel.fromPersonId)!.add(rel.toPersonId);
       if (!children.has(rel.toPersonId)) children.set(rel.toPersonId, new Set());
       children.get(rel.toPersonId)!.add(rel.fromPersonId);
+    } else if (SIBLING_TYPES.includes(rel.familyRelationshipType)) {
+      if (!siblings.has(rel.fromPersonId)) siblings.set(rel.fromPersonId, new Set());
+      if (!siblings.has(rel.toPersonId)) siblings.set(rel.toPersonId, new Set());
+      siblings.get(rel.fromPersonId)!.add(rel.toPersonId);
+      siblings.get(rel.toPersonId)!.add(rel.fromPersonId);
+    }
+  }
+
+  // Propagate parent connections to siblings: if person A has parents and
+  // person B is A's sibling but lacks those parent connections, inherit them.
+  for (const [personId, siblingIds] of siblings) {
+    const personParents = parents.get(personId);
+    if (!personParents || personParents.size === 0) continue;
+    for (const sibId of siblingIds) {
+      if (!parents.has(sibId)) parents.set(sibId, new Set());
+      const sibParents = parents.get(sibId)!;
+      for (const parentId of personParents) {
+        if (!sibParents.has(parentId)) {
+          sibParents.add(parentId);
+          if (!children.has(parentId)) children.set(parentId, new Set());
+          children.get(parentId)!.add(sibId);
+        }
+      }
     }
   }
 
@@ -190,6 +215,13 @@ function buildRenderTree(
         visited.add(spouseId);
         generations.set(spouseId, gen);
         queue.push(spouseId);
+      }
+    }
+    for (const siblingId of siblings.get(current) ?? []) {
+      if (!visited.has(siblingId)) {
+        visited.add(siblingId);
+        generations.set(siblingId, gen);
+        queue.push(siblingId);
       }
     }
   }
@@ -504,6 +536,17 @@ function buildRenderTree(
       edges.push({ from: rel.fromPersonId, to: rel.toPersonId, type: "parent-child", style: "solid" });
     } else if (cat === "child") {
       edges.push({ from: rel.toPersonId, to: rel.fromPersonId, type: "parent-child", style: "solid" });
+    }
+  }
+
+  // Add edges for sibling-inherited parent connections (siblings connected to
+  // parents they share via sibling relationship but lack direct parent edges)
+  for (const [sibId] of siblings) {
+    for (const parentId of parents.get(sibId) ?? []) {
+      const edgeKey = [parentId, sibId].sort().join(":");
+      if (edgeSet.has(edgeKey)) continue;
+      edgeSet.add(edgeKey);
+      edges.push({ from: parentId, to: sibId, type: "parent-child", style: "solid" });
     }
   }
 
