@@ -64,6 +64,7 @@ export const people = pgTable("people", {
   eloScore: integer("elo_score").notNull().default(1200),
   eloRankable: integer("elo_rankable").notNull().default(1), // 1 = rankable, 0 = not rankable
   noSocialMedia: integer("no_social_media").notNull().default(0),
+  sex: text("sex").notNull().default("unknown"), // 'male', 'female', or 'unknown'
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

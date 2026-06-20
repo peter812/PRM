@@ -30,6 +30,13 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertPersonSchema, type Person } from "@shared/schema";
@@ -72,6 +79,7 @@ export function PersonDialog({
       tags: [],
       imageUrl: null,
       noSocialMedia: 0,
+      sex: "unknown",
     },
   });
 
@@ -89,6 +97,7 @@ export function PersonDialog({
           tags: person.tags || [],
           imageUrl: person.imageUrl || null,
           noSocialMedia: person.noSocialMedia || 0,
+          sex: person.sex || "unknown",
         });
       } else {
         setImageUrl(null);
@@ -102,6 +111,7 @@ export function PersonDialog({
           tags: [],
           imageUrl: null,
           noSocialMedia: 0,
+          sex: "unknown",
         });
       }
       setTagInput("");
@@ -334,6 +344,32 @@ export function PersonDialog({
                     />
                   </FormControl>
                   <FormLabel className="font-normal">No social media</FormLabel>
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="sex"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Sex</FormLabel>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value || "unknown"}
+                  >
+                    <FormControl>
+                      <SelectTrigger data-testid={isEdit ? "select-edit-sex" : "select-sex"}>
+                        <SelectValue placeholder="Select sex" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="unknown">Unknown</SelectItem>
+                      <SelectItem value="male">Male</SelectItem>
+                      <SelectItem value="female">Female</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
                 </FormItem>
               )}
             />
