@@ -541,7 +541,7 @@ function buildRenderTree(
 
   // Add edges for sibling-inherited parent connections (siblings connected to
   // parents they share via sibling relationship but lack direct parent edges)
-  for (const [sibId, siblingIds] of siblings) {
+  for (const [sibId] of siblings) {
     for (const parentId of parents.get(sibId) ?? []) {
       const edgeKey = [parentId, sibId].sort().join(":");
       if (edgeSet.has(edgeKey)) continue;
