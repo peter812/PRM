@@ -68,7 +68,7 @@ function getEntityRoute(result: SearchResult): string {
     case "daily_note":
       return `/daily-notes/${result.entityId}`;
     case "ai_chat":
-      return `/ai-chat-demo`;
+      return `/ai-chat-demo/${result.entityId}`;
     case "image":
       return `/image/${result.entityId}`;
     default:

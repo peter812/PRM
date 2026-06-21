@@ -18,6 +18,9 @@ import { db } from "./db";
 import { storage } from "./storage";
 import { interactions, interactionTypes } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { searchUniversal } from "./vector-universal";
+import { searchAppKnowledge } from "./vector-app-knowledge";
+
 
 export type AiToolIcon =
   | "search"
@@ -46,7 +49,8 @@ export type AiToolCategory =
   | "notes"
   | "interactions"
   | "daily-notes"
-  | "social-accounts";
+  | "social-accounts"
+  | "search";
 
 export interface AiToolJsonSchema {
   type: "object";
@@ -463,6 +467,74 @@ export const AI_TOOLS: AiToolDefinition[] = [
       filtered.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const results = filtered.slice(0, MAX_SEARCH_RESULTS).map(trimInteraction);
       return { summary: `Found ${results.length} interaction${results.length === 1 ? "" : "s"}`, data: { results } };
+    },
+  },
+  {
+    name: "super_search",
+    label: "Super search",
+    icon: "search",
+    category: "search",
+    description:
+      "Perform a universal semantic/vector search across the entire PRM, covering all entity types (people, groups, images, notes, interactions, social accounts, daily notes, and AI chats). IMPORTANT: You should only call this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) either yield no results or yield bad/unhelpful results.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Free-text semantic search query.",
+        },
+      },
+      required: ["query"],
+    },
+    handler: async (args) => {
+      const query = asString(args.query).trim();
+      if (!query) return { summary: "Empty query", data: { results: [] } };
+      try {
+        const results = await searchUniversal(query, 10);
+        return {
+          summary: `Super search found ${results.length} result${results.length === 1 ? "" : "s"}`,
+          data: { results },
+        };
+      } catch (error: any) {
+        return {
+          summary: "Super search failed",
+          data: { error: error?.message || String(error) },
+        };
+      }
+    },
+  },
+  {
+    name: "query_app_knowledge",
+    label: "Search app knowledge base",
+    icon: "book",
+    category: "search",
+    description:
+      "Search the app's internal knowledge base for details, documentation, features, guides, or navigation paths of the PRM application itself. Use this tool when the user asks how the app works, what pages/features exist, or how to use a specific part of the app.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Semantic search query to look up details about the app itself.",
+        },
+      },
+      required: ["query"],
+    },
+    handler: async (args) => {
+      const query = asString(args.query).trim();
+      if (!query) return { summary: "Empty query", data: { results: [] } };
+      try {
+        const results = await searchAppKnowledge(query, 5);
+        return {
+          summary: `App knowledge search found ${results.length} result${results.length === 1 ? "" : "s"}`,
+          data: { results },
+        };
+      } catch (error: any) {
+        return {
+          summary: "App knowledge search failed",
+          data: { error: error?.message || String(error) },
+        };
+      }
     },
   },
 

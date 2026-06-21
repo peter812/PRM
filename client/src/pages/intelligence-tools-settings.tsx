@@ -16,6 +16,7 @@ import {
   UserPen,
   Book,
   BookPlus,
+  BookOpen,
   NotebookPen,
   MessageSquare,
   MessageSquarePlus,
@@ -70,6 +71,7 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
 // Display labels for each backend category. Keep in sync with `AiToolCategory`
 // in server/ai-tools.ts.
 const CATEGORY_LABELS: Record<string, string> = {
+  search: "Search",
   people: "People",
   notes: "Notes",
   interactions: "Interactions",
@@ -77,8 +79,18 @@ const CATEGORY_LABELS: Record<string, string> = {
   "social-accounts": "Social accounts",
 };
 
+const CATEGORY_ICONS: Record<string, LucideIcon> = {
+  search: Search,
+  people: User,
+  notes: Book,
+  interactions: MessageSquare,
+  "daily-notes": NotebookPen,
+  "social-accounts": AtSign,
+};
+
+
 // Stable category ordering for the UI.
-const CATEGORY_ORDER = ["people", "interactions", "notes", "daily-notes", "social-accounts"];
+const CATEGORY_ORDER = ["search", "people", "interactions", "notes", "daily-notes", "social-accounts"];
 
 export default function IntelligenceToolsSettingsPage() {
   const { toast } = useToast();
@@ -169,7 +181,7 @@ export default function IntelligenceToolsSettingsPage() {
   ];
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="container max-w-full md:max-w-3xl py-6 md:py-10 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">
       {/* Execution mode — top of the page per spec. */}
       <Card>
         <CardHeader>
@@ -289,6 +301,10 @@ export default function IntelligenceToolsSettingsPage() {
                   >
                     <div className="flex items-center gap-2">
                       {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      {(() => {
+                        const Icon = CATEGORY_ICONS[cat] ?? Wrench;
+                        return <Icon className="h-4 w-4 text-muted-foreground" />;
+                      })()}
                       <span className="text-base font-medium">
                         {CATEGORY_LABELS[cat] ?? cat}
                       </span>
@@ -354,7 +370,154 @@ export default function IntelligenceToolsSettingsPage() {
         {tools.length === 0 && (
           <p className="text-sm text-muted-foreground">No tools are registered.</p>
         )}
+        <AppKnowledgeSettingsSection />
       </div>
     </div>
+  );
+}
+
+// ── App Knowledge Settings Section ──────────────────────────────────────────
+
+function AppKnowledgeSettingsSection() {
+  const { toast } = useToast();
+  const [isOpen, setIsOpen] = useState(false);
+  const [appEnabled, setAppEnabled] = useState(false);
+
+  const { data: appSettingsData } = useQuery<{ enabled: boolean }>({
+    queryKey: ["/api/vector/app-knowledge/settings"],
+  });
+
+  const { data: stats, refetch: refetchStats } = useQuery<{
+    totalChunks: number;
+    vectorized: number;
+    missing: number;
+    lastSyncedAt: string | null;
+  }>({
+    queryKey: ["/api/vector/app-knowledge/stats"],
+  });
+
+  useEffect(() => {
+    if (appSettingsData) {
+      setAppEnabled(appSettingsData.enabled);
+    }
+  }, [appSettingsData]);
+
+  const saveSettingsMutation = useMutation({
+    mutationFn: async (patch: { enabled: boolean }) => {
+      const res = await apiRequest("POST", "/api/vector/app-knowledge/settings", patch);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/vector/app-knowledge/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/vector/app-knowledge/stats"] });
+      toast({ title: "Saved" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const reindexMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/vector/app-knowledge/reindex", {});
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Re-indexing initiated",
+        description: "App knowledge base is being chunked and vectorized in the background.",
+      });
+      setTimeout(() => refetchStats(), 2000);
+      setTimeout(() => refetchStats(), 5000);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Re-indexing failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card data-testid="card-app-knowledge">
+      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between p-4 text-left hover-elevate"
+            data-testid="tool-category-toggle-app-knowledge"
+          >
+            <div className="flex items-center gap-2">
+              {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              <span className="text-base font-medium flex items-center gap-2">
+                <BookOpen className="h-4 w-4 text-indigo-500" />
+                App Knowledge
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {appEnabled ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="space-y-4 px-4 pb-4 border-t pt-4">
+            <div className="flex items-center justify-between gap-4 rounded-md border p-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="app-knowledge-enabled-switch" className="text-base">Enable app knowledge base</Label>
+                <p className="text-sm text-muted-foreground">
+                  Allow the AI chat assistant to query the app documentation.
+                </p>
+              </div>
+              <Switch
+                id="app-knowledge-enabled-switch"
+                checked={appEnabled}
+                onCheckedChange={(v) => { setAppEnabled(v); saveSettingsMutation.mutate({ enabled: v }); }}
+                disabled={saveSettingsMutation.isPending}
+                data-testid="switch-app-knowledge-enabled"
+              />
+            </div>
+
+            {stats && (
+              <div className="space-y-3 rounded-md border p-4">
+                <p className="text-sm font-medium">Knowledge Base Stats</p>
+                <div className="grid grid-cols-3 gap-3 text-center text-xs">
+                  <div className="rounded-md border p-2 bg-background">
+                    <div className="text-base font-semibold">{stats.totalChunks}</div>
+                    <div className="text-muted-foreground">Total chunks</div>
+                  </div>
+                  <div className="rounded-md border p-2 bg-background">
+                    <div className="text-base font-semibold">{stats.vectorized}</div>
+                    <div className="text-muted-foreground">Vectorized</div>
+                  </div>
+                  <div className="rounded-md border p-2 bg-background">
+                    <div className="text-base font-semibold">{stats.missing}</div>
+                    <div className="text-muted-foreground">Pending</div>
+                  </div>
+                </div>
+                {stats.lastSyncedAt && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Last indexed: {new Date(stats.lastSyncedAt).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => reindexMutation.mutate()}
+                disabled={reindexMutation.isPending || !appEnabled}
+                data-testid="button-reindex-app-knowledge"
+              >
+                {reindexMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+                Re-index App Knowledge Base
+              </Button>
+              <Button variant="outline" onClick={() => { refetchStats(); }} data-testid="button-refresh-app-knowledge-stats">
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </div>
+            {!appEnabled && (
+              <p className="text-xs text-muted-foreground italic">Enable the app knowledge base to index or update the database.</p>
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </Card>
   );
 }

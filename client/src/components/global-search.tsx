@@ -525,7 +525,7 @@ export function GlobalSearch() {
             {items.map((chat) => (
               <button
                 key={chat.id}
-                onClick={() => handleNavigate(`/ai-chat-demo?chatId=${chat.id}`)}
+                onClick={() => handleNavigate(`/ai-chat-demo/${chat.id}`)}
                 className="w-full px-3 py-2 hover-elevate active-elevate-2 text-left"
                 data-testid={`result-chat-${chat.id}`}
               >

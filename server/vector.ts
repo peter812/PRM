@@ -92,7 +92,7 @@ export async function embedText(text: string, model?: string): Promise<number[]>
 
 // ── Qdrant client ────────────────────────────────────────────────────────────
 
-function buildClient(cfg: VectorConfig): QdrantClient {
+export function buildClient(cfg: VectorConfig): QdrantClient {
   if (!cfg.qdrantUrl) throw new Error("Qdrant URL is not configured.");
   // Parse the URL so we can pass host/port/https explicitly.
   // The @qdrant/js-client-rest `url` param defaults to port 6333 regardless
@@ -118,7 +118,7 @@ function buildClient(cfg: VectorConfig): QdrantClient {
   });
 }
 
-async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
+export async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
   try {
     await client.getCollection(name);
   } catch {

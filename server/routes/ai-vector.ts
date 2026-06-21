@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -61,6 +61,8 @@ import {
   loadUniversalVectorConfig,
   type UniversalEntityType,
 } from "../vector-universal";
+import { reindexAppKnowledge, resolveLinksInText, cleanRawLinks } from "../vector-app-knowledge";
+
 
 const scryptAsync = promisify(scrypt);
 
@@ -919,7 +921,9 @@ export function registerRoutes(app: Express) {
       "their notes, relationships, social accounts, or any stored data, always call the appropriate " +
       "tool to look up the current information rather than guessing. Use person_search to find " +
       "someone by name, person_pull to get their full details, and the other available tools as " +
-      "needed. Combine tool results with your own reasoning to give accurate, helpful answers.";
+      "needed. Combine tool results with your own reasoning to give accurate, helpful answers. " +
+      "Important note: You also have a super_search tool which performs a semantic search across the entire PRM. " +
+      "You should only use this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) yield no results or yield bad/unhelpful results.";
     const MAX_CHAT_TITLE_LENGTH = 60;
     const DEFAULT_EVENTS_SYSTEM_PROMPT = [
       "You extract a list of distinct events from a daily journal entry.",
@@ -1635,8 +1639,12 @@ export function registerRoutes(app: Express) {
           userId: req.user!.id,
         });
   
-        const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+        const resolvedLinks = await resolveLinksInText(assistantContent);
+        const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
+        const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
+        // @ts-expect-error - links is compatible with JSONB message object
+        if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         const updatedMessages = [...history, userMessage, assistantMessage];
         const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
         if (!chat.title || chat.title === "New chat") {
@@ -1709,8 +1717,12 @@ export function registerRoutes(app: Express) {
           userId: req.user!.id,
         });
   
-        const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+        const resolvedLinks = await resolveLinksInText(assistantContent);
+        const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
+        const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
+        // @ts-expect-error - links is compatible with JSONB message object
+        if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         const updatedMessages = [...trimmed, userMessage, assistantMessage];
         const [updated] = await db.update(aiChats)
           .set({ messages: updatedMessages, updatedAt: new Date() })
@@ -2323,6 +2335,81 @@ export function registerRoutes(app: Express) {
           stats[name] = { total: r.total ?? 0, vectorized: r.vectorized ?? 0 };
         }
         res.json(stats);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // ── App Knowledge Base Storage ───────────────────────────────────────────
+
+    app.get("/api/vector/app-knowledge/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const enabled = (await getVectorSetting("app_knowledge_enabled")) === "true";
+        res.json({ enabled });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/vector/app-knowledge/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { enabled } = req.body ?? {};
+      try {
+        if (typeof enabled === "boolean") {
+          const previous = (await getVectorSetting("app_knowledge_enabled")) === "true";
+          await setVectorSetting("app_knowledge_enabled", String(enabled));
+          
+          if (enabled && !previous) {
+            // Trigger async reindexing in background after the feature has been turned on
+            void (async () => {
+              try {
+                await reindexAppKnowledge();
+              } catch (err) {
+                console.error("Background app knowledge ingestion failed:", err);
+              }
+            })();
+          }
+        }
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.get("/api/vector/app-knowledge/stats", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const rows = await db
+          .select({
+            total: sql<number>`COUNT(*)::int`,
+            vectorized: sql<number>`COUNT(*) FILTER (WHERE vector_id IS NOT NULL)::int`,
+            lastSyncedAt: sql<Date | null>`MAX(vector_synced_at)`,
+          })
+          .from(appKnowledge);
+        const r = rows[0] ?? { total: 0, vectorized: 0, lastSyncedAt: null };
+        res.json({
+          totalChunks: r.total ?? 0,
+          vectorized: r.vectorized ?? 0,
+          missing: Math.max(0, (r.total ?? 0) - (r.vectorized ?? 0)),
+          lastSyncedAt: r.lastSyncedAt,
+        });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/vector/app-knowledge/reindex", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        void (async () => {
+          try {
+            await reindexAppKnowledge();
+          } catch (err) {
+            console.error("Background app knowledge reindexing failed:", err);
+          }
+        })();
+        res.json({ ok: true, message: "Reindexing initiated in the background." });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }

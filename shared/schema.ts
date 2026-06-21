@@ -353,6 +353,16 @@ export const aiChats = pgTable("ai_chats", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// App knowledge table - stores chunked app documentation for internal AI tool usage
+export const appKnowledge = pgTable("app_knowledge", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  content: text("content").notNull(),
+  vectorId: text("vector_id"), // Qdrant point ID for app knowledge semantic search
+  vectorSyncedAt: timestamp("vector_synced_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+
 // Sex guess queue - LLM-generated guesses for people with unknown sex
 export const sexGuessQueue = pgTable("sex_guess_queue", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -848,6 +858,14 @@ export type SsoConfig = typeof ssoConfig.$inferSelect;
 export type InsertSsoConfig = z.infer<typeof insertSsoConfigSchema>;
 export type Person = typeof people.$inferSelect;
 export type InsertPerson = z.infer<typeof insertPersonSchema>;
+
+export const insertAppKnowledgeSchema = createInsertSchema(appKnowledge).omit({
+  id: true,
+  createdAt: true,
+});
+export type AppKnowledge = typeof appKnowledge.$inferSelect;
+export type InsertAppKnowledge = z.infer<typeof insertAppKnowledgeSchema>;
+
 
 export type Note = typeof notes.$inferSelect;
 export type InsertNote = z.infer<typeof insertNoteSchema>;

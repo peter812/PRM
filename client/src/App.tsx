@@ -134,7 +134,7 @@ function Router() {
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
-      <ProtectedRoute path="/ai-chat-demo" component={AiChatDemo} />
+      <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
       <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
       <ProtectedRoute path="/images" component={ImagesListPage} />
       <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
