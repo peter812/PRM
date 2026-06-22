@@ -68,6 +68,7 @@ async function seedRelationshipTypes(): Promise<void> {
       { name: 'Best Friend', color: '#ec4899', value: 80, notes: 'Your best friend' },
       { name: 'Colleague', color: '#f59e0b', value: 30, notes: 'Someone you work with' },
       { name: 'Family', color: '#ef4444', value: 90, notes: 'Family member' },
+      { name: 'Ex-spouse', color: '#6b7280', value: 70, notes: 'Former spouse' },
     ];
     
     for (const type of defaultTypes) {
@@ -779,6 +780,12 @@ export async function initializeDatabase(): Promise<void> {
       
       // Validate schema and add missing columns if needed
       await validateAndSyncSchema();
+
+      // Always seed defaults so new types (e.g. Ex-spouse) are picked up by existing databases.
+      // All seed functions use ON CONFLICT DO NOTHING, making this idempotent.
+      await seedRelationshipTypes();
+      await seedInteractionTypes();
+      await seedSocialAccountTypes();
     }
 
     // Migrate Partner relationship types to spouse role if needed

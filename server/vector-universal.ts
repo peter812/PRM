@@ -161,7 +161,8 @@ export function composeTextForEntity(type: UniversalEntityType, data: Record<str
       if (data.title) parts.push(data.title);
       if (data.systemMessage) parts.push(data.systemMessage);
       if (data.messages && Array.isArray(data.messages)) {
-        const msgTexts = (data.messages as AiChatMessage[])
+        const msgTexts = (data.messages as any[])
+          .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => m.content)
           .filter(Boolean);
         parts.push(msgTexts.join("\n"));

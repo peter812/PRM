@@ -113,95 +113,97 @@ export default function SuperSearchPage() {
   const results = data?.results || [];
 
   return (
-    <div className="container mx-auto p-6 max-w-4xl">
-      <div className="flex items-center gap-3 mb-6">
-        <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Search className="h-6 w-6 text-blue-500" />
-          Super Search
-        </h1>
-      </div>
-
-      <form onSubmit={handleSubmit} className="mb-8">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search across all your data with AI..."
-              className="pl-4 pr-4 py-6 text-lg border-2 border-blue-200 focus:border-blue-400 shadow-[0_0_8px_2px_rgba(59,130,246,0.3)] focus:shadow-[0_0_12px_3px_rgba(59,130,246,0.5)] transition-shadow"
-              autoFocus
-            />
-          </div>
-          <Button type="submit" size="lg" className="px-6" disabled={!query.trim() || isLoading}>
-            {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Search className="h-5 w-5" />}
+    <div className="h-full overflow-y-auto">
+      <div className="container mx-auto p-6 max-w-4xl">
+        <div className="flex items-center gap-3 mb-6">
+          <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
+            <ArrowLeft className="h-5 w-5" />
           </Button>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <Search className="h-6 w-6 text-blue-500" />
+            Super Search
+          </h1>
         </div>
-      </form>
 
-      {error && (
-        <Card className="border-destructive">
-          <CardContent className="p-4 text-destructive">
-            {(error as Error).message || "Search failed. Make sure universal vectorization is enabled."}
-          </CardContent>
-        </Card>
-      )}
+        <form onSubmit={handleSubmit} className="mb-8">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search across all your data with AI..."
+                className="pl-4 pr-4 py-6 text-lg border-2 border-blue-200 focus:border-blue-400 shadow-[0_0_8px_2px_rgba(59,130,246,0.3)] focus:shadow-[0_0_12px_3px_rgba(59,130,246,0.5)] transition-shadow"
+                autoFocus
+              />
+            </div>
+            <Button type="submit" size="lg" className="px-6" disabled={!query.trim() || isLoading}>
+              {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Search className="h-5 w-5" />}
+            </Button>
+          </div>
+        </form>
 
-      {isLoading && (
-        <div className="flex flex-col items-center justify-center py-16 gap-4">
-          <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
-          <p className="text-muted-foreground">Searching with AI...</p>
-        </div>
-      )}
+        {error && (
+          <Card className="border-destructive">
+            <CardContent className="p-4 text-destructive">
+              {(error as Error).message || "Search failed. Make sure universal vectorization is enabled."}
+            </CardContent>
+          </Card>
+        )}
 
-      {!isLoading && searchQuery && results.length === 0 && (
-        <div className="text-center py-16 text-muted-foreground">
-          <Search className="h-12 w-12 mx-auto mb-4 opacity-50" />
-          <p className="text-lg">No results found for "{searchQuery}"</p>
-          <p className="text-sm mt-2">Try a different query or make sure entities have been vectorized.</p>
-        </div>
-      )}
+        {isLoading && (
+          <div className="flex flex-col items-center justify-center py-16 gap-4">
+            <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
+            <p className="text-muted-foreground">Searching with AI...</p>
+          </div>
+        )}
 
-      {!isLoading && results.length > 0 && (
-        <div className="space-y-3">
-          <p className="text-sm text-muted-foreground mb-4">
-            {results.length} result{results.length !== 1 ? "s" : ""} found
-          </p>
-          {results.map((result, index) => {
-            const Icon = TYPE_ICONS[result.type];
-            const route = getEntityRoute(result);
-            return (
-              <Card
-                key={`${result.type}-${result.entityId}-${index}`}
-                className="cursor-pointer hover:bg-accent transition-colors"
-                onClick={() => navigate(route)}
-              >
-                <CardContent className="p-4 flex items-start gap-3">
-                  <div className="mt-0.5">
-                    <Icon className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium truncate">{result.title}</span>
-                      <Badge variant="secondary" className={`text-xs shrink-0 ${TYPE_COLORS[result.type]}`}>
-                        {TYPE_LABELS[result.type]}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground shrink-0 ml-auto">
-                        {Math.round(result.score * 100)}%
-                      </span>
+        {!isLoading && searchQuery && results.length === 0 && (
+          <div className="text-center py-16 text-muted-foreground">
+            <Search className="h-12 w-12 mx-auto mb-4 opacity-50" />
+            <p className="text-lg">No results found for "{searchQuery}"</p>
+            <p className="text-sm mt-2">Try a different query or make sure entities have been vectorized.</p>
+          </div>
+        )}
+
+        {!isLoading && results.length > 0 && (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground mb-4">
+              {results.length} result{results.length !== 1 ? "s" : ""} found
+            </p>
+            {results.map((result, index) => {
+              const Icon = TYPE_ICONS[result.type];
+              const route = getEntityRoute(result);
+              return (
+                <Card
+                  key={`${result.type}-${result.entityId}-${index}`}
+                  className="cursor-pointer hover:bg-accent transition-colors"
+                  onClick={() => navigate(route)}
+                >
+                  <CardContent className="p-4 flex items-start gap-3">
+                    <div className="mt-0.5">
+                      <Icon className="h-5 w-5 text-muted-foreground" />
                     </div>
-                    {result.snippet && (
-                      <p className="text-sm text-muted-foreground line-clamp-2">{result.snippet}</p>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-medium truncate">{result.title}</span>
+                        <Badge variant="secondary" className={`text-xs shrink-0 ${TYPE_COLORS[result.type]}`}>
+                          {TYPE_LABELS[result.type]}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground shrink-0 ml-auto">
+                          {Math.round(result.score * 100)}%
+                        </span>
+                      </div>
+                      {result.snippet && (
+                        <p className="text-sm text-muted-foreground line-clamp-2">{result.snippet}</p>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

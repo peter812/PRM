@@ -77,6 +77,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   interactions: "Interactions",
   "daily-notes": "Daily notes",
   "social-accounts": "Social accounts",
+  relationships: "Relationships",
 };
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
@@ -86,11 +87,12 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   interactions: MessageSquare,
   "daily-notes": NotebookPen,
   "social-accounts": AtSign,
+  relationships: UserPlus,
 };
 
 
 // Stable category ordering for the UI.
-const CATEGORY_ORDER = ["search", "people", "interactions", "notes", "daily-notes", "social-accounts"];
+const CATEGORY_ORDER = ["search", "people", "interactions", "notes", "daily-notes", "social-accounts", "relationships"];
 
 export default function IntelligenceToolsSettingsPage() {
   const { toast } = useToast();

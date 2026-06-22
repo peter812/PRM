@@ -920,7 +920,8 @@ export function registerRoutes(app: Express) {
       "social accounts, notes, interactions, and daily notes. When the user asks about a person, " +
       "their notes, relationships, social accounts, or any stored data, always call the appropriate " +
       "tool to look up the current information rather than guessing. Use person_search to find " +
-      "someone by name, person_pull to get their full details, and the other available tools as " +
+      "someone by name, person_pull to get their full details (which returns up to 10 relationships/notes/interactions as a brief overview), " +
+      "person_pull_relationships to get up to 20 relationships (ideal when specifically asked about siblings, friends, family, or colleagues), and the other available tools as " +
       "needed. Combine tool results with your own reasoning to give accurate, helpful answers. " +
       "Important note: You also have a super_search tool which performs a semantic search across the entire PRM. " +
       "You should only use this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) yield no results or yield bad/unhelpful results.";
@@ -948,18 +949,30 @@ export function registerRoutes(app: Express) {
       return { base, headers };
     }
   
-    function sanitizeChatMessages(input: unknown): AiChatMessage[] {
+    function sanitizeChatMessages(input: unknown): any[] {
       if (!Array.isArray(input)) return [];
       return input
-        .filter((m): m is { role: string; content: string; attachments?: unknown; toolCalls?: unknown } =>
-          !!m && typeof m === "object" && typeof (m as any).content === "string" &&
-          ((m as any).role === "user" || (m as any).role === "assistant"))
+        .filter((m) =>
+          !!m && typeof m === "object" &&
+          (m.role === "user" || m.role === "assistant" || m.role === "tool" || m.role === "system")
+        )
         .map((m) => {
-          const out: AiChatMessage = { role: m.role as "user" | "assistant", content: m.content };
-          const atts = sanitizeAttachments((m as any).attachments);
+          if (m.role === "tool") {
+            return {
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name,
+              tool_call_id: m.tool_call_id,
+              content: m.content || "",
+            };
+          }
+          const out: any = { role: m.role, content: m.content || "" };
+          const atts = sanitizeAttachments(m.attachments);
           if (atts.length) out.attachments = atts;
-          const calls = sanitizeToolCalls((m as any).toolCalls);
+          const calls = sanitizeToolCalls(m.toolCalls);
           if (calls.length) out.toolCalls = calls;
+          if (m.tool_calls) out.tool_calls = m.tool_calls;
+          if (m.links) out.links = m.links;
           return out;
         });
     }
@@ -1159,6 +1172,7 @@ export function registerRoutes(app: Express) {
     async function runStreamingChatWithTools(p: StreamingToolLoopParams): Promise<{
       assistantContent: string;
       toolCalls: AiToolCallTrace[];
+      newMessages: any[];
     }> {
       const { res, ctx, model, userId } = p;
       const messages = [...p.initialMessages];
@@ -1194,13 +1208,13 @@ export function registerRoutes(app: Express) {
           } catch (err: any) {
             overallController.signal.removeEventListener("abort", onAbort);
             writeLine({ error: `Failed to reach Ollama: ${err.message}` });
-            return { assistantContent: "", toolCalls: toolTrace };
+            return { assistantContent: "", toolCalls: toolTrace, newMessages: messages.slice(p.initialMessages.length) };
           }
           if (!ollamaResp.ok) {
             overallController.signal.removeEventListener("abort", onAbort);
             const text = await ollamaResp.text();
             writeLine({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` });
-            return { assistantContent: "", toolCalls: toolTrace };
+            return { assistantContent: "", toolCalls: toolTrace, newMessages: messages.slice(p.initialMessages.length) };
           }
   
           const decoder = new TextDecoder();
@@ -1245,7 +1259,15 @@ export function registerRoutes(app: Express) {
   
           if (pendingToolCalls.length === 0) {
             // Model produced its final answer — return.
-            return { assistantContent: assistantContentThisIter, toolCalls: toolTrace };
+            messages.push({
+              role: "assistant",
+              content: assistantContentThisIter,
+            });
+            return {
+              assistantContent: assistantContentThisIter,
+              toolCalls: toolTrace,
+              newMessages: messages.slice(p.initialMessages.length),
+            };
           }
   
           // Persist the assistant tool-call turn into the message list so
@@ -1274,7 +1296,13 @@ export function registerRoutes(app: Express) {
               const summary = `Tool "${name}" is not available`;
               writeLine({ event: "tool_result", id, ok: false, summary });
               toolTrace.push({ name, icon: "search", label: name, args, summary, ok: false });
-              messages.push({ role: "tool", name, content: JSON.stringify({ error: summary }) });
+              messages.push({
+                role: "tool",
+                name,
+                tool_name: name,
+                tool_call_id: tc?.id,
+                content: JSON.stringify({ error: summary })
+              });
               continue;
             }
             writeLine({ event: "tool_call", id, name: def.name, label: def.label, icon: def.icon, args });
@@ -1284,7 +1312,13 @@ export function registerRoutes(app: Express) {
                 const summary = "Write tools are disabled";
                 writeLine({ event: "tool_result", id, ok: false, summary });
                 toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
-                messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: summary }) });
+                messages.push({
+                  role: "tool",
+                  name: def.name,
+                  tool_name: def.name,
+                  tool_call_id: tc?.id,
+                  content: JSON.stringify({ error: summary })
+                });
                 continue;
               }
               if (executionMode === "auth") {
@@ -1302,7 +1336,13 @@ export function registerRoutes(app: Express) {
                   const summary = "Rejected by user";
                   writeLine({ event: "tool_result", id, ok: false, summary });
                   toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
-                  messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: "user_rejected" }) });
+                  messages.push({
+                    role: "tool",
+                    name: def.name,
+                    tool_name: def.name,
+                    tool_call_id: tc?.id,
+                    content: JSON.stringify({ error: "user_rejected" })
+                  });
                   continue;
                 }
               }
@@ -1311,12 +1351,24 @@ export function registerRoutes(app: Express) {
               const result = await def.handler(args, { userId });
               writeLine({ event: "tool_result", id, ok: true, summary: result.summary });
               toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary: result.summary, ok: true });
-              messages.push({ role: "tool", name: def.name, content: JSON.stringify(result.data) });
+              messages.push({
+                role: "tool",
+                name: def.name,
+                tool_name: def.name,
+                tool_call_id: tc?.id,
+                content: JSON.stringify(result.data)
+              });
             } catch (err: any) {
               const summary = `Error: ${err?.message ?? "tool failed"}`;
               writeLine({ event: "tool_result", id, ok: false, summary });
               toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
-              messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: summary }) });
+              messages.push({
+                role: "tool",
+                name: def.name,
+                tool_name: def.name,
+                tool_call_id: tc?.id,
+                content: JSON.stringify({ error: summary })
+              });
             }
           }
           // Loop continues; next /api/chat call will see the tool messages.
@@ -1325,7 +1377,15 @@ export function registerRoutes(app: Express) {
         // Iteration cap hit — emit a synthetic final answer.
         const fallback = "I reached the tool-call limit before producing a final answer. Please refine your question.";
         writeLine({ message: { role: "assistant", content: fallback } });
-        return { assistantContent: fallback, toolCalls: toolTrace };
+        messages.push({
+          role: "assistant",
+          content: fallback,
+        });
+        return {
+          assistantContent: fallback,
+          toolCalls: toolTrace,
+          newMessages: messages.slice(p.initialMessages.length),
+        };
       } finally {
         clearTimeout(overallTimeout);
       }
@@ -1344,7 +1404,11 @@ export function registerRoutes(app: Express) {
           title: r.title,
           systemMessage: r.systemMessage,
           model: r.model,
-          messageCount: Array.isArray(r.messages) ? (r.messages as unknown[]).length : 0,
+          messageCount: Array.isArray(r.messages)
+            ? (r.messages as any[]).filter(
+                (m) => m.role === "user" || m.role === "assistant"
+              ).length
+            : 0,
           createdAt: r.createdAt,
           updatedAt: r.updatedAt,
         })));
@@ -1361,7 +1425,10 @@ export function registerRoutes(app: Express) {
           where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
         });
         if (!row) return res.status(404).json({ error: "Chat not found" });
-        res.json(row);
+        const clientMessages = (row.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.json({ ...row, messages: clientMessages });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -1455,10 +1522,28 @@ export function registerRoutes(app: Express) {
           : { role: "user", content: message };
   
         // Build the messages payload for Ollama, including the system message if present.
-        const ollamaMessages: { role: string; content: string }[] = [];
+        const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
         ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
-        for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+        for (const m of history) {
+          if (m.role === "tool") {
+            ollamaMessages.push({
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name || m.name,
+              tool_call_id: m.tool_call_id,
+              content: m.content
+            });
+          } else if (m.role === "assistant") {
+            ollamaMessages.push({
+              role: "assistant",
+              content: m.content || "",
+              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
+            });
+          } else {
+            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+          }
+        }
         ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
   
         const controller = new AbortController();
@@ -1498,7 +1583,10 @@ export function registerRoutes(app: Express) {
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
         syncEntityInBackground("ai_chat", chat.id);
-        res.json({ chat: updated, assistant: assistantMessage });
+        const clientMessages = (updated.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.json({ chat: { ...updated, messages: clientMessages }, assistant: assistantMessage });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -1617,10 +1705,28 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const ollamaMessages: { role: string; content: string }[] = [];
+        const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
         ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
-        for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+        for (const m of history) {
+          if (m.role === "tool") {
+            ollamaMessages.push({
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name || m.name,
+              tool_call_id: m.tool_call_id,
+              content: m.content
+            });
+          } else if (m.role === "assistant") {
+            ollamaMessages.push({
+              role: "assistant",
+              content: m.content || "",
+              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
+            });
+          } else {
+            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+          }
+        }
         ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
   
         // text/event-stream is understood by every reverse-proxy as "do not buffer";
@@ -1631,7 +1737,7 @@ export function registerRoutes(app: Express) {
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
   
-        const { assistantContent, toolCalls } = await runStreamingChatWithTools({
+        const { assistantContent, toolCalls, newMessages } = await runStreamingChatWithTools({
           res,
           ctx,
           model,
@@ -1641,11 +1747,13 @@ export function registerRoutes(app: Express) {
   
         const resolvedLinks = await resolveLinksInText(assistantContent);
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
-        const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
+        const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
         // @ts-expect-error - links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
-        const updatedMessages = [...history, userMessage, assistantMessage];
+        
+        const intermediateMessages = newMessages.slice(0, -1);
+        const updatedMessages = [...history, userMessage, ...intermediateMessages, assistantMessage];
         const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
         if (!chat.title || chat.title === "New chat") {
           const titleSource = message.trim() || (hasAttachments ? attachments[0].name : "");
@@ -1653,7 +1761,10 @@ export function registerRoutes(app: Express) {
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
         syncEntityInBackground("ai_chat", chat.id);
-        res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
+        const clientMessages = (updated.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
         res.end();
       } catch (error: any) {
         if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -1697,10 +1808,28 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const ollamaMessages: { role: string; content: string }[] = [];
+        const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
         ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
-        for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+        for (const m of trimmed) {
+          if (m.role === "tool") {
+            ollamaMessages.push({
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name || m.name,
+              tool_call_id: m.tool_call_id,
+              content: m.content
+            });
+          } else if (m.role === "assistant") {
+            ollamaMessages.push({
+              role: "assistant",
+              content: m.content || "",
+              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
+            });
+          } else {
+            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+          }
+        }
         ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
   
         res.setHeader("Content-Type", "text/event-stream");
@@ -1709,7 +1838,7 @@ export function registerRoutes(app: Express) {
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
   
-        const { assistantContent, toolCalls } = await runStreamingChatWithTools({
+        const { assistantContent, toolCalls, newMessages } = await runStreamingChatWithTools({
           res,
           ctx,
           model,
@@ -1719,17 +1848,22 @@ export function registerRoutes(app: Express) {
   
         const resolvedLinks = await resolveLinksInText(assistantContent);
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
-        const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
+        const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
         // @ts-expect-error - links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
-        const updatedMessages = [...trimmed, userMessage, assistantMessage];
+        
+        const intermediateMessages = newMessages.slice(0, -1);
+        const updatedMessages = [...trimmed, userMessage, ...intermediateMessages, assistantMessage];
         const [updated] = await db.update(aiChats)
           .set({ messages: updatedMessages, updatedAt: new Date() })
           .where(eq(aiChats.id, chat.id))
           .returning();
         syncEntityInBackground("ai_chat", chat.id);
-        res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
+        const clientMessages = (updated.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
         res.end();
       } catch (error: any) {
         if (!res.headersSent) res.status(500).json({ error: error.message });
