@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Loader2, Maximize, ExternalLink } from "lucide-react";
 import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle } from "@/components/family-tree-canvas";
-import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
+import { FamilyMemberDialog } from "@/components/family-member-dialog";
 import { apiRequest } from "@/lib/queryClient";
 
 interface FamilyTreeTabProps {
@@ -108,13 +108,13 @@ export function FamilyTreeTab({ personId, personName }: FamilyTreeTabProps) {
       </div>
 
       {addMemberContext && (
-        <AddFamilyMemberDialog
+        <FamilyMemberDialog
           open={!!addMemberContext}
           onOpenChange={(open) => {
             if (!open) setAddMemberContext(null);
           }}
-          relatedPersonId={addMemberContext.relatedPersonId}
-          relatedPersonName={
+          personId={addMemberContext.relatedPersonId}
+          personName={
             relatedPerson
               ? `${relatedPerson.firstName} ${relatedPerson.lastName}`.trim()
               : undefined

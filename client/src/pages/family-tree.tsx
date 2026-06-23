@@ -6,7 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import { Loader2, ZoomIn, ZoomOut, Maximize, RotateCcw, UserSearch, User, Image as ImageIcon, Circle, Sparkles, Eye, EyeOff } from "lucide-react";
 import { FamilyTreeCanvas, FamilyTreeData, FamilyTreeCanvasHandle, FamilyTreeViewMode } from "@/components/family-tree-canvas";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
-import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
+import { FamilyMemberDialog } from "@/components/family-member-dialog";
 import { GenerateFamilyConnectionsDialog } from "@/components/generate-family-connections-dialog";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -265,13 +265,13 @@ export default function FamilyTreePage() {
 
       {/* Add family member dialog */}
       {addMemberContext && (
-        <AddFamilyMemberDialog
+        <FamilyMemberDialog
           open={!!addMemberContext}
           onOpenChange={(open) => {
             if (!open) setAddMemberContext(null);
           }}
-          relatedPersonId={addMemberContext.relatedPersonId}
-          relatedPersonName={
+          personId={addMemberContext.relatedPersonId}
+          personName={
             relatedPerson
               ? `${relatedPerson.firstName} ${relatedPerson.lastName}`.trim()
               : undefined

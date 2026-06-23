@@ -145,15 +145,18 @@ async function handleGetFamilyRelationships(args: Record<string, unknown>): Prom
   const person = await storage.getPersonById(uuid);
   if (!person) return { error: "not_found" };
 
-  const familyRels = (person.relationships ?? [])
-    .filter((r: any) => r.familyRelationshipType)
-    .map((r: any) => ({
+  const rels = await storage.getFamilyRelationshipsForPerson(uuid);
+  const familyRels = [];
+  for (const r of rels) {
+    const toPerson = await storage.getPersonById(r.toPersonId);
+    familyRels.push({
       relationshipId: r.id,
       fromPersonUuid: r.fromPersonId,
       toPersonUuid: r.toPersonId,
-      toPersonName: `${r.toPerson?.firstName ?? ""} ${r.toPerson?.lastName ?? ""}`.trim(),
+      toPersonName: `${toPerson?.firstName ?? ""} ${toPerson?.lastName ?? ""}`.trim(),
       familyRelationshipType: r.familyRelationshipType,
-    }));
+    });
+  }
 
   return {
     personUuid: person.id,
@@ -542,11 +545,6 @@ export async function applyFamilyTreeChanges(
 ): Promise<ApplyFamilyTreeChangesResult> {
   const result: ApplyFamilyTreeChangesResult = { applied: 0, failed: 0, errors: [] };
 
-  // Look up the "Family" relationship type once.
-  const allTypes = await storage.getAllRelationshipTypes();
-  const familyType = allTypes.find((t: any) => t.name?.toLowerCase() === "family");
-  const familyTypeId = familyType?.id ?? null;
-
   for (let i = 0; i < changes.length; i++) {
     const change = changes[i];
     try {
@@ -563,65 +561,142 @@ export async function applyFamilyTreeChanges(
         if (!targetId) throw new Error("Missing target person");
         if (targetId === change.fromPersonId) throw new Error("Cannot relate a person to themselves");
 
-        const existing = await storage.findFamilyRelationship(change.fromPersonId, targetId);
-        if (existing) {
-          if (existing.familyRelationshipType !== change.familyRelationshipType) {
-            // Treat as an edit instead of a duplicate insert.
-            await storage.updateRelationship(existing.id, {
-              familyRelationshipType: change.familyRelationshipType,
-            });
-            const inverseType = FAMILY_RELATIONSHIP_INVERSES[change.familyRelationshipType];
-            if (inverseType) {
-              const inverse = await storage.findFamilyRelationship(targetId, change.fromPersonId);
-              if (inverse) {
-                await storage.updateRelationship(inverse.id, {
-                  familyRelationshipType: inverseType as FamilyRelationshipType,
+        const type = change.familyRelationshipType.toLowerCase();
+        const parentRoles = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
+        const childRoles = ["child", "son", "daughter", "stepchild", "stepson", "stepdaughter"];
+        const partnerRoles = ["spouse", "partner", "ex_spouse", "ex_partner"];
+        const siblingRoles = ["sibling", "brother", "sister", "half_brother", "half_sister", "half_sibling"];
+
+        if (parentRoles.includes(type) || childRoles.includes(type)) {
+          let parentId: string;
+          let childId: string;
+          if (parentRoles.includes(type)) {
+            parentId = targetId;
+            childId = change.fromPersonId;
+          } else {
+            parentId = change.fromPersonId;
+            childId = targetId;
+          }
+          const isStep = type.startsWith("step");
+          await storage.createLineage({
+            parentId,
+            childId,
+            lineageType: isStep ? "step" : "biological",
+          });
+        } else if (partnerRoles.includes(type)) {
+          let status = "partner";
+          if (type === "spouse") status = "married";
+          else if (type === "ex_spouse") status = "divorced";
+          await storage.createPartnership({
+            person1Id: change.fromPersonId,
+            person2Id: targetId,
+            status,
+          });
+        } else if (siblingRoles.includes(type)) {
+          const parents = (await storage.getLineageForPerson(change.fromPersonId))
+            .filter(l => l.childId === change.fromPersonId);
+          if (parents.length > 0) {
+            for (const parent of parents) {
+              try {
+                await storage.createLineage({
+                  childId: targetId,
+                  parentId: parent.parentId,
+                  lineageType: type.includes("half") ? "step" : "biological",
                 });
+              } catch (err) {
+                // Ignore unique constraint errors
               }
             }
-            await storage.propagateFamilyRelationship(existing.id);
+          } else {
+            // Create placeholder parent to link them
+            const placeholder = await storage.createPerson({
+              firstName: "Parent of",
+              lastName: `${change.fromPersonName} & ${change.newPerson?.firstName ?? change.toPersonName ?? "Sibling"}`,
+            } as any);
+            await storage.createLineage({
+              childId: change.fromPersonId,
+              parentId: placeholder.id,
+              lineageType: "biological",
+            });
+            await storage.createLineage({
+              childId: targetId,
+              parentId: placeholder.id,
+              lineageType: type.includes("half") ? "step" : "biological",
+            });
           }
-        } else {
-          await storage.createFamilyRelationshipWithInverse({
-            fromPersonId: change.fromPersonId,
-            toPersonId: targetId,
-            familyRelationshipType: change.familyRelationshipType,
-            typeId: familyTypeId,
-            notes: null,
-          } as any);
         }
         result.applied++;
         continue;
       }
 
       if (change.kind === "edit") {
-        const rel = await storage.getRelationshipById(change.relationshipId);
-        if (!rel) throw new Error("Relationship not found");
-        await storage.updateRelationship(change.relationshipId, {
-          familyRelationshipType: change.familyRelationshipType,
-        });
-        const inverseType = FAMILY_RELATIONSHIP_INVERSES[change.familyRelationshipType];
-        if (inverseType && rel.toPersonId && rel.fromPersonId) {
-          const inverse = await storage.findFamilyRelationship(rel.toPersonId, rel.fromPersonId);
-          if (inverse) {
-            await storage.updateRelationship(inverse.id, {
-              familyRelationshipType: inverseType as FamilyRelationshipType,
+        // Find if it is in lineage or partnerships
+        const lineages = await storage.getLineageForPerson(change.fromPersonId);
+        const lin = lineages.find(l => l.id === change.relationshipId);
+        if (lin) {
+          const type = change.familyRelationshipType.toLowerCase();
+          const parentRoles = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
+          const childRoles = ["child", "son", "daughter", "stepchild", "stepson", "stepdaughter"];
+
+          if (parentRoles.includes(type) || childRoles.includes(type)) {
+            const isStep = type.startsWith("step");
+            const lineageType = isStep ? "step" : "biological";
+            await storage.updateLineage(lin.id, { lineageType });
+          } else {
+            // Changed from lineage to partnership
+            await storage.deleteLineage(lin.id);
+            let status = "partner";
+            if (type === "spouse") status = "married";
+            else if (type === "ex_spouse") status = "divorced";
+            
+            await storage.createPartnership({
+              person1Id: lin.parentId,
+              person2Id: lin.childId,
+              status,
             });
           }
+        } else {
+          const partRels = await storage.getPartnershipsForPerson(change.fromPersonId);
+          const part = partRels.find(p => p.id === change.relationshipId);
+          if (part) {
+            const type = change.familyRelationshipType.toLowerCase();
+            const partnerRoles = ["spouse", "partner", "ex_spouse", "ex_partner"];
+            if (partnerRoles.includes(type)) {
+              let status = "partner";
+              if (type === "spouse") status = "married";
+              else if (type === "ex_spouse") status = "divorced";
+              await storage.updatePartnership(part.id, { status });
+            } else {
+              // Changed from partnership to lineage
+              await storage.deletePartnership(part.id);
+              
+              let parentId = part.person1Id;
+              let childId = part.person2Id;
+              const parentRoles = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
+              if (parentRoles.includes(type)) {
+                parentId = change.toPersonId || part.person2Id;
+                childId = change.fromPersonId || part.person1Id;
+              } else {
+                parentId = change.fromPersonId || part.person1Id;
+                childId = change.toPersonId || part.person2Id;
+              }
+
+              const isStep = type.startsWith("step");
+              await storage.createLineage({
+                parentId,
+                childId,
+                lineageType: isStep ? "step" : "biological",
+              });
+            }
+          }
         }
-        await storage.propagateFamilyRelationship(change.relationshipId);
         result.applied++;
         continue;
       }
 
       if (change.kind === "delete") {
-        const rel = await storage.getRelationshipById(change.relationshipId);
-        if (!rel) throw new Error("Relationship not found");
-        if (rel.familyRelationshipType) {
-          const inverse = await storage.findFamilyRelationship(rel.toPersonId, rel.fromPersonId);
-          if (inverse) await storage.deleteRelationship(inverse.id);
-        }
-        await storage.deleteRelationship(change.relationshipId);
+        await storage.deleteLineage(change.relationshipId);
+        await storage.deletePartnership(change.relationshipId);
         result.applied++;
         continue;
       }

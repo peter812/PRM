@@ -26,8 +26,8 @@ import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
 import { FamilyTreeTab } from "@/components/family-tree-tab";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
-import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { FamilyTab } from "@/components/family-tab";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -347,6 +347,13 @@ export default function PersonProfile() {
               Relationships
             </TabsTrigger>
             <TabsTrigger
+              value="family"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-family"
+            >
+              Family
+            </TabsTrigger>
+            <TabsTrigger
               value="tree"
               className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
               data-testid="tab-tree"
@@ -389,6 +396,13 @@ export default function PersonProfile() {
               personId={person.id}
               personName={`${person.firstName} ${person.lastName}`.trim()}
               onAddRelationship={() => setIsAddRelationshipOpen(true)}
+            />
+          </TabsContent>
+
+          <TabsContent value="family" className="mt-0 h-full">
+            <FamilyTab
+              personId={person.id}
+              personName={`${person.firstName} ${person.lastName}`.trim()}
             />
           </TabsContent>
 

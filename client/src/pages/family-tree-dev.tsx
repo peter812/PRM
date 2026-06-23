@@ -29,7 +29,7 @@ import {
   FamilyTreeViewMode,
 } from "@/components/family-tree-flow";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
-import { AddFamilyMemberDialog } from "@/components/add-family-member-dialog";
+import { FamilyMemberDialog } from "@/components/family-member-dialog";
 import { GenerateFamilyConnectionsDialog } from "@/components/generate-family-connections-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -754,13 +754,13 @@ export default function FamilyTreeDevPage() {
 
       {/* Add family member dialog */}
       {addMemberContext && (
-        <AddFamilyMemberDialog
+        <FamilyMemberDialog
           open={!!addMemberContext}
           onOpenChange={(open) => {
             if (!open) setAddMemberContext(null);
           }}
-          relatedPersonId={addMemberContext.relatedPersonId}
-          relatedPersonName={
+          personId={addMemberContext.relatedPersonId}
+          personName={
             relatedPerson
               ? personName(relatedPerson)
               : undefined

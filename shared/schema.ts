@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -128,6 +128,28 @@ export const relationships = pgTable("relationships", {
   familyRelationshipType: varchar("family_relationship_type", { length: 50 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Lineage table
+export const lineage = pgTable("lineage", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  childId: varchar("child_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  parentId: varchar("parent_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  lineageType: text("lineage_type").notNull().default("biological"), // 'biological' | 'adoptive' | 'step'
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => ({
+  unq: unique().on(t.childId, t.parentId),
+}));
+
+// Partnerships table
+export const partnerships = pgTable("partnerships", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  person1Id: varchar("person1_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  person2Id: varchar("person2_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("partner"), // 'married' | 'partner' | 'divorced' | 'ex_partner'
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => ({
+  unq: unique().on(t.person1Id, t.person2Id),
+}));
 
 // Groups table
 export const groups = pgTable("groups", {
@@ -651,7 +673,38 @@ export const FAMILY_RELATIONSHIP_LABELS: Record<string, string> = {
   parent: "Parent",
   grandparent: "Grandparent",
   stepparent: "Stepparent",
+  partner: "Partner",
+  ex_partner: "Ex-Partner",
+  married: "Spouse",
+  divorced: "Ex-Spouse",
+  adoptive_father: "Adoptive Father",
+  adoptive_mother: "Adoptive Mother",
+  adoptive_parent: "Adoptive Parent",
+  adoptive_child: "Adoptive Child",
+  adoptive_son: "Adoptive Son",
+  adoptive_daughter: "Adoptive Daughter",
 };
+
+export function deriveLineageRole(
+  isChild: boolean,
+  sex: string | null | undefined,
+  lineageType: string
+): string {
+  let role = isChild ? "parent" : "child";
+  if (isChild) {
+    if (sex === "male") role = "father";
+    else if (sex === "female") role = "mother";
+  } else {
+    if (sex === "male") role = "son";
+    else if (sex === "female") role = "daughter";
+  }
+  if (lineageType === "step") {
+    role = "step" + role;
+  } else if (lineageType === "adoptive") {
+    role = "adoptive_" + role;
+  }
+  return role;
+}
 
 export const FAMILY_RELATIONSHIP_CATEGORIES: Record<string, string> = {
   father: "parent",
@@ -722,6 +775,16 @@ export const insertRelationshipSchema = createInsertSchema(relationships).omit({
   createdAt: true,
 }).extend({
   familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES).nullable().optional(),
+});
+
+export const insertLineageSchema = createInsertSchema(lineage).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertPartnershipSchema = createInsertSchema(partnerships).omit({
+  id: true,
+  createdAt: true,
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({
@@ -875,6 +938,11 @@ export type InsertInteraction = z.infer<typeof insertInteractionSchema>;
 
 export type Relationship = typeof relationships.$inferSelect;
 export type InsertRelationship = z.infer<typeof insertRelationshipSchema>;
+
+export type Lineage = typeof lineage.$inferSelect;
+export type InsertLineage = z.infer<typeof insertLineageSchema>;
+export type Partnership = typeof partnerships.$inferSelect;
+export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 
 export type Group = typeof groups.$inferSelect;
 export type InsertGroup = z.infer<typeof insertGroupSchema>;

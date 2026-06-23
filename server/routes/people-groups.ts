@@ -29,6 +29,7 @@ import {
   FAMILY_RELATIONSHIP_INVERSES,
   FAMILY_RELATIONSHIP_CATEGORIES,
   type FamilyRelationshipType,
+  deriveLineageRole,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
@@ -754,31 +755,8 @@ export function registerRoutes(app: Express) {
       try {
         const validatedData = insertRelationshipSchema.parse(req.body);
   
-        // If it's a family relationship, use the family-specific creation logic
         if (validatedData.familyRelationshipType) {
-          if (validatedData.fromPersonId === validatedData.toPersonId) {
-            return res.status(400).json({ error: "Cannot create a relationship from a person to themselves" });
-          }
-  
-          // Check if a family relationship already exists
-          const existing = await storage.findFamilyRelationship(validatedData.fromPersonId, validatedData.toPersonId);
-          if (existing) {
-            return res.status(409).json({ error: "A family relationship already exists between these people" });
-          }
-  
-          // Find "Family" relationship type
-          const allTypes = await storage.getAllRelationshipTypes();
-          const familyType = allTypes.find(t => t.name.toLowerCase() === "family");
-  
-          const result = await storage.createFamilyRelationshipWithInverse({
-            fromPersonId: validatedData.fromPersonId,
-            toPersonId: validatedData.toPersonId,
-            familyRelationshipType: validatedData.familyRelationshipType as FamilyRelationshipType,
-            typeId: familyType?.id ?? validatedData.typeId ?? null,
-            notes: validatedData.notes ?? null,
-          });
-  
-          return res.status(201).json(result.relationship);
+          return res.status(400).json({ error: "Family relationship types must use dedicated family endpoints" });
         }
   
         const relationship = await storage.createRelationship(validatedData);
@@ -799,46 +777,13 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Relationship not found" });
         }
   
-        const wasFamily = !!existingRel.familyRelationshipType;
-        const isFamily = 'familyRelationshipType' in validatedData ? !!validatedData.familyRelationshipType : wasFamily;
-  
-        let typeId = validatedData.typeId;
-        if (isFamily && !typeId) {
-          const allTypes = await storage.getAllRelationshipTypes();
-          const familyType = allTypes.find(t => t.name.toLowerCase() === "family");
-          if (familyType) {
-            typeId = familyType.id;
-          }
+        if (validatedData.familyRelationshipType || existingRel.familyRelationshipType) {
+          return res.status(400).json({ error: "Family relationships cannot be modified via generic endpoints" });
         }
   
-        const updateData = {
-          ...validatedData,
-          ...(isFamily ? { typeId } : {}),
-        };
-  
-        const relationship = await storage.updateRelationship(id, updateData);
+        const relationship = await storage.updateRelationship(id, validatedData);
         if (!relationship) {
           return res.status(404).json({ error: "Relationship not found" });
-        }
-  
-        // If family relationship changed, update the inverse direction and propagate
-        if (updateData.familyRelationshipType && relationship.toPersonId && relationship.fromPersonId) {
-          const inverseType = FAMILY_RELATIONSHIP_INVERSES[updateData.familyRelationshipType];
-          if (inverseType) {
-            const inverse = await storage.findFamilyRelationship(relationship.toPersonId, relationship.fromPersonId);
-            if (inverse) {
-              await storage.updateRelationship(inverse.id, { familyRelationshipType: inverseType as FamilyRelationshipType });
-            } else {
-              await storage.createRelationship({
-                fromPersonId: relationship.toPersonId,
-                toPersonId: relationship.fromPersonId,
-                familyRelationshipType: inverseType as FamilyRelationshipType,
-                typeId: typeId ?? null,
-                notes: relationship.notes,
-              });
-            }
-          }
-          await storage.propagateFamilyRelationship(relationship.id);
         }
   
         res.json(relationship);
@@ -895,138 +840,184 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // Manually trigger propagation for a person's tree
-    app.post("/api/family-relationships/propagate", async (req, res) => {
+    // Fetch immediate family for a person profile tab
+    app.get("/api/people/:personId/family", async (req, res) => {
       try {
-        const { personId } = z.object({ personId: z.string().min(1) }).parse(req.body);
-  
+        const { personId } = req.params;
         const person = await storage.getPersonById(personId);
         if (!person) {
           return res.status(404).json({ error: "Person not found" });
         }
   
-        const familyRels = await storage.getFamilyRelationshipsForPerson(personId);
-        const allPropagated = [];
-        for (const rel of familyRels) {
-          const propagated = await storage.propagateFamilyRelationship(rel.id);
-          allPropagated.push(...propagated);
+        const lineages = await storage.getLineageForPerson(personId);
+        const partnerships = await storage.getPartnershipsForPerson(personId);
+  
+        const parents = [];
+        const children = [];
+        const spouses = [];
+  
+        for (const lin of lineages) {
+          const isChild = lin.childId === personId;
+          const relativeId = isChild ? lin.parentId : lin.childId;
+          const relative = await storage.getPersonById(relativeId);
+          if (!relative) continue;
+  
+          const roleKey = deriveLineageRole(isChild, relative.sex, lin.lineageType);
+          const roleLabel = FAMILY_RELATIONSHIP_LABELS[roleKey] || roleKey;
+            
+          const relativeData = {
+            id: lin.id,
+            person: {
+              id: relative.id,
+              firstName: relative.firstName,
+              lastName: relative.lastName,
+              imageUrl: relative.imageUrl,
+              sex: relative.sex,
+            },
+            lineageType: lin.lineageType,
+            roleLabel,
+          };
+
+          if (isChild) {
+            parents.push(relativeData);
+          } else {
+            children.push(relativeData);
+          }
         }
-        res.json({ propagated: allPropagated, total: allPropagated.length });
+  
+        for (const part of partnerships) {
+          const relativeId = part.person1Id === personId ? part.person2Id : part.person1Id;
+          const relative = await storage.getPersonById(relativeId);
+          if (!relative) continue;
+  
+          const roleLabel = FAMILY_RELATIONSHIP_LABELS[part.status] || part.status;
+  
+          spouses.push({
+            id: part.id,
+            person: {
+              id: relative.id,
+              firstName: relative.firstName,
+              lastName: relative.lastName,
+              imageUrl: relative.imageUrl,
+              sex: relative.sex,
+            },
+            status: part.status,
+            roleLabel,
+          });
+        }
+  
+        res.json({ parents, spouses, children });
       } catch (error) {
-        console.error("Error propagating family relationships:", error);
-        res.status(400).json({ error: "Failed to propagate family relationships" });
+        console.error("Error fetching immediate family:", error);
+        res.status(500).json({ error: "Failed to fetch immediate family" });
       }
     });
-  
-    // Create a family relationship (with automatic inverse + propagation)
-    app.post("/api/family-relationships", async (req, res) => {
+
+    // Create Lineage link
+    app.post("/api/family/lineage", async (req, res) => {
       try {
         const bodySchema = z.object({
-          fromPersonId: z.string().min(1),
-          toPersonId: z.string().min(1),
-          familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES),
-          notes: z.string().nullable().optional(),
+          childId: z.string().min(1),
+          parentId: z.string().min(1),
+          lineageType: z.enum(["biological", "adoptive", "step"]),
         });
         const body = bodySchema.parse(req.body);
   
-        if (body.fromPersonId === body.toPersonId) {
-          return res.status(400).json({ error: "Cannot create a relationship from a person to themselves" });
+        if (body.childId === body.parentId) {
+          return res.status(400).json({ error: "Cannot create lineage link to self" });
         }
   
-        // Verify both people exist
-        const [fromPerson, toPerson] = await Promise.all([
-          storage.getPersonById(body.fromPersonId),
-          storage.getPersonById(body.toPersonId),
-        ]);
-        if (!fromPerson) {
-          return res.status(404).json({ error: "From person not found" });
-        }
-        if (!toPerson) {
-          return res.status(404).json({ error: "To person not found" });
-        }
-  
-        // Check if a family relationship already exists between these two people
-        const existing = await storage.findFamilyRelationship(body.fromPersonId, body.toPersonId);
-        if (existing) {
-          return res.status(409).json({ error: "A family relationship already exists between these people" });
-        }
-  
-        // Find or use the existing "Family" relationship type for typeId
-        const allTypes = await storage.getAllRelationshipTypes();
-        const familyType = allTypes.find(t => t.name.toLowerCase() === "family");
-  
-        const result = await storage.createFamilyRelationshipWithInverse({
-          fromPersonId: body.fromPersonId,
-          toPersonId: body.toPersonId,
-          familyRelationshipType: body.familyRelationshipType,
-          typeId: familyType?.id ?? null,
-          notes: body.notes ?? null,
-        });
-  
-        res.status(201).json(result);
+        const lin = await storage.createLineage(body);
+        res.status(201).json(lin);
       } catch (error) {
-        console.error("Error creating family relationship:", error);
-        res.status(400).json({ error: "Failed to create family relationship" });
+        console.error("Error creating lineage:", error);
+        res.status(400).json({ error: "Failed to create lineage link" });
       }
     });
   
-    // Update a family relationship (updates both directions)
-    app.patch("/api/family-relationships/:id", async (req, res) => {
+    // Update Lineage link
+    app.patch("/api/family/lineage/:id", async (req, res) => {
       try {
         const { id } = req.params;
         const bodySchema = z.object({
-          familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES).optional(),
-          notes: z.string().nullable().optional(),
+          lineageType: z.enum(["biological", "adoptive", "step"]),
         });
         const body = bodySchema.parse(req.body);
   
-        const updated = await storage.updateRelationship(id, body);
+        const updated = await storage.updateLineage(id, body);
         if (!updated) {
-          return res.status(404).json({ error: "Relationship not found" });
+          return res.status(404).json({ error: "Lineage link not found" });
         }
-  
-        // Update the inverse direction if type changed
-        if (body.familyRelationshipType && updated.toPersonId && updated.fromPersonId) {
-          const inverseType = FAMILY_RELATIONSHIP_INVERSES[body.familyRelationshipType];
-          if (inverseType) {
-            const inverse = await storage.findFamilyRelationship(updated.toPersonId, updated.fromPersonId);
-            if (inverse) {
-              await storage.updateRelationship(inverse.id, { familyRelationshipType: inverseType as FamilyRelationshipType });
-            }
-          }
-          // Re-run propagation
-          await storage.propagateFamilyRelationship(updated.id);
-        }
-  
-        res.json({ relationship: updated });
+        res.json(updated);
       } catch (error) {
-        console.error("Error updating family relationship:", error);
-        res.status(400).json({ error: "Failed to update family relationship" });
+        console.error("Error updating lineage:", error);
+        res.status(400).json({ error: "Failed to update lineage link" });
       }
     });
   
-    // Delete a family relationship (removes both directions)
-    app.delete("/api/family-relationships/:id", async (req, res) => {
+    // Delete Lineage link
+    app.delete("/api/family/lineage/:id", async (req, res) => {
       try {
         const { id } = req.params;
-        const rel = await storage.getRelationshipById(id);
-        if (!rel) {
-          return res.status(404).json({ error: "Relationship not found" });
-        }
-  
-        // Delete the inverse if it exists
-        if (rel.familyRelationshipType) {
-          const inverse = await storage.findFamilyRelationship(rel.toPersonId, rel.fromPersonId);
-          if (inverse) {
-            await storage.deleteRelationship(inverse.id);
-          }
-        }
-  
-        await storage.deleteRelationship(id);
+        await storage.deleteLineage(id);
         res.json({ success: true });
       } catch (error) {
-        console.error("Error deleting family relationship:", error);
-        res.status(500).json({ error: "Failed to delete family relationship" });
+        console.error("Error deleting lineage:", error);
+        res.status(500).json({ error: "Failed to delete lineage link" });
+      }
+    });
+  
+    // Create Partnership
+    app.post("/api/family/partnerships", async (req, res) => {
+      try {
+        const bodySchema = z.object({
+          person1Id: z.string().min(1),
+          person2Id: z.string().min(1),
+          status: z.enum(["married", "partner", "divorced", "ex_partner"]),
+        });
+        const body = bodySchema.parse(req.body);
+  
+        if (body.person1Id === body.person2Id) {
+          return res.status(400).json({ error: "Cannot create partnership to self" });
+        }
+  
+        const part = await storage.createPartnership(body);
+        res.status(201).json(part);
+      } catch (error) {
+        console.error("Error creating partnership:", error);
+        res.status(400).json({ error: "Failed to create partnership" });
+      }
+    });
+  
+    // Update Partnership
+    app.patch("/api/family/partnerships/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const bodySchema = z.object({
+          status: z.enum(["married", "partner", "divorced", "ex_partner"]),
+        });
+        const body = bodySchema.parse(req.body);
+  
+        const updated = await storage.updatePartnership(id, body);
+        if (!updated) {
+          return res.status(404).json({ error: "Partnership not found" });
+        }
+        res.json(updated);
+      } catch (error) {
+        console.error("Error updating partnership:", error);
+        res.status(400).json({ error: "Failed to update partnership" });
+      }
+    });
+  
+    // Delete Partnership
+    app.delete("/api/family/partnerships/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        await storage.deletePartnership(id);
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error deleting partnership:", error);
+        res.status(500).json({ error: "Failed to delete partnership" });
       }
     });
   

@@ -34,18 +34,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertRelationshipSchema, type InsertRelationship, type Person, type RelationshipType, type RelationshipWithPerson, type FamilyRelationshipType } from "@shared/schema";
+import { insertRelationshipSchema, type InsertRelationship, type Person, type RelationshipType, type RelationshipWithPerson } from "@shared/schema";
 import { z } from "zod";
 import { Check, ChevronsUpDown, X } from "lucide-react";
 
 const relationshipFormSchema = z.object({
   fromPersonId: z.string().min(1),
-  typeId: z.string().optional().nullable(),
-  familyRelationshipType: z.string().optional().nullable(),
+  typeId: z.string().min(1, "Relationship type is required"),
   notes: z.string().optional().nullable(),
-}).refine((data) => data.typeId || data.familyRelationshipType, {
-  message: "Relationship type is required",
-  path: ["typeId"],
 });
 
 type FormValues = z.infer<typeof relationshipFormSchema>;
@@ -86,13 +82,6 @@ export function RelationshipDialog({
     enabled: open,
   });
 
-  const { data: familyTypesData } = useQuery<{ types: { value: string; label: string }[] }>({
-    queryKey: ["/api/family-relationships/types"],
-    enabled: open,
-  });
-
-  const familyTypes = familyTypesData?.types ?? [];
-
   // Check if ME user already has a relationship with this person (only in Add mode)
   const meHasRelationship = meUser ? existingRelationships.some(
     rel => rel.toPerson.id === meUser.id
@@ -112,7 +101,6 @@ export function RelationshipDialog({
     defaultValues: {
       fromPersonId: personId,
       typeId: "",
-      familyRelationshipType: null,
       notes: "",
     },
   });
@@ -123,14 +111,12 @@ export function RelationshipDialog({
         form.reset({
           fromPersonId: personId,
           typeId: relationship.typeId ?? "",
-          familyRelationshipType: relationship.familyRelationshipType ?? null,
           notes: relationship.notes || "",
         });
       } else {
         form.reset({
           fromPersonId: personId,
           typeId: "",
-          familyRelationshipType: null,
           notes: "",
         });
         setSelectedPeopleIds([]);
@@ -145,7 +131,6 @@ export function RelationshipDialog({
       if (isEdit && relationship) {
         const payload = {
           typeId: data.typeId || null,
-          familyRelationshipType: data.familyRelationshipType || null,
           notes: data.notes || "",
         };
         return await apiRequest("PATCH", `/api/relationships/${relationship.id}`, payload);
@@ -154,7 +139,6 @@ export function RelationshipDialog({
           fromPersonId: data.fromPersonId,
           toPersonId,
           typeId: data.typeId || null,
-          familyRelationshipType: (data.familyRelationshipType as FamilyRelationshipType) || null,
           notes: data.notes || "",
         }));
 
@@ -324,9 +308,7 @@ export function RelationshipDialog({
                     className="w-full justify-between text-left font-normal"
                     data-testid="button-select-relationship-type"
                   >
-                    {form.watch("familyRelationshipType")
-                      ? familyTypes.find(t => t.value === form.watch("familyRelationshipType"))?.label || form.watch("familyRelationshipType")
-                      : form.watch("typeId")
+                    {form.watch("typeId")
                       ? relationshipTypes?.find(t => t.id === form.watch("typeId"))?.name || "Custom Type"
                       : "Select relationship type..."}
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
@@ -337,35 +319,14 @@ export function RelationshipDialog({
                     <CommandInput placeholder="Search types..." />
                     <CommandEmpty>No type found.</CommandEmpty>
                     <CommandList>
-                      <CommandGroup heading="Family Relationships">
-                        {familyTypes.map((t) => (
-                          <CommandItem
-                            key={t.value}
-                            value={`family-${t.label}`}
-                            onSelect={() => {
-                              form.setValue("familyRelationshipType", t.value);
-                              form.setValue("typeId", null, { shouldValidate: true });
-                              setTypePopoverOpen(false);
-                            }}
-                          >
-                            <Check
-                              className={`mr-2 h-4 w-4 ${
-                                form.watch("familyRelationshipType") === t.value ? "opacity-100" : "opacity-0"
-                              }`}
-                            />
-                            {t.label}
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
                       {relationshipTypes && relationshipTypes.length > 0 && (
-                        <CommandGroup heading="Other Relationships">
-                          {relationshipTypes.map((t) => (
+                        <CommandGroup heading="Relationship Types">
+                          {relationshipTypes.filter(t => t.name.toLowerCase() !== "family").map((t) => (
                             <CommandItem
                               key={t.id}
-                              value={`other-${t.name}`}
+                              value={t.name}
                               onSelect={() => {
                                 form.setValue("typeId", t.id, { shouldValidate: true });
-                                form.setValue("familyRelationshipType", null);
                                 setTypePopoverOpen(false);
                               }}
                             >

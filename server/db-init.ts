@@ -460,6 +460,40 @@ async function validateAndSyncSchema(): Promise<void> {
       log("Backfilled image_uuid for notes and interactions from photos table");
     }
 
+    // Ensure lineage table exists
+    const lineageExists = await tableExists("lineage");
+    if (!lineageExists) {
+      log("Creating lineage table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS lineage (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          child_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          parent_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          lineage_type TEXT NOT NULL DEFAULT 'biological',
+          created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          CONSTRAINT lineage_child_parent_unq UNIQUE (child_id, parent_id)
+        )
+      `);
+      log("Lineage table created successfully");
+    }
+
+    // Ensure partnerships table exists
+    const partnershipsExists = await tableExists("partnerships");
+    if (!partnershipsExists) {
+      log("Creating partnerships table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS partnerships (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          person1_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          person2_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          status TEXT NOT NULL DEFAULT 'partner',
+          created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          CONSTRAINT partnerships_person1_person2_unq UNIQUE (person1_id, person2_id)
+        )
+      `);
+      log("Partnerships table created successfully");
+    }
+
     // Ensure tasks table exists
     const tasksExists = await tableExists("tasks");
     if (!tasksExists) {
@@ -790,6 +824,9 @@ export async function initializeDatabase(): Promise<void> {
 
     // Migrate Partner relationship types to spouse role if needed
     await migratePartnerToSpouse();
+
+    // Migrate family relationships to highly normalized tables
+    await migrateFamilyToNormalizedSchema();
   } catch (error) {
     log(`Database initialization failed: ${error}`);
     throw error;
@@ -869,5 +906,112 @@ async function migratePartnerToSpouse(): Promise<void> {
 
   } catch (error) {
     log(`Error migrating Partner to spouse: ${error}`);
+  }
+}
+
+/**
+ * Migrates family relationships from the generic `relationships` table
+ * to `lineage` and `partnerships` tables, then prunes them and deletes the 'Family' relationship type.
+ */
+async function migrateFamilyToNormalizedSchema(): Promise<void> {
+  log("Checking for family migration to normalized schema...");
+  try {
+    // 1. Check if lineage and partnerships tables are empty
+    const lineageCountRes = await pool.query("SELECT COUNT(*) FROM lineage");
+    const partnershipsCountRes = await pool.query("SELECT COUNT(*) FROM partnerships");
+    const lineageCount = parseInt(lineageCountRes.rows[0].count, 10);
+    const partnershipsCount = parseInt(partnershipsCountRes.rows[0].count, 10);
+
+    if (lineageCount > 0 || partnershipsCount > 0) {
+      log("Lineage or partnerships tables already have data. Skipping migration.");
+      return;
+    }
+
+    // 2. Query all relationships that have a familyRelationshipType
+    const familyRelsRes = await pool.query(`
+      SELECT id, from_person_id, to_person_id, family_relationship_type, notes, created_at
+      FROM relationships
+      WHERE family_relationship_type IS NOT NULL
+    `);
+
+    log(`Found ${familyRelsRes.rows.length} family relationships to migrate.`);
+
+    let lineageMigrated = 0;
+    let partnershipsMigrated = 0;
+
+    for (const rel of familyRelsRes.rows) {
+      const { from_person_id, to_person_id, family_relationship_type, created_at } = rel;
+      const type = family_relationship_type.toLowerCase();
+
+      // Parent-child roles
+      const parentRoles = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
+      const childRoles = ["child", "son", "daughter", "stepchild", "stepson", "stepdaughter"];
+      // Partner roles
+      const partnerRoles = ["spouse", "partner", "ex_spouse", "ex_partner"];
+
+      if (parentRoles.includes(type) || childRoles.includes(type)) {
+        let parentId: string;
+        let childId: string;
+
+        if (parentRoles.includes(type)) {
+          parentId = to_person_id;
+          childId = from_person_id;
+        } else {
+          parentId = from_person_id;
+          childId = to_person_id;
+        }
+
+        const isStep = type.startsWith("step");
+        const lineageType = isStep ? "step" : "biological";
+
+        // Insert into lineage
+        await pool.query(`
+          INSERT INTO lineage (child_id, parent_id, lineage_type, created_at)
+          VALUES ($1, $2, $3, COALESCE($4, NOW()))
+          ON CONFLICT (child_id, parent_id) DO NOTHING
+        `, [childId, parentId, lineageType, created_at]);
+        lineageMigrated++;
+      } else if (partnerRoles.includes(type)) {
+        // Enforce canon order person1Id < person2Id
+        const person1Id = from_person_id < to_person_id ? from_person_id : to_person_id;
+        const person2Id = from_person_id < to_person_id ? to_person_id : from_person_id;
+
+        // Map status
+        let status = "partner";
+        if (type === "spouse") status = "married";
+        else if (type === "ex_spouse") status = "divorced";
+        else if (type === "partner") status = "partner";
+        else if (type === "ex_partner") status = "ex_partner";
+
+        // Insert into partnerships
+        await pool.query(`
+          INSERT INTO partnerships (person1_id, person2_id, status, created_at)
+          VALUES ($1, $2, $3, COALESCE($4, NOW()))
+          ON CONFLICT (person1_id, person2_id) DO NOTHING
+        `, [person1Id, person2Id, status, created_at]);
+        partnershipsMigrated++;
+      }
+    }
+
+    log(`Migrated ${lineageMigrated} lineage records and ${partnershipsMigrated} partnership records.`);
+
+    // 3. Prune these family rows from relationships
+    if (familyRelsRes.rows.length > 0) {
+      const pruneRes = await pool.query(`
+        DELETE FROM relationships
+        WHERE family_relationship_type IS NOT NULL
+      `);
+      log(`Pruned ${pruneRes.rowCount} family relationships from generic table.`);
+    }
+
+    // 4. Delete the "Family" type from relationship_types
+    await pool.query(`
+      DELETE FROM relationship_types
+      WHERE LOWER(name) = 'family'
+    `);
+    log("Deleted 'Family' relationship type from database.");
+
+  } catch (error) {
+    log(`Error migrating family relationships to normalized schema: ${error}`);
   }
 }

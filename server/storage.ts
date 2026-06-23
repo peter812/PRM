@@ -98,6 +98,13 @@ import {
   type AiChat,
   FAMILY_RELATIONSHIP_INVERSES,
   type FamilyRelationshipType,
+  lineage,
+  partnerships,
+  type Lineage,
+  type InsertLineage,
+  type Partnership,
+  type InsertPartnership,
+  deriveLineageRole,
 } from "@shared/schema";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull } from "drizzle-orm";
@@ -222,11 +229,21 @@ export interface IStorage {
   findFamilyRelationship(fromPersonId: string, toPersonId: string): Promise<Relationship | undefined>;
   getFamilyTree(personId: string, maxDepth: number): Promise<FamilyTreeResult>;
   detectMissingFamilyLinks(personIds: string[], rels: Array<{ fromPersonId: string; toPersonId: string; familyRelationshipType: string | null }>, rootPersonId?: string): MissingLink[];
-  propagateFamilyRelationship(relationshipId: string): Promise<Relationship[]>;
-  createFamilyRelationshipWithInverse(data: InsertRelationship): Promise<{ relationship: Relationship; inverseRelationship: Relationship | null; propagated: Relationship[] }>;
   getPeopleByLastName(lastName: string): Promise<Person[]>;
   getSuggestedFamilyConnections(personId: string): Promise<SuggestedFamilyConnection[]>;
   deleteAllFamilyRelationships(): Promise<number>;
+
+  // Lineage operations
+  createLineage(data: InsertLineage): Promise<Lineage>;
+  deleteLineage(id: string): Promise<void>;
+  updateLineage(id: string, data: Partial<InsertLineage>): Promise<Lineage | undefined>;
+  getLineageForPerson(personId: string): Promise<Lineage[]>;
+
+  // Partnership operations
+  createPartnership(data: InsertPartnership): Promise<Partnership>;
+  deletePartnership(id: string): Promise<void>;
+  updatePartnership(id: string, data: Partial<InsertPartnership>): Promise<Partnership | undefined>;
+  getPartnershipsForPerson(personId: string): Promise<Partnership[]>;
 
   // Relationship type operations
   getAllRelationshipTypes(): Promise<RelationshipType[]>;
@@ -993,90 +1010,192 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getFamilyRelationshipsForPerson(personId: string): Promise<Relationship[]> {
-    return db
-      .select()
-      .from(relationships)
-      .where(
-        and(
-          isNotNull(relationships.familyRelationshipType),
-          or(
-            eq(relationships.fromPersonId, personId),
-            eq(relationships.toPersonId, personId)
-          )
-        )
-      );
+    const lineageRels = await db.select().from(lineage).where(
+      or(eq(lineage.childId, personId), eq(lineage.parentId, personId))
+    );
+    const partnerRels = await db.select().from(partnerships).where(
+      or(eq(partnerships.person1Id, personId), eq(partnerships.person2Id, personId))
+    );
+
+    const result: Relationship[] = [];
+
+    // Map lineage to relationships format
+    for (const rel of lineageRels) {
+      const isChild = rel.childId === personId;
+      const otherId = isChild ? rel.parentId : rel.childId;
+      const otherPerson = await db.select().from(people).where(eq(people.id, otherId)).then(r => r[0]);
+
+      const type = deriveLineageRole(isChild, otherPerson?.sex, rel.lineageType);
+
+      result.push({
+        id: rel.id,
+        fromPersonId: personId,
+        toPersonId: otherId,
+        typeId: null,
+        notes: null,
+        familyRelationshipType: type as any,
+        createdAt: rel.createdAt,
+      });
+    }
+
+    // Map partnerships to relationships format
+    for (const rel of partnerRels) {
+      const isPerson1 = rel.person1Id === personId;
+      const otherId = isPerson1 ? rel.person2Id : rel.person1Id;
+      
+      let type = "spouse";
+      if (rel.status === "divorced" || rel.status === "ex_partner") {
+        type = "ex_spouse";
+      }
+
+      result.push({
+        id: rel.id,
+        fromPersonId: personId,
+        toPersonId: otherId,
+        typeId: null,
+        notes: null,
+        familyRelationshipType: type as any,
+        createdAt: rel.createdAt,
+      });
+    }
+
+    return result;
   }
 
   async findFamilyRelationship(fromPersonId: string, toPersonId: string): Promise<Relationship | undefined> {
-    const [rel] = await db
+    // Check lineage
+    const [lin] = await db
       .select()
-      .from(relationships)
+      .from(lineage)
       .where(
-        and(
-          eq(relationships.fromPersonId, fromPersonId),
-          eq(relationships.toPersonId, toPersonId),
-          isNotNull(relationships.familyRelationshipType)
+        or(
+          and(eq(lineage.childId, fromPersonId), eq(lineage.parentId, toPersonId)),
+          and(eq(lineage.childId, toPersonId), eq(lineage.parentId, fromPersonId))
         )
       );
-    return rel || undefined;
+
+    if (lin) {
+      const isFromChild = lin.childId === fromPersonId;
+      const toSex = await db.select({ sex: people.sex }).from(people).where(eq(people.id, toPersonId)).then(r => r[0]?.sex);
+      const type = deriveLineageRole(isFromChild, toSex, lin.lineageType);
+
+      return {
+        id: lin.id,
+        fromPersonId,
+        toPersonId,
+        typeId: null,
+        notes: null,
+        familyRelationshipType: type as any,
+        createdAt: lin.createdAt,
+      };
+    }
+
+    // Check partnerships
+    const [part] = await db
+      .select()
+      .from(partnerships)
+      .where(
+        or(
+          and(eq(partnerships.person1Id, fromPersonId), eq(partnerships.person2Id, toPersonId)),
+          and(eq(partnerships.person1Id, toPersonId), eq(partnerships.person2Id, fromPersonId))
+        )
+      );
+
+    if (part) {
+      let type = "spouse";
+      if (part.status === "divorced" || part.status === "ex_partner") {
+        type = "ex_spouse";
+      }
+
+      return {
+        id: part.id,
+        fromPersonId,
+        toPersonId,
+        typeId: null,
+        notes: null,
+        familyRelationshipType: type as any,
+        createdAt: part.createdAt,
+      };
+    }
+
+    return undefined;
   }
 
   async deleteAllFamilyRelationships(): Promise<number> {
-    const [familyType] = await db
-      .select()
-      .from(relationshipTypes)
-      .where(ilike(relationshipTypes.name, "family"));
-
-    const deletedRels = await db
-      .delete(relationships)
-      .where(
-        familyType
-          ? or(
-              isNotNull(relationships.familyRelationshipType),
-              eq(relationships.typeId, familyType.id)
-            )
-          : isNotNull(relationships.familyRelationshipType)
-      )
-      .returning();
-    return deletedRels.length;
+    const linDeleted = await db.delete(lineage).returning();
+    const partDeleted = await db.delete(partnerships).returning();
+    return linDeleted.length + partDeleted.length;
   }
 
   async getFamilyTree(personId: string, maxDepth: number): Promise<FamilyTreeResult> {
     const visitedPeople = new Map<string, number>(); // personId -> depth
-    const treeRelationships: Array<{ id: string; fromPersonId: string; toPersonId: string; familyRelationshipType: string }> = [];
-    const treeRelIds = new Set<string>();
-
     visitedPeople.set(personId, 0);
     let frontier = [personId];
+
+    const lineageList: Array<{ id: string; childId: string; parentId: string; lineageType: string }> = [];
+    const partnershipsList: Array<{ id: string; person1Id: string; person2Id: string; status: string }> = [];
+
+    const seenLineageIds = new Set<string>();
+    const seenPartnershipIds = new Set<string>();
 
     for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
 
-      const rels = await db
-        .select()
-        .from(relationships)
-        .where(
-          and(
-            isNotNull(relationships.familyRelationshipType),
-            or(
-              inArray(relationships.fromPersonId, frontier),
-              inArray(relationships.toPersonId, frontier)
+      // Query lineage where childId or parentId is in frontier
+      const lineageRels = frontier.length > 0
+        ? await db
+            .select()
+            .from(lineage)
+            .where(
+              or(
+                inArray(lineage.childId, frontier),
+                inArray(lineage.parentId, frontier)
+              )
             )
-          )
-        );
+        : [];
 
-      for (const rel of rels) {
-        if (!treeRelIds.has(rel.id) && rel.familyRelationshipType) {
-          treeRelIds.add(rel.id);
-          treeRelationships.push({
+      // Query partnerships where person1Id or person2Id is in frontier
+      const partnerRels = frontier.length > 0
+        ? await db
+            .select()
+            .from(partnerships)
+            .where(
+              or(
+                inArray(partnerships.person1Id, frontier),
+                inArray(partnerships.person2Id, frontier)
+              )
+            )
+        : [];
+
+      for (const rel of lineageRels) {
+        if (!seenLineageIds.has(rel.id)) {
+          seenLineageIds.add(rel.id);
+          lineageList.push({
             id: rel.id,
-            fromPersonId: rel.fromPersonId,
-            toPersonId: rel.toPersonId,
-            familyRelationshipType: rel.familyRelationshipType,
+            childId: rel.childId,
+            parentId: rel.parentId,
+            lineageType: rel.lineageType,
           });
         }
+        for (const otherId of [rel.childId, rel.parentId]) {
+          if (!visitedPeople.has(otherId)) {
+            visitedPeople.set(otherId, depth + 1);
+            nextFrontier.push(otherId);
+          }
+        }
+      }
 
-        for (const otherId of [rel.fromPersonId, rel.toPersonId]) {
+      for (const rel of partnerRels) {
+        if (!seenPartnershipIds.has(rel.id)) {
+          seenPartnershipIds.add(rel.id);
+          partnershipsList.push({
+            id: rel.id,
+            person1Id: rel.person1Id,
+            person2Id: rel.person2Id,
+            status: rel.status,
+          });
+        }
+        for (const otherId of [rel.person1Id, rel.person2Id]) {
           if (!visitedPeople.has(otherId)) {
             visitedPeople.set(otherId, depth + 1);
             nextFrontier.push(otherId);
@@ -1092,6 +1211,11 @@ export class DatabaseStorage implements IStorage {
       ? await db.select().from(people).where(inArray(people.id, personIds))
       : [];
 
+    const peopleMap = new Map<string, typeof peopleRows[0]>();
+    for (const p of peopleRows) {
+      peopleMap.set(p.id, p);
+    }
+
     const treePeople: FamilyTreePersonEntry[] = peopleRows.map(p => ({
       id: p.id,
       firstName: p.firstName,
@@ -1099,6 +1223,95 @@ export class DatabaseStorage implements IStorage {
       avatarUrl: p.imageUrl ?? null,
       depth: visitedPeople.get(p.id) ?? 0,
     }));
+
+    const treeRelationships: Array<{ id: string; fromPersonId: string; toPersonId: string; familyRelationshipType: string }> = [];
+
+    // Synthesize edges:
+    // 1. Direct parent/child edges
+    for (const rel of lineageList) {
+      const { id, childId, parentId, lineageType } = rel;
+
+      // Subject is child, relative is parent
+      const parentRole = deriveLineageRole(true, peopleMap.get(parentId)?.sex, lineageType);
+      treeRelationships.push({
+        id: `${id}_p`,
+        fromPersonId: childId,
+        toPersonId: parentId,
+        familyRelationshipType: parentRole,
+      });
+
+      // Subject is parent, relative is child
+      const childRole = deriveLineageRole(false, peopleMap.get(childId)?.sex, lineageType);
+      treeRelationships.push({
+        id: `${id}_c`,
+        fromPersonId: parentId,
+        toPersonId: childId,
+        familyRelationshipType: childRole,
+      });
+    }
+
+    // 2. Partnerships (spouses)
+    for (const rel of partnershipsList) {
+      const { id, person1Id, person2Id, status } = rel;
+      let role = "spouse";
+      if (status === "divorced" || status === "ex_partner") {
+        role = "ex_spouse";
+      }
+
+      // Add spousal edges in both directions
+      treeRelationships.push(
+        {
+          id: `${id}_s1`,
+          fromPersonId: person1Id,
+          toPersonId: person2Id,
+          familyRelationshipType: role,
+        },
+        {
+          id: `${id}_s2`,
+          fromPersonId: person2Id,
+          toPersonId: person1Id,
+          familyRelationshipType: role,
+        }
+      );
+    }
+
+    // 3. Synthesize siblings/half-siblings
+    const parentsMap = new Map<string, string[]>();
+    for (const rel of lineageList) {
+      if (!parentsMap.has(rel.childId)) {
+        parentsMap.set(rel.childId, []);
+      }
+      parentsMap.get(rel.childId)!.push(rel.parentId);
+    }
+
+    for (let i = 0; i < peopleRows.length; i++) {
+      const A = peopleRows[i];
+      const parentsA = parentsMap.get(A.id) || [];
+      if (parentsA.length === 0) continue;
+
+      for (let j = i + 1; j < peopleRows.length; j++) {
+        const B = peopleRows[j];
+        const parentsB = parentsMap.get(B.id) || [];
+        const sharedParents = parentsA.filter(p => parentsB.includes(p));
+
+        if (sharedParents.length > 0) {
+          const isFull = sharedParents.length >= 2;
+
+          let roleAB = isFull ? "sibling" : "half_sibling";
+          if (B.sex === "male") roleAB = isFull ? "brother" : "half_brother";
+          else if (B.sex === "female") roleAB = isFull ? "sister" : "half_sister";
+
+          let roleBA = isFull ? "sibling" : "half_sibling";
+          if (A.sex === "male") roleBA = isFull ? "brother" : "half_brother";
+          else if (A.sex === "female") roleBA = isFull ? "sister" : "half_sister";
+
+          treeRelationships.push(
+            { id: `sib_${A.id}_${B.id}`, fromPersonId: A.id, toPersonId: B.id, familyRelationshipType: roleAB },
+            { id: `sib_${B.id}_${A.id}`, fromPersonId: B.id, toPersonId: A.id, familyRelationshipType: roleBA }
+          );
+        }
+      }
+    }
 
     const missingLinks = this.detectMissingFamilyLinks(personIds, treeRelationships, personId);
 
@@ -1214,40 +1427,78 @@ export class DatabaseStorage implements IStorage {
     return missing;
   }
 
-  async propagateFamilyRelationship(relationshipId: string): Promise<Relationship[]> {
-    const { propagateRelationship } = await import("./family-propagation");
-    return propagateRelationship(relationshipId, this);
+  // Lineage operations
+  async createLineage(data: InsertLineage): Promise<Lineage> {
+    const [inserted] = await db.insert(lineage).values(data).returning();
+    return inserted;
   }
 
-  async createFamilyRelationshipWithInverse(data: InsertRelationship): Promise<{
-    relationship: Relationship;
-    inverseRelationship: Relationship | null;
-    propagated: Relationship[];
-  }> {
-    const relationship = await this.createRelationship(data);
+  async deleteLineage(id: string): Promise<void> {
+    await db.delete(lineage).where(eq(lineage.id, id));
+  }
 
-    let inverseRelationship: Relationship | null = null;
-    if (data.familyRelationshipType) {
-      const inverseType = FAMILY_RELATIONSHIP_INVERSES[data.familyRelationshipType];
-      if (inverseType) {
-        const existingInverse = await this.findFamilyRelationship(data.toPersonId, data.fromPersonId);
-        if (!existingInverse) {
-          inverseRelationship = await this.createRelationship({
-            fromPersonId: data.toPersonId,
-            toPersonId: data.fromPersonId,
-            familyRelationshipType: inverseType as FamilyRelationshipType,
-            typeId: data.typeId,
-            notes: data.notes,
-          });
-        } else {
-          inverseRelationship = existingInverse;
-        }
-      }
+  async updateLineage(id: string, data: Partial<InsertLineage>): Promise<Lineage | undefined> {
+    const [updated] = await db
+      .update(lineage)
+      .set(data)
+      .where(eq(lineage.id, id))
+      .returning();
+    return updated || undefined;
+  }
+
+  async getLineageForPerson(personId: string): Promise<Lineage[]> {
+    return db
+      .select()
+      .from(lineage)
+      .where(
+        or(
+          eq(lineage.childId, personId),
+          eq(lineage.parentId, personId)
+        )
+      );
+  }
+
+  // Partnership operations
+  async createPartnership(data: InsertPartnership): Promise<Partnership> {
+    const person1Id = data.person1Id < data.person2Id ? data.person1Id : data.person2Id;
+    const person2Id = data.person1Id < data.person2Id ? data.person2Id : data.person1Id;
+    const [inserted] = await db
+      .insert(partnerships)
+      .values({ ...data, person1Id, person2Id })
+      .returning();
+    return inserted;
+  }
+
+  async deletePartnership(id: string): Promise<void> {
+    await db.delete(partnerships).where(eq(partnerships.id, id));
+  }
+
+  async updatePartnership(id: string, data: Partial<InsertPartnership>): Promise<Partnership | undefined> {
+    let updateData = { ...data };
+    if (data.person1Id && data.person2Id) {
+      const person1Id = data.person1Id < data.person2Id ? data.person1Id : data.person2Id;
+      const person2Id = data.person1Id < data.person2Id ? data.person2Id : data.person1Id;
+      updateData.person1Id = person1Id;
+      updateData.person2Id = person2Id;
     }
+    const [updated] = await db
+      .update(partnerships)
+      .set(updateData)
+      .where(eq(partnerships.id, id))
+      .returning();
+    return updated || undefined;
+  }
 
-    const propagated = await this.propagateFamilyRelationship(relationship.id);
-
-    return { relationship, inverseRelationship, propagated };
+  async getPartnershipsForPerson(personId: string): Promise<Partnership[]> {
+    return db
+      .select()
+      .from(partnerships)
+      .where(
+        or(
+          eq(partnerships.person1Id, personId),
+          eq(partnerships.person2Id, personId)
+        )
+      );
   }
 
   async getPeopleByLastName(lastName: string): Promise<Person[]> {
