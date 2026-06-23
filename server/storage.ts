@@ -1379,7 +1379,7 @@ export class DatabaseStorage implements IStorage {
       // for the root and anyone who is a parent in the tree. Previously we only
       // flagged a missing parent when the OTHER parent existed; now we also
       // surface them when neither parent is recorded so the user can fill them in.
-      const shouldSuggestParents = isCentral || isParentInTree;
+      const shouldSuggestParents = pid === rootPersonId;
       if (shouldSuggestParents && !hasFather) {
         const key = `${pid}:father`;
         if (!seen.has(key) && personIdSet.has(pid)) {

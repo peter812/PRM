@@ -16,7 +16,7 @@ import {
   BaseEdge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Trash2 } from "lucide-react";
+import { Trash2, X } from "lucide-react";
 import {
   FamilyTreeData,
   FamilyTreePerson,
@@ -74,7 +74,7 @@ function getInverseParentRole(childType: string): string {
  * so edges can be routed to/from any direction. Color reflects relationship
  * status: green for "together" (default for spouse), orange for "dating".
  */
-function CoupleGroupNode({ data }: { id: string; data: { color?: CoupleGroupColor } }) {
+function CoupleGroupNode({ data }: { id: string; data: { color?: CoupleGroupColor; partnershipId?: string; onDivorce?: (partnershipId: string) => void } }) {
   const color: CoupleGroupColor = data.color ?? "together";
   const palette =
     color === "dating"
@@ -92,15 +92,25 @@ function CoupleGroupNode({ data }: { id: string; data: { color?: CoupleGroupColo
   const handleClass = `${palette.handle} !w-2 !h-2 !border-0`;
 
   return (
-    <div className={`w-full h-full rounded-2xl border-2 ${palette.border} ${palette.bg}`}>
-      <Handle id="top" type="source" position={Position.Top} className={handleClass} />
-      <Handle id="top-target" type="target" position={Position.Top} className={handleClass} />
+    <div className={`relative w-full h-full rounded-2xl border-2 group/couple ${palette.border} ${palette.bg}`}>
       <Handle id="bottom" type="source" position={Position.Bottom} className={handleClass} />
-      <Handle id="bottom-target" type="target" position={Position.Bottom} className={handleClass} />
-      <Handle id="left" type="source" position={Position.Left} className={handleClass} />
-      <Handle id="left-target" type="target" position={Position.Left} className={handleClass} />
-      <Handle id="right" type="source" position={Position.Right} className={handleClass} />
-      <Handle id="right-target" type="target" position={Position.Right} className={handleClass} />
+
+      {/* Divorce Toggle Button */}
+      {data.partnershipId && data.onDivorce && data.color !== "dating" && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <button
+            type="button"
+            className="w-6 h-6 rounded-full bg-red-600 hover:bg-red-700 text-white flex items-center justify-center shadow-md transition-opacity duration-200 opacity-0 group-hover/couple:opacity-100 pointer-events-auto cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              data.onDivorce?.(data.partnershipId!);
+            }}
+            title="Mark as divorced"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -116,6 +126,7 @@ interface PersonNodeData {
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   relatedPersonId?: string;
   missingRole?: string;
+  hasSpouse?: boolean;
 }
 
 function PersonNode({ data }: { data: PersonNodeData; id: string }) {
@@ -157,10 +168,14 @@ function PersonNode({ data }: { data: PersonNodeData; id: string }) {
     <div className={nodeClasses} onClick={handleClick}>
       <Handle id="top" type="target" position={Position.Top} className={handleClass} />
       <Handle id="top-source" type="source" position={Position.Top} className={handleClass} />
-      <Handle id="left" type="target" position={Position.Left} className={handleClass} />
-      <Handle id="left-source" type="source" position={Position.Left} className={handleClass} />
-      <Handle id="right" type="target" position={Position.Right} className={handleClass} />
-      <Handle id="right-source" type="source" position={Position.Right} className={handleClass} />
+      {!data.hasSpouse && (
+        <>
+          <Handle id="left" type="target" position={Position.Left} className={handleClass} />
+          <Handle id="left-source" type="source" position={Position.Left} className={handleClass} />
+          <Handle id="right" type="target" position={Position.Right} className={handleClass} />
+          <Handle id="right-source" type="source" position={Position.Right} className={handleClass} />
+        </>
+      )}
       {showAvatar && (
         <img
           src={data.avatarUrl ?? ""}
@@ -282,12 +297,14 @@ function buildFlowElements(
   showAddOptions: boolean,
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void,
   onDeleteEdge?: (edgeId: string) => void,
+  onDivorce?: (partnershipId: string) => void,
 ): { nodes: Node[]; edges: Edge[] } {
   const { rootPersonId, people, relationships } = data;
   const missingLinks = showAddOptions ? data.missingLinks : [];
 
   // Build adjacency maps
   const spouses = new Map<string, Set<string>>();
+  const couplePartnershipIdMap = new Map<string, string>();
   const parents = new Map<string, Set<string>>();
   const children = new Map<string, Set<string>>();
   const siblings = new Map<string, Set<string>>();
@@ -298,10 +315,18 @@ function buildFlowElements(
     relTypeMap.set(`${rel.fromPersonId}:${rel.toPersonId}`, rel.familyRelationshipType);
 
     if (cat === "spouse") {
-      if (!spouses.has(rel.fromPersonId)) spouses.set(rel.fromPersonId, new Set());
-      if (!spouses.has(rel.toPersonId)) spouses.set(rel.toPersonId, new Set());
-      spouses.get(rel.fromPersonId)!.add(rel.toPersonId);
-      spouses.get(rel.toPersonId)!.add(rel.fromPersonId);
+      if (rel.familyRelationshipType === "ex_spouse" || rel.familyRelationshipType === "ex_partner") {
+        // Divorced spouses do not form a couple group box
+      } else {
+        const partnershipId = rel.id.replace(/_s[12]/, "");
+        const key = [rel.fromPersonId, rel.toPersonId].sort().join(":");
+        couplePartnershipIdMap.set(key, partnershipId);
+
+        if (!spouses.has(rel.fromPersonId)) spouses.set(rel.fromPersonId, new Set());
+        if (!spouses.has(rel.toPersonId)) spouses.set(rel.toPersonId, new Set());
+        spouses.get(rel.fromPersonId)!.add(rel.toPersonId);
+        spouses.get(rel.toPersonId)!.add(rel.fromPersonId);
+      }
     } else if (cat === "parent") {
       if (!parents.has(rel.toPersonId)) parents.set(rel.toPersonId, new Set());
       parents.get(rel.toPersonId)!.add(rel.fromPersonId);
@@ -541,7 +566,11 @@ function buildFlowElements(
       id: groupId,
       type: "coupleGroup",
       position: groupPos,
-      data: { color: coupleColor.get(coupleKey) ?? "together" },
+      data: {
+        color: coupleColor.get(coupleKey) ?? "together",
+        partnershipId: couplePartnershipIdMap.get(coupleKey),
+        onDivorce,
+      },
       style: { width: groupWidth, height: groupHeight },
     });
   }
@@ -584,6 +613,7 @@ function buildFlowElements(
         isRoot: person.id === rootPersonId,
         isMissing: false,
         viewMode,
+        hasSpouse: !!groupId,
       } satisfies PersonNodeData,
       style: { width: LAYOUT.NODE_WIDTH, height: LAYOUT.NODE_HEIGHT },
     });
@@ -855,9 +885,10 @@ interface FamilyTreeFlowInnerProps {
   onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
   /** Fired when the user drags from a person's side handle and releases without connecting.
    *  Used to prompt adding a spouse for that person. */
-  onDragEndNoTarget?: (sourcePersonId: string) => void;
+  onDragEndNoTarget?: (sourcePersonId: string, handleId: string | null) => void;
   /** Fired when the user clicks the delete button on an edge. */
   onDeleteEdge?: (edgeId: string) => void;
+  onDivorce?: (partnershipId: string) => void;
 }
 
 /** Returns true when a node id refers to a real person (not a couple group or virtual placeholder). */
@@ -884,15 +915,17 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
       onConnectGroupChild,
       onDragEndNoTarget,
       onDeleteEdge,
+      onDivorce,
     },
     ref,
   ) {
     const { fitView, zoomIn, zoomOut } = useReactFlow();
     const connectingNodeId = useRef<string | null>(null);
+    const connectingHandleId = useRef<string | null>(null);
 
     const { nodes: initialNodes, edges: initialEdges } = useMemo(
-      () => buildFlowElements(data, viewMode, showAddOptions, onAddMember, onDeleteEdge),
-      [data, viewMode, showAddOptions, onAddMember, onDeleteEdge],
+      () => buildFlowElements(data, viewMode, showAddOptions, onAddMember, onDeleteEdge, onDivorce),
+      [data, viewMode, showAddOptions, onAddMember, onDeleteEdge, onDivorce],
     );
 
     useImperativeHandle(ref, () => ({
@@ -927,6 +960,7 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
     const handleConnectStart = useCallback(
       (_event: MouseEvent | TouchEvent, params: { nodeId: string | null; handleId: string | null }) => {
         connectingNodeId.current = params.nodeId;
+        connectingHandleId.current = params.handleId;
       },
       [],
     );
@@ -936,9 +970,10 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         if (!onDragEndNoTarget || !connectingNodeId.current) return;
         // If connection was not successfully completed (i.e. didn't land on a valid target)
         if (!connectionState.isValid && isRealPersonId(connectingNodeId.current)) {
-          onDragEndNoTarget(connectingNodeId.current);
+          onDragEndNoTarget(connectingNodeId.current, connectingHandleId.current);
         }
         connectingNodeId.current = null;
+        connectingHandleId.current = null;
       },
       [onDragEndNoTarget],
     );
@@ -1007,8 +1042,9 @@ interface FamilyTreeFlowProps {
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
   onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
   onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
-  onDragEndNoTarget?: (sourcePersonId: string) => void;
+  onDragEndNoTarget?: (sourcePersonId: string, handleId: string | null) => void;
   onDeleteEdge?: (edgeId: string) => void;
+  onDivorce?: (partnershipId: string) => void;
   className?: string;
   viewMode?: FamilyTreeViewMode;
   showAddOptions?: boolean;
@@ -1026,6 +1062,7 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
       onConnectGroupChild,
       onDragEndNoTarget,
       onDeleteEdge,
+      onDivorce,
       className,
       viewMode = "name",
       showAddOptions = true,
@@ -1050,6 +1087,7 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
             onConnectGroupChild={onConnectGroupChild}
             onDragEndNoTarget={onDragEndNoTarget}
             onDeleteEdge={onDeleteEdge}
+            onDivorce={onDivorce}
           />
         </ReactFlowProvider>
       </div>

@@ -144,10 +144,14 @@ function buildRenderTree(
     relTypeMap.set(`${rel.fromPersonId}:${rel.toPersonId}`, rel.familyRelationshipType);
 
     if (cat === "spouse") {
-      if (!spouses.has(rel.fromPersonId)) spouses.set(rel.fromPersonId, new Set());
-      if (!spouses.has(rel.toPersonId)) spouses.set(rel.toPersonId, new Set());
-      spouses.get(rel.fromPersonId)!.add(rel.toPersonId);
-      spouses.get(rel.toPersonId)!.add(rel.fromPersonId);
+      if (rel.familyRelationshipType === "ex_spouse" || rel.familyRelationshipType === "ex_partner") {
+        // Divorced spouses do not form a couple group/lineage grouping
+      } else {
+        if (!spouses.has(rel.fromPersonId)) spouses.set(rel.fromPersonId, new Set());
+        if (!spouses.has(rel.toPersonId)) spouses.set(rel.toPersonId, new Set());
+        spouses.get(rel.fromPersonId)!.add(rel.toPersonId);
+        spouses.get(rel.toPersonId)!.add(rel.fromPersonId);
+      }
     } else if (cat === "parent") {
       // fromPerson is parent of toPerson
       if (!parents.has(rel.toPersonId)) parents.set(rel.toPersonId, new Set());

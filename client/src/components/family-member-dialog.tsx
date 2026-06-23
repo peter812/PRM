@@ -58,12 +58,15 @@ export function FamilyMemberDialog({
   const [mode, setMode] = useState<"link" | "create">("link");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
-  const [connectionType, setConnectionType] = useState<"parent" | "spouse" | "child">("parent");
+  const [connectionType, setConnectionType] = useState<"parent" | "spouse" | "child" | "sibling">("parent");
   
   // Details
   const [lineageType, setLineageType] = useState<"biological" | "adoptive" | "step">("biological");
   const [partnershipStatus, setPartnershipStatus] = useState<"married" | "partner" | "divorced" | "ex_partner">("married");
   
+  // State for step-relations of the new spouse to A's children: childId -> "none" | "biological" | "adoptive" | "step"
+  const [childRelations, setChildRelations] = useState<Record<string, "none" | "biological" | "adoptive" | "step">>({});
+
   // New Person form
   const [newPerson, setNewPerson] = useState({ firstName: "", lastName: "" });
   const [newPersonSex, setNewPersonSex] = useState<string>("unknown");
@@ -73,10 +76,27 @@ export function FamilyMemberDialog({
     enabled: open,
   });
 
+  const { data: familyData } = useQuery<{ parents: any[]; children: any[] }>({
+    queryKey: [`/api/people/${personId}/family`],
+    enabled: open && !!personId,
+  });
+
+  useEffect(() => {
+    if (connectionType === "spouse" && familyData?.children) {
+      const initial: Record<string, "none" | "biological" | "adoptive" | "step"> = {};
+      familyData.children.forEach((c: any) => {
+        initial[c.person.id] = "none";
+      });
+      setChildRelations(initial);
+    } else {
+      setChildRelations({});
+    }
+  }, [connectionType, familyData]);
+
   useEffect(() => {
     if (open) {
       if (isEdit && connection) {
-        setConnectionType(connection.type);
+        setConnectionType(connection.type as any);
         setSelectedPersonId(connection.person.id);
         if (connection.type === "spouse") {
           setPartnershipStatus(connection.status || "married");
@@ -88,7 +108,7 @@ export function FamilyMemberDialog({
         setSearchTerm("");
         setSelectedPersonId(null);
         
-        let defaultConnType: "parent" | "spouse" | "child" = "parent";
+        let defaultConnType: "parent" | "spouse" | "child" | "sibling" = "parent";
         if (suggestedRole) {
           const role = suggestedRole.toLowerCase();
           if (role.includes("spouse") || role.includes("partner") || role.includes("husband") || role.includes("wife")) {
@@ -97,6 +117,8 @@ export function FamilyMemberDialog({
             defaultConnType = "child";
           } else if (role.includes("parent") || role.includes("father") || role.includes("mother")) {
             defaultConnType = "parent";
+          } else if (role.includes("sibling") || role.includes("brother") || role.includes("sister")) {
+            defaultConnType = "sibling";
           }
         }
         
@@ -163,12 +185,54 @@ export function FamilyMemberDialog({
             parentId: personId,
             lineageType,
           });
+        } else if (connectionType === "sibling") {
+          // Link targetPersonId to existing parents of personId
+          if (familyData?.parents && familyData.parents.length > 0) {
+            for (const parent of familyData.parents) {
+              await apiRequest("POST", "/api/family/lineage", {
+                childId: targetPersonId,
+                parentId: parent.person.id,
+                lineageType,
+              });
+            }
+          } else {
+            // Create a placeholder parent first
+            const createdParent = await createPersonMutation.mutateAsync({
+              firstName: "Parent of",
+              lastName: personName ? personName.split(" ").slice(1).join(" ") : "",
+              sex: "unknown",
+            });
+            // Link selected person to this parent
+            await apiRequest("POST", "/api/family/lineage", {
+              childId: personId,
+              parentId: createdParent.id,
+              lineageType,
+            });
+            // Link new sibling to this parent
+            await apiRequest("POST", "/api/family/lineage", {
+              childId: targetPersonId,
+              parentId: createdParent.id,
+              lineageType,
+            });
+          }
         } else {
           await apiRequest("POST", "/api/family/partnerships", {
             person1Id: personId,
             person2Id: targetPersonId,
             status: partnershipStatus,
           });
+
+          // Create lineage links for children if selected
+          for (const childId of Object.keys(childRelations)) {
+            const relType = childRelations[childId];
+            if (relType !== "none") {
+              await apiRequest("POST", "/api/family/lineage", {
+                childId,
+                parentId: targetPersonId,
+                lineageType: relType,
+              });
+            }
+          }
         }
       }
     },
@@ -229,6 +293,7 @@ export function FamilyMemberDialog({
                   <SelectItem value="parent">Parent</SelectItem>
                   <SelectItem value="spouse">Spouse / Partner</SelectItem>
                   <SelectItem value="child">Child</SelectItem>
+                  <SelectItem value="sibling">Sibling</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -345,23 +410,61 @@ export function FamilyMemberDialog({
 
         <div className="space-y-3 border-t pt-3 mt-1">
           {connectionType === "spouse" ? (
-            <div>
-              <Label>Relationship Status</Label>
-              <Select
-                value={partnershipStatus}
-                onValueChange={(val) => setPartnershipStatus(val as any)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="married">Married / Spouse</SelectItem>
-                  <SelectItem value="partner">Partner / Significant Other</SelectItem>
-                  <SelectItem value="divorced">Divorced / Ex-Spouse</SelectItem>
-                  <SelectItem value="ex_partner">Ex-Partner</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <>
+              <div>
+                <Label>Relationship Status</Label>
+                <Select
+                  value={partnershipStatus}
+                  onValueChange={(val) => setPartnershipStatus(val as any)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="married">Married / Spouse</SelectItem>
+                    <SelectItem value="partner">Partner / Significant Other</SelectItem>
+                    <SelectItem value="divorced">Divorced / Ex-Spouse</SelectItem>
+                    <SelectItem value="ex_partner">Ex-Partner</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {!isEdit && familyData?.children && familyData.children.length > 0 && (
+                <div className="space-y-2 pt-2 border-t mt-2">
+                  <Label className="text-xs font-semibold text-muted-foreground">
+                    Define relationship to existing children of {personName}:
+                  </Label>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
+                    {familyData.children.map((c: any) => (
+                      <div key={c.person.id} className="flex items-center justify-between gap-2 text-sm py-1 border-b last:border-b-0">
+                        <span className="truncate max-w-[180px]">
+                          {c.person.firstName} {c.person.lastName}
+                        </span>
+                        <Select
+                          value={childRelations[c.person.id] || "none"}
+                          onValueChange={(val) =>
+                            setChildRelations((prev) => ({
+                              ...prev,
+                              [c.person.id]: val as any,
+                            }))
+                          }
+                        >
+                          <SelectTrigger className="w-36 h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">Not connected</SelectItem>
+                            <SelectItem value="biological">Biological parent</SelectItem>
+                            <SelectItem value="step">Step-parent</SelectItem>
+                            <SelectItem value="adoptive">Adoptive parent</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
             <div>
               <Label>Lineage Type</Label>

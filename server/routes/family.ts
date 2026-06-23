@@ -206,4 +206,16 @@ export function registerRoutes(app: Express) {
       res.status(500).json({ error: "Failed to delete partnership" });
     }
   });
+
+  // Delete all family relationships and connections
+  app.delete("/api/family/relationships/all", async (_req, res) => {
+    try {
+      const count = await storage.deleteAllFamilyRelationships();
+      res.json({ success: true, count });
+    } catch (error) {
+      console.error("Error deleting all family relationships:", error);
+      res.status(500).json({ error: "Failed to delete all family relationships" });
+    }
+  });
 }
+

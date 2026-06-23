@@ -127,6 +127,7 @@ export default function FamilyTreeDevPage() {
   >(null);
   const [removeRelsConfirm, setRemoveRelsConfirm] = useState<string | null>(null);
   const [deleteEdgeConfirm, setDeleteEdgeConfirm] = useState<string | null>(null);
+  const [deleteAllStage, setDeleteAllStage] = useState<0 | 1 | 2>(0);
   const { toast } = useToast();
 
   // Fetch current user to use as default root
@@ -326,10 +327,68 @@ export default function FamilyTreeDevPage() {
   };
 
   // When the user drags from a person and releases without connecting to another node,
-  // prompt them to add a spouse for that person.
-  const handleDragEndNoTarget = (sourcePersonId: string) => {
-    setAddMemberContext({ relatedPersonId: sourcePersonId, suggestedRole: "spouse" });
+  // infer the role from the handle the drag started on: bottom → child, top → parent,
+  // sides → spouse. This keeps the "add member" prompt defaulted to the right type.
+  const handleDragEndNoTarget = (sourcePersonId: string, handleId: string | null) => {
+    let suggestedRole = "spouse";
+    if (handleId?.startsWith("bottom")) suggestedRole = "child";
+    else if (handleId?.startsWith("top")) suggestedRole = "parent";
+    setAddMemberContext({ relatedPersonId: sourcePersonId, suggestedRole });
   };
+
+  // Mark a spouse/partner connection as divorced (red "X" toggle on the couple bubble).
+  const divorcePartnership = useMutation({
+    mutationFn: async (partnershipId: string) => {
+      await apiRequest("PATCH", `/api/family/partnerships/${partnershipId}`, {
+        status: "divorced",
+      });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Marked as divorced",
+        description: "The relationship is now shown as divorced.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Failed to update relationship",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDivorce = (partnershipId: string) => {
+    divorcePartnership.mutate(partnershipId);
+  };
+
+  // Delete every family relationship/connection (garbage-can button, double-confirmed).
+  const deleteAllFamily = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("DELETE", "/api/family/relationships/all");
+      return res.json() as Promise<{ count?: number }>;
+    },
+    onSuccess: (data) => {
+      const count = data?.count ?? 0;
+      toast({
+        title: "All family relationships deleted",
+        description: `Removed ${count} relationship${count === 1 ? "" : "s"}.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/graph"] });
+      setDeleteAllStage(0);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Failed to delete relationships",
+        description: err.message,
+        variant: "destructive",
+      });
+      setDeleteAllStage(0);
+    },
+  });
 
   // When the user clicks the trash icon on an edge, prompt to delete that connection.
   const handleDeleteEdge = (edgeId: string) => {
@@ -659,6 +718,17 @@ export default function FamilyTreeDevPage() {
           >
             <Maximize className="h-4 w-4" />
           </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+            onClick={() => setDeleteAllStage(1)}
+            disabled={!selectedPersonId}
+            title="Delete all family relations and connections"
+            data-testid="button-delete-all-family"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
@@ -711,6 +781,7 @@ export default function FamilyTreeDevPage() {
             onConnectGroupChild={handleConnectGroupChild}
             onDragEndNoTarget={handleDragEndNoTarget}
             onDeleteEdge={handleDeleteEdge}
+            onDivorce={handleDivorce}
             viewMode={viewMode}
             showAddOptions={showAddOptions}
           />
@@ -913,6 +984,59 @@ export default function FamilyTreeDevPage() {
             >
               Delete
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete ALL family relationships — double confirmation */}
+      <AlertDialog
+        open={deleteAllStage > 0}
+        onOpenChange={(open) => {
+          if (!open && !deleteAllFamily.isPending) setDeleteAllStage(0);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteAllStage === 1
+                ? "Delete ALL family relationships?"
+                : "Are you absolutely sure?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteAllStage === 1
+                ? "This permanently removes every family relationship and connection for everyone — all lineage links and partnerships across the whole database. This cannot be undone."
+                : "Final confirmation: this erases the entire family graph for all people. There is no way to recover it."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteAllStage(0)}
+              disabled={deleteAllFamily.isPending}
+            >
+              Cancel
+            </Button>
+            {deleteAllStage === 1 ? (
+              <Button
+                className="bg-red-600 hover:bg-red-700 text-white"
+                onClick={() => setDeleteAllStage(2)}
+                data-testid="confirm-delete-all-step-1"
+              >
+                Continue
+              </Button>
+            ) : (
+              <Button
+                className="bg-red-600 hover:bg-red-700 text-white"
+                onClick={() => deleteAllFamily.mutate()}
+                disabled={deleteAllFamily.isPending}
+                data-testid="confirm-delete-all-step-2"
+              >
+                {deleteAllFamily.isPending && (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                )}
+                Delete everything
+              </Button>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
