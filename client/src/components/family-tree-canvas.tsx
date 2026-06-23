@@ -584,6 +584,7 @@ export interface FamilyTreeCanvasHandle {
   fitToScreen: () => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  getLayoutData?: () => { nodes: any[]; edges: any[] };
 }
 
 export const FamilyTreeCanvas = forwardRef<FamilyTreeCanvasHandle, FamilyTreeCanvasProps>(
