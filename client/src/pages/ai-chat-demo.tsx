@@ -31,6 +31,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { MarkdownMessage } from "@/components/markdown-message";
@@ -731,8 +732,13 @@ export default function AiChatDemoPage() {
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
             {isLoadingChats ? (
-              <div className="flex justify-center py-6">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              <div className="space-y-1">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="flex items-center gap-2 px-2 py-2">
+                    <Skeleton className="h-4 w-4 shrink-0 rounded" />
+                    <Skeleton className="h-4 flex-1" />
+                  </div>
+                ))}
               </div>
             ) : chats.length === 0 ? (
               <p className="text-xs text-muted-foreground px-2 py-4 text-center">

@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -399,8 +400,15 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-24" data-testid="loading-person-photos">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div className="px-6 py-4 space-y-4" data-testid="loading-person-photos">
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-4 w-40" />
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="aspect-square rounded-md w-full" />
+          ))}
+        </div>
       </div>
     );
   }

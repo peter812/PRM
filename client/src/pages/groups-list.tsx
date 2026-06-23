@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -110,12 +111,12 @@ export default function GroupsList() {
         {isLoading ? (
           <div className={viewMode === "list" ? "flex flex-col gap-[5px]" : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"}>
             {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-4 animate-pulse">
+              <Card key={i} className="p-4">
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-full bg-muted" />
+                  <Skeleton className="w-12 h-12 rounded-full" />
                   <div className="flex-1 space-y-2">
-                    <div className="h-4 bg-muted rounded w-1/3" />
-                    <div className="h-3 bg-muted rounded w-1/4" />
+                    <Skeleton className="h-4 w-1/3" />
+                    <Skeleton className="h-3 w-1/4" />
                   </div>
                 </div>
               </Card>

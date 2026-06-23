@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Trash2, Users2, Edit, MoreHorizontal } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { RelationshipDialog } from "@/components/relationship-dialog";
@@ -124,11 +125,20 @@ export function RelationshipsTab({
         {/* Left: grouped chips. Spans two columns on large screens. */}
         <div className="lg:col-span-2 min-w-0">
           {isLoading ? (
-            <div
-              className="text-sm text-muted-foreground"
-              data-testid="text-relationships-loading"
-            >
-              Loading relationships…
+            <div className="space-y-6" data-testid="text-relationships-loading">
+              {[1, 2].map((i) => (
+                <div key={i} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Skeleton className="w-3.5 h-3.5 rounded-full" />
+                    <Skeleton className="h-4 w-28" />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {[1, 2, 3].map((j) => (
+                      <Skeleton key={j} className="h-8 w-24 rounded-full" />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : hasAny ? (
             <div className="space-y-6">

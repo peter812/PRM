@@ -10,6 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
@@ -115,13 +116,13 @@ export default function PersonProfile() {
   if (isLoading) {
     return (
       <div className="flex flex-col h-full">
-        <div className="border-b px-6 py-4 animate-pulse">
-          <div className="h-8 w-32 bg-muted rounded mb-6" />
+        <div className="border-b px-6 py-4">
+          <Skeleton className="h-8 w-32 mb-6" />
           <div className="flex items-start gap-6">
-            <div className="w-24 h-24 rounded-full bg-muted" />
+            <Skeleton className="w-24 h-24 rounded-full" />
             <div className="flex-1 space-y-3">
-              <div className="h-8 bg-muted rounded w-1/3" />
-              <div className="h-4 bg-muted rounded w-1/4" />
+              <Skeleton className="h-8 w-1/3" />
+              <Skeleton className="h-4 w-1/4" />
             </div>
           </div>
         </div>

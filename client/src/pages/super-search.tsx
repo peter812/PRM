@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Loader2, Search, Users, Users2, FileText, Calendar, AtSign, BookOpen, MessageSquare, Image, ArrowLeft } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -151,9 +152,22 @@ export default function SuperSearchPage() {
         )}
 
         {isLoading && (
-          <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <Loader2 className="h-10 w-10 animate-spin text-blue-500" />
-            <p className="text-muted-foreground">Searching with AI...</p>
+          <div className="space-y-3">
+            {[1, 2, 3, 4, 5].map((i) => (
+              <Card key={i}>
+                <CardContent className="p-4 flex items-start gap-3">
+                  <Skeleton className="h-5 w-5 shrink-0 rounded" />
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Skeleton className="h-4 w-1/3" />
+                      <Skeleton className="h-4 w-16" />
+                      <Skeleton className="h-3 w-8 ml-auto" />
+                    </div>
+                    <Skeleton className="h-4 w-5/6" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         )}
 
