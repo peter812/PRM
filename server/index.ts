@@ -53,9 +53,11 @@ app.use(etagMiddleware);
 // Setup auth after body parsers
 setupAuth(app);
 
-// Middleware to bypass auth if DISABLE_AUTH is set
+// Middleware to bypass auth if DISABLE_AUTH is set.
+// Guarded to non-production environments so a stray DISABLE_AUTH=true in
+// production can never bypass authentication.
 app.use((req, res, next) => {
-  if (process.env.DISABLE_AUTH === 'true') {
+  if (process.env.DISABLE_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
     // Mock authenticated user for development
     if (!req.isAuthenticated()) {
       (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev' };

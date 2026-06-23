@@ -58,22 +58,10 @@ export function setupAuth(app: Express) {
     done(null, user);
   });
 
-  app.post("/api/register", async (req, res, next) => {
-    const existingUser = await storage.getUserByUsername(req.body.username);
-    if (existingUser) {
-      return res.status(400).send("Username already exists");
-    }
-
-    const user = await storage.createUser({
-      ...req.body,
-      password: await hashPassword(req.body.password),
-    });
-
-    req.login(user, (err) => {
-      if (err) return next(err);
-      res.status(201).json(user);
-    });
-  });
+  // NOTE: There is intentionally no open "/api/register" endpoint. Account
+  // creation goes through "/api/setup/initialize", which is guarded by the
+  // isUserCreationAllowed / user-count check so accounts can only be created
+  // during first-time setup or after an explicit database reset.
 
   app.post("/api/login", passport.authenticate("local"), (req, res) => {
     res.status(200).json(req.user);
@@ -96,9 +84,10 @@ export function setupAuth(app: Express) {
  * Express middleware that requires the request be authenticated.
  *
  * Honors the DISABLE_AUTH bypass flag set in server/index.ts: when
- * DISABLE_AUTH=true, the bypass middleware populates req.user with a mock
- * developer account, which causes req.isAuthenticated() (Passport) to return
- * true. Do NOT remove this bypass option.
+ * DISABLE_AUTH=true (and NODE_ENV is not "production"), the bypass middleware
+ * populates req.user with a mock developer account, which causes
+ * req.isAuthenticated() (Passport) to return true. The production guard means
+ * this bypass never weakens auth in production. Do NOT remove this bypass option.
  */
 export function requireAuth(
   req: import("express").Request,

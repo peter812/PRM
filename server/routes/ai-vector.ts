@@ -71,21 +71,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 // Flag to track if user creation is allowed (only after database reset)
 let isUserCreationAllowed = false;
 
-// Endpoints under /api that intentionally do not require authentication.
-// Paths are relative to the "/api" mount point (so "/setup/status" matches
-// the route "/api/setup/status"). Everything not listed here is protected
-// by the requireAuth gate installed at the top of registerRoutes().
-const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
-  "/setup/status",
-  "/setup/initialize",
-  "/sso-config/status",
-  "/sso/login",
-  "/sso/callback",
-  "/extension-auth/verify",
-  "/extension-auth/ping",
-  "/v1/ping",
-]);
-
+// NOTE: The global "/api" auth gate (and its PUBLIC_API_PATHS allowlist) lives
+// in server/routes/auth-setup.ts, which is registered first and protects every
+// /api route in all modules. Do not add a separate allowlist here.
 
 
 

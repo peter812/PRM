@@ -31,8 +31,9 @@ user can see every row.
 - `server/auth.ts` configures Passport with a local username/password
   strategy, scrypt password hashing, and `express-session` backed by
   `storage.sessionStore`.
-- `setupAuth(app)` registers `/api/register`, `/api/login`,
-  `/api/logout`, `/api/user`.
+- `setupAuth(app)` registers `/api/login`, `/api/logout`, `/api/user`.
+  (There is intentionally no open `/api/register`; account creation goes
+  through the guarded `/api/setup/initialize`.)
 - A `requireAuth` middleware exists but is **not applied globally**;
   individual routes either call `req.isAuthenticated()` themselves or
   read `req.user` directly.
@@ -306,7 +307,7 @@ place ends up with a self-consistent database.
 ### 4.1 Auth enforcement
 
 - Apply `requireAuth` (or a wrapper) to **every** `/api/*` route
-  except `/api/login`, `/api/register`, `/api/user`, the SSO callback,
+  except `/api/login`, `/api/user`, the SSO callback,
   health checks, and the public extension auth-code exchange.
 - Audit every route that reads `req.user` defensively (`if (!req.user)
   return 401`) — once `requireAuth` is global these checks become

@@ -7,7 +7,10 @@ import { registerRoutes as registerAiVector } from "./routes/ai-vector";
 import { registerRoutes as registerFamily } from "./routes/family";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Register sub-route modules
+  // Register sub-route modules.
+  // IMPORTANT: registerAuthSetup MUST stay first — it installs the global
+  // app.use("/api", ...) authentication gate that protects every /api route in
+  // all modules registered after it (including family, which has no gate).
   registerAuthSetup(app);
   registerPeopleGroups(app);
   registerSocialMedia(app);
