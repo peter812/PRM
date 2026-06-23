@@ -1159,7 +1159,7 @@ export function registerRoutes(app: Express) {
       ctx: { base: string; headers: Record<string, string> };
       model: string;
       /** Initial messages array (system + history + new user). */
-      initialMessages: { role: string; content: string; tool_call_id?: string; name?: string }[];
+      initialMessages: { role: string; content: string; tool_call_id?: string; name?: string; tool_name?: string }[];
       userId: number;
     };
   
@@ -1749,7 +1749,6 @@ export function registerRoutes(app: Express) {
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
-        // @ts-expect-error - links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         
         const intermediateMessages = newMessages.slice(0, -1);
@@ -1850,7 +1849,6 @@ export function registerRoutes(app: Express) {
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
-        // @ts-expect-error - links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         
         const intermediateMessages = newMessages.slice(0, -1);

@@ -191,8 +191,17 @@ export function GlobalSearch() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [preferences, setPreferences] = useState<SearchPreferences>(loadPreferences);
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isSuperSearchActive, setIsSuperSearchActive] = useState(false);
+
+  useEffect(() => {
+    if (location.startsWith("/super-search")) {
+      setIsSuperSearchActive(true);
+    } else {
+      setIsSuperSearchActive(false);
+    }
+  }, [location]);
 
   // UUID detection regex
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -212,8 +221,8 @@ export function GlobalSearch() {
   });
 
   const { data: results } = useQuery<MegaSearchResult>({
-    queryKey: searchQuery.length > 0 && !isUuidQuery ? [`/api/mega-search?${queryParams.toString()}`] : ["/api/mega-search"],
-    enabled: searchQuery.length > 0 && !isUuidQuery,
+    queryKey: searchQuery.length > 0 && !isUuidQuery && !isSuperSearchActive ? [`/api/mega-search?${queryParams.toString()}`] : ["/api/mega-search"],
+    enabled: searchQuery.length > 0 && !isUuidQuery && !isSuperSearchActive,
   });
 
   // UUID lookup query
@@ -552,17 +561,23 @@ export function GlobalSearch() {
   return (
     <div className="relative flex-1 max-w-2xl" ref={containerRef}>
       <div className="relative flex items-center">
-        <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+        <SearchIcon className={`absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 pointer-events-none transition-colors duration-200 ${
+          isSuperSearchActive ? "text-blue-500" : "text-muted-foreground"
+        }`} />
         <Input
           type="search"
-          placeholder="Search..."
-          className={`pl-9 ${isSuperSearchReady ? "pr-20" : "pr-10"}`}
+          placeholder={isSuperSearchActive ? "Super Search with AI..." : "Search..."}
+          className={`pl-9 transition-all duration-200 ${isSuperSearchReady ? "pr-20" : "pr-10"} ${
+            isSuperSearchActive
+              ? "border-blue-500/80 dark:border-blue-400/80 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400 focus-visible:border-blue-500 dark:focus-visible:border-blue-400 shadow-[0_0_8px_2px_rgba(59,130,246,0.15)] dark:shadow-[0_0_8px_2px_rgba(59,130,246,0.25)] ring-2 ring-blue-500/20 dark:ring-blue-400/20"
+              : ""
+          }`}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => searchQuery.length > 0 && setIsOpen(true)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && searchQuery.trim()) {
-              if (isSuperSearchReady) {
+              if (isSuperSearchActive) {
                 setIsOpen(false);
                 setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
               }
@@ -577,22 +592,21 @@ export function GlobalSearch() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950"
+                  className={`h-7 w-7 transition-all duration-200 ${
+                    isSuperSearchActive
+                      ? "text-blue-600 bg-blue-100 hover:bg-blue-200 dark:text-blue-400 dark:bg-blue-950 dark:hover:bg-blue-900 shadow-[0_0_6px_1px_rgba(59,130,246,0.2)]"
+                      : "text-muted-foreground hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950"
+                  }`}
                   onClick={() => {
-                    if (searchQuery.trim()) {
-                      setIsOpen(false);
-                      setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
-                    } else {
-                      setLocation("/super-search");
-                    }
+                    setIsSuperSearchActive(!isSuperSearchActive);
                   }}
                   data-testid="btn-super-search"
                 >
-                  <Sparkles className="h-4 w-4" />
+                  <Sparkles className={`h-4 w-4 ${isSuperSearchActive ? "animate-pulse" : ""}`} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Super Search — AI-powered semantic search</p>
+                <p>{isSuperSearchActive ? "Disable Super Search" : "Super Search — AI-powered semantic search"}</p>
               </TooltipContent>
             </Tooltip>
           )}
@@ -601,8 +615,28 @@ export function GlobalSearch() {
       </div>
 
       {isOpen && searchQuery.length > 0 && (
-        <Card className="absolute top-full mt-1 w-full max-h-96 overflow-auto z-50" data-testid="card-search-results">
-          {isUuidQuery ? (
+        <Card className="absolute top-full mt-1 w-full max-h-96 overflow-auto z-50 p-2" data-testid="card-search-results">
+          {isSuperSearchActive ? (
+            <div className="p-3 text-center flex flex-col items-center">
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles className="h-4 w-4 text-blue-500 animate-pulse" />
+                <span className="font-semibold text-sm text-blue-600 dark:text-blue-400">AI Super Search Mode</span>
+              </div>
+              <p className="text-xs text-muted-foreground mb-3 max-w-xs">
+                Press Enter or click the button below to search across all records semantically.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setIsOpen(false);
+                  setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white dark:bg-blue-600 dark:hover:bg-blue-700 w-full"
+              >
+                Run AI Search
+              </Button>
+            </div>
+          ) : isUuidQuery ? (
             uuidResult ? (
               <div className="py-2">
                 <div className="px-3 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2">
