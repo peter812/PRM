@@ -605,7 +605,10 @@ function buildFlowElements(
     flowNodes.push({
       id: virtualId,
       type: "person",
-      position: pos,
+      position: {
+        x: pos.x + (LAYOUT.NODE_WIDTH - LAYOUT.ADD_NODE_WIDTH) / 2,
+        y: pos.y + (LAYOUT.NODE_HEIGHT - LAYOUT.ADD_NODE_HEIGHT) / 2,
+      },
       ...(groupId ? { parentId: groupId, extent: "parent" as const } : {}),
       data: {
         label,
@@ -621,9 +624,6 @@ function buildFlowElements(
       style: {
         width: LAYOUT.ADD_NODE_WIDTH,
         height: LAYOUT.ADD_NODE_HEIGHT,
-        // Center smaller add nodes in the layout slot they were assigned.
-        marginLeft: (LAYOUT.NODE_WIDTH - LAYOUT.ADD_NODE_WIDTH) / 2,
-        marginTop: (LAYOUT.NODE_HEIGHT - LAYOUT.ADD_NODE_HEIGHT) / 2,
       },
     });
   }

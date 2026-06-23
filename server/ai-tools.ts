@@ -927,21 +927,63 @@ export const AI_TOOLS: AiToolDefinition[] = [
       const person2Name = `${person2.firstName ?? ""} ${person2.lastName ?? ""}`.trim();
 
       if (familyRelType) {
-        const result = await storage.createFamilyRelationshipWithInverse({
-          fromPersonId: uuid1,
-          toPersonId: uuid2,
-          typeId,
-          familyRelationshipType: familyRelType,
-          notes,
-        });
-        return {
-          summary: `Created '${familyRelType}' family relationship from ${person1Name} to ${person2Name}`,
-          data: {
-            relationship: trimRelationship({ ...result.relationship, type: relType }),
-            inverseCreated: !!result.inverseRelationship,
-            propagatedCount: result.propagated.length,
-          },
-        };
+        const cat = FAMILY_RELATIONSHIP_CATEGORIES[familyRelType];
+        if (cat === "parent" || cat === "child") {
+          const isParentRole = cat === "parent";
+          const parentId = isParentRole ? uuid1 : uuid2;
+          const childId = isParentRole ? uuid2 : uuid1;
+          const lineageType = familyRelType.startsWith("step") ? "step" : "biological";
+
+          const result = await storage.createLineage({
+            parentId,
+            childId,
+            lineageType,
+          });
+
+          return {
+            summary: `Created '${familyRelType}' family relationship from ${person1Name} to ${person2Name}`,
+            data: {
+              relationship: trimRelationship({
+                id: `${result.id}_p`,
+                fromPersonId: uuid1,
+                toPersonId: uuid2,
+                typeId,
+                type: relType,
+                familyRelationshipType: familyRelType,
+                notes,
+              }),
+              inverseCreated: true,
+              propagatedCount: 0,
+            },
+          };
+        } else {
+          let status: "married" | "partner" | "divorced" | "ex_partner" = "partner";
+          if (familyRelType === "spouse") status = "married";
+          else if (familyRelType === "ex_spouse") status = "divorced";
+
+          const result = await storage.createPartnership({
+            person1Id: uuid1,
+            person2Id: uuid2,
+            status,
+          });
+
+          return {
+            summary: `Created '${familyRelType}' family relationship from ${person1Name} to ${person2Name}`,
+            data: {
+              relationship: trimRelationship({
+                id: `${result.id}_s1`,
+                fromPersonId: uuid1,
+                toPersonId: uuid2,
+                typeId,
+                type: relType,
+                familyRelationshipType: familyRelType,
+                notes,
+              }),
+              inverseCreated: true,
+              propagatedCount: 0,
+            },
+          };
+        }
       }
 
       const relationship = await storage.createRelationship({ fromPersonId: uuid1, toPersonId: uuid2, typeId, notes });

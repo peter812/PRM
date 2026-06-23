@@ -1019,13 +1019,14 @@ export class DatabaseStorage implements IStorage {
 
     const result: Relationship[] = [];
 
+    const personSex = await db.select({ sex: people.sex }).from(people).where(eq(people.id, personId)).then(r => r[0]?.sex);
+
     // Map lineage to relationships format
     for (const rel of lineageRels) {
       const isChild = rel.childId === personId;
       const otherId = isChild ? rel.parentId : rel.childId;
-      const otherPerson = await db.select().from(people).where(eq(people.id, otherId)).then(r => r[0]);
-
-      const type = deriveLineageRole(isChild, otherPerson?.sex, rel.lineageType);
+      const isParent = rel.parentId === personId;
+      const type = deriveLineageRole(isParent, personSex, rel.lineageType);
 
       result.push({
         id: rel.id,
@@ -1075,9 +1076,9 @@ export class DatabaseStorage implements IStorage {
       );
 
     if (lin) {
-      const isFromChild = lin.childId === fromPersonId;
-      const toSex = await db.select({ sex: people.sex }).from(people).where(eq(people.id, toPersonId)).then(r => r[0]?.sex);
-      const type = deriveLineageRole(isFromChild, toSex, lin.lineageType);
+      const isFromParent = lin.parentId === fromPersonId;
+      const fromSex = await db.select({ sex: people.sex }).from(people).where(eq(people.id, fromPersonId)).then(r => r[0]?.sex);
+      const type = deriveLineageRole(isFromParent, fromSex, lin.lineageType);
 
       return {
         id: lin.id,
@@ -1235,8 +1236,8 @@ export class DatabaseStorage implements IStorage {
       const parentRole = deriveLineageRole(true, peopleMap.get(parentId)?.sex, lineageType);
       treeRelationships.push({
         id: `${id}_p`,
-        fromPersonId: childId,
-        toPersonId: parentId,
+        fromPersonId: parentId,
+        toPersonId: childId,
         familyRelationshipType: parentRole,
       });
 
@@ -1244,8 +1245,8 @@ export class DatabaseStorage implements IStorage {
       const childRole = deriveLineageRole(false, peopleMap.get(childId)?.sex, lineageType);
       treeRelationships.push({
         id: `${id}_c`,
-        fromPersonId: parentId,
-        toPersonId: childId,
+        fromPersonId: childId,
+        toPersonId: parentId,
         familyRelationshipType: childRole,
       });
     }

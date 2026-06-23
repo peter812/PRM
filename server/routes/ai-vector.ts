@@ -1175,7 +1175,7 @@ export function registerRoutes(app: Express) {
       newMessages: any[];
     }> {
       const { res, ctx, model, userId } = p;
-      const messages = [...p.initialMessages];
+      const messages: any[] = [...p.initialMessages];
       const { names: toolNames, executionMode } = await activeToolNames();
       const tools = toolNames.size > 0 ? buildOllamaToolsArray(toolNames) : undefined;
       const toolTrace: AiToolCallTrace[] = [];
@@ -1275,7 +1275,6 @@ export function registerRoutes(app: Express) {
           messages.push({
             role: "assistant",
             content: assistantContentThisIter,
-            // @ts-expect-error - extra fields are fine; Ollama accepts them.
             tool_calls: pendingToolCalls,
           });
   
@@ -1749,7 +1748,7 @@ export function registerRoutes(app: Express) {
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
-        // @ts-expect-error - links is compatible with JSONB message object
+        // links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         
         const intermediateMessages = newMessages.slice(0, -1);
@@ -1850,7 +1849,7 @@ export function registerRoutes(app: Express) {
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
-        // @ts-expect-error - links is compatible with JSONB message object
+        // links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         
         const intermediateMessages = newMessages.slice(0, -1);

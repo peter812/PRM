@@ -291,10 +291,10 @@ export default function FamilyTreeDevPage() {
           skipped.push({ spouseId, reason });
           continue;
         }
-        await apiRequest("POST", "/api/relationships", {
-          fromPersonId: spouseId,
-          toPersonId: targetPersonId,
-          familyRelationshipType: "parent",
+        await apiRequest("POST", "/api/family/lineage", {
+          childId: targetPersonId,
+          parentId: spouseId,
+          lineageType: "biological",
         });
         created.push(spouseId);
       }
@@ -334,6 +334,20 @@ export default function FamilyTreeDevPage() {
   // When the user clicks the trash icon on an edge, prompt to delete that connection.
   const handleDeleteEdge = (edgeId: string) => {
     setDeleteEdgeConfirm(edgeId);
+  };
+
+  // Helper to delete native relationships from synthesized IDs
+  const deleteNativeRelationships = async (ids: string[]) => {
+    const uniqueIds = Array.from(new Set(ids));
+    for (const id of uniqueIds) {
+      if (id.endsWith("_p") || id.endsWith("_c")) {
+        const actualId = id.slice(0, -2);
+        await apiRequest("DELETE", `/api/family/lineage/${actualId}`);
+      } else if (id.endsWith("_s1") || id.endsWith("_s2")) {
+        const actualId = id.slice(0, -3);
+        await apiRequest("DELETE", `/api/family/partnerships/${actualId}`);
+      }
+    }
   };
 
   // Delete relationships associated with an edge
@@ -409,13 +423,8 @@ export default function FamilyTreeDevPage() {
 
       if (relIds.length === 0) throw new Error("No relationships found for this connection");
 
-      // The server-side DELETE /api/relationships/:id already handles deleting
-      // the inverse family relationship, so we just delete each found relationship.
-      const uniqueIds = Array.from(new Set(relIds));
-      for (const id of uniqueIds) {
-        await apiRequest("DELETE", `/api/relationships/${id}`);
-      }
-      return uniqueIds.length;
+      await deleteNativeRelationships(relIds);
+      return relIds.length;
     },
     onSuccess: (count) => {
       toast({
@@ -447,12 +456,39 @@ export default function FamilyTreeDevPage() {
       targetPersonId: string;
       relationshipType: string;
     }) => {
-      const res = await apiRequest("POST", "/api/relationships", {
-        fromPersonId: sourcePersonId,
-        toPersonId: targetPersonId,
-        familyRelationshipType: relationshipType,
-      });
-      return res.json();
+      const cat = FAMILY_RELATIONSHIP_CATEGORIES[relationshipType];
+      if (cat === "parent" || cat === "child") {
+        const isParentRole = cat === "parent";
+        const parentId = isParentRole ? sourcePersonId : targetPersonId;
+        const childId = isParentRole ? targetPersonId : sourcePersonId;
+        const lineageType = relationshipType.startsWith("step")
+          ? "step"
+          : relationshipType.startsWith("adoptive")
+          ? "adoptive"
+          : "biological";
+
+        const res = await apiRequest("POST", "/api/family/lineage", {
+          parentId,
+          childId,
+          lineageType,
+        });
+        return res.json();
+      } else if (cat === "spouse") {
+        let status: "married" | "partner" | "divorced" | "ex_partner" = "partner";
+        if (relationshipType === "spouse") status = "married";
+        else if (relationshipType === "ex_spouse") status = "divorced";
+        else if (relationshipType === "partner") status = "partner";
+        else if (relationshipType === "ex_partner") status = "ex_partner";
+
+        const res = await apiRequest("POST", "/api/family/partnerships", {
+          person1Id: sourcePersonId,
+          person2Id: targetPersonId,
+          status,
+        });
+        return res.json();
+      } else {
+        throw new Error("Unsupported relationship type for direct connection");
+      }
     },
     onSuccess: () => {
       toast({ title: "Relationship added", description: "The new family link was saved." });
@@ -475,10 +511,8 @@ export default function FamilyTreeDevPage() {
       const toDelete = treeData.relationships.filter(
         (r) => r.fromPersonId === personId || r.toPersonId === personId,
       );
-      const ids = Array.from(new Set(toDelete.map((r) => r.id)));
-      for (const id of ids) {
-        await apiRequest("DELETE", `/api/relationships/${id}`);
-      }
+      const ids = toDelete.map((r) => r.id);
+      await deleteNativeRelationships(ids);
       return ids.length;
     },
     onSuccess: (count) => {
@@ -1055,6 +1089,11 @@ function ConnectRelationshipDialog({
     onConfirm(relationshipType);
   };
 
+  const supportedTypes = FAMILY_RELATIONSHIP_TYPES.filter((t) => {
+    const cat = FAMILY_RELATIONSHIP_CATEGORIES[t];
+    return cat === "parent" || cat === "child" || cat === "spouse";
+  });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -1064,9 +1103,7 @@ function ConnectRelationshipDialog({
             <span className="font-medium">{sourceName}</span> will now be{" "}
             <span className="font-medium">{targetName}</span>'s{" "}
             <span className="font-medium">
-              {FAMILY_RELATIONSHIP_LABELS[
-                FAMILY_RELATIONSHIP_INVERSES[relationshipType] ?? relationshipType
-              ] ?? relationshipType}
+              {FAMILY_RELATIONSHIP_LABELS[relationshipType] ?? relationshipType}
             </span>
             .
           </DialogDescription>
@@ -1078,7 +1115,7 @@ function ConnectRelationshipDialog({
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="max-h-60">
-              {FAMILY_RELATIONSHIP_TYPES.map((t) => (
+              {supportedTypes.map((t) => (
                 <SelectItem key={t} value={t}>
                   {FAMILY_RELATIONSHIP_LABELS[t] ?? t}
                 </SelectItem>

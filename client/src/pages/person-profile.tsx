@@ -28,6 +28,7 @@ import { FamilyTreeTab } from "@/components/family-tree-tab";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { FamilyTab } from "@/components/family-tab";
+import { getInitials } from "@/lib/utils";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
