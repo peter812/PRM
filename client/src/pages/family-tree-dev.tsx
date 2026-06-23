@@ -524,9 +524,9 @@ export default function FamilyTreeDevPage() {
           — This page uses React Flow for interactive graph visualization.
         </span>
         <Button
-          variant="link"
+          variant="ghost"
           size="sm"
-          className="ml-auto text-xs h-auto p-0 text-amber-700 dark:text-amber-400"
+          className="ml-auto text-xs h-auto p-0 text-amber-700 dark:text-amber-400 underline hover:bg-transparent"
           onClick={() => navigate("/family-tree")}
         >
           Switch to stable →

@@ -16,8 +16,11 @@
 
 import { db } from "./db";
 import { storage } from "./storage";
-import { interactions, interactionTypes } from "@shared/schema";
+import { interactions, interactionTypes, FAMILY_RELATIONSHIP_TYPES, FAMILY_RELATIONSHIP_LABELS, FAMILY_RELATIONSHIP_CATEGORIES, FAMILY_RELATIONSHIP_INVERSES } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { searchUniversal } from "./vector-universal";
+import { searchAppKnowledge } from "./vector-app-knowledge";
+
 
 export type AiToolIcon =
   | "search"
@@ -46,7 +49,9 @@ export type AiToolCategory =
   | "notes"
   | "interactions"
   | "daily-notes"
-  | "social-accounts";
+  | "social-accounts"
+  | "relationships"
+  | "search";
 
 export interface AiToolJsonSchema {
   type: "object";
@@ -209,7 +214,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     icon: "user",
     category: "people",
     description:
-      "Fetch a single person's full account by UUID, including their profile info, notes, interactions, and relationships. Call this after person_search if you need the complete record. For partial data, use person_pull_flow or person_pull_relationships instead.",
+      "Fetch a single person's full account by UUID, including their profile info, notes, interactions, relationships, and owned social accounts. Call this after person_search if you need the complete record. For partial data, use person_pull_flow or person_pull_relationships instead.",
     parameters: {
       type: "object",
       properties: {
@@ -222,6 +227,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
       if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
       const person = await storage.getPersonById(uuid);
       if (!person) return { summary: "Person not found", data: { error: "not_found" } };
+      const ownedSocialAccounts = await storage.getSocialAccountsByOwner(uuid);
       return {
         summary: `Pulled ${person.firstName ?? ""} ${person.lastName ?? ""}`.trim() || "Pulled person",
         data: {
@@ -229,6 +235,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
           notes: (person.notes ?? []).slice(0, 10).map(trimNote),
           interactions: (person.interactions ?? []).slice(0, 10).map(trimInteraction),
           relationships: (person.relationships ?? []).slice(0, 10).map(trimRelationship),
+          socialAccounts: ownedSocialAccounts.map(trimSocialAccount),
         },
       };
     },
@@ -339,7 +346,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
     icon: "at-sign",
     category: "social-accounts",
     description:
-      "Fetch a single social account in full by UUID. Returns the account owner UUID, handle, display name, bio, account URL, follower/following counts, and account creation date. Call this after social_account_search if you need the full record.",
+      "Fetch a single social account in full by UUID. Returns handle, display name, bio, account URL, follower/following counts, account creation date, and the owner person (if any). Call this after social_account_search if you need the full record.",
     parameters: {
       type: "object",
       properties: {
@@ -353,9 +360,13 @@ export const AI_TOOLS: AiToolDefinition[] = [
       const account = await storage.getSocialAccountById(uuid);
       if (!account) return { summary: "Social account not found", data: { error: "not_found" } };
       const trimmed = trimSocialAccount(account);
+      const owner = account.ownerUuid ? await storage.getPersonById(account.ownerUuid) : null;
       return {
         summary: `Pulled ${trimmed.handle ?? trimmed.displayName ?? "social account"}`,
-        data: trimmed,
+        data: {
+          ...trimmed,
+          owner: owner ? trimPerson(owner) : null,
+        },
       };
     },
   },
@@ -463,6 +474,74 @@ export const AI_TOOLS: AiToolDefinition[] = [
       filtered.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
       const results = filtered.slice(0, MAX_SEARCH_RESULTS).map(trimInteraction);
       return { summary: `Found ${results.length} interaction${results.length === 1 ? "" : "s"}`, data: { results } };
+    },
+  },
+  {
+    name: "super_search",
+    label: "Super search",
+    icon: "search",
+    category: "search",
+    description:
+      "Perform a universal semantic/vector search across the entire PRM, covering all entity types (people, groups, images, notes, interactions, social accounts, daily notes, and AI chats). IMPORTANT: You should only call this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) either yield no results or yield bad/unhelpful results.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Free-text semantic search query.",
+        },
+      },
+      required: ["query"],
+    },
+    handler: async (args) => {
+      const query = asString(args.query).trim();
+      if (!query) return { summary: "Empty query", data: { results: [] } };
+      try {
+        const results = await searchUniversal(query, 10);
+        return {
+          summary: `Super search found ${results.length} result${results.length === 1 ? "" : "s"}`,
+          data: { results },
+        };
+      } catch (error: any) {
+        return {
+          summary: "Super search failed",
+          data: { error: error?.message || String(error) },
+        };
+      }
+    },
+  },
+  {
+    name: "query_app_knowledge",
+    label: "Search app knowledge base",
+    icon: "book",
+    category: "search",
+    description:
+      "Search the app's internal knowledge base for details, documentation, features, guides, or navigation paths of the PRM application itself. Use this tool when the user asks how the app works, what pages/features exist, or how to use a specific part of the app.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Semantic search query to look up details about the app itself.",
+        },
+      },
+      required: ["query"],
+    },
+    handler: async (args) => {
+      const query = asString(args.query).trim();
+      if (!query) return { summary: "Empty query", data: { results: [] } };
+      try {
+        const results = await searchAppKnowledge(query, 5);
+        return {
+          summary: `App knowledge search found ${results.length} result${results.length === 1 ? "" : "s"}`,
+          data: { results },
+        };
+      } catch (error: any) {
+        return {
+          summary: "App knowledge search failed",
+          data: { error: error?.message || String(error) },
+        };
+      }
     },
   },
 
@@ -711,6 +790,165 @@ export const AI_TOOLS: AiToolDefinition[] = [
       const updated = await storage.updateDailyNote(uuid, patch as any);
       if (!updated) return { summary: "Daily note not found", data: { error: "not_found" } };
       return { summary: `Updated daily note ${uuid}`, data: trimDailyNote(updated) };
+    },
+  },
+  // ─── Relationship tools ─────────────────────────────────────────────────────
+  {
+    name: "get_relationship_types",
+    label: "Get relationship types",
+    icon: "user",
+    category: "relationships",
+    description:
+      "Get all relationship types available in this PRM, including general types (Friend, Colleague, Family, etc.) and every family sub-type (spouse, child, ex_spouse, parent, sibling, etc.) with their labels, categories, and inverse types. Always call this before set_relationship so you know valid type IDs and family sub-types.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      const generalTypes = await storage.getAllRelationshipTypes();
+      const familySubTypes = FAMILY_RELATIONSHIP_TYPES.map(value => ({
+        value,
+        label: FAMILY_RELATIONSHIP_LABELS[value] ?? value,
+        category: FAMILY_RELATIONSHIP_CATEGORIES[value] ?? "other",
+        inverse: FAMILY_RELATIONSHIP_INVERSES[value] ?? value,
+      }));
+      return {
+        summary: `Found ${generalTypes.length} general types and ${familySubTypes.length} family sub-types`,
+        data: { generalTypes, familySubTypes },
+      };
+    },
+  },
+  {
+    name: "get_all_relationships",
+    label: "Get all relationships",
+    icon: "user",
+    category: "relationships",
+    description:
+      "Get all relationships for a person by their UUID, in both directions (relationships they initiated and relationships targeting them).",
+    parameters: {
+      type: "object",
+      properties: {
+        personUuid: { type: "string", description: "UUID of the person whose relationships to fetch." },
+      },
+      required: ["personUuid"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.personUuid).trim();
+      if (!uuid) return { summary: "Missing personUuid", data: { error: "personUuid is required" } };
+      const person = await storage.getPersonById(uuid);
+      if (!person) return { summary: "Person not found", data: { error: "not_found" } };
+      const personName = `${person.firstName ?? ""} ${person.lastName ?? ""}`.trim();
+      const results = (person.relationships ?? []).map(trimRelationship);
+      return {
+        summary: `Found ${results.length} relationship${results.length === 1 ? "" : "s"} for ${personName || "person"}`,
+        data: { uuid, name: personName, relationships: results },
+      };
+    },
+  },
+  {
+    name: "get_relationships",
+    label: "Get relationships by type",
+    icon: "user",
+    category: "relationships",
+    description:
+      "Get relationships for a person filtered by a relationship type name (e.g. 'Family', 'Friend') or family sub-type (e.g. 'spouse', 'child', 'ex_spouse'). Both the general type name and the family sub-type are checked (case-insensitive).",
+    parameters: {
+      type: "object",
+      properties: {
+        personUuid: { type: "string", description: "UUID of the person whose relationships to fetch." },
+        type: { type: "string", description: "Relationship type name or family sub-type to filter by (e.g. 'Family', 'spouse', 'ex_spouse')." },
+      },
+      required: ["personUuid", "type"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.personUuid).trim();
+      const typeFilter = asString(args.type).trim().toLowerCase();
+      if (!uuid) return { summary: "Missing personUuid", data: { error: "personUuid is required" } };
+      if (!typeFilter) return { summary: "Missing type", data: { error: "type is required" } };
+      const person = await storage.getPersonById(uuid);
+      if (!person) return { summary: "Person not found", data: { error: "not_found" } };
+      const personName = `${person.firstName ?? ""} ${person.lastName ?? ""}`.trim();
+      const filtered = (person.relationships ?? []).filter((r: any) =>
+        (r.type?.name ?? "").toLowerCase().includes(typeFilter) ||
+        (r.familyRelationshipType ?? "").toLowerCase().includes(typeFilter)
+      );
+      const results = filtered.map(trimRelationship);
+      return {
+        summary: `Found ${results.length} '${typeFilter}' relationship${results.length === 1 ? "" : "s"} for ${personName || "person"}`,
+        data: { uuid, name: personName, typeFilter, relationships: results },
+      };
+    },
+  },
+  {
+    name: "set_relationship",
+    label: "Set relationship",
+    icon: "user-plus",
+    category: "relationships",
+    write: true,
+    description:
+      "Create a relationship between two people. IMPORTANT: You must call get_relationship_types first to get the correct relationship type ID and valid family sub-types. For family relationships, supply both the Family type ID as relationshipTypeId and the appropriate familyRelationshipType sub-type (e.g. 'spouse', 'child', 'ex_spouse'). The system will automatically create the inverse relationship.",
+    parameters: {
+      type: "object",
+      properties: {
+        uuid1: { type: "string", description: "UUID of the first person (relationship FROM this person)." },
+        uuid2: { type: "string", description: "UUID of the second person (relationship TO this person)." },
+        relationshipTypeId: { type: "string", description: "ID of the relationship type (from get_relationship_types generalTypes)." },
+        familyRelationshipType: {
+          type: "string",
+          description: "Optional family sub-type (e.g. 'spouse', 'child', 'parent', 'sibling', 'ex_spouse'). Required when the relationship type is 'Family'.",
+        },
+        notes: { type: "string", description: "Optional notes about the relationship." },
+      },
+      required: ["uuid1", "uuid2", "relationshipTypeId"],
+    },
+    handler: async (args) => {
+      const uuid1 = asString(args.uuid1).trim();
+      const uuid2 = asString(args.uuid2).trim();
+      const typeId = asString(args.relationshipTypeId).trim();
+      const familyRelType = asString(args.familyRelationshipType ?? "").trim() as (typeof FAMILY_RELATIONSHIP_TYPES)[number] | "";
+      const notes = asString(args.notes ?? "").trim() || null;
+
+      if (!uuid1 || !uuid2) return { summary: "Missing UUIDs", data: { error: "uuid1 and uuid2 are required" } };
+      if (!typeId) return { summary: "Missing relationship type ID", data: { error: "relationshipTypeId is required — call get_relationship_types first" } };
+      if (uuid1 === uuid2) return { summary: "Same person", data: { error: "Cannot create a relationship from a person to themselves" } };
+
+      const [person1, person2, relType] = await Promise.all([
+        storage.getPersonById(uuid1),
+        storage.getPersonById(uuid2),
+        storage.getRelationshipTypeById(typeId),
+      ]);
+      if (!person1) return { summary: "Person 1 not found", data: { error: `Person with UUID ${uuid1} not found` } };
+      if (!person2) return { summary: "Person 2 not found", data: { error: `Person with UUID ${uuid2} not found` } };
+      if (!relType) return { summary: "Relationship type not found", data: { error: `Relationship type ${typeId} not found — call get_relationship_types first` } };
+
+      // Validate family sub-type if provided
+      if (familyRelType && !(FAMILY_RELATIONSHIP_TYPES as readonly string[]).includes(familyRelType)) {
+        return { summary: "Invalid family sub-type", data: { error: `'${familyRelType}' is not a valid family sub-type — call get_relationship_types to see all valid values` } };
+      }
+
+      const person1Name = `${person1.firstName ?? ""} ${person1.lastName ?? ""}`.trim();
+      const person2Name = `${person2.firstName ?? ""} ${person2.lastName ?? ""}`.trim();
+
+      if (familyRelType) {
+        const result = await storage.createFamilyRelationshipWithInverse({
+          fromPersonId: uuid1,
+          toPersonId: uuid2,
+          typeId,
+          familyRelationshipType: familyRelType,
+          notes,
+        });
+        return {
+          summary: `Created '${familyRelType}' family relationship from ${person1Name} to ${person2Name}`,
+          data: {
+            relationship: trimRelationship({ ...result.relationship, type: relType }),
+            inverseCreated: !!result.inverseRelationship,
+            propagatedCount: result.propagated.length,
+          },
+        };
+      }
+
+      const relationship = await storage.createRelationship({ fromPersonId: uuid1, toPersonId: uuid2, typeId, notes });
+      return {
+        summary: `Created '${relType.name}' relationship from ${person1Name} to ${person2Name}`,
+        data: { relationship: trimRelationship({ ...relationship, type: relType }) },
+      };
     },
   },
 ];

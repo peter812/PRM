@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
@@ -185,12 +186,12 @@ export default function PeopleList() {
         {isLoading ? (
           <div className="flex flex-col gap-[5px]">
             {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-2 animate-pulse">
+              <Card key={i} className="p-2">
                 <div className="flex items-center gap-2">
-                  <div className="w-12 h-12 rounded-full bg-muted" />
+                  <Skeleton className="w-12 h-12 rounded-full" />
                   <div className="flex-1 space-y-1">
-                    <div className="h-4 bg-muted rounded w-1/3" />
-                    <div className="h-3 bg-muted rounded w-1/4" />
+                    <Skeleton className="h-4 w-1/3" />
+                    <Skeleton className="h-3 w-1/4" />
                   </div>
                 </div>
               </Card>

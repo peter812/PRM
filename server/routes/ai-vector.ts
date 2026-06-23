@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -52,6 +52,17 @@ import {
   syncDailyNoteInBackground,
   searchDailyNotes,
 } from "../vector";
+import {
+  syncEntityInBackground,
+  deleteEntityVector,
+  searchUniversal,
+  getUniversalStatus,
+  bulkSyncAll,
+  loadUniversalVectorConfig,
+  type UniversalEntityType,
+} from "../vector-universal";
+import { reindexAppKnowledge, resolveLinksInText, cleanRawLinks } from "../vector-app-knowledge";
+
 
 const scryptAsync = promisify(scrypt);
 
@@ -909,8 +920,11 @@ export function registerRoutes(app: Express) {
       "social accounts, notes, interactions, and daily notes. When the user asks about a person, " +
       "their notes, relationships, social accounts, or any stored data, always call the appropriate " +
       "tool to look up the current information rather than guessing. Use person_search to find " +
-      "someone by name, person_pull to get their full details, and the other available tools as " +
-      "needed. Combine tool results with your own reasoning to give accurate, helpful answers.";
+      "someone by name, person_pull to get their full details (which returns up to 10 relationships/notes/interactions as a brief overview), " +
+      "person_pull_relationships to get up to 20 relationships (ideal when specifically asked about siblings, friends, family, or colleagues), and the other available tools as " +
+      "needed. Combine tool results with your own reasoning to give accurate, helpful answers. " +
+      "Important note: You also have a super_search tool which performs a semantic search across the entire PRM. " +
+      "You should only use this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) yield no results or yield bad/unhelpful results.";
     const MAX_CHAT_TITLE_LENGTH = 60;
     const DEFAULT_EVENTS_SYSTEM_PROMPT = [
       "You extract a list of distinct events from a daily journal entry.",
@@ -935,18 +949,30 @@ export function registerRoutes(app: Express) {
       return { base, headers };
     }
   
-    function sanitizeChatMessages(input: unknown): AiChatMessage[] {
+    function sanitizeChatMessages(input: unknown): any[] {
       if (!Array.isArray(input)) return [];
       return input
-        .filter((m): m is { role: string; content: string; attachments?: unknown; toolCalls?: unknown } =>
-          !!m && typeof m === "object" && typeof (m as any).content === "string" &&
-          ((m as any).role === "user" || (m as any).role === "assistant"))
+        .filter((m) =>
+          !!m && typeof m === "object" &&
+          (m.role === "user" || m.role === "assistant" || m.role === "tool" || m.role === "system")
+        )
         .map((m) => {
-          const out: AiChatMessage = { role: m.role as "user" | "assistant", content: m.content };
-          const atts = sanitizeAttachments((m as any).attachments);
+          if (m.role === "tool") {
+            return {
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name,
+              tool_call_id: m.tool_call_id,
+              content: m.content || "",
+            };
+          }
+          const out: any = { role: m.role, content: m.content || "" };
+          const atts = sanitizeAttachments(m.attachments);
           if (atts.length) out.attachments = atts;
-          const calls = sanitizeToolCalls((m as any).toolCalls);
+          const calls = sanitizeToolCalls(m.toolCalls);
           if (calls.length) out.toolCalls = calls;
+          if (m.tool_calls) out.tool_calls = m.tool_calls;
+          if (m.links) out.links = m.links;
           return out;
         });
     }
@@ -1146,6 +1172,7 @@ export function registerRoutes(app: Express) {
     async function runStreamingChatWithTools(p: StreamingToolLoopParams): Promise<{
       assistantContent: string;
       toolCalls: AiToolCallTrace[];
+      newMessages: any[];
     }> {
       const { res, ctx, model, userId } = p;
       const messages = [...p.initialMessages];
@@ -1181,13 +1208,13 @@ export function registerRoutes(app: Express) {
           } catch (err: any) {
             overallController.signal.removeEventListener("abort", onAbort);
             writeLine({ error: `Failed to reach Ollama: ${err.message}` });
-            return { assistantContent: "", toolCalls: toolTrace };
+            return { assistantContent: "", toolCalls: toolTrace, newMessages: messages.slice(p.initialMessages.length) };
           }
           if (!ollamaResp.ok) {
             overallController.signal.removeEventListener("abort", onAbort);
             const text = await ollamaResp.text();
             writeLine({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` });
-            return { assistantContent: "", toolCalls: toolTrace };
+            return { assistantContent: "", toolCalls: toolTrace, newMessages: messages.slice(p.initialMessages.length) };
           }
   
           const decoder = new TextDecoder();
@@ -1232,7 +1259,15 @@ export function registerRoutes(app: Express) {
   
           if (pendingToolCalls.length === 0) {
             // Model produced its final answer — return.
-            return { assistantContent: assistantContentThisIter, toolCalls: toolTrace };
+            messages.push({
+              role: "assistant",
+              content: assistantContentThisIter,
+            });
+            return {
+              assistantContent: assistantContentThisIter,
+              toolCalls: toolTrace,
+              newMessages: messages.slice(p.initialMessages.length),
+            };
           }
   
           // Persist the assistant tool-call turn into the message list so
@@ -1261,7 +1296,13 @@ export function registerRoutes(app: Express) {
               const summary = `Tool "${name}" is not available`;
               writeLine({ event: "tool_result", id, ok: false, summary });
               toolTrace.push({ name, icon: "search", label: name, args, summary, ok: false });
-              messages.push({ role: "tool", name, content: JSON.stringify({ error: summary }) });
+              messages.push({
+                role: "tool",
+                name,
+                tool_name: name,
+                tool_call_id: tc?.id,
+                content: JSON.stringify({ error: summary })
+              });
               continue;
             }
             writeLine({ event: "tool_call", id, name: def.name, label: def.label, icon: def.icon, args });
@@ -1271,7 +1312,13 @@ export function registerRoutes(app: Express) {
                 const summary = "Write tools are disabled";
                 writeLine({ event: "tool_result", id, ok: false, summary });
                 toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
-                messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: summary }) });
+                messages.push({
+                  role: "tool",
+                  name: def.name,
+                  tool_name: def.name,
+                  tool_call_id: tc?.id,
+                  content: JSON.stringify({ error: summary })
+                });
                 continue;
               }
               if (executionMode === "auth") {
@@ -1289,7 +1336,13 @@ export function registerRoutes(app: Express) {
                   const summary = "Rejected by user";
                   writeLine({ event: "tool_result", id, ok: false, summary });
                   toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
-                  messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: "user_rejected" }) });
+                  messages.push({
+                    role: "tool",
+                    name: def.name,
+                    tool_name: def.name,
+                    tool_call_id: tc?.id,
+                    content: JSON.stringify({ error: "user_rejected" })
+                  });
                   continue;
                 }
               }
@@ -1298,12 +1351,24 @@ export function registerRoutes(app: Express) {
               const result = await def.handler(args, { userId });
               writeLine({ event: "tool_result", id, ok: true, summary: result.summary });
               toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary: result.summary, ok: true });
-              messages.push({ role: "tool", name: def.name, content: JSON.stringify(result.data) });
+              messages.push({
+                role: "tool",
+                name: def.name,
+                tool_name: def.name,
+                tool_call_id: tc?.id,
+                content: JSON.stringify(result.data)
+              });
             } catch (err: any) {
               const summary = `Error: ${err?.message ?? "tool failed"}`;
               writeLine({ event: "tool_result", id, ok: false, summary });
               toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
-              messages.push({ role: "tool", name: def.name, content: JSON.stringify({ error: summary }) });
+              messages.push({
+                role: "tool",
+                name: def.name,
+                tool_name: def.name,
+                tool_call_id: tc?.id,
+                content: JSON.stringify({ error: summary })
+              });
             }
           }
           // Loop continues; next /api/chat call will see the tool messages.
@@ -1312,7 +1377,15 @@ export function registerRoutes(app: Express) {
         // Iteration cap hit — emit a synthetic final answer.
         const fallback = "I reached the tool-call limit before producing a final answer. Please refine your question.";
         writeLine({ message: { role: "assistant", content: fallback } });
-        return { assistantContent: fallback, toolCalls: toolTrace };
+        messages.push({
+          role: "assistant",
+          content: fallback,
+        });
+        return {
+          assistantContent: fallback,
+          toolCalls: toolTrace,
+          newMessages: messages.slice(p.initialMessages.length),
+        };
       } finally {
         clearTimeout(overallTimeout);
       }
@@ -1331,7 +1404,11 @@ export function registerRoutes(app: Express) {
           title: r.title,
           systemMessage: r.systemMessage,
           model: r.model,
-          messageCount: Array.isArray(r.messages) ? (r.messages as unknown[]).length : 0,
+          messageCount: Array.isArray(r.messages)
+            ? (r.messages as any[]).filter(
+                (m) => m.role === "user" || m.role === "assistant"
+              ).length
+            : 0,
           createdAt: r.createdAt,
           updatedAt: r.updatedAt,
         })));
@@ -1348,7 +1425,10 @@ export function registerRoutes(app: Express) {
           where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
         });
         if (!row) return res.status(404).json({ error: "Chat not found" });
-        res.json(row);
+        const clientMessages = (row.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.json({ ...row, messages: clientMessages });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -1368,6 +1448,7 @@ export function registerRoutes(app: Express) {
           model,
           messages: [],
         }).returning();
+        syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1388,6 +1469,7 @@ export function registerRoutes(app: Express) {
         if (typeof req.body.model === "string") patch.model = req.body.model;
         if (req.body.messages !== undefined) patch.messages = sanitizeChatMessages(req.body.messages);
         const [row] = await db.update(aiChats).set(patch).where(eq(aiChats.id, req.params.id)).returning();
+        syncEntityInBackground("ai_chat", req.params.id);
         res.json(row);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1402,7 +1484,9 @@ export function registerRoutes(app: Express) {
           where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
         });
         if (!existing) return res.status(404).json({ error: "Chat not found" });
+        const vectorIdToDelete = existing.vectorId ?? null;
         await db.delete(aiChats).where(eq(aiChats.id, req.params.id));
+        if (vectorIdToDelete) void deleteEntityVector("ai_chat", vectorIdToDelete);
         res.json({ success: true });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1438,10 +1522,28 @@ export function registerRoutes(app: Express) {
           : { role: "user", content: message };
   
         // Build the messages payload for Ollama, including the system message if present.
-        const ollamaMessages: { role: string; content: string }[] = [];
+        const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
         ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
-        for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+        for (const m of history) {
+          if (m.role === "tool") {
+            ollamaMessages.push({
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name || m.name,
+              tool_call_id: m.tool_call_id,
+              content: m.content
+            });
+          } else if (m.role === "assistant") {
+            ollamaMessages.push({
+              role: "assistant",
+              content: m.content || "",
+              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
+            });
+          } else {
+            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+          }
+        }
         ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
   
         const controller = new AbortController();
@@ -1480,7 +1582,11 @@ export function registerRoutes(app: Express) {
           if (titleSource) patch.title = titleSource.slice(0, MAX_CHAT_TITLE_LENGTH);
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
-        res.json({ chat: updated, assistant: assistantMessage });
+        syncEntityInBackground("ai_chat", chat.id);
+        const clientMessages = (updated.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.json({ chat: { ...updated, messages: clientMessages }, assistant: assistantMessage });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -1564,6 +1670,7 @@ export function registerRoutes(app: Express) {
           .set({ messages: updatedMessages, updatedAt: new Date() })
           .where(eq(aiChats.id, chat.id))
           .returning();
+        syncEntityInBackground("ai_chat", chat.id);
         res.json({ chat: updated, assistant: assistantMessage });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1598,10 +1705,28 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const ollamaMessages: { role: string; content: string }[] = [];
+        const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
         ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
-        for (const m of history) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+        for (const m of history) {
+          if (m.role === "tool") {
+            ollamaMessages.push({
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name || m.name,
+              tool_call_id: m.tool_call_id,
+              content: m.content
+            });
+          } else if (m.role === "assistant") {
+            ollamaMessages.push({
+              role: "assistant",
+              content: m.content || "",
+              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
+            });
+          } else {
+            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+          }
+        }
         ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
   
         // text/event-stream is understood by every reverse-proxy as "do not buffer";
@@ -1612,7 +1737,7 @@ export function registerRoutes(app: Express) {
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
   
-        const { assistantContent, toolCalls } = await runStreamingChatWithTools({
+        const { assistantContent, toolCalls, newMessages } = await runStreamingChatWithTools({
           res,
           ctx,
           model,
@@ -1620,16 +1745,26 @@ export function registerRoutes(app: Express) {
           userId: req.user!.id,
         });
   
-        const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+        const resolvedLinks = await resolveLinksInText(assistantContent);
+        const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
+        const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
-        const updatedMessages = [...history, userMessage, assistantMessage];
+        // @ts-expect-error - links is compatible with JSONB message object
+        if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
+        
+        const intermediateMessages = newMessages.slice(0, -1);
+        const updatedMessages = [...history, userMessage, ...intermediateMessages, assistantMessage];
         const patch: Record<string, unknown> = { messages: updatedMessages, updatedAt: new Date() };
         if (!chat.title || chat.title === "New chat") {
           const titleSource = message.trim() || (hasAttachments ? attachments[0].name : "");
           if (titleSource) patch.title = titleSource.slice(0, MAX_CHAT_TITLE_LENGTH);
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
-        res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
+        syncEntityInBackground("ai_chat", chat.id);
+        const clientMessages = (updated.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
         res.end();
       } catch (error: any) {
         if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -1673,10 +1808,28 @@ export function registerRoutes(app: Express) {
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const ollamaMessages: { role: string; content: string }[] = [];
+        const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
         ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
-        for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+        for (const m of trimmed) {
+          if (m.role === "tool") {
+            ollamaMessages.push({
+              role: "tool",
+              name: m.name,
+              tool_name: m.tool_name || m.name,
+              tool_call_id: m.tool_call_id,
+              content: m.content
+            });
+          } else if (m.role === "assistant") {
+            ollamaMessages.push({
+              role: "assistant",
+              content: m.content || "",
+              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
+            });
+          } else {
+            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
+          }
+        }
         ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
   
         res.setHeader("Content-Type", "text/event-stream");
@@ -1685,7 +1838,7 @@ export function registerRoutes(app: Express) {
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
   
-        const { assistantContent, toolCalls } = await runStreamingChatWithTools({
+        const { assistantContent, toolCalls, newMessages } = await runStreamingChatWithTools({
           res,
           ctx,
           model,
@@ -1693,14 +1846,24 @@ export function registerRoutes(app: Express) {
           userId: req.user!.id,
         });
   
-        const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+        const resolvedLinks = await resolveLinksInText(assistantContent);
+        const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
+        const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
-        const updatedMessages = [...trimmed, userMessage, assistantMessage];
+        // @ts-expect-error - links is compatible with JSONB message object
+        if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
+        
+        const intermediateMessages = newMessages.slice(0, -1);
+        const updatedMessages = [...trimmed, userMessage, ...intermediateMessages, assistantMessage];
         const [updated] = await db.update(aiChats)
           .set({ messages: updatedMessages, updatedAt: new Date() })
           .where(eq(aiChats.id, chat.id))
           .returning();
-        res.write(JSON.stringify({ done: true, chat: updated }) + "\n");
+        syncEntityInBackground("ai_chat", chat.id);
+        const clientMessages = (updated.messages as any[]).filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        );
+        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
         res.end();
       } catch (error: any) {
         if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -1727,6 +1890,7 @@ export function registerRoutes(app: Express) {
           model: newModel,
           messages: sanitizeChatMessages(source.messages),
         }).returning();
+        syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -1865,6 +2029,7 @@ export function registerRoutes(app: Express) {
         if (involvedParties.length > 0) await storage.replaceDailyNoteParties(created.id, involvedParties);
         const full = await storage.getDailyNoteById(created.id);
         syncDailyNoteInBackground(created.id);
+        syncEntityInBackground("daily_note", created.id);
         res.status(201).json(full);
       } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -1916,6 +2081,7 @@ export function registerRoutes(app: Express) {
         await storage.addDailyNoteAuditLog(req.params.id, "edited", needsPin);
         const full = await storage.getDailyNoteById(req.params.id);
         syncDailyNoteInBackground(req.params.id);
+        syncEntityInBackground("daily_note", req.params.id);
         res.json(full);
       } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -1931,6 +2097,7 @@ export function registerRoutes(app: Express) {
         await storage.deleteDailyNote(req.params.id);
         if (vectorIdToDelete) {
           void deleteDailyNoteVector(req.params.id, vectorIdToDelete);
+          void deleteEntityVector("daily_note", vectorIdToDelete);
         }
         res.json({ success: true });
       } catch (error: any) {
@@ -2182,6 +2349,201 @@ export function registerRoutes(app: Express) {
       try {
         const hits = await searchDailyNotes(q, limit);
         res.json({ hits });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // ── Universal Vector Storage ─────────────────────────────────────────────
+
+    // Status endpoint for the universal vector collection
+    app.get("/api/vector/universal/status", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const status = await getUniversalStatus();
+        res.json(status);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Get/set universal vector settings
+    app.get("/api/vector/universal/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const cfg = await loadUniversalVectorConfig();
+        res.json({
+          enabled: cfg.universalEnabled,
+          collectionName: cfg.universalCollection,
+        });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/vector/universal/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { enabled, collectionName } = req.body ?? {};
+      try {
+        if (typeof enabled === "boolean") await setVectorSetting("vector_universal_enabled", String(enabled));
+        if (typeof collectionName === "string" && collectionName.trim().length > 0) {
+          await setVectorSetting("vector_universal_collection", collectionName.trim());
+        }
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Universal semantic search
+    app.post("/api/vector/universal/search", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { query, limit, typeFilter } = req.body ?? {};
+      if (!query || typeof query !== "string" || !query.trim()) {
+        return res.status(400).json({ error: "Missing 'query' field." });
+      }
+      try {
+        const results = await searchUniversal(
+          query.trim(),
+          Math.min(50, Math.max(1, limit || 20)),
+          typeFilter as UniversalEntityType[] | undefined
+        );
+        res.json({ results });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Bulk vectorize all entities
+    app.post("/api/vector/universal/vectorize-all", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const result = await bulkSyncAll();
+        res.json({ ok: true, ...result });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Reset universal vector sync (clear vector_synced_at on all tables)
+    app.post("/api/vector/universal/reset-sync", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        await db.update(people).set({ vectorSyncedAt: null });
+        await db.update(groups).set({ vectorSyncedAt: null });
+        await db.update(photos).set({ vectorSyncedAt: null });
+        await db.update(notes).set({ vectorSyncedAt: null });
+        await db.update(interactions).set({ vectorSyncedAt: null });
+        await db.update(socialAccounts).set({ vectorSyncedAt: null });
+        await db.update(dailyNotes).set({ vectorSyncedAt: null });
+        await db.update(aiChats).set({ vectorSyncedAt: null });
+        res.json({ ok: true });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Stats for universal vectorization
+    app.get("/api/vector/universal/stats", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const tables = [
+          { name: "people", table: people },
+          { name: "groups", table: groups },
+          { name: "photos", table: photos },
+          { name: "notes", table: notes },
+          { name: "interactions", table: interactions },
+          { name: "social_accounts", table: socialAccounts },
+          { name: "daily_notes", table: dailyNotes },
+          { name: "ai_chats", table: aiChats },
+        ];
+        const stats: Record<string, { total: number; vectorized: number }> = {};
+        for (const { name, table } of tables) {
+          const rows = await db
+            .select({
+              total: sql<number>`COUNT(*)::int`,
+              vectorized: sql<number>`COUNT(*) FILTER (WHERE vector_synced_at IS NOT NULL)::int`,
+            })
+            .from(table);
+          const r = rows[0] ?? { total: 0, vectorized: 0 };
+          stats[name] = { total: r.total ?? 0, vectorized: r.vectorized ?? 0 };
+        }
+        res.json(stats);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // ── App Knowledge Base Storage ───────────────────────────────────────────
+
+    app.get("/api/vector/app-knowledge/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const enabled = (await getVectorSetting("app_knowledge_enabled")) === "true";
+        res.json({ enabled });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/vector/app-knowledge/settings", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { enabled } = req.body ?? {};
+      try {
+        if (typeof enabled === "boolean") {
+          const previous = (await getVectorSetting("app_knowledge_enabled")) === "true";
+          await setVectorSetting("app_knowledge_enabled", String(enabled));
+          
+          if (enabled && !previous) {
+            // Trigger async reindexing in background after the feature has been turned on
+            void (async () => {
+              try {
+                await reindexAppKnowledge();
+              } catch (err) {
+                console.error("Background app knowledge ingestion failed:", err);
+              }
+            })();
+          }
+        }
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.get("/api/vector/app-knowledge/stats", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const rows = await db
+          .select({
+            total: sql<number>`COUNT(*)::int`,
+            vectorized: sql<number>`COUNT(*) FILTER (WHERE vector_id IS NOT NULL)::int`,
+            lastSyncedAt: sql<Date | null>`MAX(vector_synced_at)`,
+          })
+          .from(appKnowledge);
+        const r = rows[0] ?? { total: 0, vectorized: 0, lastSyncedAt: null };
+        res.json({
+          totalChunks: r.total ?? 0,
+          vectorized: r.vectorized ?? 0,
+          missing: Math.max(0, (r.total ?? 0) - (r.vectorized ?? 0)),
+          lastSyncedAt: r.lastSyncedAt,
+        });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/vector/app-knowledge/reindex", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        void (async () => {
+          try {
+            await reindexAppKnowledge();
+          } catch (err) {
+            console.error("Background app knowledge reindexing failed:", err);
+          }
+        })();
+        res.json({ ok: true, message: "Reindexing initiated in the background." });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }

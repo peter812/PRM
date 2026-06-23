@@ -35,6 +35,7 @@ import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
+import { syncEntityInBackground } from "../vector-universal";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import fs from "fs";
@@ -146,6 +147,7 @@ export function registerRoutes(app: Express) {
         try {
           const photo = await storage.insertPhoto({ location: imageUrl, prmLocation, isSubImage: false });
           photoId = photo.id;
+          syncEntityInBackground("image", photo.id);
         } catch (photoErr) {
           console.error("Warning: failed to register photo in photos table:", photoErr);
         }
@@ -200,6 +202,7 @@ export function registerRoutes(app: Express) {
                 imageDescription: data.response,
                 imageDescriptionAt: new Date(),
               });
+              syncEntityInBackground("image", capturedPhotoId);
             } catch {
               clearTimeout(timeout);
             }

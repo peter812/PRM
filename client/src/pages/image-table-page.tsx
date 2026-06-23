@@ -4,6 +4,7 @@ import { Link } from "wouter";
 import { Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
 import { imageDetailHref } from "@/lib/image-link";
 
@@ -137,19 +138,13 @@ export default function ImageTablePage() {
           </div>
         </div>
 
-        {isLoading && (
-          <div className="flex items-center justify-center py-16" data-testid="loading-image-table">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        )}
-
         {isError && (
           <div className="px-4 py-8 text-sm text-destructive" data-testid="error-image-table">
             Failed to load photos. Please refresh.
           </div>
         )}
 
-        {!isLoading && !isError && (
+        {!isError && (
           <div className="overflow-x-auto">
             <table className="text-xs border-collapse" style={{ minWidth: 1700 }} data-testid="table-images">
               <thead>
@@ -168,7 +163,24 @@ export default function ImageTablePage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((photo, i) => (
+                {isLoading ? (
+                  Array.from({ length: 15 }).map((_, rowIndex) => (
+                    <tr key={rowIndex} className={rowIndex % 2 === 0 ? "bg-background" : "bg-muted/20"}>
+                      <Td w={210}><Skeleton className="h-4 w-40" /></Td>
+                      <Td w={220}><Skeleton className="h-4 w-48" /></Td>
+                      <Td w={140}><Skeleton className="h-4 w-28" /></Td>
+                      <Td w={180}><Skeleton className="h-4 w-36" /></Td>
+                      <Td w={82}><Skeleton className="h-4 w-12" /></Td>
+                      <Td w={82}><Skeleton className="h-4 w-12" /></Td>
+                      <Td w={140}><Skeleton className="h-4 w-28" /></Td>
+                      <Td w={72}><Skeleton className="h-4 w-12" /></Td>
+                      <Td w={200}><Skeleton className="h-4 w-44" /></Td>
+                      <Td w={105}><Skeleton className="h-4 w-16" /></Td>
+                      <Td w={200}><Skeleton className="h-4 w-44" /></Td>
+                    </tr>
+                  ))
+                ) : (
+                  rows.map((photo, i) => (
                   <tr
                     key={photo.id}
                     className={i % 2 === 0 ? "bg-background" : "bg-muted/20"}
@@ -216,7 +228,7 @@ export default function ImageTablePage() {
                       <TruncCell value={photo.prmLocation} maxW={185} />
                     </Td>
                   </tr>
-                ))}
+                )))}
               </tbody>
             </table>
 

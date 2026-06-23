@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, notes, groups, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -52,6 +52,7 @@ import {
   syncDailyNoteInBackground,
   searchDailyNotes,
 } from "../vector";
+import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
 
 const scryptAsync = promisify(scrypt);
 
@@ -320,6 +321,7 @@ export function registerRoutes(app: Express) {
         }
         
         const person = await storage.createPerson(validatedData);
+        syncEntityInBackground("person", person.id);
         res.status(201).json(person);
       } catch (error) {
         console.error("Error creating person:", error);
@@ -344,6 +346,7 @@ export function registerRoutes(app: Express) {
             if (account?.currentProfile?.imageUrl) {
               const updated = await storage.updatePerson(id, { imageUrl: account.currentProfile.imageUrl });
               if (updated) {
+                syncEntityInBackground("person", id);
                 return res.json(updated);
               }
               break;
@@ -351,6 +354,7 @@ export function registerRoutes(app: Express) {
           }
         }
   
+        syncEntityInBackground("person", id);
         res.json(person);
       } catch (error) {
         console.error("Error updating person:", error);
@@ -361,7 +365,16 @@ export function registerRoutes(app: Express) {
     app.delete("/api/people/:id", async (req, res) => {
       try {
         const id = req.params.id;
+        // Collect vector IDs for cascaded child entities before deletion
+        const [personRow] = await db.select({ vectorId: people.vectorId }).from(people).where(eq(people.id, id));
+        const childNotes = await db.select({ vectorId: notes.vectorId }).from(notes).where(eq(notes.personId, id));
         await storage.deletePerson(id);
+        // Remove vectors asynchronously
+        if (personRow?.vectorId) void deleteEntityVector("person", personRow.vectorId);
+        const childNoteVectorIds = childNotes.map((n) => n.vectorId).filter(Boolean) as string[];
+        if (childNoteVectorIds.length > 0) {
+          void deleteEntityVector("note", childNoteVectorIds);
+        }
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting person:", error);
@@ -428,6 +441,7 @@ export function registerRoutes(app: Express) {
       try {
         const validatedData = insertNoteSchema.parse(req.body);
         const note = await storage.createNote(validatedData);
+        syncEntityInBackground("note", note.id);
         res.status(201).json(note);
       } catch (error) {
         console.error("Error creating note:", error);
@@ -438,7 +452,9 @@ export function registerRoutes(app: Express) {
     app.delete("/api/notes/:id", async (req, res) => {
       try {
         const id = req.params.id;
+        const [noteRow] = await db.select({ vectorId: notes.vectorId }).from(notes).where(eq(notes.id, id));
         await storage.deleteNote(id);
+        if (noteRow?.vectorId) void deleteEntityVector("note", noteRow.vectorId);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting note:", error);
@@ -534,6 +550,7 @@ export function registerRoutes(app: Express) {
       try {
         const validatedData = insertInteractionSchema.parse(req.body);
         const interaction = await storage.createInteraction(validatedData);
+        syncEntityInBackground("interaction", interaction.id);
         res.status(201).json(interaction);
       } catch (error) {
         console.error("Error creating interaction:", error);
@@ -551,6 +568,7 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Interaction not found" });
         }
   
+        syncEntityInBackground("interaction", id);
         res.json(interaction);
       } catch (error) {
         console.error("Error updating interaction:", error);
@@ -575,7 +593,9 @@ export function registerRoutes(app: Express) {
           }
         }
         
+        const vectorIdToDelete = interaction?.vectorId ?? null;
         await storage.deleteInteraction(id);
+        if (vectorIdToDelete) void deleteEntityVector("interaction", vectorIdToDelete);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting interaction:", error);
@@ -1151,6 +1171,7 @@ export function registerRoutes(app: Express) {
       try {
         const validatedData = insertGroupSchema.parse(req.body);
         const group = await storage.createGroup(validatedData);
+        syncEntityInBackground("group", group.id);
         res.status(201).json(group);
       } catch (error) {
         console.error("Error creating group:", error);
@@ -1168,6 +1189,7 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Group not found" });
         }
   
+        syncEntityInBackground("group", id);
         res.json(group);
       } catch (error) {
         console.error("Error updating group:", error);
@@ -1178,7 +1200,9 @@ export function registerRoutes(app: Express) {
     app.delete("/api/groups/:id", async (req, res) => {
       try {
         const id = req.params.id;
+        const [groupRow] = await db.select({ vectorId: groups.vectorId }).from(groups).where(eq(groups.id, id));
         await storage.deleteGroup(id);
+        if (groupRow?.vectorId) void deleteEntityVector("group", groupRow.vectorId);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting group:", error);

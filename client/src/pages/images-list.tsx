@@ -3,6 +3,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Loader2, ImageIcon, ImageOff } from "lucide-react";
 import { imageDetailHref } from "@/lib/image-link";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const PAGE_SIZE = 60;
 
@@ -81,8 +82,12 @@ export default function ImagesListPage() {
       </div>
 
       {isLoading && (
-        <div className="flex items-center justify-center py-16" data-testid="loading-images-list">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <div className="p-3" data-testid="loading-images-list">
+          <div className="grid gap-2 grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10">
+            {Array.from({ length: 18 }).map((_, i) => (
+              <Skeleton key={i} className="aspect-square rounded-md w-full" />
+            ))}
+          </div>
         </div>
       )}
 

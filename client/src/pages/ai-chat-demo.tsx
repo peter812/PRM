@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useRoute, useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -30,6 +31,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { MarkdownMessage } from "@/components/markdown-message";
@@ -57,6 +59,7 @@ import {
   ChevronRight,
   CheckCircle2,
   XCircle,
+  Link2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -84,6 +87,7 @@ type ChatMessage = {
   content: string;
   attachments?: ChatAttachment[];
   toolCalls?: ToolCallTrace[];
+  links?: { url: string; title: string }[];
 };
 
 // Map from server-side icon keys (see server/ai-tools.ts) to Lucide components.
@@ -238,9 +242,28 @@ function attachmentTypeFor(file: File): string {
 
 export default function AiChatDemoPage() {
   const { toast } = useToast();
-  // Support deep-linking via ?chatId= query parameter
-  const initialChatId = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('chatId') : null;
-  const [activeChatId, setActiveChatId] = useState<string | null>(initialChatId);
+  const [match, params] = useRoute("/ai-chat-demo/:id");
+  const [, setLocation] = useLocation();
+  const activeChatId = match ? params?.id : null;
+
+  const selectChat = (id: string | null) => {
+    if (id) {
+      setLocation(`/ai-chat-demo/${id}`);
+    } else {
+      setLocation("/ai-chat-demo");
+    }
+  };
+
+  // Backwards compatibility / deep-link query parameter support
+  useEffect(() => {
+    if (!match) {
+      const qParams = new URLSearchParams(window.location.search);
+      const qChatId = qParams.get("chatId");
+      if (qChatId) {
+        setLocation(`/ai-chat-demo/${qChatId}`, { replace: true });
+      }
+    }
+  }, [match, setLocation]);
   const [input, setInput] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get("message") ?? "";
@@ -348,7 +371,7 @@ export default function AiChatDemoPage() {
     },
     onSuccess: (chat) => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
-      setActiveChatId(chat.id);
+      selectChat(chat.id);
     },
     onError: (error: Error) => {
       toast({ title: "Failed to create chat", description: error.message, variant: "destructive" });
@@ -475,7 +498,7 @@ export default function AiChatDemoPage() {
       if (!chatId) {
         const created = await apiRequest("POST", "/api/ai-chats", {}).then((r) => r.json() as Promise<ChatDetail>);
         chatId = created.id;
-        setActiveChatId(chatId);
+        selectChat(chatId);
         queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
       }
       await runStream(chatId, `/api/ai-chats/${chatId}/message/stream`, payload);
@@ -580,7 +603,7 @@ export default function AiChatDemoPage() {
     onSuccess: (chat) => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
       queryClient.setQueryData(["/api/ai-chats", chat.id], chat);
-      setActiveChatId(chat.id);
+      selectChat(chat.id);
       setBranchOpen(false);
       toast({ title: "Conversation branched", description: `New chat: ${chat.title}` });
     },
@@ -596,7 +619,7 @@ export default function AiChatDemoPage() {
     },
     onSuccess: (id) => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
-      if (activeChatId === id) setActiveChatId(null);
+      if (activeChatId === id) selectChat(null);
       setPendingDeleteId(null);
     },
     onError: (error: Error) => {
@@ -709,8 +732,13 @@ export default function AiChatDemoPage() {
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
             {isLoadingChats ? (
-              <div className="flex justify-center py-6">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              <div className="space-y-1">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="flex items-center gap-2 px-2 py-2">
+                    <Skeleton className="h-4 w-4 shrink-0 rounded" />
+                    <Skeleton className="h-4 flex-1" />
+                  </div>
+                ))}
               </div>
             ) : chats.length === 0 ? (
               <p className="text-xs text-muted-foreground px-2 py-4 text-center">
@@ -724,7 +752,7 @@ export default function AiChatDemoPage() {
                     "group flex items-center gap-1 rounded-md px-2 py-2 text-sm cursor-pointer hover-elevate",
                     activeChatId === chat.id && "bg-sidebar-accent",
                   )}
-                  onClick={() => setActiveChatId(chat.id)}
+                  onClick={() => selectChat(chat.id)}
                   data-testid={`chat-history-item-${chat.id}`}
                 >
                   <MessagesSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -834,6 +862,18 @@ export default function AiChatDemoPage() {
                           <ThoughtChain calls={m.toolCalls} dataTestidPrefix={`message-${i}`} />
                         )}
                         <MarkdownMessage content={m.content} />
+                        {m.links && m.links.length > 0 && (
+                          <div className="mt-3 pt-2 border-t border-muted-foreground/10 flex flex-wrap gap-2" data-testid={`message-links-${i}`}>
+                            {m.links.map((link, linkIdx) => (
+                              <Link key={linkIdx} to={link.url}>
+                                <a className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs font-medium transition-colors border shadow-sm cursor-pointer">
+                                  <Link2 className="h-3 w-3 text-indigo-500" />
+                                  {link.title}
+                                </a>
+                              </Link>
+                            ))}
+                          </div>
+                        )}
                       </>
                     ) : (
                       <>

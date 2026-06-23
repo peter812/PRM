@@ -52,6 +52,7 @@ import {
   syncDailyNoteInBackground,
   searchDailyNotes,
 } from "../vector";
+import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
 
 const scryptAsync = promisify(scrypt);
 
@@ -550,6 +551,7 @@ export function registerRoutes(app: Express) {
         const validatedData = insertSocialAccountSchema.parse(req.body);
         const account = await storage.createSocialAccount(validatedData);
         sseManager.broadcast("social_account.created", { id: account.id, username: account.username });
+        syncEntityInBackground("social_account", account.id);
         res.status(201).json(account);
       } catch (error) {
         console.error("Error creating social account:", error);
@@ -598,6 +600,7 @@ export function registerRoutes(app: Express) {
         }
   
         sseManager.broadcast("social_account.updated", { id });
+        syncEntityInBackground("social_account", id);
         res.json(account);
       } catch (error) {
         console.error("Error updating social account:", error);
@@ -618,7 +621,9 @@ export function registerRoutes(app: Express) {
     app.delete("/api/social-accounts/:id", async (req, res) => {
       try {
         const id = req.params.id;
+        const [row] = await db.select({ vectorId: socialAccounts.vectorId }).from(socialAccounts).where(eq(socialAccounts.id, id));
         await storage.deleteSocialAccount(id);
+        if (row?.vectorId) void deleteEntityVector("social_account", row.vectorId);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting social account:", error);
@@ -1780,6 +1785,10 @@ export function registerRoutes(app: Express) {
       }
       try {
         const result = await storage.deleteInstagramImageUrls();
+        const vectorIds = result.deletedPhotos?.map((p) => p.vectorId).filter(Boolean) as string[];
+        if (vectorIds?.length) {
+          void deleteEntityVector("image", vectorIds);
+        }
         res.json(result);
       } catch (error) {
         console.error("Error deleting Instagram image URLs:", error);

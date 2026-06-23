@@ -65,6 +65,8 @@ export const people = pgTable("people", {
   eloRankable: integer("elo_rankable").notNull().default(1), // 1 = rankable, 0 = not rankable
   noSocialMedia: integer("no_social_media").notNull().default(0),
   sex: text("sex").notNull().default("unknown"), // 'male', 'female', or 'unknown'
+  vectorId: text("vector_id"), // Qdrant point ID for universal vector search
+  vectorSyncedAt: timestamp("vector_synced_at"), // Last successful vector sync
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -75,6 +77,8 @@ export const notes = pgTable("notes", {
   content: text("content").notNull(),
   imageUrl: text("image_url"),
   imageUuid: varchar("image_uuid").references(() => photos.id, { onDelete: "set null" }),
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -99,6 +103,8 @@ export const interactions = pgTable("interactions", {
   description: text("description"),
   imageUrl: text("image_url"),
   imageUuid: varchar("image_uuid").references(() => photos.id, { onDelete: "set null" }),
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -131,6 +137,8 @@ export const groups = pgTable("groups", {
   type: text("type").array().default(sql`ARRAY[]::text[]`), // list of group types
   members: text("members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs
   imageUrl: text("image_url"),
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -161,6 +169,8 @@ export const socialAccounts = pgTable("social_accounts", {
   lastScrapedAt: timestamp("last_scraped_at"),
   currentPosts: text("current_posts"), // JSON array of post UUIDs currently visible on the account, e.g. '["uuid1","uuid2"]'
   deletedPosts: text("deleted_posts"), // JSON array of post UUIDs that were previously seen but are now deleted, e.g. '["uuid3"]'
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -259,6 +269,8 @@ export const photos = pgTable("photos", {
   fileHash: text("file_hash"), // SHA-256 hash of the file contents for deduplication
   widthPx: integer("width_px"), // Image width in pixels
   heightPx: integer("height_px"), // Image height in pixels
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
 });
 
 // Daily notes tables
@@ -335,9 +347,21 @@ export const aiChats = pgTable("ai_chats", {
   systemMessage: text("system_message").notNull().default(""),
   model: text("model").notNull().default(""),
   messages: jsonb("messages").notNull().default(sql`'[]'::jsonb`), // Array of { role: 'user' | 'assistant', content: string, attachments?: AiChatAttachment[] }
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// App knowledge table - stores chunked app documentation for internal AI tool usage
+export const appKnowledge = pgTable("app_knowledge", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  content: text("content").notNull(),
+  vectorId: text("vector_id"), // Qdrant point ID for app knowledge semantic search
+  vectorSyncedAt: timestamp("vector_synced_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 
 // Sex guess queue - LLM-generated guesses for people with unknown sex
 export const sexGuessQueue = pgTable("sex_guess_queue", {
@@ -834,6 +858,14 @@ export type SsoConfig = typeof ssoConfig.$inferSelect;
 export type InsertSsoConfig = z.infer<typeof insertSsoConfigSchema>;
 export type Person = typeof people.$inferSelect;
 export type InsertPerson = z.infer<typeof insertPersonSchema>;
+
+export const insertAppKnowledgeSchema = createInsertSchema(appKnowledge).omit({
+  id: true,
+  createdAt: true,
+});
+export type AppKnowledge = typeof appKnowledge.$inferSelect;
+export type InsertAppKnowledge = z.infer<typeof insertAppKnowledgeSchema>;
+
 
 export type Note = typeof notes.$inferSelect;
 export type InsertNote = z.infer<typeof insertNoteSchema>;

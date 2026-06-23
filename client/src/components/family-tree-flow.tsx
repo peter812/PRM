@@ -932,7 +932,7 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
     );
 
     const handleConnectEnd = useCallback(
-      (_event: MouseEvent | TouchEvent, connectionState: { isValid: boolean }) => {
+      (_event: MouseEvent | TouchEvent, connectionState: { isValid: boolean | null }) => {
         if (!onDragEndNoTarget || !connectingNodeId.current) return;
         // If connection was not successfully completed (i.e. didn't land on a valid target)
         if (!connectionState.isValid && isRealPersonId(connectingNodeId.current)) {

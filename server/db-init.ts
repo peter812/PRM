@@ -68,6 +68,7 @@ async function seedRelationshipTypes(): Promise<void> {
       { name: 'Best Friend', color: '#ec4899', value: 80, notes: 'Your best friend' },
       { name: 'Colleague', color: '#f59e0b', value: 30, notes: 'Someone you work with' },
       { name: 'Family', color: '#ef4444', value: 90, notes: 'Family member' },
+      { name: 'Ex-spouse', color: '#6b7280', value: 70, notes: 'Former spouse' },
     ];
     
     for (const type of defaultTypes) {
@@ -381,15 +382,35 @@ async function validateAndSyncSchema(): Promise<void> {
         social_account_uuids: "TEXT[]",
         elo_rankable: "INTEGER NOT NULL DEFAULT 1",
         sex: "TEXT NOT NULL DEFAULT 'unknown'",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       photos: {
         og_metadata: "JSONB",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       notes: {
         image_uuid: "VARCHAR",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       interactions: {
         image_uuid: "VARCHAR",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
+      },
+      groups: {
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
+      },
+      social_accounts: {
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
+      },
+      ai_chats: {
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       daily_notes: {
         vector_id: "TEXT",
@@ -759,6 +780,12 @@ export async function initializeDatabase(): Promise<void> {
       
       // Validate schema and add missing columns if needed
       await validateAndSyncSchema();
+
+      // Always seed defaults so new types (e.g. Ex-spouse) are picked up by existing databases.
+      // All seed functions use ON CONFLICT DO NOTHING, making this idempotent.
+      await seedRelationshipTypes();
+      await seedInteractionTypes();
+      await seedSocialAccountTypes();
     }
 
     // Migrate Partner relationship types to spouse role if needed

@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Skeleton } from "@/components/ui/skeleton";
 import { getInitials, cn } from "@/lib/utils";
 import { imageDetailHref } from "@/lib/image-link";
 import type {
@@ -198,7 +199,19 @@ function RecentPeopleContent() {
   });
 
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <ul className="space-y-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <li key={i} className="flex items-center gap-3 p-1.5">
+            <Skeleton className="h-8 w-8 rounded-full" />
+            <div className="flex-1 space-y-1">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-3 w-1/3" />
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
   }
   if (!data || data.length === 0) {
     return (
@@ -254,7 +267,19 @@ function RecentSocialContent() {
   }, [data]);
 
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <ul className="space-y-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <li key={i} className="flex items-center gap-3 p-1.5">
+            <Skeleton className="h-8 w-8 rounded-full" />
+            <div className="flex-1 space-y-1">
+              <Skeleton className="h-4 w-1/2" />
+              <Skeleton className="h-3 w-1/3" />
+            </div>
+          </li>
+        ))}
+      </ul>
+    );
   }
   if (recent.length === 0) {
     return (
@@ -320,7 +345,13 @@ function RecentPhotosContent() {
   });
 
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <div className="grid grid-cols-3 gap-2">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Skeleton key={i} className="aspect-square rounded-md w-full" />
+        ))}
+      </div>
+    );
   }
   if (isError) {
     return (

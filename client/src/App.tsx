@@ -48,6 +48,7 @@ import ImageDetailPage from "@/pages/image-detail";
 import ImagesListPage from "@/pages/images-list";
 import DailyNotesList from "@/pages/daily-notes";
 import DailyNoteDetail from "@/pages/daily-note-detail";
+import SuperSearchPage from "@/pages/super-search";
 import FamilyTreePage from "@/pages/family-tree";
 import FamilyTreeDevPage from "@/pages/family-tree-dev";
 import NotFound from "@/pages/not-found";
@@ -133,11 +134,12 @@ function Router() {
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
-      <ProtectedRoute path="/ai-chat-demo" component={AiChatDemo} />
+      <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
       <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
       <ProtectedRoute path="/images" component={ImagesListPage} />
       <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
       <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
+      <ProtectedRoute path="/super-search" component={SuperSearchPage} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
       <Route component={NotFound} />
     </Switch>

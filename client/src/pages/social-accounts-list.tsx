@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -221,12 +222,12 @@ export default function SocialAccountsList() {
         {isLoading ? (
           <div className="flex flex-col gap-1">
             {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-2 animate-pulse">
+              <Card key={i} className="p-2">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-muted" />
+                  <Skeleton className="w-10 h-10 rounded-full" />
                   <div className="flex-1 space-y-2">
-                    <div className="h-4 bg-muted rounded w-1/3" />
-                    <div className="h-3 bg-muted rounded w-1/4" />
+                    <Skeleton className="h-4 w-1/3" />
+                    <Skeleton className="h-3 w-1/4" />
                   </div>
                 </div>
               </Card>

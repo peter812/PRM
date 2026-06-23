@@ -1,5 +1,6 @@
 import { storage } from "./storage";
 import { db } from "./db";
+import { syncEntityInBackground } from "./vector-universal";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, isLocalImageUrl } from "./local-storage";
 import { log } from "./vite";
@@ -170,6 +171,8 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     heightPx: dims?.height ?? null,
     ogMetadata,
   });
+
+  syncEntityInBackground("image", photo.id);
 
   // Update profile version image URL
   if (targetVersionId) {

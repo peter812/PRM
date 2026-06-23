@@ -72,6 +72,8 @@ export function PersonFlowTab({
         imageUrl: item.imageUrl || null,
         imageUuid: item.imageUuid || null,
         createdAt: new Date(item.date),
+        vectorId: (item as any).vectorId || null,
+        vectorSyncedAt: (item as any).vectorSyncedAt ? new Date((item as any).vectorSyncedAt) : null,
       });
     } else if (item.type === "interaction") {
       onSelectInteraction({
@@ -85,6 +87,8 @@ export function PersonFlowTab({
         imageUrl: item.imageUrl || null,
         imageUuid: item.imageUuid || null,
         createdAt: new Date(item.date),
+        vectorId: (item as any).vectorId || null,
+        vectorSyncedAt: (item as any).vectorSyncedAt ? new Date((item as any).vectorSyncedAt) : null,
       });
     }
   };

@@ -499,7 +499,13 @@ export async function generateFamilyTreeChanges(
         } catch (err: any) {
           result = { error: err?.message ?? "tool failed" };
         }
-        messages.push({ role: "tool", name, content: JSON.stringify(result) });
+        messages.push({
+          role: "tool",
+          name,
+          tool_name: name,
+          tool_call_id: tc?.id,
+          content: JSON.stringify(result)
+        });
       }
     }
   } finally {
