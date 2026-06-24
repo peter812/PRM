@@ -857,8 +857,9 @@ export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPos
 export const insertAppSettingSchema = createInsertSchema(appSettings);
 
 export const insertPhotoSchema = createInsertSchema(photos).omit({
-  id: true,
   uploadedAt: true,
+}).extend({
+  id: z.string().optional(),
 });
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({

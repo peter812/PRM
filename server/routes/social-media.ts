@@ -1,5 +1,5 @@
 // Generated route module - social-media.ts
-import type { Express } from "express";
+import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
@@ -1433,7 +1433,63 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to create import task" });
       }
     });
-  
+
+    // POST /api/tasks/multi-image-download — creates a background multi_image_download task
+    app.post("/api/tasks/multi-image-download", async (req, res) => {
+      try {
+        if (!req.isAuthenticated() || !req.user) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+
+        const { images } = req.body;
+        if (!Array.isArray(images)) {
+          return res.status(400).json({ error: "images must be an array" });
+        }
+
+        if (images.length === 0 || images.length > 999) {
+          return res.status(400).json({ error: "images array must contain between 1 and 999 items" });
+        }
+
+        const resolvedImages = images.map((item: any) => {
+          if (typeof item === "string") {
+            return {
+              url: item,
+              uuid: crypto.randomUUID(),
+            };
+          } else if (item && typeof item === "object" && typeof item.url === "string") {
+            return {
+              url: item.url,
+              uuid: typeof item.uuid === "string" && item.uuid ? item.uuid : crypto.randomUUID(),
+              prmLocation: typeof item.prmLocation === "string" ? item.prmLocation : undefined,
+              isSubImage: typeof item.isSubImage === "boolean" ? item.isSubImage : undefined,
+              metadata: item.metadata,
+              ogMetadata: item.ogMetadata,
+            };
+          } else {
+            throw new Error("Each item in images must be a URL string or an object with a url string");
+          }
+        });
+
+        const task = await storage.createTask({
+          type: "multi_image_download",
+          status: "pending",
+          payload: JSON.stringify({ images: resolvedImages }),
+        });
+
+        triggerTaskWorker();
+
+        // Started return: returns the UUIDs for all the images
+        res.json({
+          taskId: task.id,
+          uuids: resolvedImages.map(img => img.uuid),
+          status: "pending",
+        });
+      } catch (error) {
+        console.error("Error creating multi_image_download task:", error);
+        res.status(500).json({ error: error instanceof Error ? error.message : "Failed to create download task" });
+      }
+    });
+
     // GET /api/tasks/:id/download — streams the XML result of a completed export_xml task
     app.get("/api/tasks/:id/download", async (req, res) => {
       try {
@@ -1952,7 +2008,7 @@ export function registerRoutes(app: Express) {
     });
 
     // --- Instagram Post Import Endpoint ---
-    app.post("/api/posts/instagram/import", async (req, res) => {
+    const importInstagramPostHandler = async (req: Request, res: Response) => {
       try {
         // 1. Authenticate using X-Extension-Token header
         const token = req.headers["x-extension-token"] as string;
@@ -2012,6 +2068,7 @@ export function registerRoutes(app: Express) {
 
         if (existingPost) {
           return res.status(200).json({
+            status: "already_exists",
             message: "Post already exists, skipped duplicate",
             post: existingPost,
           });
@@ -2084,7 +2141,55 @@ export function registerRoutes(app: Express) {
         console.error("Error importing Instagram post:", error);
         res.status(500).json({ error: "Failed to import Instagram post" });
       }
-    });
+    };
+
+    const checkPostDuplicatesHandler = async (req: Request, res: Response) => {
+      try {
+        const token = req.headers["x-extension-token"] as string;
+        if (!token) {
+          return res.status(401).json({ error: "Extension token required" });
+        }
+
+        const session = await authenticateExtensionToken(token);
+        if (!session) {
+          return res.status(401).json({ error: "Invalid extension token" });
+        }
+
+        await storage.updateExtensionSessionLastAccessed(session.id);
+
+        const { postIds } = req.body;
+        if (!Array.isArray(postIds)) {
+          return res.status(400).json({ error: "postIds must be an array of strings" });
+        }
+
+        if (postIds.length === 0) {
+          return res.json({ existingPostIds: [] });
+        }
+
+        const deterministicIds = postIds.map(id => generateDeterministicUuid(`instagram:post:${id}`));
+
+        const existing = await db
+          .select({ id: socialAccountPosts.id })
+          .from(socialAccountPosts)
+          .where(inArray(socialAccountPosts.id, deterministicIds));
+
+        const existingSet = new Set(existing.map(p => p.id));
+        const existingPostIds = postIds.filter(id => {
+          const detId = generateDeterministicUuid(`instagram:post:${id}`);
+          return existingSet.has(detId);
+        });
+
+        res.json({ existingPostIds });
+      } catch (error) {
+        console.error("Error checking post duplicates:", error);
+        res.status(500).json({ error: "Failed to check duplicates" });
+      }
+    };
+
+    app.post("/api/posts/instagram/import", importInstagramPostHandler);
+    app.post("/api/v1/posts/import", importInstagramPostHandler);
+    app.post("/api/posts/instagram/check", checkPostDuplicatesHandler);
+    app.post("/api/v1/posts/check", checkPostDuplicatesHandler);
 
 }
 

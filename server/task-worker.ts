@@ -1343,6 +1343,165 @@ async function processImportInstagram(taskId: string, payload: {
   });
 }
 
+interface MultiImageDownloadItem {
+  url: string;
+  uuid: string;
+  prmLocation?: string;
+  isSubImage?: boolean;
+  metadata?: any;
+  ogMetadata?: any;
+}
+
+async function processMultiImageDownload(
+  taskId: string,
+  payload: { images: MultiImageDownloadItem[] }
+): Promise<string> {
+  const images = payload.images || [];
+  const totalCount = images.length;
+  await storage.updateTaskProgress(taskId, 0, `Starting download of ${totalCount} images...`);
+
+  let completedCount = 0;
+  const results: Array<{
+    uuid: string;
+    status: "completed" | "failed";
+    url?: string;
+    widthPx?: number | null;
+    heightPx?: number | null;
+    error?: string;
+  }> = [];
+
+  // Determine storage mode once
+  let storageMode: "local" | "s3" = "s3";
+  try {
+    const user = (await storage.getAllUsers())[0];
+    if (user) {
+      storageMode = await storage.getImageStorageMode(user.id);
+    }
+  } catch (err) {
+    log(`[TaskWorker] Error getting image storage mode: ${err}`);
+  }
+
+  // Helper to process a single image
+  const downloadImage = async (item: MultiImageDownloadItem) => {
+    const { url, uuid, prmLocation, isSubImage, metadata, ogMetadata: providedOgMetadata } = item;
+    try {
+      // Check if photo ID already exists
+      const existing = await storage.getPhotoById(uuid);
+      if (existing) {
+        return {
+          uuid,
+          status: "completed" as const,
+          url: existing.location,
+          widthPx: existing.widthPx,
+          heightPx: existing.heightPx,
+        };
+      }
+
+      // Download
+      const response = await fetch(url, {
+        headers: { "User-Agent": INSTAGRAM_USER_AGENT },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to download image: HTTP ${response.status} ${response.statusText}`);
+      }
+
+      const contentType = response.headers.get("content-type") || "image/jpeg";
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+
+      const ogMetadataObj: Record<string, unknown> = {
+        sourceUrl: url,
+        contentType,
+        contentLength: response.headers.get("content-length"),
+        lastModified: response.headers.get("last-modified"),
+        etag: response.headers.get("etag"),
+        fetchedAt: new Date().toISOString(),
+      };
+
+      const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+      const dims = getImageDimensions(buffer);
+
+      // Upload
+      let cdnUrl: string;
+      if (storageMode === "local") {
+        cdnUrl = await uploadImageLocally(buffer, `image.${ext}`, contentType);
+      } else {
+        cdnUrl = await uploadImageToS3(buffer, `image.${ext}`, contentType);
+      }
+
+      // Insert photo
+      const photo = await storage.insertPhoto({
+        id: uuid,
+        location: cdnUrl,
+        prmLocation: prmLocation || `multi_image_download:${taskId}`,
+        isSubImage: isSubImage ?? false,
+        fileHash,
+        widthPx: dims?.width ?? null,
+        heightPx: dims?.height ?? null,
+        ogMetadata: {
+          ...ogMetadataObj,
+          ...(providedOgMetadata || {}),
+        },
+        metadata: metadata || null,
+      });
+
+      // Sync vector
+      syncEntityInBackground("image", photo.id);
+
+      return {
+        uuid,
+        status: "completed" as const,
+        url: cdnUrl,
+        widthPx: dims?.width ?? null,
+        heightPx: dims?.height ?? null,
+      };
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      log(`[TaskWorker] Failed to download image ${uuid} from ${url}: ${errMsg}`);
+      return {
+        uuid,
+        status: "failed" as const,
+        error: errMsg,
+      };
+    }
+  };
+
+  // Process concurrently with a limit of 8
+  const CONCURRENCY_LIMIT = 8;
+  let currentIndex = 0;
+
+  const worker = async () => {
+    while (currentIndex < totalCount) {
+      const index = currentIndex++;
+      const item = images[index];
+      const result = await downloadImage(item);
+      results[index] = result;
+
+      completedCount++;
+      const percent = Math.round((completedCount / totalCount) * 100);
+      await storage.updateTaskProgress(
+        taskId,
+        percent,
+        `Downloaded ${completedCount}/${totalCount} images...`
+      );
+    }
+  };
+
+  const workers = Array.from(
+    { length: Math.min(CONCURRENCY_LIMIT, totalCount) },
+    () => worker()
+  );
+  await Promise.all(workers);
+
+  const responsePayload = {
+    uuids: images.map(img => img.uuid),
+    results,
+  };
+
+  return JSON.stringify(responsePayload);
+}
+
 async function processNextTask(): Promise<boolean> {
   const task = await storage.getNextPendingTask();
   if (!task) return false;
@@ -1354,6 +1513,11 @@ async function processNextTask(): Promise<boolean> {
     let result: string;
 
     switch (task.type) {
+      case "multi_image_download": {
+        const payload = JSON.parse(task.payload);
+        result = await processMultiImageDownload(task.id, payload);
+        break;
+      }
       case "get_img": {
         const payload = JSON.parse(task.payload);
         result = await processGetImgTask(payload);

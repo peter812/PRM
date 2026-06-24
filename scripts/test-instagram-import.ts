@@ -67,7 +67,8 @@ async function test() {
   await db.delete(socialAccountPosts).where(eq(socialAccountPosts.id, deterministicPostId));
   await db.delete(photos).where(eq(photos.prmLocation, `post:${deterministicPostId}`));
 
-  // 4. Formulate import request payload
+  // 4. Formulate import request payload with a large image (> 100kb default limit) to verify the payload limit fix.
+  const largeBase64 = Buffer.alloc(300000, "A").toString("base64");
   const payload = {
     username: "test_instagram_coder",
     platform: "Instagram",
@@ -81,18 +82,17 @@ async function test() {
         {
           type: "image",
           filename: "C8d823xABcd_0.jpg",
-          // Small valid 1x1 pixel JPEG base64
-          data: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
+          data: `data:image/jpeg;base64,${largeBase64}`
         }
       ]
     }
   };
 
-  // 5. Send POST request
-  const url = "http://localhost:5000/api/posts/instagram/import";
-  console.log(`Sending POST request to ${url}...`);
+  // 5. Send POST request to the new extension API endpoint
+  const urlv1 = "http://localhost:5000/api/v1/posts/import";
+  console.log(`Sending POST request to ${urlv1}...`);
 
-  const response1 = await fetch(url, {
+  const response1 = await fetch(urlv1, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -103,10 +103,10 @@ async function test() {
 
   console.log(`Response status: ${response1.status}`);
   const data1 = (await response1.json()) as any;
-  console.log("Response data:", JSON.stringify(data1, null, 2));
+  console.log("Response data message:", data1.message);
 
   if (response1.status !== 201) {
-    throw new Error(`Expected 201 Created but got ${response1.status}`);
+    throw new Error(`Expected 201 Created but got ${response1.status}: ${JSON.stringify(data1)}`);
   }
 
   // Verify database record
@@ -123,9 +123,10 @@ async function test() {
   }
   console.log(`Verified: ${dbPhotos.length} photo(s) registered in database.`);
 
-  // 6. Test de-duplication by sending it again
-  console.log("Sending duplicate POST request to test de-duplication...");
-  const response2 = await fetch(url, {
+  // 6. Test de-duplication and compatibility by sending it to the original endpoint
+  const urlOriginal = "http://localhost:5000/api/posts/instagram/import";
+  console.log(`Sending duplicate POST request to original endpoint ${urlOriginal}...`);
+  const response2 = await fetch(urlOriginal, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -136,7 +137,7 @@ async function test() {
 
   console.log(`Duplicate response status: ${response2.status}`);
   const data2 = (await response2.json()) as any;
-  console.log("Duplicate response data:", JSON.stringify(data2, null, 2));
+  console.log("Duplicate response data message:", data2.message);
 
   if (response2.status !== 200) {
     throw new Error(`Expected 200 OK for duplicate but got ${response2.status}`);

@@ -75,6 +75,9 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/extension-auth/ping",
   "/v1/ping",
   "/posts/instagram/import",
+  "/v1/posts/import",
+  "/v1/posts/check",
+  "/posts/instagram/check",
 ]);
 
 
