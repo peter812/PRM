@@ -61,6 +61,7 @@ export const people = pgTable("people", {
   imageUrl: text("image_url"),
   socialAccountUuids: text("social_account_uuids").array().default(sql`ARRAY[]::text[]`),
   isStarred: integer("is_starred").notNull().default(0), // 0 = not starred, 1 = starred (SQLite compatibility)
+  isWatched: boolean("is_watched").notNull().default(false),
   eloScore: integer("elo_score").notNull().default(1200),
   eloRankable: integer("elo_rankable").notNull().default(1), // 1 = rankable, 0 = not rankable
   noSocialMedia: integer("no_social_media").notNull().default(0),
@@ -244,6 +245,9 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   mentionedAccounts: text("mentioned_accounts"), // JSON array of {imageIndex: number, accounts: string[]} objects, e.g. '[{"imageIndex":0,"accounts":["user1"]}]'
   faceIds: text("face_ids"), // JSON array of arrays of face UUIDs, one entry per image, e.g. '[["uuid1","uuid2"],["uuid3"]]'
   isDeleted: boolean("is_deleted").notNull().default(false),
+  summary: text("summary"),
+  summaryCreationDate: timestamp("summary_creation_date"),
+  summaryToolingVersion: text("summary_tooling_version"),
   postedAt: timestamp("posted_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

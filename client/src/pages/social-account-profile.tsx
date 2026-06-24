@@ -229,6 +229,26 @@ export default function SocialAccountProfile() {
     },
   });
 
+  const summarizePostMutation = useMutation({
+    mutationFn: async (postId: string) => {
+      await apiRequest("POST", `/api/social-account-posts/${postId}/summarize`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Summarization Scheduled",
+        description: "A background task has been scheduled to generate a summary for this post.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to schedule summarization",
+        variant: "destructive",
+      });
+    },
+  });
+
   const importInstagramMutation = useMutation({
     mutationFn: async ({ file, accountId, importType }: { file: File; accountId: string; importType: "followers" | "following" }) => {
       const formData = new FormData();
@@ -658,6 +678,13 @@ export default function SocialAccountProfile() {
               >
                 Posts
               </TabsTrigger>
+              <TabsTrigger
+                value="summary"
+                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                data-testid="tab-summary"
+              >
+                AI Summary
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -953,6 +980,137 @@ export default function SocialAccountProfile() {
                   <ImageIcon className="h-12 w-12 mx-auto mb-3 opacity-40" />
                   <p className="text-sm">No posts yet</p>
                   <p className="text-xs mt-1">Click "Add Post" to create the first post</p>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+
+          {/* Summary Tab */}
+          <TabsContent value="summary" className="mt-0">
+            <div className="px-6 py-6 max-w-4xl mx-auto space-y-6">
+              <div className="flex items-center justify-between border-b pb-4 mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold text-foreground">Profile Activity Summary</h2>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    AI-generated summaries of posts and activities for this profile.
+                  </p>
+                </div>
+                {owner?.isWatched ? (
+                  <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20 flex gap-1 items-center px-3 py-1 text-xs">
+                    <CheckCircle2 className="h-3 w-3" /> Watch List Active
+                  </Badge>
+                ) : (
+                  <div className="text-right">
+                    <p className="text-xs text-muted-foreground mb-1">Watch List is disabled for this person.</p>
+                    <Link to={`/people/${account.ownerUuid}`}>
+                      <Button size="sm" variant="outline" className="text-xs">
+                        Enable Watch List
+                      </Button>
+                    </Link>
+                  </div>
+                )}
+              </div>
+
+              {posts && posts.some(p => p.summary) ? (
+                <div className="space-y-6 relative before:absolute before:inset-y-0 before:left-4 before:w-[2px] before:bg-border">
+                  {posts
+                    .filter(p => p.summary)
+                    .map((post) => {
+                      let images: string[] = [];
+                      try {
+                        images = post.content ? JSON.parse(post.content) : [];
+                      } catch {
+                        images = [];
+                      }
+                      const firstImage = images[0] || null;
+
+                      return (
+                        <div key={post.id} className="relative pl-10 flex gap-4 items-start group">
+                          {/* Timeline node */}
+                          <div className="absolute left-2.5 top-2.5 w-3.5 h-3.5 rounded-full border-2 border-primary bg-background group-hover:scale-110 transition-transform" />
+
+                          <Card className="flex-1 p-5 shadow-sm hover:shadow-md transition-shadow">
+                            <div className="flex gap-4 items-start flex-col sm:flex-row">
+                              {firstImage && (
+                                <div className="w-full sm:w-24 aspect-square bg-muted rounded overflow-hidden flex-shrink-0 border">
+                                  <img src={firstImage} alt="Post thumbnail" className="w-full h-full object-cover" />
+                                </div>
+                              )}
+                              <div className="flex-1 space-y-2">
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <span className="text-sm font-medium text-muted-foreground">
+                                    {post.postedAt ? new Date(post.postedAt).toLocaleDateString(undefined, {
+                                      year: 'numeric',
+                                      month: 'long',
+                                      day: 'numeric'
+                                    }) : "Unknown Date"}
+                                  </span>
+                                  {post.summaryToolingVersion && (
+                                    <Badge variant="secondary" className="font-mono text-[10px] scale-90 origin-right">
+                                      {post.summaryToolingVersion}
+                                    </Badge>
+                                  )}
+                                </div>
+
+                                <p className="text-base text-foreground leading-relaxed">
+                                  {post.summary}
+                                </p>
+
+                                {post.description && (
+                                  <details className="text-xs text-muted-foreground cursor-pointer mt-2">
+                                    <summary className="hover:text-foreground">View Original Caption</summary>
+                                    <p className="mt-2 p-2 bg-muted rounded text-xs font-mono whitespace-pre-wrap">
+                                      {post.description}
+                                    </p>
+                                  </details>
+                                )}
+
+                                <div className="flex items-center justify-end gap-2 pt-2 border-t mt-3">
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="text-xs h-8 text-muted-foreground hover:text-foreground"
+                                    onClick={() => summarizePostMutation.mutate(post.id)}
+                                    disabled={summarizePostMutation.isPending}
+                                  >
+                                    Regenerate Summary
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          </Card>
+                        </div>
+                      );
+                    })}
+                </div>
+              ) : (
+                <div className="text-center py-16 border-2 border-dashed rounded-lg">
+                  <FileText className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-40" />
+                  <h3 className="text-lg font-medium">No Summaries Yet</h3>
+                  <p className="text-sm text-muted-foreground max-w-sm mx-auto mt-1">
+                    {owner?.isWatched
+                      ? "Summaries are automatically generated in the background when new posts are imported. You can also manually trigger them below."
+                      : "Put this person on your Watch List to enable automatic post tracking and AI-generated activity summaries."}
+                  </p>
+                  {owner?.isWatched && posts && posts.length > 0 && (
+                    <div className="mt-6 space-y-3">
+                      <p className="text-xs text-muted-foreground">Select a post to trigger a manual summary:</p>
+                      <div className="flex flex-wrap gap-2 justify-center max-w-lg mx-auto">
+                        {posts.slice(0, 5).map((p, idx) => (
+                          <Button
+                            key={p.id}
+                            size="sm"
+                            variant="outline"
+                            className="text-xs"
+                            onClick={() => summarizePostMutation.mutate(p.id)}
+                            disabled={summarizePostMutation.isPending}
+                          >
+                            Post {idx + 1} ({p.postedAt ? new Date(p.postedAt).toLocaleDateString() : "unknown"})
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

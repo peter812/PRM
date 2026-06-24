@@ -8,7 +8,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, isNotNull } from "drizzle-orm";
+import { eq, isNotNull, inArray, and } from "drizzle-orm";
 import {
   people,
   tasks,
@@ -17,6 +17,9 @@ import {
   interactionTypes,
   socialNetworkChanges,
   socialAccountPosts,
+  photos,
+  socialAccounts,
+  socialProfileVersions,
 } from "@shared/schema";
 
 // ── Image dimension helper ────────────────────────────────────────────────────
@@ -1560,6 +1563,11 @@ async function processNextTask(): Promise<boolean> {
         result = await processImportXmlTask(task.id, payload);
         break;
       }
+      case "watchlist_post_analysis": {
+        const payload = JSON.parse(task.payload);
+        result = await processWatchlistPostAnalysis(task.id, payload);
+        break;
+      }
       default:
         throw new Error(`Unknown task type: ${task.type}`);
     }
@@ -1635,4 +1643,446 @@ export function resumeTaskWorker() {
 
 export function isTaskWorkerPaused(): boolean {
   return isPaused;
+}
+
+async function getImageBuffer(location: string): Promise<Buffer | null> {
+  try {
+    if (location.startsWith("/api/images/")) {
+      const filename = location.split("/api/images/").pop();
+      if (!filename) return null;
+      const filePath = path.join(process.cwd(), "uploads", filename);
+      if (fs.existsSync(filePath)) {
+        return fs.readFileSync(filePath);
+      }
+      return null;
+    }
+    // Remote URL
+    const resp = await fetch(location, { signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) return null;
+    const arrayBuffer = await resp.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch (error) {
+    log(`[TaskWorker] Failed to get image buffer for ${location}: ${error}`);
+    return null;
+  }
+}
+
+async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
+  const apiUrl = (await storage.getAppSetting("ollama_api_url")) ?? "";
+  if (!apiUrl.trim()) return null;
+  const base = apiUrl.replace(/\/+$/, "");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const authRequired = (await storage.getAppSetting("ollama_auth_required")) === "true";
+  if (authRequired) {
+    const username = (await storage.getAppSetting("ollama_username")) ?? "";
+    const password = (await storage.getAppSetting("ollama_password")) ?? "";
+    headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+  }
+  return { base, headers };
+}
+
+async function enrichFaceNames(rawFaces: any[]): Promise<any[]> {
+  const assignedUuids = [...new Set(rawFaces.map(f => f.person_uuid).filter(Boolean))] as string[];
+  if (assignedUuids.length === 0) return rawFaces;
+
+  const [matchedPeople, matchedSocials] = await Promise.all([
+    db.select({ id: people.id, firstName: people.firstName, lastName: people.lastName })
+      .from(people)
+      .where(inArray(people.id, assignedUuids)),
+    db.select({ id: socialAccounts.id, username: socialAccounts.username, nickname: socialProfileVersions.nickname })
+      .from(socialAccounts)
+      .leftJoin(socialProfileVersions, and(eq(socialProfileVersions.socialAccountId, socialAccounts.id), eq(socialProfileVersions.isCurrent, true)))
+      .where(inArray(socialAccounts.id, assignedUuids)),
+  ]);
+
+  const peopleMap = new Map(matchedPeople.map(p => [p.id, p]));
+  const socialMap = new Map(matchedSocials.map(s => [s.id, s]));
+
+  return rawFaces.map(f => {
+    const pUuid = f.person_uuid;
+    if (!pUuid) return f;
+    const person = peopleMap.get(pUuid);
+    if (person) {
+      return { ...f, person_name: `${person.firstName} ${person.lastName}`.trim() };
+    }
+    const social = socialMap.get(pUuid);
+    if (social) {
+      return { ...f, person_name: social.nickname || `@${social.username}` };
+    }
+    return f;
+  });
+}
+
+async function guessAndAssignOwnerFace(params: {
+  faceApiUrl: string;
+  faceApiKey: string;
+  ownerId: string;
+  ownerName: string;
+  socialAccountId: string;
+  detectedFacesByPhoto: Map<string, any[]>;
+}): Promise<void> {
+  const { faceApiUrl, faceApiKey, ownerId, ownerName, socialAccountId, detectedFacesByPhoto } = params;
+
+  // Step 1: Try profile image first
+  const currentProfile = await storage.getCurrentProfileVersion(socialAccountId);
+  if (currentProfile?.imageUrl) {
+    log(`[TaskWorker] Trying to detect owner face from profile picture: ${currentProfile.imageUrl}`);
+    const profileBuffer = await getImageBuffer(currentProfile.imageUrl);
+    if (profileBuffer) {
+      try {
+        const mimeType = currentProfile.imageUrl.endsWith(".png") ? "image/png" : "image/jpeg";
+        const formData = new FormData();
+        formData.append("image", new Blob([profileBuffer], { type: mimeType }), "profile.jpg");
+        const response = await fetch(`${faceApiUrl}/api/img/add`, {
+          method: "POST",
+          headers: { "x-api-key": faceApiKey },
+          body: formData,
+          signal: AbortSignal.timeout(20000),
+        });
+
+        if (response.ok) {
+          const data = await response.json() as { faces?: any[] };
+          const faces = data.faces ?? [];
+          if (faces.length > 0) {
+            const faceUuid = faces[0].face_uuid;
+            log(`[TaskWorker] Found face in profile pic. Assigning face_uuid ${faceUuid} to owner ${ownerId}`);
+            
+            const assignRes = await fetch(`${faceApiUrl}/api/face/assign-bulk`, {
+              method: "POST",
+              headers: { "x-api-key": faceApiKey, "Content-Type": "application/json" },
+              body: JSON.stringify({
+                assignments: [{ face_uuid: faceUuid, person_uuid: ownerId, name: ownerName }]
+              }),
+              signal: AbortSignal.timeout(10000),
+            });
+
+            if (assignRes.ok) {
+              log(`[TaskWorker] Successfully assigned profile face to owner`);
+              return;
+            }
+          }
+        }
+      } catch (err: any) {
+        log(`[TaskWorker] Profile picture owner face guess failed: ${err.message}`);
+      }
+    }
+  }
+
+  // Step 2: Fallback to face frequency in post images
+  log(`[TaskWorker] Falling back to post image face frequency analysis...`);
+  const frequencyMap = new Map<string, number>();
+  
+  for (const faces of detectedFacesByPhoto.values()) {
+    for (const f of faces) {
+      if (f.face_uuid) {
+        if (f.person_uuid && f.person_uuid !== ownerId) continue;
+        frequencyMap.set(f.face_uuid, (frequencyMap.get(f.face_uuid) || 0) + 1);
+      }
+    }
+  }
+
+  if (frequencyMap.size > 0) {
+    let bestFaceUuid = "";
+    let maxCount = 0;
+    for (const [faceUuid, count] of frequencyMap.entries()) {
+      if (count > maxCount) {
+        maxCount = count;
+        bestFaceUuid = faceUuid;
+      }
+    }
+
+    if (bestFaceUuid) {
+      log(`[TaskWorker] Guessed face_uuid ${bestFaceUuid} (occurred ${maxCount} times in post photos). Assigning to owner ${ownerId}`);
+      try {
+        const assignRes = await fetch(`${faceApiUrl}/api/face/assign-bulk`, {
+          method: "POST",
+          headers: { "x-api-key": faceApiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            assignments: [{ face_uuid: bestFaceUuid, person_uuid: ownerId, name: ownerName }]
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (assignRes.ok) {
+          log(`[TaskWorker] Successfully assigned guessed post face to owner`);
+        }
+      } catch (err: any) {
+        log(`[TaskWorker] Post image owner face guess failed: ${err.message}`);
+      }
+    }
+  }
+}
+
+async function processWatchlistPostAnalysis(taskId: string, payload: { postId: string }): Promise<string> {
+  const { postId } = payload;
+  log(`[TaskWorker] Running watchlist post analysis for post ${postId}`);
+
+  const [post] = await db
+    .select()
+    .from(socialAccountPosts)
+    .where(eq(socialAccountPosts.id, postId))
+    .limit(1);
+
+  if (!post) {
+    throw new Error(`Post ${postId} not found`);
+  }
+
+  const [account] = await db
+    .select()
+    .from(socialAccounts)
+    .where(eq(socialAccounts.id, post.socialAccountId))
+    .limit(1);
+
+  if (!account) {
+    throw new Error(`Social account ${post.socialAccountId} not found`);
+  }
+
+  if (!account.ownerUuid) {
+    return JSON.stringify({ success: true, message: "Skipped: Social account has no owner linked." });
+  }
+
+  const [owner] = await db
+    .select()
+    .from(people)
+    .where(eq(people.id, account.ownerUuid))
+    .limit(1);
+
+  if (!owner) {
+    throw new Error(`Owner ${account.ownerUuid} not found`);
+  }
+
+  if (!owner.isWatched) {
+    return JSON.stringify({ success: true, message: "Skipped: Owner is not on the watch list." });
+  }
+
+  await storage.updateTaskProgress(taskId, 10, "Fetching post images...");
+
+  const postPhotos = await db
+    .select()
+    .from(photos)
+    .where(eq(photos.prmLocation, `post:${postId}`));
+
+  if (postPhotos.length === 0) {
+    return JSON.stringify({ success: true, message: "Skipped: No photos found for this post." });
+  }
+
+  await storage.updateTaskProgress(taskId, 20, "Running PRM-Face detection...");
+
+  const faceApiUrlSetting = await storage.getAppSetting("prm_face_api_url");
+  const faceApiKeySetting = await storage.getAppSetting("prm_face_api_key");
+
+  let prmFaceConfigured = false;
+  let faceApiUrl = "";
+  let faceApiKey = "";
+  if (faceApiUrlSetting && faceApiKeySetting) {
+    faceApiUrl = faceApiUrlSetting.replace(/\/+$/, "");
+    faceApiKey = faceApiKeySetting;
+    prmFaceConfigured = true;
+  }
+
+  const detectedFacesByPhoto = new Map<string, any[]>();
+
+  if (prmFaceConfigured) {
+    for (let i = 0; i < postPhotos.length; i++) {
+      const photo = postPhotos[i];
+      const progress = 20 + Math.floor((i / postPhotos.length) * 30);
+      await storage.updateTaskProgress(taskId, progress, `Analyzing image ${i + 1}/${postPhotos.length} on PRM-Face...`);
+
+      const buffer = await getImageBuffer(photo.location);
+      if (!buffer) {
+        log(`[TaskWorker] Could not load image buffer for photo ${photo.id}`);
+        continue;
+      }
+
+      try {
+        const mimeType = photo.location.endsWith(".png") ? "image/png" : "image/jpeg";
+        const formData = new FormData();
+        formData.append("image", new Blob([buffer], { type: mimeType }), path.basename(photo.location));
+        
+        const response = await fetch(`${faceApiUrl}/api/img/add`, {
+          method: "POST",
+          headers: { "x-api-key": faceApiKey },
+          body: formData,
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (response.ok) {
+          const data = await response.json() as { image_uuid?: string; faces?: any[] };
+          detectedFacesByPhoto.set(photo.id, data.faces ?? []);
+          log(`[TaskWorker] PRM-Face detected ${data.faces?.length ?? 0} faces in photo ${photo.id}`);
+        } else {
+          const body = await response.text();
+          log(`[TaskWorker] PRM-Face API returned status ${response.status}: ${body}`);
+        }
+      } catch (err: any) {
+        log(`[TaskWorker] Failed to call PRM-Face for photo ${photo.id}: ${err.message}`);
+      }
+    }
+
+    await storage.updateTaskProgress(taskId, 50, "Checking owner face assignment...");
+    try {
+      const faceListResp = await fetch(
+        `${faceApiUrl}/api/face/list?page=1&page_size=1&person_uuid=${encodeURIComponent(owner.id)}`,
+        { headers: { "x-api-key": faceApiKey }, signal: AbortSignal.timeout(10000) }
+      );
+
+      let ownerHasFace = false;
+      if (faceListResp.ok) {
+        const faceListData = await faceListResp.json() as { faces?: any[] };
+        if (faceListData.faces && faceListData.faces.length > 0) {
+          ownerHasFace = true;
+        }
+      }
+
+      if (!ownerHasFace) {
+        await storage.updateTaskProgress(taskId, 55, "Attempting to guess owner face...");
+        await guessAndAssignOwnerFace({
+          faceApiUrl,
+          faceApiKey,
+          ownerId: owner.id,
+          ownerName: `${owner.firstName} ${owner.lastName}`.trim(),
+          socialAccountId: account.id,
+          detectedFacesByPhoto,
+        });
+      }
+    } catch (err: any) {
+      log(`[TaskWorker] Failed to verify/guess owner face assignment: ${err.message}`);
+    }
+  } else {
+    log(`[TaskWorker] PRM-Face API is not configured. Skipping face detection.`);
+  }
+
+  await storage.updateTaskProgress(taskId, 65, "Checking Ollama settings...");
+  const ollamaEnabled = (await storage.getAppSetting("ollama_enabled")) === "true";
+  const ollamaApiUrl = (await storage.getAppSetting("ollama_api_url")) ?? "";
+
+  const imageDescriptions: string[] = [];
+
+  if (ollamaEnabled && ollamaApiUrl.trim()) {
+    const ctx = await buildOllamaChatContext();
+    if (ctx) {
+      const model = (await storage.getAppSetting("ollama_model")) || "llava";
+      const textModel = (await storage.getAppSetting("ollama_text_model")) || "llama3";
+
+      for (let i = 0; i < postPhotos.length; i++) {
+        const photo = postPhotos[i];
+        const progress = 65 + Math.floor((i / postPhotos.length) * 20);
+        await storage.updateTaskProgress(taskId, progress, `Generating AI description for image ${i + 1}/${postPhotos.length}...`);
+
+        const buffer = await getImageBuffer(photo.location);
+        if (!buffer) continue;
+        const base64Img = buffer.toString("base64");
+
+        const rawFaces = detectedFacesByPhoto.get(photo.id) || [];
+        const enrichedFaces = await enrichFaceNames(rawFaces);
+        const faceLabels = enrichedFaces.map(f => {
+          const name = f.person_name || "Unknown Person";
+          const box = f.box ? `at coordinates [x: ${f.box.x}, y: ${f.box.y}, w: ${f.box.w}, h: ${f.box.h}]` : "";
+          return `- ${name} ${box}`;
+        }).join("\n");
+
+        const descPrompt = `Analyze this image. The following people/faces have been detected in the image:
+${faceLabels || "No known faces detected."}
+
+Provide a detailed, natural description of the image scene, what the people are doing, the setting, and any notable details. Refer to the identified people by their names if they are listed above. Keep it concise (2-4 sentences).`;
+
+        try {
+          const response = await fetch(`${ctx.base}/api/chat`, {
+            method: "POST",
+            headers: ctx.headers,
+            body: JSON.stringify({
+              model: model,
+              messages: [{
+                role: "user",
+                content: descPrompt,
+                images: [base64Img],
+              }],
+              stream: false,
+            }),
+            signal: AbortSignal.timeout(60000),
+          });
+
+          if (response.ok) {
+            const resData = await response.json() as { message?: { content?: string } };
+            const desc = (resData?.message?.content ?? "").trim();
+            if (desc) {
+              imageDescriptions.push(desc);
+              await db
+                .update(photos)
+                .set({
+                  imageDescription: desc,
+                  imageDescriptionAt: new Date(),
+                })
+                .where(eq(photos.id, photo.id));
+              
+              syncEntityInBackground("image", photo.id);
+            }
+          } else {
+            const body = await response.text();
+            log(`[TaskWorker] Ollama description returned status ${response.status}: ${body}`);
+          }
+        } catch (err: any) {
+          log(`[TaskWorker] Failed to describe photo ${photo.id} with Ollama: ${err.message}`);
+        }
+      }
+
+      await storage.updateTaskProgress(taskId, 90, "Generating cohesive post summary...");
+      if (imageDescriptions.length > 0) {
+        const summaryPrompt = `You are a social media summarizer. Generate a short, cohesive single-paragraph summary (2-3 sentences) of the following social media post based on its caption and the visual descriptions of the images it contains.
+
+Post Details:
+- Caption: "${post.description || "(No caption)"}"
+- Posted Date: ${post.postedAt ? new Date(post.postedAt).toLocaleDateString() : "Unknown"}
+
+Image Descriptions:
+${imageDescriptions.map((desc, idx) => `Image ${idx + 1}: ${desc}`).join("\n")}
+
+Write a concise, engaging summary paragraph explaining what the post is about, who is in it, and what is happening. Do not use markdown headers or lists. Return only the summary text.`;
+
+        try {
+          const response = await fetch(`${ctx.base}/api/chat`, {
+            method: "POST",
+            headers: ctx.headers,
+            body: JSON.stringify({
+              model: textModel,
+              messages: [{ role: "user", content: summaryPrompt }],
+              stream: false,
+            }),
+            signal: AbortSignal.timeout(60000),
+          });
+
+          if (response.ok) {
+            const resData = await response.json() as { message?: { content?: string } };
+            const summary = (resData?.message?.content ?? "").trim();
+            if (summary) {
+              await db
+                .update(socialAccountPosts)
+                .set({
+                  summary: summary,
+                  summaryCreationDate: new Date(),
+                  summaryToolingVersion: `watchlist-summarizer-v1.0-${textModel}`,
+                })
+                .where(eq(socialAccountPosts.id, postId));
+              
+              log(`[TaskWorker] Successfully generated summary for post ${postId}`);
+            }
+          } else {
+            const body = await response.text();
+            log(`[TaskWorker] Ollama summary returned status ${response.status}: ${body}`);
+          }
+        } catch (err: any) {
+          log(`[TaskWorker] Failed to generate post summary: ${err.message}`);
+        }
+      }
+    }
+  } else {
+    log(`[TaskWorker] Ollama is not enabled or configured. Skipping description/summary.`);
+  }
+
+  return JSON.stringify({
+    success: true,
+    postId,
+    descriptionsCount: imageDescriptions.length,
+    prmFaceAnalyzed: prmFaceConfigured,
+  });
 }

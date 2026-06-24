@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, Eye, EyeOff } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -109,6 +109,29 @@ export default function PersonProfile() {
       toast({
         title: "Error",
         description: "Failed to link social account",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const watchMutation = useMutation({
+    mutationFn: async (isWatched: boolean) => {
+      await apiRequest("PATCH", `/api/people/${id}`, {
+        isWatched,
+      });
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      toast({
+        title: "Success",
+        description: variables ? "Added to Watch List" : "Removed from Watch List",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update watch status",
         variant: "destructive",
       });
     },
@@ -265,6 +288,27 @@ export default function PersonProfile() {
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>Account info</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={person.isWatched ? "default" : "outline"}
+                      size="icon"
+                      onClick={() => watchMutation.mutate(!person.isWatched)}
+                      data-testid="button-toggle-watch"
+                      aria-label="Toggle watch status"
+                      disabled={watchMutation.isPending}
+                    >
+                      {person.isWatched ? (
+                        <Eye className="h-4 w-4 text-primary-foreground fill-current" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {person.isWatched ? "Watching Profile (Click to Unwatch)" : "Watch Profile (Track & Summarize Posts)"}
+                  </TooltipContent>
                 </Tooltip>
                 <Button
                   variant="outline"

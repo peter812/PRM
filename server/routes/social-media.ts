@@ -851,6 +851,25 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to update post" });
       }
     });
+
+    app.post("/api/social-account-posts/:id/summarize", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+        const post = await storage.getPostById(req.params.id);
+        if (!post) return res.status(404).json({ error: "Post not found" });
+
+        const task = await storage.createTask({
+          type: "watchlist_post_analysis",
+          status: "pending",
+          payload: JSON.stringify({ postId: post.id }),
+        });
+        triggerTaskWorker();
+        res.status(201).json(task);
+      } catch (error) {
+        console.error("Error creating post summarization task:", error);
+        res.status(500).json({ error: "Failed to schedule post summarization" });
+      }
+    });
   
     app.delete("/api/social-account-posts/:id", async (req, res) => {
       try {
@@ -2151,6 +2170,23 @@ export function registerRoutes(app: Express) {
 
         // Sync social account in background
         syncEntityInBackground("social_account", targetAccount.id);
+
+        // Check if poster is on the watch list
+        if (targetAccount.ownerUuid) {
+          const [owner] = await db
+            .select({ isWatched: people.isWatched })
+            .from(people)
+            .where(eq(people.id, targetAccount.ownerUuid))
+            .limit(1);
+          if (owner?.isWatched) {
+            await storage.createTask({
+              type: "watchlist_post_analysis",
+              status: "pending",
+              payload: JSON.stringify({ postId: createdPost.id }),
+            });
+            triggerTaskWorker();
+          }
+        }
 
         res.status(201).json({
           message: "Instagram post imported successfully",
