@@ -21,6 +21,7 @@ import {
   Trash2,
   Crosshair,
   ExternalLink,
+  Download,
 } from "lucide-react";
 import {
   FamilyTreeFlow,
@@ -599,6 +600,75 @@ export default function FamilyTreeDevPage() {
   const ViewIcon =
     viewMode === "name" ? User : viewMode === "avatar-name" ? ImageIcon : Circle;
 
+  const handleExportCSV = () => {
+    const layout = canvasRef.current?.getLayoutData?.();
+    if (!layout) {
+      toast({
+        title: "Export failed",
+        description: "Could not retrieve family tree layout data.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const { nodes, edges } = layout;
+
+    const headers = ["Entity Type", "ID", "Name/Label", "Type/Role", "X", "Y", "Source", "Target"];
+    const rows = [headers];
+
+    for (const node of nodes) {
+      rows.push([
+        node.type === "coupleGroup" ? "Group" : "Node",
+        node.id,
+        node.data?.label || "",
+        node.data?.sublabel || node.data?.color || "",
+        String(node.position?.x ?? ""),
+        String(node.position?.y ?? ""),
+        "",
+        ""
+      ]);
+    }
+
+    for (const edge of edges) {
+      rows.push([
+        "Edge",
+        edge.id,
+        "",
+        edge.data?.strokeDasharray ? "ex-spouse/partner" : "active connection",
+        "",
+        "",
+        edge.source,
+        edge.target
+      ]);
+    }
+
+    const csvContent = rows
+      .map((row) =>
+        row
+          .map((val) => {
+            const cleanVal = val.replace(/"/g, '""');
+            return `"${cleanVal}"`;
+          })
+          .join(",")
+      )
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `family_tree_layout_${selectedPersonId || "export"}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    toast({
+      title: "Export successful",
+      description: "Family tree layout CSV has been downloaded.",
+    });
+  };
+
   const handleAddMember = (relatedPersonId: string, suggestedRole: string) => {
     setAddMemberContext({ relatedPersonId, suggestedRole });
   };
@@ -690,6 +760,16 @@ export default function FamilyTreeDevPage() {
             data-testid="button-view-mode"
           >
             <ViewIcon className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={handleExportCSV}
+            title="Export layout to CSV"
+            data-testid="button-export-csv"
+          >
+            <Download className="h-4 w-4" />
           </Button>
           <Button
             variant="outline"

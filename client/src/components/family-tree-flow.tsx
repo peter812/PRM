@@ -1,4 +1,4 @@
-import { useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState } from "react";
+import { useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState, useEffect } from "react";
 import {
   ReactFlow,
   Node,
@@ -14,6 +14,10 @@ import {
   EdgeProps,
   getBezierPath,
   BaseEdge,
+  NodeChange,
+  EdgeChange,
+  applyNodeChanges,
+  applyEdgeChanges,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Trash2, X } from "lucide-react";
@@ -295,6 +299,7 @@ function buildFlowElements(
   data: FamilyTreeData,
   viewMode: FamilyTreeViewMode,
   showAddOptions: boolean,
+  draggedPositions: Record<string, { x: number; y: number }>,
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void,
   onDeleteEdge?: (edgeId: string) => void,
   onDivorce?: (partnershipId: string) => void,
@@ -481,6 +486,15 @@ function buildFlowElements(
     }
   }
 
+  // Build a reverse lookup: personId -> coupleGroupId (for edge routing)
+  const personToGroupId = new Map<string, string>();
+  for (const coupleKey of coupleSet) {
+    const [a, b] = coupleKey.split(":");
+    const groupId = `couple-${coupleKey}`;
+    personToGroupId.set(a, groupId);
+    personToGroupId.set(b, groupId);
+  }
+
   // Position nodes
   const nodePositions = new Map<string, { x: number; y: number }>();
   const minGen = sortedGens.length > 0 ? sortedGens[0] : 0;
@@ -489,13 +503,13 @@ function buildFlowElements(
   // coupleKey -> { x, y } of the group's top-left corner
   const coupleGroupPositions = new Map<string, { x: number; y: number }>();
 
+  // 1. Group members by generation into units
+  const genUnits = new Map<number, Array<{ ids: string[]; width: number; coupleKey?: string; id: string }>>();
+  
   for (const gen of sortedGens) {
     const members = genGroups.get(gen) ?? [];
-    const row = gen - minGen;
-    const y = row * (LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
-
     const processed = new Set<string>();
-    const units: Array<{ ids: string[]; width: number; coupleKey?: string }> = [];
+    const units: Array<{ ids: string[]; width: number; coupleKey?: string; id: string }> = [];
 
     for (const pid of members) {
       if (processed.has(pid)) continue;
@@ -506,48 +520,174 @@ function buildFlowElements(
         const [a, b] = coupleKey.split(":");
         processed.add(a);
         processed.add(b);
-        // Group width = padding + node + gap + node + padding
         const groupWidth = LAYOUT.GROUP_PADDING * 2 + LAYOUT.NODE_WIDTH * 2 + LAYOUT.SPOUSE_GAP;
-        units.push({ ids: [a, b], width: groupWidth, coupleKey });
+        units.push({ ids: [a, b], width: groupWidth, coupleKey, id: `couple-${coupleKey}` });
       } else {
-        units.push({ ids: [pid], width: LAYOUT.NODE_WIDTH });
+        units.push({ ids: [pid], width: LAYOUT.NODE_WIDTH, id: pid });
       }
     }
+    genUnits.set(gen, units);
+  }
 
-    const totalWidth =
-      units.reduce((sum, u) => sum + u.width, 0) + (units.length - 1) * LAYOUT.HORIZONTAL_GAP;
-    let currentX = -totalWidth / 2;
+  // Position track maps
+  // entityId -> { x, y, width }
+  const entityPositions = new Map<string, { x: number; y: number; width: number }>();
 
-    for (const unit of units) {
-      if (unit.ids.length === 2 && unit.coupleKey) {
-        // Store the group's top-left position
-        coupleGroupPositions.set(unit.coupleKey, { x: currentX, y });
+  // Helper to get center X of an entity
+  const getEntityCenterX = (entityId: string): number => {
+    const groupId = personToGroupId.get(entityId);
+    const idToLookup = groupId ?? entityId;
+    const pos = entityPositions.get(idToLookup);
+    if (pos) {
+      return pos.x + pos.width / 2;
+    }
+    return 0;
+  };
 
-        // Person positions are relative to the group node
+  // Helper to position a single row (array of units) using target X coordinates
+  const positionRow = (gen: number, units: Array<{ ids: string[]; width: number; coupleKey?: string; id: string }>, y: number, isDescendant: boolean) => {
+    if (units.length === 0) return;
+
+    // Calculate target X for each unit
+    const unitsWithTargets = units.map(unit => {
+      let targetX = 0;
+      let count = 0;
+
+      if (gen === 0) {
+        if (unit.ids.includes(rootPersonId)) {
+          targetX = 0;
+          count = 1;
+        } else {
+          targetX = 0;
+          count = 0;
+        }
+      } else if (isDescendant) {
+        for (const pid of unit.ids) {
+          const parentIds = parents.get(pid) ?? new Set();
+          for (const parentId of parentIds) {
+            const parentGroupId = personToGroupId.get(parentId);
+            const parentEntityId = parentGroupId ?? parentId;
+            if (entityPositions.has(parentEntityId)) {
+              targetX += getEntityCenterX(parentId);
+              count++;
+            }
+          }
+          if (pid.startsWith("missing-")) {
+            const link = missingLinks.find(l => `missing-${l.personId}-${l.missingRole}` === pid);
+            if (link) {
+              const anchorId = link.relatedPersonId;
+              const anchorGroupId = personToGroupId.get(anchorId);
+              const anchorEntityId = anchorGroupId ?? anchorId;
+              if (entityPositions.has(anchorEntityId)) {
+                targetX += getEntityCenterX(anchorId);
+                count++;
+              }
+            }
+          }
+        }
+      } else {
+        for (const pid of unit.ids) {
+          const childIds = children.get(pid) ?? new Set();
+          for (const childId of childIds) {
+            const childGroupId = personToGroupId.get(childId);
+            const childEntityId = childGroupId ?? childId;
+            if (entityPositions.has(childEntityId)) {
+              targetX += getEntityCenterX(childId);
+              count++;
+            }
+          }
+          if (pid.startsWith("missing-")) {
+            const link = missingLinks.find(l => `missing-${l.personId}-${l.missingRole}` === pid);
+            if (link) {
+              const anchorId = link.relatedPersonId;
+              const anchorGroupId = personToGroupId.get(anchorId);
+              const anchorEntityId = anchorGroupId ?? anchorId;
+              if (entityPositions.has(anchorEntityId)) {
+                targetX += getEntityCenterX(anchorId);
+                count++;
+              }
+            }
+          }
+        }
+      }
+
+      const finalTargetX = count > 0 ? targetX / count : 0;
+      return { unit, targetLeftX: finalTargetX - unit.width / 2, targetCenterX: finalTargetX };
+    });
+
+    // Sort units by targetLeftX
+    unitsWithTargets.sort((a, b) => a.targetLeftX - b.targetLeftX);
+
+    // Resolve overlaps left-to-right
+    const positionedUnits: Array<{ unit: typeof units[number]; x: number }> = [];
+
+    for (const item of unitsWithTargets) {
+      let x = item.targetLeftX;
+      if (positionedUnits.length > 0) {
+        const last = positionedUnits[positionedUnits.length - 1];
+        const minX = last.x + last.unit.width + LAYOUT.HORIZONTAL_GAP;
+        if (x < minX) {
+          x = minX;
+        }
+      }
+      positionedUnits.push({ unit: item.unit, x });
+    }
+
+    // Shift all units so their average center matches the average target center
+    const targetCenterSum = unitsWithTargets.reduce((sum, item) => sum + item.targetCenterX, 0);
+    const avgTargetCenter = targetCenterSum / unitsWithTargets.length;
+
+    const actualCenterSum = positionedUnits.reduce((sum, item) => sum + (item.x + item.unit.width / 2), 0);
+    const avgActualCenter = actualCenterSum / positionedUnits.length;
+
+    const shift = avgTargetCenter - avgActualCenter;
+    for (const item of positionedUnits) {
+      item.x += shift;
+    }
+
+    // Store final positions
+    for (const item of positionedUnits) {
+      const override = draggedPositions[item.unit.id];
+      const finalX = override ? override.x : item.x;
+      const finalY = override ? override.y : y;
+
+      entityPositions.set(item.unit.id, { x: finalX, y: finalY, width: item.unit.width });
+      if (item.unit.coupleKey) {
+        coupleGroupPositions.set(item.unit.coupleKey, { x: finalX, y: finalY });
         const x1Rel = LAYOUT.GROUP_PADDING;
         const x2Rel = LAYOUT.GROUP_PADDING + LAYOUT.NODE_WIDTH + LAYOUT.SPOUSE_GAP;
         const yRel = LAYOUT.GROUP_PADDING;
-
-        // Store absolute positions (for edge routing debug / fallback) but mark them
-        // as relative positions since they'll be children of the group
-        nodePositions.set(unit.ids[0], { x: x1Rel, y: yRel });
-        nodePositions.set(unit.ids[1], { x: x2Rel, y: yRel });
-        currentX += unit.width + LAYOUT.HORIZONTAL_GAP;
+        nodePositions.set(item.unit.ids[0], { x: x1Rel, y: yRel });
+        nodePositions.set(item.unit.ids[1], { x: x2Rel, y: yRel });
       } else {
-        nodePositions.set(unit.ids[0], { x: currentX, y });
-        currentX += unit.width + LAYOUT.HORIZONTAL_GAP;
+        nodePositions.set(item.unit.ids[0], { x: finalX, y: finalY });
       }
     }
+  };
+
+  // 2. Position row by row in hierarchy order starting from root gen
+  const startGen = sortedGens.includes(0) ? 0 : (sortedGens[0] ?? 0);
+  const rowStart = startGen - minGen;
+  const yStart = rowStart * (LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
+  positionRow(startGen, genUnits.get(startGen) ?? [], yStart, false);
+
+  // Position descendants (gen > startGen)
+  for (let g = startGen + 1; g <= Math.max(...sortedGens, startGen); g++) {
+    if (!genUnits.has(g)) continue;
+    const row = g - minGen;
+    const y = row * (LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
+    positionRow(g, genUnits.get(g) ?? [], y, true);
   }
 
-  // Build a reverse lookup: personId -> coupleGroupId (for edge routing)
-  const personToGroupId = new Map<string, string>();
-  for (const coupleKey of coupleSet) {
-    const [a, b] = coupleKey.split(":");
-    const groupId = `couple-${coupleKey}`;
-    personToGroupId.set(a, groupId);
-    personToGroupId.set(b, groupId);
+  // Position ancestors (gen < startGen)
+  for (let g = startGen - 1; g >= Math.min(...sortedGens, startGen); g--) {
+    if (!genUnits.has(g)) continue;
+    const row = g - minGen;
+    const y = row * (LAYOUT.NODE_HEIGHT + LAYOUT.VERTICAL_GAP);
+    positionRow(g, genUnits.get(g) ?? [], y, false);
   }
+
+
 
   // Build React Flow nodes
   const flowNodes: Node[] = [];
@@ -923,15 +1063,61 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
     const connectingNodeId = useRef<string | null>(null);
     const connectingHandleId = useRef<string | null>(null);
 
-    const { nodes: initialNodes, edges: initialEdges } = useMemo(
-      () => buildFlowElements(data, viewMode, showAddOptions, onAddMember, onDeleteEdge, onDivorce),
-      [data, viewMode, showAddOptions, onAddMember, onDeleteEdge, onDivorce],
+    const [nodes, setNodes] = useState<Node[]>([]);
+    const [edges, setEdges] = useState<Edge[]>([]);
+
+    useEffect(() => {
+      // Find manual dragged positions from existing nodes state to preserve them
+      const currentPositions: Record<string, { x: number; y: number }> = {};
+      for (const node of nodes) {
+        if (!node.parentId) {
+          currentPositions[node.id] = node.position;
+        }
+      }
+
+      const { nodes: newNodes, edges: newEdges } = buildFlowElements(
+        data,
+        viewMode,
+        showAddOptions,
+        currentPositions,
+        onAddMember,
+        onDeleteEdge,
+        onDivorce
+      );
+      setNodes(newNodes);
+      setEdges(newEdges);
+    }, [data, viewMode, showAddOptions]);
+
+    // Reset layout (clear manual drags) when root person changes
+    useEffect(() => {
+      const { nodes: newNodes, edges: newEdges } = buildFlowElements(
+        data,
+        viewMode,
+        showAddOptions,
+        {},
+        onAddMember,
+        onDeleteEdge,
+        onDivorce
+      );
+      setNodes(newNodes);
+      setEdges(newEdges);
+    }, [data.rootPersonId]);
+
+    const onNodesChange = useCallback(
+      (changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
+      [],
+    );
+
+    const onEdgesChange = useCallback(
+      (changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)),
+      [],
     );
 
     useImperativeHandle(ref, () => ({
       fitToScreen: () => fitView({ padding: 0.1, duration: 300 }),
       zoomIn: () => zoomIn({ duration: 200 }),
       zoomOut: () => zoomOut({ duration: 200 }),
+      getLayoutData: () => ({ nodes, edges }),
     }));
 
     const handleNodeClick = useCallback(
@@ -1006,8 +1192,10 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
 
     return (
       <ReactFlow
-        nodes={initialNodes}
-        edges={initialEdges}
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
