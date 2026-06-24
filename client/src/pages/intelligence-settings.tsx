@@ -109,20 +109,13 @@ export default function IntelligenceSettingsPage() {
     saveMutation.mutate(patch);
   };
 
-  const handleSaveTextModel = () => {
-    saveMutation.mutate({ textModel: selectedTextModel });
-  };
-
-  const handleSaveEventsModel = () => {
-    saveMutation.mutate({ eventsModel: selectedEventsModel });
-  };
-
-  const handleSaveSexGuessModel = () => {
-    saveMutation.mutate({ sexGuessModel: selectedSexGuessModel });
-  };
-
-  const handleSaveEventsPrompt = () => {
-    saveMutation.mutate({ eventsPrompt });
+  const handleSaveModels = () => {
+    saveMutation.mutate({
+      textModel: selectedTextModel,
+      eventsModel: selectedEventsModel,
+      sexGuessModel: selectedSexGuessModel,
+      eventsPrompt,
+    });
   };
 
   const models = modelsData?.models ?? [];
@@ -284,252 +277,182 @@ export default function IntelligenceSettingsPage() {
           </CardContent>
         </Card>
 
-        <Card data-testid="card-ollama-text-model">
-          <CardHeader>
+        <Card data-testid="card-ollama-model-settings">
+          <CardHeader className="pb-3">
             <CardTitle className="text-lg flex items-center gap-2">
               <MessagesSquare className="h-4 w-4" />
-              Text Model Selection
+              Model Settings
             </CardTitle>
             <CardDescription>
               {urlConfigured
-                ? "Choose which text model to use for AI chat. Only models already pulled on your Ollama instance are shown."
+                ? "Choose models for each AI task. Only models already pulled on your Ollama instance are shown."
                 : "Configure and save an API URL above to load available models."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex gap-2 items-end">
-              <div className="flex-1 space-y-2">
-                <Label htmlFor="ollama-text-model-select">Model</Label>
-                <Select
-                  value={selectedTextModel}
-                  onValueChange={setSelectedTextModel}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-text-model-select" data-testid="select-ollama-text-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} data-testid={`option-text-model-${m.name}`}>
-                        <span className="font-mono text-sm">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            {/* Shared model select row helper */}
+            <div className="grid grid-cols-1 gap-3">
+
+              {/* Text Model */}
+              <div className="flex gap-2 items-end">
+                <div className="flex-1 space-y-1">
+                  <Label htmlFor="ollama-text-model-select" className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                    <MessagesSquare className="h-3 w-3" /> Text Model
+                  </Label>
+                  <Select
+                    value={selectedTextModel}
+                    onValueChange={setSelectedTextModel}
+                    disabled={!urlConfigured || isLoadingModels}
+                  >
+                    <SelectTrigger id="ollama-text-model-select" data-testid="select-ollama-text-model" className="h-8 text-sm">
+                      <SelectValue placeholder={
+                        !urlConfigured ? "No API URL configured" :
+                        isLoadingModels ? "Loading models…" :
+                        models.length === 0 ? "No models found" :
+                        "Select a model"
+                      } />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {models.map((m) => (
+                        <SelectItem key={m.name} value={m.name} data-testid={`option-text-model-${m.name}`}>
+                          <span className="font-mono text-sm">{m.name}</span>
+                          {m.parameterSize && (
+                            <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
+                          )}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {settings?.textModel && (
+                    <p className="text-xs text-muted-foreground" data-testid="text-saved-text-model">
+                      Saved: <span className="font-mono">{settings.textModel}</span>
+                    </p>
+                  )}
+                </div>
               </div>
+
+              {/* Events Extraction Model */}
+              <div className="flex gap-2 items-end">
+                <div className="flex-1 space-y-1">
+                  <Label htmlFor="ollama-events-model-select" className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                    <ListChecks className="h-3 w-3" /> Daily Note Event Extraction Model
+                  </Label>
+                  <Select
+                    value={selectedEventsModel}
+                    onValueChange={setSelectedEventsModel}
+                    disabled={!urlConfigured || isLoadingModels}
+                  >
+                    <SelectTrigger id="ollama-events-model-select" data-testid="select-ollama-events-model" className="h-8 text-sm">
+                      <SelectValue placeholder={
+                        !urlConfigured ? "No API URL configured" :
+                        isLoadingModels ? "Loading models…" :
+                        models.length === 0 ? "No models found" :
+                        "Select a model"
+                      } />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {models.map((m) => (
+                        <SelectItem key={m.name} value={m.name} data-testid={`option-events-model-${m.name}`}>
+                          <span className="font-mono text-sm">{m.name}</span>
+                          {m.parameterSize && (
+                            <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
+                          )}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {settings?.eventsModel ? (
+                    <p className="text-xs text-muted-foreground" data-testid="text-saved-events-model">
+                      Saved: <span className="font-mono">{settings.eventsModel}</span>
+                    </p>
+                  ) : settings?.textModel ? (
+                    <p className="text-xs text-muted-foreground">
+                      Falls back to text model (<span className="font-mono">{settings.textModel}</span>)
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Sex Guess Model */}
+              <div className="flex gap-2 items-end">
+                <div className="flex-1 space-y-1">
+                  <Label htmlFor="ollama-sex-guess-model-select" className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                    <HelpCircle className="h-3 w-3" /> Sex Guess Model
+                  </Label>
+                  <Select
+                    value={selectedSexGuessModel}
+                    onValueChange={setSelectedSexGuessModel}
+                    disabled={!urlConfigured || isLoadingModels}
+                  >
+                    <SelectTrigger id="ollama-sex-guess-model-select" data-testid="select-ollama-sex-guess-model" className="h-8 text-sm">
+                      <SelectValue placeholder={
+                        !urlConfigured ? "No API URL configured" :
+                        isLoadingModels ? "Loading models…" :
+                        models.length === 0 ? "No models found" :
+                        "Select a model"
+                      } />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {models.map((m) => (
+                        <SelectItem key={m.name} value={m.name} data-testid={`option-sex-guess-model-${m.name}`}>
+                          <span className="font-mono text-sm">{m.name}</span>
+                          {m.parameterSize && (
+                            <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
+                          )}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {settings?.sexGuessModel ? (
+                    <p className="text-xs text-muted-foreground" data-testid="text-saved-sex-guess-model">
+                      Saved: <span className="font-mono">{settings.sexGuessModel}</span>
+                    </p>
+                  ) : settings?.textModel ? (
+                    <p className="text-xs text-muted-foreground">
+                      Falls back to text model (<span className="font-mono">{settings.textModel}</span>)
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Refresh + separator */}
+            <div className="flex items-center gap-2 pt-1">
               <Button
-                variant="outline"
-                size="icon"
+                variant="ghost"
+                size="sm"
                 onClick={() => refetchModels()}
                 disabled={!urlConfigured || isLoadingModels}
-                title="Refresh model list"
-                data-testid="button-refresh-text-models"
+                className="h-7 px-2 text-xs text-muted-foreground"
+                data-testid="button-refresh-models"
               >
                 {isLoadingModels ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                 ) : (
-                  <RefreshCw className="h-4 w-4" />
+                  <RefreshCw className="h-3 w-3 mr-1" />
                 )}
-              </Button>
-              <Button
-                onClick={handleSaveTextModel}
-                disabled={!selectedTextModel || saveMutation.isPending}
-                data-testid="button-save-text-model"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+                Refresh models
               </Button>
             </div>
 
-            {settings?.textModel && (
-              <p className="text-xs text-muted-foreground" data-testid="text-saved-text-model">
-                Currently saved: <span className="font-mono">{settings.textModel}</span>
+            {/* Events Prompt */}
+            <div className="space-y-1 border-t pt-4">
+              <Label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                <MessageSquare className="h-3 w-3" /> Daily Note Event Extraction System Prompt
+              </Label>
+              <p className="text-xs text-muted-foreground pb-1">
+                Sent to the model when extracting events. The API also constrains output to{" "}
+                <code className="bg-muted px-1 rounded">{'{ events: [{ text }] }'}</code>.
               </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-ollama-events-model">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <ListChecks className="h-4 w-4" />
-              Daily Note Event Extraction Model
-            </CardTitle>
-            <CardDescription>
-              {urlConfigured
-                ? "Choose which text model to use when generating events from a daily note's markdown body. The model is asked for a structured JSON response."
-                : "Configure and save an API URL above to load available models."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2 items-end">
-              <div className="flex-1 space-y-2">
-                <Label htmlFor="ollama-events-model-select">Model</Label>
-                <Select
-                  value={selectedEventsModel}
-                  onValueChange={setSelectedEventsModel}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-events-model-select" data-testid="select-ollama-events-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} data-testid={`option-events-model-${m.name}`}>
-                        <span className="font-mono text-sm">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => refetchModels()}
-                disabled={!urlConfigured || isLoadingModels}
-                title="Refresh model list"
-                data-testid="button-refresh-events-models"
-              >
-                {isLoadingModels ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-              </Button>
-              <Button
-                onClick={handleSaveEventsModel}
-                disabled={!selectedEventsModel || saveMutation.isPending}
-                data-testid="button-save-events-model"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-              </Button>
-            </div>
-
-            {settings?.eventsModel && (
-              <p className="text-xs text-muted-foreground" data-testid="text-saved-events-model">
-                Currently saved: <span className="font-mono">{settings.eventsModel}</span>
-              </p>
-            )}
-            {!settings?.eventsModel && settings?.textModel && (
-              <p className="text-xs text-muted-foreground">
-                Falls back to the text model (<span className="font-mono">{settings.textModel}</span>) when not set.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-ollama-sex-guess-model">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <HelpCircle className="h-4 w-4" />
-              Sex Guess Model
-            </CardTitle>
-            <CardDescription>
-              {urlConfigured
-                ? "Choose which text model to use when guessing the sex of people with unknown sex. Falls back to the Text Model if not set."
-                : "Configure and save an API URL above to load available models."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2 items-end">
-              <div className="flex-1 space-y-2">
-                <Label htmlFor="ollama-sex-guess-model-select">Model</Label>
-                <Select
-                  value={selectedSexGuessModel}
-                  onValueChange={setSelectedSexGuessModel}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-sex-guess-model-select" data-testid="select-ollama-sex-guess-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} data-testid={`option-sex-guess-model-${m.name}`}>
-                        <span className="font-mono text-sm">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => refetchModels()}
-                disabled={!urlConfigured || isLoadingModels}
-                title="Refresh model list"
-                data-testid="button-refresh-sex-guess-models"
-              >
-                {isLoadingModels ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-              </Button>
-              <Button
-                onClick={handleSaveSexGuessModel}
-                disabled={!selectedSexGuessModel || saveMutation.isPending}
-                data-testid="button-save-sex-guess-model"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-              </Button>
-            </div>
-
-            {settings?.sexGuessModel && (
-              <p className="text-xs text-muted-foreground" data-testid="text-saved-sex-guess-model">
-                Currently saved: <span className="font-mono">{settings.sexGuessModel}</span>
-              </p>
-            )}
-            {!settings?.sexGuessModel && settings?.textModel && (
-              <p className="text-xs text-muted-foreground">
-                Falls back to the text model (<span className="font-mono">{settings.textModel}</span>) when not set.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-ollama-events-prompt">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <MessageSquare className="h-4 w-4" />
-              Daily Note Event Extraction System Prompt
-            </CardTitle>
-            <CardDescription>
-              The system prompt sent to the model when extracting events from a daily note's markdown body. The model is also constrained at the API level to return JSON in the shape <code className="text-xs bg-muted px-1 rounded">{"{ events: [{ text }] }"}</code>, but the prompt should reinforce this and define what counts as an event.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Textarea
-              value={eventsPrompt}
-              onChange={(e) => setEventsPrompt(e.target.value)}
-              rows={6}
-              className="resize-y font-mono text-xs"
-              data-testid="textarea-ollama-events-prompt"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-3">
+              <Textarea
+                value={eventsPrompt}
+                onChange={(e) => setEventsPrompt(e.target.value)}
+                rows={5}
+                className="resize-y font-mono text-xs"
+                data-testid="textarea-ollama-events-prompt"
+              />
+              <div className="flex items-center gap-3 pt-0.5">
                 <button
                   type="button"
                   className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
@@ -539,13 +462,17 @@ export default function IntelligenceSettingsPage() {
                   Reset to default
                 </button>
                 <span className="text-xs text-muted-foreground" data-testid="text-events-prompt-char-count">
-                  {eventsPrompt.length} characters
+                  {eventsPrompt.length} chars
                 </span>
               </div>
+            </div>
+
+            {/* Single save button */}
+            <div className="flex justify-end pt-1">
               <Button
-                onClick={handleSaveEventsPrompt}
-                disabled={!eventsPrompt.trim() || saveMutation.isPending}
-                data-testid="button-save-events-prompt"
+                onClick={handleSaveModels}
+                disabled={saveMutation.isPending}
+                data-testid="button-save-model-settings"
               >
                 {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </Button>

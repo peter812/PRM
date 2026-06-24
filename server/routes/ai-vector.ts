@@ -1413,7 +1413,7 @@ export function registerRoutes(app: Express) {
         });
         if (!row) return res.status(404).json({ error: "Chat not found" });
         const clientMessages = (row.messages as any[]).filter(
-          (m) => m.role === "user" || m.role === "assistant"
+          (m) => m.role === "user" || (m.role === "assistant" && !((m.content ?? "") === "" && m.tool_calls?.length))
         );
         res.json({ ...row, messages: clientMessages });
       } catch (error: any) {
@@ -1749,7 +1749,7 @@ export function registerRoutes(app: Express) {
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
         syncEntityInBackground("ai_chat", chat.id);
         const clientMessages = (updated.messages as any[]).filter(
-          (m) => m.role === "user" || m.role === "assistant"
+          (m) => m.role === "user" || (m.role === "assistant" && !((m.content ?? "") === "" && m.tool_calls?.length))
         );
         res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
         res.end();
@@ -1848,7 +1848,7 @@ export function registerRoutes(app: Express) {
           .returning();
         syncEntityInBackground("ai_chat", chat.id);
         const clientMessages = (updated.messages as any[]).filter(
-          (m) => m.role === "user" || m.role === "assistant"
+          (m) => m.role === "user" || (m.role === "assistant" && !((m.content ?? "") === "" && m.tool_calls?.length))
         );
         res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
         res.end();

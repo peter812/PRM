@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -216,10 +216,19 @@ export const socialNetworkState = pgTable("social_network_state", {
   socialAccountId: varchar("social_account_id").notNull().unique().references(() => socialAccounts.id, { onDelete: "cascade" }),
   followerCount: integer("follower_count").notNull().default(0),
   followingCount: integer("following_count").notNull().default(0),
-  followers: text("followers").array().default(sql`ARRAY[]::text[]`),
-  following: text("following").array().default(sql`ARRAY[]::text[]`),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// Social connections table (directed follower/following links)
+export const socialConnections = pgTable("social_connections", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  followerId: varchar("follower_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  followingId: varchar("following_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  uniqueFollowIdx: uniqueIndex("unique_follow_idx").on(table.followerId, table.followingId),
+  followingIdx: index("following_idx").on(table.followingId),
+}));
 
 // Social network changes table (Git-like change log)
 export const socialNetworkChanges = pgTable("social_network_changes", {
@@ -481,6 +490,8 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one, many })
   networkState: many(socialNetworkState),
   networkChanges: many(socialNetworkChanges),
   posts: many(socialAccountPosts),
+  followingConnections: many(socialConnections, { relationName: "following_connections" }),
+  followerConnections: many(socialConnections, { relationName: "follower_connections" }),
 }));
 
 export const socialProfileVersionsRelations = relations(socialProfileVersions, ({ one }) => ({
@@ -494,6 +505,19 @@ export const socialNetworkStateRelations = relations(socialNetworkState, ({ one 
   socialAccount: one(socialAccounts, {
     fields: [socialNetworkState.socialAccountId],
     references: [socialAccounts.id],
+  }),
+}));
+
+export const socialConnectionsRelations = relations(socialConnections, ({ one }) => ({
+  follower: one(socialAccounts, {
+    fields: [socialConnections.followerId],
+    references: [socialAccounts.id],
+    relationName: "following_connections",
+  }),
+  following: one(socialAccounts, {
+    fields: [socialConnections.followingId],
+    references: [socialAccounts.id],
+    relationName: "follower_connections",
   }),
 }));
 
@@ -845,6 +869,9 @@ export const insertSocialProfileVersionSchema = createInsertSchema(socialProfile
 export const insertSocialNetworkStateSchema = createInsertSchema(socialNetworkState).omit({
   id: true,
   updatedAt: true,
+}).extend({
+  followers: z.array(z.string()).optional(),
+  following: z.array(z.string()).optional(),
 });
 
 export const insertSocialNetworkChangeSchema = createInsertSchema(socialNetworkChanges).omit({
@@ -970,7 +997,10 @@ export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSche
 export type SocialProfileVersion = typeof socialProfileVersions.$inferSelect;
 export type InsertSocialProfileVersion = z.infer<typeof insertSocialProfileVersionSchema>;
 
-export type SocialNetworkState = typeof socialNetworkState.$inferSelect;
+export type SocialNetworkState = typeof socialNetworkState.$inferSelect & {
+  followers: string[] | null;
+  following: string[] | null;
+};
 export type InsertSocialNetworkState = z.infer<typeof insertSocialNetworkStateSchema>;
 
 export type SocialNetworkChange = typeof socialNetworkChanges.$inferSelect;

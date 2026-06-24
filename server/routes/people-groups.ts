@@ -793,6 +793,19 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to delete all family relationships" });
       }
     });
+
+    app.delete("/api/people/tags/asterisk", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+        const count = await storage.removeAsteriskTags();
+        res.json({ success: true, deleted: count });
+      } catch (error) {
+        console.error("Error removing asterisk tags:", error);
+        res.status(500).json({ error: "Failed to remove asterisk tags" });
+      }
+    });
   
     app.delete("/api/relationships/:id", async (req, res) => {
       try {

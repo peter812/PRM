@@ -13,9 +13,9 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Upload, FileText, AlertCircle, CheckCircle2, UserCheck } from "lucide-react";
+import { Upload, FileText, AlertCircle, CheckCircle2, UserCheck, X, Users, UserPlus } from "lucide-react";
 import { SiInstagram } from "react-icons/si";
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import type { SocialAccountWithCurrentProfile } from "@shared/schema";
@@ -31,36 +31,66 @@ function parseInstagramFilename(filename: string): { username: string; type: "fo
   };
 }
 
-export default function ImportSocialMediaPage() {
-  const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
-  const [filenameError, setFilenameError] = useState<string | null>(null);
-  const [detectedUsername, setDetectedUsername] = useState<string | null>(null);
-  const [detectedType, setDetectedType] = useState<"followers" | "following" | null>(null);
+interface ParsedFile {
+  file: File;
+  username: string;
+  type: "followers" | "following";
+}
 
+interface FileError {
+  filename: string;
+  message: string;
+}
+
+interface TaskResult {
+  imported: number;
+  updated: number;
+  total: number;
+  skippedRows: number;
+}
+
+interface FileTaskState {
+  taskId: string | null;
+  isPolling: boolean;
+  result: TaskResult | null;
+  type: "followers" | "following";
+}
+
+export default function ImportSocialMediaPage() {
+  // Multi-file selection: up to one followers + one following
+  const [parsedFiles, setParsedFiles] = useState<ParsedFile[]>([]);
+  const [fileErrors, setFileErrors] = useState<FileError[]>([]);
+
+  // Manual overrides (applied to all files in the batch)
   const [manualTypeEnabled, setManualTypeEnabled] = useState(false);
   const [manualAccountEnabled, setManualAccountEnabled] = useState(false);
-
-  const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
+  const [manualFollowersType, setManualFollowersType] = useState<"followers" | "following">("followers");
+  const [manualFollowingType, setManualFollowingType] = useState<"followers" | "following">("following");
   const [forceUpdateImages, setForceUpdateImages] = useState(false);
+
+  // Account picker
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [selectedAccountLabel, setSelectedAccountLabel] = useState<string>("");
   const [accountSearchOpen, setAccountSearchOpen] = useState(false);
   const [accountSearchQuery, setAccountSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SocialAccountWithCurrentProfile[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  const [taskResult, setTaskResult] = useState<{ imported: number; updated: number; total: number; skippedRows: number } | null>(null);
-  const [isPolling, setIsPolling] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Per-file task tracking: keyed by "followers" | "following"
+  const [followerTask, setFollowerTask] = useState<FileTaskState>({ taskId: null, isPolling: false, result: null, type: "followers" });
+  const [followingTask, setFollowingTask] = useState<FileTaskState>({ taskId: null, isPolling: false, result: null, type: "following" });
+  const followerPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const followingPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
+  // ── Account search ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (accountSearchQuery.length < 3) {
       setSearchResults([]);
       return;
     }
-
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
@@ -79,43 +109,37 @@ export default function ImportSocialMediaPage() {
         setIsSearching(false);
       }
     }, 300);
-
     return () => clearTimeout(timer);
   }, [accountSearchQuery]);
 
-  useEffect(() => {
-    if (!activeTaskId) return;
+  // ── Task polling helpers ─────────────────────────────────────────────────────
+  function startPolling(
+    taskId: string,
+    taskType: "followers" | "following",
+    setTask: React.Dispatch<React.SetStateAction<FileTaskState>>,
+    pollRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>,
+  ) {
+    const label = taskType === "followers" ? "Followers" : "Following";
 
     const poll = async () => {
       try {
-        const response = await fetch(`/api/tasks/${activeTaskId}`, { credentials: "include" });
-        if (!response.ok) return;
+        const response = await fetch(`/api/tasks/${taskId}`, { credentials: "include" });
+        if (!response.ok) { pollRef.current = setTimeout(poll, 2000); return; }
         const task = await response.json();
 
         if (task.status === "completed") {
-          setIsPolling(false);
-          setActiveTaskId(null);
           const result = JSON.parse(task.result || "{}");
-          setTaskResult(result);
+          setTask({ taskId: null, isPolling: false, result, type: taskType });
           queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
           queryClient.invalidateQueries({ queryKey: ["/api/social-accounts/paginated"], exact: false });
           toast({
-            title: "Instagram Import Successful",
+            title: `${label} Import Complete`,
             description: `Imported ${result.imported} accounts${result.updated > 0 ? `, updated ${result.updated}` : ""}${result.skippedRows > 0 ? ` (${result.skippedRows} rows skipped)` : ""}`,
           });
-          setSelectedInstagramFile(null);
-          setDetectedUsername(null);
-          setDetectedType(null);
-          setFilenameError(null);
-          setSelectedAccountId("");
-          setSelectedAccountLabel("");
-          const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
-          if (fileInput) fileInput.value = "";
         } else if (task.status === "failed") {
-          setIsPolling(false);
-          setActiveTaskId(null);
+          setTask({ taskId: null, isPolling: false, result: null, type: taskType });
           toast({
-            title: "Instagram Import Failed",
+            title: `${label} Import Failed`,
             description: task.result || "An error occurred during import",
             variant: "destructive",
           });
@@ -127,15 +151,20 @@ export default function ImportSocialMediaPage() {
       }
     };
 
-    setIsPolling(true);
+    setTask({ taskId, isPolling: true, result: null, type: taskType });
     pollRef.current = setTimeout(poll, 1000);
+  }
 
+  // Cleanup poll timers on unmount
+  useEffect(() => {
     return () => {
-      if (pollRef.current) clearTimeout(pollRef.current);
+      if (followerPollRef.current) clearTimeout(followerPollRef.current);
+      if (followingPollRef.current) clearTimeout(followingPollRef.current);
     };
-  }, [activeTaskId]);
+  }, []);
 
-  const importInstagramMutation = useMutation({
+  // ── Import mutations ─────────────────────────────────────────────────────────
+  const importMutation = useMutation({
     mutationFn: async ({
       file,
       username,
@@ -168,83 +197,108 @@ export default function ImportSocialMediaPage() {
 
       return response.json();
     },
-    onSuccess: (data) => {
-      setTaskResult(null);
-      setActiveTaskId(data.taskId);
-    },
     onError: (error: Error) => {
       toast({
-        title: "Instagram Import Failed",
+        title: "Import Failed",
         description: error.message,
         variant: "destructive",
       });
     },
   });
 
-  const isPending = importInstagramMutation.isPending || isPolling;
+  // ── File picker ──────────────────────────────────────────────────────────────
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
 
-  const effectiveImportType = manualTypeEnabled ? instagramImportType : (detectedType ?? "followers");
-  const effectiveUsername = detectedUsername ?? "";
+    const newParsed: ParsedFile[] = [];
+    const newErrors: FileError[] = [];
 
-  const canSubmit =
-    selectedInstagramFile &&
-    !filenameError &&
-    detectedUsername !== null &&
-    !isPending;
+    // Deduplicate by type: last one wins
+    const byType = new Map<"followers" | "following", ParsedFile>();
 
-  const handleInstagramFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      setFilenameError("Please select a CSV file (.csv)");
-      setSelectedInstagramFile(null);
-      setDetectedUsername(null);
-      setDetectedType(null);
-      return;
+    for (const file of files) {
+      if (!file.name.toLowerCase().endsWith(".csv")) {
+        newErrors.push({ filename: file.name, message: "Not a CSV file (.csv required)" });
+        continue;
+      }
+      const parsed = parseInstagramFilename(file.name);
+      if (!parsed) {
+        newErrors.push({
+          filename: file.name,
+          message: `Filename must follow the pattern: {username}_followers.csv or {username}_following.csv`,
+        });
+        continue;
+      }
+      byType.set(parsed.type, { file, ...parsed });
     }
 
-    const parsed = parseInstagramFilename(file.name);
-    if (!parsed) {
-      setFilenameError(
-        `Filename must follow the pattern: {username}_followers.csv or {username}_following.csv — got "${file.name}"`
-      );
-      setSelectedInstagramFile(null);
-      setDetectedUsername(null);
-      setDetectedType(null);
-      return;
+    // Merge with existing parsed files so you can add them one at a time
+    const merged = new Map<"followers" | "following", ParsedFile>(
+      parsedFiles.map(p => [p.type, p])
+    );
+    for (const [type, pf] of byType) {
+      merged.set(type, pf);
     }
 
-    setFilenameError(null);
-    setSelectedInstagramFile(file);
-    setDetectedUsername(parsed.username);
-    setDetectedType(parsed.type);
-    if (!manualTypeEnabled) {
-      setInstagramImportType(parsed.type);
+    setParsedFiles(Array.from(merged.values()));
+    setFileErrors(newErrors);
+
+    // Reset the input so the user can re-select the same files
+    event.target.value = "";
+  };
+
+  const removeFile = (type: "followers" | "following") => {
+    setParsedFiles(prev => prev.filter(p => p.type !== type));
+    if (type === "followers") setFollowerTask({ taskId: null, isPolling: false, result: null, type: "followers" });
+    if (type === "following") setFollowingTask({ taskId: null, isPolling: false, result: null, type: "following" });
+  };
+
+  const clearAll = () => {
+    setParsedFiles([]);
+    setFileErrors([]);
+    setFollowerTask({ taskId: null, isPolling: false, result: null, type: "followers" });
+    setFollowingTask({ taskId: null, isPolling: false, result: null, type: "following" });
+  };
+
+  // ── Submit ───────────────────────────────────────────────────────────────────
+  const handleImport = async () => {
+    if (!parsedFiles.length) return;
+
+    for (const pf of parsedFiles) {
+      const effectiveType = manualTypeEnabled
+        ? (pf.type === "followers" ? manualFollowersType : manualFollowingType)
+        : pf.type;
+      const effectiveUsername = pf.username;
+
+      try {
+        const data = await importMutation.mutateAsync({
+          file: pf.file,
+          username: effectiveUsername,
+          accountId: manualAccountEnabled ? selectedAccountId : "",
+          importType: effectiveType,
+          forceImages: forceUpdateImages,
+        });
+
+        if (pf.type === "followers") {
+          startPolling(data.taskId, "followers", setFollowerTask, followerPollRef);
+        } else {
+          startPolling(data.taskId, "following", setFollowingTask, followingPollRef);
+        }
+      } catch {
+        // onError toast already handled in mutation
+      }
     }
   };
 
-  const handleInstagramImport = () => {
-    if (!canSubmit) return;
-    setTaskResult(null);
-    importInstagramMutation.mutate({
-      file: selectedInstagramFile!,
-      username: effectiveUsername,
-      accountId: manualAccountEnabled ? selectedAccountId : "",
-      importType: effectiveImportType,
-      forceImages: forceUpdateImages,
-    });
-  };
+  // ── Derived state ────────────────────────────────────────────────────────────
+  const followerFile = parsedFiles.find(p => p.type === "followers");
+  const followingFile = parsedFiles.find(p => p.type === "following");
+  const isAnyPolling = followerTask.isPolling || followingTask.isPolling;
+  const isPending = importMutation.isPending || isAnyPolling;
+  const canSubmit = parsedFiles.length > 0 && !isPending;
 
-  const clearFile = () => {
-    setSelectedInstagramFile(null);
-    setDetectedUsername(null);
-    setDetectedType(null);
-    setFilenameError(null);
-    const fileInput = document.getElementById("instagram-file-input") as HTMLInputElement;
-    if (fileInput) fileInput.value = "";
-  };
-
+  // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <Card>
@@ -253,91 +307,117 @@ export default function ImportSocialMediaPage() {
             <SiInstagram className="h-5 w-5" />
             Instagram Import
           </CardTitle>
-          <CardDescription>Import followers or following data from an Instagram CSV export</CardDescription>
+          <CardDescription>
+            Import followers and/or following data from Instagram CSV exports. You can select both files at once.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-4">
 
-            {/* File picker */}
+            {/* ── File picker ── */}
             <div className="space-y-2">
-              <Label htmlFor="instagram-file-input">CSV File</Label>
+              <Label htmlFor="instagram-file-input">CSV Files</Label>
               <p className="text-xs text-muted-foreground">
-                Name your file <code className="bg-muted px-1 py-0.5 rounded text-xs">username_followers.csv</code> or <code className="bg-muted px-1 py-0.5 rounded text-xs">username_following.csv</code> — the account and import type are detected automatically.
+                Name your files{" "}
+                <code className="bg-muted px-1 py-0.5 rounded text-xs">username_followers.csv</code>{" "}
+                and/or{" "}
+                <code className="bg-muted px-1 py-0.5 rounded text-xs">username_following.csv</code>{" "}
+                — the account and import type are detected automatically. Select one or both at once.
               </p>
               <div className="flex items-center gap-3">
                 <Input
                   id="instagram-file-input"
                   type="file"
                   accept=".csv"
-                  onChange={handleInstagramFileChange}
+                  multiple
+                  onChange={handleFileChange}
                   disabled={isPending}
                   data-testid="input-instagram-file"
                   className="cursor-pointer"
                 />
               </div>
-
-              {/* Filename error */}
-              {filenameError && (
-                <div className="flex items-start gap-2 text-sm text-destructive" data-testid="error-filename-format">
-                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                  <span>{filenameError}</span>
-                </div>
-              )}
-
-              {/* Auto-detected confirmation */}
-              {selectedInstagramFile && detectedUsername && detectedType && (
-                <div className="flex items-center gap-2 text-sm" data-testid="text-filename-detected">
-                  <UserCheck className="h-4 w-4 text-primary shrink-0" />
-                  <span>
-                    Detected: <span className="font-medium">@{detectedUsername}</span>
-                    {" · "}
-                    <span className="font-medium capitalize">{detectedType}</span>
-                    {!manualAccountEnabled && (
-                      <span className="text-muted-foreground ml-1">
-                        (account will be created if it doesn&apos;t exist)
-                      </span>
-                    )}
-                  </span>
-                </div>
-              )}
-
-              {selectedInstagramFile && !filenameError && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <FileText className="h-3.5 w-3.5" />
-                  <span data-testid="text-selected-instagram-filename">{selectedInstagramFile.name}</span>
-                </div>
-              )}
             </div>
 
-            {/* Manual import type (revealed by checkbox) */}
-            {manualTypeEnabled && (
-              <div className="flex items-center justify-between rounded-md border p-4">
-                <div className="space-y-0.5">
-                  <Label htmlFor="import-type-toggle" className="text-base font-medium">
-                    Import Type
-                  </Label>
-                  <p className="text-sm text-muted-foreground">
-                    {instagramImportType === "followers" ? "Import accounts that follow you" : "Import accounts you follow"}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={instagramImportType === "followers" ? "text-foreground font-medium" : "text-muted-foreground"}>
-                    Followers
-                  </span>
-                  <Switch
-                    id="import-type-toggle"
-                    checked={instagramImportType === "following"}
-                    onCheckedChange={(checked) => setInstagramImportType(checked ? "following" : "followers")}
-                    data-testid="switch-import-type"
+            {/* ── File errors ── */}
+            {fileErrors.map(err => (
+              <div
+                key={err.filename}
+                className="flex items-start gap-2 text-sm text-destructive"
+                data-testid="error-filename-format"
+              >
+                <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                <span><span className="font-medium">{err.filename}:</span> {err.message}</span>
+              </div>
+            ))}
+
+            {/* ── Detected file cards ── */}
+            {parsedFiles.length > 0 && (
+              <div className="space-y-2">
+                {followerFile && (
+                  <FileCard
+                    parsedFile={followerFile}
+                    taskState={followerTask}
+                    onRemove={() => removeFile("followers")}
+                    isPending={isPending}
                   />
-                  <span className={instagramImportType === "following" ? "text-foreground font-medium" : "text-muted-foreground"}>
-                    Following
-                  </span>
-                </div>
+                )}
+                {followingFile && (
+                  <FileCard
+                    parsedFile={followingFile}
+                    taskState={followingTask}
+                    onRemove={() => removeFile("following")}
+                    isPending={isPending}
+                  />
+                )}
               </div>
             )}
 
-            {/* Manual account picker (revealed by checkbox) */}
+            {/* ── Manual type overrides (revealed by checkbox) ── */}
+            {manualTypeEnabled && parsedFiles.length > 0 && (
+              <div className="space-y-3 rounded-md border p-4">
+                <p className="text-sm font-medium">Override Import Types</p>
+                {parsedFiles.map(pf => (
+                  <div key={pf.type} className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <p className="text-sm text-muted-foreground">
+                        <span className="font-medium">{pf.file.name}</span>
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={
+                          (pf.type === "followers" ? manualFollowersType : manualFollowingType) === "followers"
+                            ? "text-foreground font-medium text-sm"
+                            : "text-muted-foreground text-sm"
+                        }
+                      >
+                        Followers
+                      </span>
+                      <Switch
+                        id={`override-type-${pf.type}`}
+                        checked={(pf.type === "followers" ? manualFollowersType : manualFollowingType) === "following"}
+                        onCheckedChange={(checked) => {
+                          if (pf.type === "followers") setManualFollowersType(checked ? "following" : "followers");
+                          else setManualFollowingType(checked ? "following" : "followers");
+                        }}
+                        data-testid={`switch-import-type-${pf.type}`}
+                      />
+                      <span
+                        className={
+                          (pf.type === "followers" ? manualFollowersType : manualFollowingType) === "following"
+                            ? "text-foreground font-medium text-sm"
+                            : "text-muted-foreground text-sm"
+                        }
+                      >
+                        Following
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── Manual account picker (revealed by checkbox) ── */}
             {manualAccountEnabled && (
               <div className="space-y-2">
                 <Label>Override Account</Label>
@@ -403,12 +483,12 @@ export default function ImportSocialMediaPage() {
                   </PopoverContent>
                 </Popover>
                 <p className="text-xs text-muted-foreground">
-                  Overrides the account detected from the filename
+                  Overrides the account detected from the filename for all selected files
                 </p>
               </div>
             )}
 
-            {/* Force update images */}
+            {/* ── Force update images ── */}
             <div className="flex items-center gap-3 rounded-md border p-4">
               <Checkbox
                 id="force-update-images"
@@ -426,7 +506,7 @@ export default function ImportSocialMediaPage() {
               </div>
             </div>
 
-            {/* CSV format notes */}
+            {/* ── CSV format notes ── */}
             <div className="rounded-md bg-muted p-4 space-y-2">
               <div className="flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 mt-0.5 text-muted-foreground" />
@@ -442,22 +522,18 @@ export default function ImportSocialMediaPage() {
               </div>
             </div>
 
-            {/* Manual override checkboxes */}
+            {/* ── Manual override checkboxes ── */}
             <div className="space-y-3">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Manual Overrides</p>
               <div className="flex items-center gap-3">
                 <Checkbox
                   id="manual-type"
                   checked={manualTypeEnabled}
-                  onCheckedChange={(checked) => {
-                    const enabled = checked === true;
-                    setManualTypeEnabled(enabled);
-                    if (!enabled && detectedType) setInstagramImportType(detectedType);
-                  }}
+                  onCheckedChange={(checked) => setManualTypeEnabled(checked === true)}
                   data-testid="checkbox-manual-type"
                 />
                 <Label htmlFor="manual-type" className="cursor-pointer text-sm">
-                  Manually select followers / following
+                  Manually select followers / following type per file
                 </Label>
               </div>
               <div className="flex items-center gap-3">
@@ -480,10 +556,10 @@ export default function ImportSocialMediaPage() {
               </div>
             </div>
 
-            {/* Action buttons */}
+            {/* ── Action buttons ── */}
             <div className="flex items-center gap-3">
               <Button
-                onClick={handleInstagramImport}
+                onClick={handleImport}
                 disabled={!canSubmit}
                 data-testid="button-import-instagram"
                 className="gap-2"
@@ -491,28 +567,33 @@ export default function ImportSocialMediaPage() {
                 {isPending ? (
                   <>
                     <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
-                    {isPolling ? "Processing..." : "Uploading..."}
+                    {isAnyPolling ? "Processing..." : "Uploading..."}
                   </>
                 ) : (
                   <>
                     <Upload className="h-4 w-4" />
-                    Import {effectiveImportType === "followers" ? "Followers" : "Following"}
+                    {parsedFiles.length === 2
+                      ? "Import Both"
+                      : parsedFiles.length === 1
+                        ? `Import ${parsedFiles[0].type === "followers" ? "Followers" : "Following"}`
+                        : "Import"}
                   </>
                 )}
               </Button>
 
-              {selectedInstagramFile && !isPending && (
+              {parsedFiles.length > 0 && !isPending && (
                 <Button
                   variant="outline"
-                  onClick={clearFile}
+                  onClick={clearAll}
                   data-testid="button-clear-instagram-file"
                 >
-                  Clear
+                  Clear All
                 </Button>
               )}
             </div>
 
-            {isPolling && (
+            {/* ── Background processing banner ── */}
+            {isAnyPolling && (
               <div className="rounded-md bg-muted p-4">
                 <div className="flex items-center gap-3 text-sm text-muted-foreground">
                   <div className="h-4 w-4 border-2 border-muted-foreground border-t-transparent rounded-full animate-spin flex-shrink-0" />
@@ -521,30 +602,81 @@ export default function ImportSocialMediaPage() {
               </div>
             )}
           </div>
-
-          {taskResult && (
-            <div className="rounded-md bg-primary/10 border border-primary/20 p-4">
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="h-5 w-5 text-primary mt-0.5" />
-                <div className="space-y-1">
-                  <p className="font-medium" data-testid="text-instagram-import-success">
-                    Instagram Import Complete
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Imported {taskResult.imported} account{taskResult.imported !== 1 ? "s" : ""}
-                    {taskResult.updated > 0 && (
-                      <span className="ml-1">({taskResult.updated} updated)</span>
-                    )}
-                    {taskResult.skippedRows > 0 && (
-                      <span className="ml-1">({taskResult.skippedRows} rows skipped)</span>
-                    )}
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ── Sub-component: file status card ──────────────────────────────────────────
+
+interface FileCardProps {
+  parsedFile: ParsedFile;
+  taskState: FileTaskState;
+  onRemove: () => void;
+  isPending: boolean;
+}
+
+function FileCard({ parsedFile, taskState, onRemove, isPending }: FileCardProps) {
+  const isFollowers = parsedFile.type === "followers";
+
+  return (
+    <div className="rounded-md border p-3 space-y-2">
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          {isFollowers ? (
+            <Users className="h-4 w-4 text-primary shrink-0" />
+          ) : (
+            <UserPlus className="h-4 w-4 text-primary shrink-0" />
+          )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <UserCheck className="h-3.5 w-3.5 text-primary shrink-0" />
+              <span className="text-sm">
+                <span className="font-medium">@{parsedFile.username}</span>
+                {" · "}
+                <span className="font-medium capitalize">{parsedFile.type}</span>
+              </span>
+            </div>
+            <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
+              <FileText className="h-3 w-3" />
+              <span className="truncate" data-testid={`text-selected-instagram-filename-${parsedFile.type}`}>
+                {parsedFile.file.name}
+              </span>
+            </div>
+          </div>
+        </div>
+        {!isPending && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0"
+            onClick={onRemove}
+            data-testid={`button-remove-file-${parsedFile.type}`}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      </div>
+
+      {/* Per-file result */}
+      {taskState.isPolling && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="h-3 w-3 border border-muted-foreground border-t-transparent rounded-full animate-spin" />
+          <span>Processing in background…</span>
+        </div>
+      )}
+      {taskState.result && (
+        <div className="flex items-start gap-2 rounded-md bg-primary/10 border border-primary/20 px-3 py-2">
+          <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+          <p className="text-xs" data-testid={`text-instagram-import-success-${parsedFile.type}`}>
+            Imported {taskState.result.imported} account{taskState.result.imported !== 1 ? "s" : ""}
+            {taskState.result.updated > 0 && <span> ({taskState.result.updated} updated)</span>}
+            {taskState.result.skippedRows > 0 && <span> ({taskState.result.skippedRows} rows skipped)</span>}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

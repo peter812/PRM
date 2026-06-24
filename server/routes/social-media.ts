@@ -644,55 +644,39 @@ export function registerRoutes(app: Express) {
         const { id } = req.params;
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
         const state = await storage.getNetworkState(id);
-  
-        if (!state || !state.followers || state.followers.length === 0) {
+        const total = state?.followerCount || 0;
+
+        if (total === 0) {
           return res.json({ items: [], total: 0, page, limit });
         }
-  
-        const total = state.followers.length;
-        const start = (page - 1) * limit;
-        const pageIds = state.followers.slice(start, start + limit);
-  
-        const followerAccounts = [];
-        for (const followerId of pageIds) {
-          const account = await storage.getSocialAccountById(followerId);
-          if (account) {
-            followerAccounts.push(account);
-          }
-        }
-  
-        res.json({ items: followerAccounts, total, page, limit });
+
+        const items = await storage.getFollowersPaginated(id, offset, limit);
+        res.json({ items, total, page, limit });
       } catch (error) {
         console.error("Error fetching followers:", error);
         res.status(500).json({ error: "Failed to fetch followers" });
       }
     });
-  
+
     app.get("/api/social-accounts/:id/following", async (req, res) => {
       try {
         const { id } = req.params;
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
         const state = await storage.getNetworkState(id);
-  
-        if (!state || !state.following || state.following.length === 0) {
+        const total = state?.followingCount || 0;
+
+        if (total === 0) {
           return res.json({ items: [], total: 0, page, limit });
         }
-  
-        const total = state.following.length;
-        const start = (page - 1) * limit;
-        const pageIds = state.following.slice(start, start + limit);
-  
-        const followingAccounts = [];
-        for (const followingId of pageIds) {
-          const account = await storage.getSocialAccountById(followingId);
-          if (account) {
-            followingAccounts.push(account);
-          }
-        }
-  
-        res.json({ items: followingAccounts, total, page, limit });
+
+        const items = await storage.getFollowingPaginated(id, offset, limit);
+        res.json({ items, total, page, limit });
       } catch (error) {
         console.error("Error fetching following:", error);
         res.status(500).json({ error: "Failed to fetch following" });
@@ -741,47 +725,60 @@ export function registerRoutes(app: Express) {
         if (!account) {
           return res.status(404).json({ error: "Social account not found" });
         }
-  
+
         const oldState = await storage.getNetworkState(id);
         const oldFollowers = new Set(oldState?.followers || []);
         const oldFollowing = new Set(oldState?.following || []);
-        const newFollowers = new Set<string>(req.body.followers || []);
-        const newFollowing = new Set<string>(req.body.following || []);
-  
+
+        // Guard against wiping out followers if LinkFollowingAccountsDialog posts followers: []
+        const hasFollowers = req.body.followers !== undefined;
+        const hasFollowing = req.body.following !== undefined;
+
+        const updateFollowers = hasFollowers && !(req.body.followers.length === 0 && oldFollowers.size > 0 && hasFollowing);
+        const updateFollowing = hasFollowing;
+
+        const newFollowers = updateFollowers ? new Set<string>(req.body.followers) : oldFollowers;
+        const newFollowing = updateFollowing ? new Set<string>(req.body.following) : oldFollowing;
+
         const batchId = crypto.randomUUID();
         const changes: { socialAccountId: string; changeType: string; direction: string; targetAccountId: string; batchId: string }[] = [];
-  
-        for (const f of Array.from(newFollowers)) {
-          if (!oldFollowers.has(f)) {
-            changes.push({ socialAccountId: id, changeType: 'follow', direction: 'follower', targetAccountId: f, batchId });
+
+        if (updateFollowers) {
+          for (const f of Array.from(newFollowers)) {
+            if (!oldFollowers.has(f)) {
+              changes.push({ socialAccountId: id, changeType: 'follow', direction: 'follower', targetAccountId: f, batchId });
+            }
+          }
+          for (const f of Array.from(oldFollowers)) {
+            if (!newFollowers.has(f)) {
+              changes.push({ socialAccountId: id, changeType: 'unfollow', direction: 'follower', targetAccountId: f, batchId });
+            }
           }
         }
-        for (const f of Array.from(oldFollowers)) {
-          if (!newFollowers.has(f)) {
-            changes.push({ socialAccountId: id, changeType: 'unfollow', direction: 'follower', targetAccountId: f, batchId });
+
+        if (updateFollowing) {
+          for (const f of Array.from(newFollowing)) {
+            if (!oldFollowing.has(f)) {
+              changes.push({ socialAccountId: id, changeType: 'follow', direction: 'following', targetAccountId: f, batchId });
+            }
+          }
+          for (const f of Array.from(oldFollowing)) {
+            if (!newFollowing.has(f)) {
+              changes.push({ socialAccountId: id, changeType: 'unfollow', direction: 'following', targetAccountId: f, batchId });
+            }
           }
         }
-        for (const f of Array.from(newFollowing)) {
-          if (!oldFollowing.has(f)) {
-            changes.push({ socialAccountId: id, changeType: 'follow', direction: 'following', targetAccountId: f, batchId });
-          }
-        }
-        for (const f of Array.from(oldFollowing)) {
-          if (!newFollowing.has(f)) {
-            changes.push({ socialAccountId: id, changeType: 'unfollow', direction: 'following', targetAccountId: f, batchId });
-          }
-        }
-  
+
         if (changes.length > 0) {
           await storage.recordNetworkChanges(changes);
         }
-  
+
         const state = await storage.upsertNetworkState({
           socialAccountId: id,
           followerCount: newFollowers.size,
           followingCount: newFollowing.size,
-          followers: Array.from(newFollowers),
-          following: Array.from(newFollowing),
+          followers: updateFollowers ? Array.from(newFollowers) : undefined,
+          following: updateFollowing ? Array.from(newFollowing) : undefined,
         });
         res.status(201).json(state);
       } catch (error) {
@@ -1875,6 +1872,41 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error deleting Instagram image URLs:", error);
         res.status(500).json({ error: "Failed to delete Instagram image URLs" });
+      }
+    });
+  
+    app.delete("/api/photos/orphans", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const result = await storage.deleteOrphanPhotos();
+
+        // Delete the actual files from storage (S3 or local) for each orphan
+        for (const photo of result.deletedPhotos) {
+          try {
+            if (isLocalImageUrl(photo.location)) {
+              await deleteImageLocally(photo.location);
+            } else if (photo.location.startsWith("http")) {
+              await deleteImageFromS3(photo.location);
+            }
+          } catch (fileErr) {
+            console.warn(`Failed to delete orphan file ${photo.location}:`, fileErr);
+          }
+        }
+
+        // Clean up vector embeddings for deleted photos
+        const vectorIds = result.deletedPhotos
+          .map((p) => p.vectorId)
+          .filter(Boolean) as string[];
+        if (vectorIds.length) {
+          void deleteEntityVector("image", vectorIds);
+        }
+
+        res.json({ deleted: result.deleted });
+      } catch (error) {
+        console.error("Error deleting orphan photos:", error);
+        res.status(500).json({ error: "Failed to delete orphan photos" });
       }
     });
   

@@ -86,7 +86,7 @@ export default function SocialAccountProfile() {
   } = useInfiniteQuery<PaginatedAccounts>({
     queryKey: ["/api/social-accounts", uuid, "followers"],
     queryFn: async ({ pageParam }) => {
-      const res = await fetch(`/api/social-accounts/${uuid}/followers?page=${pageParam}&limit=20`);
+      const res = await fetch(`/api/social-accounts/${uuid}/followers?page=${pageParam}&limit=20`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch followers");
       return res.json();
     },
@@ -106,7 +106,7 @@ export default function SocialAccountProfile() {
   } = useInfiniteQuery<PaginatedAccounts>({
     queryKey: ["/api/social-accounts", uuid, "following"],
     queryFn: async ({ pageParam }) => {
-      const res = await fetch(`/api/social-accounts/${uuid}/following?page=${pageParam}&limit=20`);
+      const res = await fetch(`/api/social-accounts/${uuid}/following?page=${pageParam}&limit=20`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch following");
       return res.json();
     },
@@ -133,7 +133,7 @@ export default function SocialAccountProfile() {
   const { data: profileVersions } = useQuery<SocialProfileVersion[]>({
     queryKey: ["/api/social-accounts", uuid, "profile-versions"],
     queryFn: async () => {
-      const res = await fetch(`/api/social-accounts/${uuid}/profile-versions`);
+      const res = await fetch(`/api/social-accounts/${uuid}/profile-versions`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch profile versions");
       return res.json();
     },
@@ -259,6 +259,7 @@ export default function SocialAccountProfile() {
       const response = await fetch("/api/import-instagram", {
         method: "POST",
         body: formData,
+        credentials: "include",
       });
 
       if (!response.ok) {

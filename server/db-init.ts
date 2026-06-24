@@ -240,7 +240,7 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
 
   if (profileVersionsExists && networkStateExists && networkChangesExists) {
     await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
-    return;
+    // Fall through to apply any pending sub-migrations (do NOT return early)
   }
 
   log("Migrating social_accounts to historical model...");
@@ -271,8 +271,6 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
         social_account_id VARCHAR NOT NULL UNIQUE REFERENCES social_accounts(id) ON DELETE CASCADE,
         follower_count INTEGER NOT NULL DEFAULT 0,
         following_count INTEGER NOT NULL DEFAULT 0,
-        followers TEXT[] DEFAULT ARRAY[]::text[],
-        following TEXT[] DEFAULT ARRAY[]::text[],
         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
       )
     `);
@@ -295,15 +293,41 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
     log("Created social_network_changes table");
   }
 
+  // 3b. Create social_connections table if it doesn't exist (added in schema v2)
+  const socialConnectionsExists = await tableExists("social_connections");
+  if (!socialConnectionsExists) {
+    await pool.query(`
+      CREATE TABLE social_connections (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        follower_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        following_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS unique_follow_idx ON social_connections (follower_id, following_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS following_idx ON social_connections (following_id)`);
+    log("Created social_connections table");
+  }
+
+  // 3c. Drop old followers/following TEXT[] columns from social_network_state if they still exist
+  const hasFollowersCol = await columnExists("social_network_state", "followers");
+  const hasFollowingCol = await columnExists("social_network_state", "following");
+  if (hasFollowersCol) {
+    await pool.query(`ALTER TABLE social_network_state DROP COLUMN followers`);
+    log("Dropped legacy social_network_state.followers column");
+  }
+  if (hasFollowingCol) {
+    await pool.query(`ALTER TABLE social_network_state DROP COLUMN following`);
+    log("Dropped legacy social_network_state.following column");
+  }
+
   // 4. Migrate data from old social_network_snapshots table if it exists
   const snapshotsExists = await tableExists("social_network_snapshots");
   if (snapshotsExists && !networkStateExists) {
     log("Migrating social_network_snapshots to social_network_state...");
     await pool.query(`
-      INSERT INTO social_network_state (social_account_id, follower_count, following_count, followers, following, updated_at)
+      INSERT INTO social_network_state (social_account_id, follower_count, following_count, updated_at)
       SELECT DISTINCT ON (social_account_id) social_account_id, follower_count, following_count,
-        COALESCE(followers, ARRAY[]::text[]),
-        COALESCE(following, ARRAY[]::text[]),
         captured_at
       FROM social_network_snapshots
       ORDER BY social_account_id, captured_at DESC
@@ -333,12 +357,10 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
 
     if (hasFollowers) {
       await pool.query(`
-        INSERT INTO social_network_state (social_account_id, follower_count, following_count, followers, following, updated_at)
+        INSERT INTO social_network_state (social_account_id, follower_count, following_count, updated_at)
         SELECT id,
           COALESCE(array_length(followers, 1), 0),
           COALESCE(array_length(following, 1), 0),
-          COALESCE(followers, ARRAY[]::text[]),
-          COALESCE(following, ARRAY[]::text[]),
           COALESCE(created_at, NOW())
         FROM social_accounts
       `);

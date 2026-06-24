@@ -8,7 +8,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, isNotNull, inArray, and } from "drizzle-orm";
+import { eq, isNotNull, inArray, and, sql } from "drizzle-orm";
 import {
   people,
   tasks,
@@ -20,6 +20,8 @@ import {
   photos,
   socialAccounts,
   socialProfileVersions,
+  socialNetworkState,
+  socialConnections,
 } from "@shared/schema";
 
 // ── Image dimension helper ────────────────────────────────────────────────────
@@ -1311,28 +1313,73 @@ async function processImportInstagram(taskId: string, payload: {
     }
   }
 
-  const existingState = await storage.getNetworkState(accountId);
-  const existingFollowers = existingState?.followers || [];
-  const existingFollowing = existingState?.following || [];
-
-  let newFollowers: string[];
-  let newFollowing: string[];
+  const connectionInserts = [];
 
   if (importType === "followers") {
-    newFollowers = Array.from(new Set([...existingFollowers, ...processedAccountIds]));
-    newFollowing = Array.from(new Set([...existingFollowing, ...mutualFollowIds]));
+    for (const otherId of processedAccountIds) {
+      connectionInserts.push({ followerId: otherId, followingId: accountId });
+    }
+    for (const otherId of mutualFollowIds) {
+      connectionInserts.push({ followerId: accountId, followingId: otherId });
+    }
   } else {
-    newFollowing = Array.from(new Set([...existingFollowing, ...processedAccountIds]));
-    newFollowers = Array.from(new Set([...existingFollowers, ...mutualFollowIds]));
+    for (const otherId of processedAccountIds) {
+      connectionInserts.push({ followerId: accountId, followingId: otherId });
+    }
+    for (const otherId of mutualFollowIds) {
+      connectionInserts.push({ followerId: otherId, followingId: accountId });
+    }
   }
 
-  await storage.upsertNetworkState({
-    socialAccountId: accountId,
-    followerCount: newFollowers.length,
-    followingCount: newFollowing.length,
-    followers: newFollowers,
-    following: newFollowing,
-  });
+  const seenInserts = new Set<string>();
+  const uniqueInserts = [];
+  for (const conn of connectionInserts) {
+    const key = `${conn.followerId}-${conn.followingId}`;
+    if (!seenInserts.has(key)) {
+      seenInserts.add(key);
+      uniqueInserts.push(conn);
+    }
+  }
+
+  if (uniqueInserts.length > 0) {
+    for (let i = 0; i < uniqueInserts.length; i += 500) {
+      const chunk = uniqueInserts.slice(i, i + 500);
+      await db.insert(socialConnections).values(chunk).onConflictDoNothing();
+    }
+  }
+
+  // Update counts in socialNetworkState for the main account and all processed accounts
+  const allAffectedAccountIds = Array.from(new Set([accountId, ...processedAccountIds]));
+  for (const affectedId of allAffectedAccountIds) {
+    const [followerCountRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(socialConnections)
+      .where(eq(socialConnections.followingId, affectedId));
+    const [followingCountRow] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(socialConnections)
+      .where(eq(socialConnections.followerId, affectedId));
+
+    const followerCount = followerCountRow?.count || 0;
+    const followingCount = followingCountRow?.count || 0;
+
+    await db
+      .insert(socialNetworkState)
+      .values({
+        socialAccountId: affectedId,
+        followerCount,
+        followingCount,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: socialNetworkState.socialAccountId,
+        set: {
+          followerCount,
+          followingCount,
+          updatedAt: new Date(),
+        },
+      });
+  }
 
   // Kick off the image task worker for the download_img_instagram tasks we just created
   triggerImageTaskWorker();

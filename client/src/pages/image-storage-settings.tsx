@@ -34,7 +34,7 @@ type DeleteInstagramResult = {
 
 export default function ImageStorageSettingsPage() {
   const { toast } = useToast();
-  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | "backfill" | "delete-instagram" | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | "backfill" | "delete-instagram" | "delete-orphans" | null>(null);
 
   const { data: storageData, isLoading: modeLoading } = useQuery<StorageModeResponse>({
     queryKey: ["/api/image-storage/mode"],
@@ -115,6 +115,24 @@ export default function ImageStorageSettingsPage() {
       toast({
         title: "Instagram URLs removed",
         description: `${data.profileVersionsCleared} profile image${data.profileVersionsCleared !== 1 ? "s" : ""}, ${data.postsCleared} post${data.postsCleared !== 1 ? "s" : ""}, ${data.photosDeleted} photo record${data.photosDeleted !== 1 ? "s" : ""} cleared.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteOrphansMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("DELETE", "/api/photos/orphans");
+      return res.json() as Promise<{ deleted: number }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
+      toast({
+        title: "Orphan images deleted",
+        description: `${data.deleted} orphan photo record${data.deleted !== 1 ? "s" : ""} removed from the database${data.deleted > 0 ? " and their files deleted" : ""}.`,
       });
     },
     onError: (error: Error) => {
@@ -370,6 +388,42 @@ export default function ImageStorageSettingsPage() {
             </Button>
           </CardContent>
         </Card>
+
+        <Card data-testid="card-delete-orphan-images">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              Delete Orphan Images
+            </CardTitle>
+            <CardDescription>
+              Remove photo records from the database that are no longer linked to any person, note, interaction, group, or social profile.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-orphan-danger">
+              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-destructive">Danger — this is destructive and cannot be undone</p>
+                <p className="text-xs text-muted-foreground">
+                  Scans every row in the photos table and deletes any whose image URL does not appear in any people, note, interaction, group, or social profile record. The physical files (local or S3) are also deleted.
+                </p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDialog("delete-orphans")}
+              disabled={deleteOrphansMutation.isPending}
+              data-testid="button-delete-orphan-images"
+            >
+              {deleteOrphansMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-2" />
+              )}
+              Delete Orphan Images
+            </Button>
+          </CardContent>
+        </Card>
       </div>
 
       <AlertDialog open={confirmDialog === "to-local"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
@@ -481,6 +535,26 @@ export default function ImageStorageSettingsPage() {
               data-testid="button-confirm-delete-instagram"
             >
               Delete CDN URLs
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === "delete-orphans"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Orphan Images?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all photo records whose image URL is not referenced by any person, note, interaction, group, or social profile. Their physical files will also be deleted from storage. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete-orphans">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { deleteOrphansMutation.mutate(); setConfirmDialog(null); }}
+              data-testid="button-confirm-delete-orphans"
+            >
+              Delete Orphans
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

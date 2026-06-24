@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, X, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, X, Trash2, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { SocialAccountPost } from "@shared/schema";
@@ -8,6 +8,11 @@ import {
   Dialog,
   DialogContent,
 } from "@/components/ui/dialog";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 
 interface MentionEntry {
   imageIndex: number;
@@ -92,26 +97,24 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                 {images.length > 1 && (
                   <>
                     {currentImageIndex > 0 && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 text-white rounded-full"
+                      <button
+                        type="button"
+                        className="absolute left-4 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-10 h-10 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                         onClick={prevImage}
                         data-testid="button-prev-image"
                       >
                         <ChevronLeft className="h-6 w-6" />
-                      </Button>
+                      </button>
                     )}
                     {currentImageIndex < images.length - 1 && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/50 text-white rounded-full"
+                      <button
+                        type="button"
+                        className="absolute right-4 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-10 h-10 rounded-full bg-black/50 hover:bg-black/70 text-white transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                         onClick={nextImage}
                         data-testid="button-next-image"
                       >
                         <ChevronRight className="h-6 w-6" />
-                      </Button>
+                      </button>
                     )}
 
                     {/* Image Dots */}
@@ -140,14 +143,49 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
           {/* Info Section */}
           <div className="w-full md:w-80 border-t md:border-t-0 md:border-l flex flex-col overflow-auto bg-background">
             <div className="p-4 space-y-4 flex-1">
-              {/* Description */}
-              {post.description && (
-                <div>
-                  <p className="text-sm whitespace-pre-wrap" data-testid="text-post-description">
-                    {post.description}
-                  </p>
+              {/* Description & Caption Info */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Caption</span>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground"
+                        data-testid="button-post-info"
+                      >
+                        <Info className="h-4 w-4" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-80" align="end">
+                      <div className="space-y-2">
+                        <h4 className="font-medium leading-none text-sm font-semibold">Post Metadata</h4>
+                        <p className="text-xs text-muted-foreground">Internal database identifiers for this post.</p>
+                        <div className="border-t pt-2 mt-2 space-y-1.5 text-xs">
+                          <div className="flex justify-between items-center gap-2">
+                            <span className="text-muted-foreground font-medium">Post ID:</span>
+                            <code className="bg-muted px-1.5 py-0.5 rounded select-all break-all text-[10px]" data-testid="text-metadata-post-id">{post.id}</code>
+                          </div>
+                          <div className="flex justify-between items-center gap-2">
+                            <span className="text-muted-foreground font-medium">Account ID:</span>
+                            <code className="bg-muted px-1.5 py-0.5 rounded select-all break-all text-[10px]" data-testid="text-metadata-account-id">{post.socialAccountId}</code>
+                          </div>
+                          {post.postType && (
+                            <div className="flex justify-between items-center gap-2">
+                              <span className="text-muted-foreground font-medium">Post Type:</span>
+                              <span className="capitalize">{post.postType}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
                 </div>
-              )}
+                <p className="text-sm whitespace-pre-wrap" data-testid="text-post-description">
+                  {post.description || <span className="italic text-muted-foreground">No caption</span>}
+                </p>
+              </div>
 
               {/* Stats */}
               <div className="flex items-center gap-4">

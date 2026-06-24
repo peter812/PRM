@@ -15,6 +15,7 @@ import {
   socialAccountTypes,
   socialProfileVersions,
   socialNetworkState,
+  socialConnections,
   socialNetworkChanges,
   socialAccountPosts,
   photos,
@@ -206,6 +207,7 @@ export interface IStorage {
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
   deletePerson(id: string): Promise<void>;
+  removeAsteriskTags(): Promise<number>;
   updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }>;
   getRandomPeoplePair(): Promise<Person[]>;
 
@@ -354,6 +356,8 @@ export interface IStorage {
   getNetworkState(socialAccountId: string): Promise<SocialNetworkState | null>;
   upsertNetworkState(state: InsertSocialNetworkState): Promise<SocialNetworkState>;
   getAllNetworkStates(): Promise<SocialNetworkState[]>;
+  getFollowersPaginated(socialAccountId: string, offset: number, limit: number): Promise<SocialAccountWithCurrentProfile[]>;
+  getFollowingPaginated(socialAccountId: string, offset: number, limit: number): Promise<SocialAccountWithCurrentProfile[]>;
 
   // Social network change operations
   recordNetworkChanges(changes: InsertSocialNetworkChange[]): Promise<SocialNetworkChange[]>;
@@ -414,6 +418,7 @@ export interface IStorage {
     photosDeleted: number;
     deletedPhotos?: { id: string; vectorId: string | null }[];
   }>;
+  deleteOrphanPhotos(): Promise<{ deleted: number; deletedPhotos: { id: string; location: string; vectorId: string | null }[] }>;
 
   // Image task operations
   createImageTask(task: InsertImageTask): Promise<ImageTask>;
@@ -839,6 +844,32 @@ export class DatabaseStorage implements IStorage {
       .where(eq(people.id, id))
       .returning();
     return person || undefined;
+  }
+
+  async removeAsteriskTags(): Promise<number> {
+    const allPeople = await db.select().from(people);
+    let updatedCount = 0;
+    for (const person of allPeople) {
+      if (person.tags && person.tags.length > 0) {
+        const hasAsteriskTag = person.tags.some(tag => tag.startsWith('*'));
+        if (hasAsteriskTag) {
+          const cleanTags = person.tags.filter(tag => !tag.startsWith('*'));
+          await db
+            .update(people)
+            .set({ tags: cleanTags })
+            .where(eq(people.id, person.id));
+          updatedCount++;
+          
+          try {
+            const { syncEntityInBackground } = await import("./vector-universal");
+            syncEntityInBackground("person", person.id);
+          } catch (e) {
+            console.error("Error syncing person to vector storage:", e);
+          }
+        }
+      }
+    }
+    return updatedCount;
   }
 
   async deletePerson(id: string): Promise<void> {
@@ -2083,10 +2114,10 @@ export class DatabaseStorage implements IStorage {
 
   // Social graph operations
   async getSocialGraph(settings: SocialGraphSettings): Promise<SocialGraphData> {
-    const [allAccounts, allTypes, allStates, allCurrentProfiles] = await Promise.all([
+    const [allAccounts, allTypes, allConnections, allCurrentProfiles] = await Promise.all([
       db.select().from(socialAccounts),
       db.select().from(socialAccountTypes),
-      db.select().from(socialNetworkState),
+      db.select().from(socialConnections),
       db.select().from(socialProfileVersions).where(eq(socialProfileVersions.isCurrent, true)),
     ]);
 
@@ -2098,9 +2129,11 @@ export class DatabaseStorage implements IStorage {
     const profileMap = new Map<string, SocialProfileVersion>();
     allCurrentProfiles.forEach(p => profileMap.set(p.socialAccountId, p));
 
-    const stateMap = new Map<string, SocialNetworkState>();
-    allStates.forEach(state => {
-      stateMap.set(state.socialAccountId, state);
+    const followingMap = new Map<string, string[]>();
+    allConnections.forEach(conn => {
+      const list = followingMap.get(conn.followerId) || [];
+      list.push(conn.followingId);
+      followingMap.set(conn.followerId, list);
     });
 
     const allAccountIds = new Set(allAccounts.map(a => a.id));
@@ -2108,7 +2141,7 @@ export class DatabaseStorage implements IStorage {
     type AccountWithFollowing = SocialAccount & { following: string[] | null };
     const accountsWithFollowing: AccountWithFollowing[] = allAccounts.map(a => ({
       ...a,
-      following: stateMap.get(a.id)?.following || null,
+      following: followingMap.get(a.id) || null,
     }));
 
     const directConnectionsMap = new Map<string, Set<string>>();
@@ -2505,11 +2538,11 @@ export class DatabaseStorage implements IStorage {
     if (followsAccountIds && followsAccountIds.length > 0) {
       conditions.push(
         sql`EXISTS (
-          SELECT 1 FROM ${socialNetworkState} sns
-          WHERE sns.social_account_id = ${socialAccounts.id}
-          AND (${sql.join(
-            followsAccountIds.map(id => sql`${id} = ANY(sns.following)`),
-            sql` OR `
+          SELECT 1 FROM ${socialConnections}
+          WHERE ${socialConnections.followerId} = ${socialAccounts.id}
+          AND ${socialConnections.followingId} IN (${sql.join(
+            followsAccountIds.map(id => sql`${id}`),
+            sql`, `
           )})
         )`
       );
@@ -2610,12 +2643,9 @@ export class DatabaseStorage implements IStorage {
 
     if (!row) return undefined;
 
-    const [currentState] = await db
-      .select()
-      .from(socialNetworkState)
-      .where(eq(socialNetworkState.socialAccountId, id));
+    const currentState = await this.getNetworkState(id);
 
-    return this.buildSocialAccountWithProfile(row.account, row.profile, currentState || null);
+    return this.buildSocialAccountWithProfile(row.account, row.profile, currentState);
   }
 
   async getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]> {
@@ -2936,32 +2966,207 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(socialNetworkState)
       .where(eq(socialNetworkState.socialAccountId, socialAccountId));
-    return state || null;
+    if (!state) return null;
+
+    const followersRows = await db
+      .select({ followerId: socialConnections.followerId })
+      .from(socialConnections)
+      .where(eq(socialConnections.followingId, socialAccountId));
+
+    const followingRows = await db
+      .select({ followingId: socialConnections.followingId })
+      .from(socialConnections)
+      .where(eq(socialConnections.followerId, socialAccountId));
+
+    return {
+      ...state,
+      followers: followersRows.map(r => r.followerId),
+      following: followingRows.map(r => r.followingId),
+    };
   }
 
   async upsertNetworkState(state: InsertSocialNetworkState): Promise<SocialNetworkState> {
-    const followerCount = state.followers?.length || 0;
-    const followingCount = state.following?.length || 0;
-    const values = { ...state, followerCount, followingCount };
-    const [upserted] = await db
-      .insert(socialNetworkState)
-      .values(values)
-      .onConflictDoUpdate({
-        target: socialNetworkState.socialAccountId,
-        set: {
+    return await db.transaction(async (tx) => {
+      const accountId = state.socialAccountId;
+
+      let newFollowers = state.followers;
+      let newFollowing = state.following;
+
+      if (newFollowers === undefined) {
+        const rows = await tx
+          .select({ followerId: socialConnections.followerId })
+          .from(socialConnections)
+          .where(eq(socialConnections.followingId, accountId));
+        newFollowers = rows.map(r => r.followerId);
+      }
+      if (newFollowing === undefined) {
+        const rows = await tx
+          .select({ followingId: socialConnections.followingId })
+          .from(socialConnections)
+          .where(eq(socialConnections.followerId, accountId));
+        newFollowing = rows.map(r => r.followingId);
+      }
+
+      const followerCount = newFollowers.length;
+      const followingCount = newFollowing.length;
+
+      const [upsertedState] = await tx
+        .insert(socialNetworkState)
+        .values({
+          socialAccountId: accountId,
           followerCount,
           followingCount,
-          followers: state.followers,
-          following: state.following,
           updatedAt: new Date(),
-        },
-      })
-      .returning();
-    return upserted;
+        })
+        .onConflictDoUpdate({
+          target: socialNetworkState.socialAccountId,
+          set: {
+            followerCount,
+            followingCount,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+
+      if (state.followers !== undefined) {
+        const currentFollowers = await tx
+          .select({ followerId: socialConnections.followerId })
+          .from(socialConnections)
+          .where(eq(socialConnections.followingId, accountId))
+          .then(rows => rows.map(r => r.followerId));
+
+        const followersToSet = Array.from(new Set(state.followers.filter(id => id && id.trim() !== '')));
+        const currentFollowersSet = new Set(currentFollowers);
+
+        const toAdd = followersToSet.filter(id => !currentFollowersSet.has(id));
+        const toRemove = currentFollowers.filter(id => !followersToSet.includes(id));
+
+        if (toRemove.length > 0) {
+          await tx
+             .delete(socialConnections)
+             .where(
+               and(
+                 eq(socialConnections.followingId, accountId),
+                 inArray(socialConnections.followerId, toRemove)
+               )
+             );
+        }
+
+        if (toAdd.length > 0) {
+          const inserts = toAdd.map(fid => ({
+            followerId: fid,
+            followingId: accountId,
+          }));
+          await tx.insert(socialConnections).values(inserts).onConflictDoNothing();
+        }
+      }
+
+      if (state.following !== undefined) {
+        const currentFollowing = await tx
+          .select({ followingId: socialConnections.followingId })
+          .from(socialConnections)
+          .where(eq(socialConnections.followerId, accountId))
+          .then(rows => rows.map(r => r.followingId));
+
+        const followingToSet = Array.from(new Set(state.following.filter(id => id && id.trim() !== '')));
+        const currentFollowingSet = new Set(currentFollowing);
+
+        const toAdd = followingToSet.filter(id => !currentFollowingSet.has(id));
+        const toRemove = currentFollowing.filter(id => !followingToSet.includes(id));
+
+        if (toRemove.length > 0) {
+          await tx
+             .delete(socialConnections)
+             .where(
+               and(
+                 eq(socialConnections.followerId, accountId),
+                 inArray(socialConnections.followingId, toRemove)
+               )
+             );
+        }
+
+        if (toAdd.length > 0) {
+          const inserts = toAdd.map(fid => ({
+            followerId: accountId,
+            followingId: fid,
+          }));
+          await tx.insert(socialConnections).values(inserts).onConflictDoNothing();
+        }
+      }
+
+      return {
+        ...upsertedState,
+        followers: newFollowers,
+        following: newFollowing,
+      };
+    });
   }
 
   async getAllNetworkStates(): Promise<SocialNetworkState[]> {
-    return await db.select().from(socialNetworkState);
+    const states = await db.select().from(socialNetworkState);
+    const connections = await db.select().from(socialConnections);
+
+    const followerMap = new Map<string, string[]>();
+    const followingMap = new Map<string, string[]>();
+
+    connections.forEach(conn => {
+      const follList = followingMap.get(conn.followerId) || [];
+      follList.push(conn.followingId);
+      followingMap.set(conn.followerId, follList);
+
+      const foldList = followerMap.get(conn.followingId) || [];
+      foldList.push(conn.followerId);
+      followerMap.set(conn.followingId, foldList);
+    });
+
+    return states.map(state => ({
+      ...state,
+      followers: followerMap.get(state.socialAccountId) || [],
+      following: followingMap.get(state.socialAccountId) || [],
+    }));
+  }
+
+  private async getConnectionsPaginated(
+    socialAccountId: string,
+    direction: "followers" | "following",
+    offset: number,
+    limit: number
+  ): Promise<SocialAccountWithCurrentProfile[]> {
+    const joinCondition = direction === "followers" 
+      ? eq(socialConnections.followerId, socialAccounts.id)
+      : eq(socialConnections.followingId, socialAccounts.id);
+
+    const filterCondition = direction === "followers"
+      ? eq(socialConnections.followingId, socialAccountId)
+      : eq(socialConnections.followerId, socialAccountId);
+
+    const rows = await db
+      .select({
+        account: socialAccounts,
+        profile: socialProfileVersions,
+      })
+      .from(socialConnections)
+      .innerJoin(socialAccounts, joinCondition)
+      .leftJoin(
+        socialProfileVersions,
+        and(
+          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+          eq(socialProfileVersions.isCurrent, true)
+        )
+      )
+      .where(filterCondition)
+      .limit(limit)
+      .offset(offset);
+
+    return rows.map(r => this.buildSocialAccountWithProfile(r.account, r.profile, null));
+  }
+
+  async getFollowersPaginated(socialAccountId: string, offset: number, limit: number): Promise<SocialAccountWithCurrentProfile[]> {
+    return this.getConnectionsPaginated(socialAccountId, "followers", offset, limit);
+  }
+
+  async getFollowingPaginated(socialAccountId: string, offset: number, limit: number): Promise<SocialAccountWithCurrentProfile[]> {
+    return this.getConnectionsPaginated(socialAccountId, "following", offset, limit);
   }
 
   // Social network change operations
@@ -3821,6 +4026,48 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async deleteOrphanPhotos(): Promise<{ deleted: number; deletedPhotos: { id: string; location: string; vectorId: string | null }[] }> {
+    // An orphan photo is one whose location URL does not appear in any entity's imageUrl column.
+    // Sub-images (face crops) are included unless they are still referenced by a parent's faceUuids.
+    const orphans = await db.execute<{ id: string; location: string; vector_id: string | null }>(sql`
+      SELECT p.id, p.location, p.vector_id
+      FROM photos p
+      WHERE p.location NOT IN (
+        SELECT image_url FROM people            WHERE image_url IS NOT NULL
+        UNION ALL
+        SELECT image_url FROM notes             WHERE image_url IS NOT NULL
+        UNION ALL
+        SELECT image_url FROM interactions      WHERE image_url IS NOT NULL
+        UNION ALL
+        SELECT image_url FROM groups            WHERE image_url IS NOT NULL
+        UNION ALL
+        SELECT image_url FROM social_profile_versions WHERE image_url IS NOT NULL
+      )
+      AND NOT (
+        p.is_sub_image = true
+        AND EXISTS (
+          SELECT 1 FROM photos parent
+          WHERE parent.face_uuids @> jsonb_build_array(
+            jsonb_build_object('subImagePhotoId', p.id)
+          )
+        )
+      )
+    `);
+
+    const rows = orphans.rows;
+    if (rows.length === 0) {
+      return { deleted: 0, deletedPhotos: [] };
+    }
+
+    const ids = rows.map((r) => r.id);
+    await db.delete(photos).where(inArray(photos.id, ids));
+
+    return {
+      deleted: rows.length,
+      deletedPhotos: rows.map((r) => ({ id: r.id, location: r.location, vectorId: r.vector_id })),
+    };
+  }
+
   async getAppSetting(key: string): Promise<string | null> {
     const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
     return row?.value ?? null;
@@ -3832,6 +4079,73 @@ export class DatabaseStorage implements IStorage {
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
     );
   }
+
+  async runStartupMigration(): Promise<void> {
+    try {
+      const connectionCountResult = await db.select({ count: sql<number>`count(*)` }).from(socialConnections);
+      if (connectionCountResult[0] && connectionCountResult[0].count > 0) {
+        return;
+      }
+
+      const legacyStates = await db.select({
+        socialAccountId: socialNetworkState.socialAccountId,
+        followers: sql<string[] | null>`followers`,
+        following: sql<string[] | null>`following`,
+      }).from(socialNetworkState);
+
+      const bulkConnections = [];
+
+      for (const state of legacyStates) {
+        const { socialAccountId, followers, following } = state;
+
+        if (followers && followers.length > 0) {
+          for (const fid of followers) {
+            if (fid && fid.trim() !== '') {
+              bulkConnections.push({
+                followerId: fid,
+                followingId: socialAccountId,
+              });
+            }
+          }
+        }
+
+        if (following && following.length > 0) {
+          for (const fid of following) {
+            if (fid && fid.trim() !== '') {
+              bulkConnections.push({
+                followerId: socialAccountId,
+                followingId: fid,
+              });
+            }
+          }
+        }
+      }
+
+      if (bulkConnections.length > 0) {
+        const seen = new Set<string>();
+        const uniqueConnections = [];
+        for (const conn of bulkConnections) {
+          const key = `${conn.followerId}-${conn.followingId}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            uniqueConnections.push(conn);
+          }
+        }
+
+        for (let i = 0; i < uniqueConnections.length; i += 500) {
+          const chunk = uniqueConnections.slice(i, i + 500);
+          await db.insert(socialConnections).values(chunk).onConflictDoNothing();
+        }
+        console.log(`Migrated ${uniqueConnections.length} social connections to junction table.`);
+      }
+    } catch (error) {
+      console.warn("Skipping social connections startup migration:", (error as Error).message);
+    }
+  }
 }
 
 export const storage = new DatabaseStorage();
+
+storage.runStartupMigration().catch(err => {
+  console.error("Failed to run startup migration for social connections:", err);
+});

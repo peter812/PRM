@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertCircle, Trash2, Users, Network } from "lucide-react";
+import { AlertCircle, Trash2, Users, Network, Tag } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -33,12 +33,15 @@ export default function DeleteOptionsPage() {
   const [confirmSwitch3, setConfirmSwitch3] = useState(false);
   const [confirmFamilySwitch1, setConfirmFamilySwitch1] = useState(false);
   const [confirmFamilySwitch2, setConfirmFamilySwitch2] = useState(false);
+  const [confirmTagSwitch1, setConfirmTagSwitch1] = useState(false);
+  const [confirmTagSwitch2, setConfirmTagSwitch2] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
 
   const allSwitchesOn = confirmSwitch1 && confirmSwitch2 && confirmSwitch3;
   const allFamilySwitchesOn = confirmFamilySwitch1 && confirmFamilySwitch2;
+  const allTagSwitchesOn = confirmTagSwitch1 && confirmTagSwitch2;
 
   const resetDatabaseMutation = useMutation({
     mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
@@ -164,6 +167,45 @@ export default function DeleteOptionsPage() {
   const handleDeleteAllFamilyRelationships = () => {
     if (allFamilySwitchesOn) {
       deleteAllFamilyRelationshipsMutation.mutate();
+    }
+  };
+
+  const removeAsteriskTagsMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/people/tags/asterisk", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to remove asterisk tags");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Asterisk Tags Removed",
+        description: `Successfully removed asterisk tags from ${data.deleted} people.`,
+      });
+
+      setConfirmTagSwitch1(false);
+      setConfirmTagSwitch2(false);
+
+      queryClient.invalidateQueries();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Operation Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleRemoveAsteriskTags = () => {
+    if (allTagSwitchesOn) {
+      removeAsteriskTagsMutation.mutate();
     }
   };
 
@@ -326,6 +368,79 @@ export default function DeleteOptionsPage() {
               <>
                 <Trash2 className="h-4 w-4" />
                 Remove All Family Relationships
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6 border-destructive/50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <Tag className="h-5 w-5" />
+            Remove Asterisk Person Tags
+          </CardTitle>
+          <CardDescription>Permanently remove any person tags that start with * (e.g. *developer, *lead, etc.)</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                  <li>Any tags on person profiles starting with an asterisk (*) will be deleted</li>
+                  <li>Other tags (not starting with *) will remain unaffected</li>
+                  <li>This cleans up system-generated or temporary tags</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-sm font-medium">Confirm by enabling both switches:</p>
+            
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-tag-switch-1" className="text-sm font-normal">
+                I understand I am about to remove all asterisk-prefixed person tags
+              </Label>
+              <Switch
+                id="confirm-tag-switch-1"
+                checked={confirmTagSwitch1}
+                onCheckedChange={setConfirmTagSwitch1}
+                data-testid="switch-confirm-tag-1"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-tag-switch-2" className="text-sm font-normal">
+                I understand that this action cannot be undone
+              </Label>
+              <Switch
+                id="confirm-tag-switch-2"
+                checked={confirmTagSwitch2}
+                onCheckedChange={setConfirmTagSwitch2}
+                data-testid="switch-confirm-tag-2"
+              />
+            </div>
+          </div>
+
+          <Button
+            variant="destructive"
+            onClick={handleRemoveAsteriskTags}
+            disabled={!allTagSwitchesOn || removeAsteriskTagsMutation.isPending}
+            className="gap-2"
+            data-testid="button-remove-asterisk-tags"
+          >
+            {removeAsteriskTagsMutation.isPending ? (
+              <>
+                <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
+                Removing...
+              </>
+            ) : (
+              <>
+                <Trash2 className="h-4 w-4" />
+                Remove Asterisk Tags
               </>
             )}
           </Button>

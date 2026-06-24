@@ -145,20 +145,26 @@ const settingsMenuItems: MenuItem[] = [
   },
 ];
 
-function SettingsSidebar() {
+export function SettingsSidebar() {
   const [location] = useLocation();
 
-  const isDataTypesActive = location.startsWith("/data-types");
-  const isImportExportActive = location.startsWith("/import-export") || location === "/instagram";
-  const isRecognitionActive = location.startsWith("/recognition");
+  // Strip the /settings prefix so matching works whether the sidebar is mounted
+  // at the top-level router context or inside a nested /settings context.
+  const relativePath = location.startsWith("/settings")
+    ? location.slice("/settings".length) || "/"
+    : location;
+
+  const isDataTypesActive = relativePath.startsWith("/data-types");
+  const isImportExportActive = relativePath.startsWith("/import-export") || relativePath === "/instagram";
+  const isRecognitionActive = relativePath.startsWith("/recognition");
   const isAppOptionsActive =
-    location.startsWith("/app") ||
-    location.startsWith("/social-graph") ||
-    location === "/chrome-extension" ||
-    location === "/api-settings";
-  const isImageStorageActive = location.startsWith("/image-storage") && location !== "/image-storage/tasks";
-  const isIntelligenceActive = location.startsWith("/intelligence") || location === "/vector";
-  const isTasksActive = location.startsWith("/tasks") || location === "/image-tasks" || location === "/image-storage/tasks";
+    relativePath.startsWith("/app") ||
+    relativePath.startsWith("/social-graph") ||
+    relativePath === "/chrome-extension" ||
+    relativePath === "/api-settings";
+  const isImageStorageActive = relativePath.startsWith("/image-storage") && relativePath !== "/image-storage/tasks";
+  const isIntelligenceActive = relativePath.startsWith("/intelligence") || relativePath === "/vector";
+  const isTasksActive = relativePath.startsWith("/tasks") || relativePath === "/image-tasks" || relativePath === "/image-storage/tasks";
 
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
@@ -180,6 +186,11 @@ function SettingsSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {settingsMenuItems.map((item) => {
+                // Prefix href with /settings when sidebar is at top-level context
+                const href = location.startsWith("/settings") && item.url !== "~/people"
+                  ? `/settings${item.url}`
+                  : item.url;
+
                 if (item.subItems) {
                   const isActive = getIsActive(item);
                   return (
@@ -193,9 +204,9 @@ function SettingsSidebar() {
                         <CollapsibleTrigger asChild>
                           <SidebarMenuButton
                             asChild
-                            isActive={location === item.url}
+                            isActive={relativePath === item.url}
                           >
-                            <Link href={item.url} data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
+                            <Link href={href} data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
                               <item.icon />
                               <span>{item.title}</span>
                               <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
@@ -204,19 +215,24 @@ function SettingsSidebar() {
                         </CollapsibleTrigger>
                         <CollapsibleContent>
                           <SidebarMenuSub>
-                            {item.subItems.map((subItem) => (
-                              <SidebarMenuSubItem key={subItem.title}>
-                                <SidebarMenuSubButton
-                                  asChild
-                                  isActive={location === subItem.url}
-                                >
-                                  <Link href={subItem.url} data-testid={`link-${subItem.title.toLowerCase().replace(/\s+/g, '-')}`}>
-                                    <subItem.icon className="h-4 w-4" />
-                                    <span>{subItem.title}</span>
-                                  </Link>
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
-                            ))}
+                            {item.subItems.map((subItem) => {
+                              const subHref = location.startsWith("/settings")
+                                ? `/settings${subItem.url}`
+                                : subItem.url;
+                              return (
+                                <SidebarMenuSubItem key={subItem.title}>
+                                  <SidebarMenuSubButton
+                                    asChild
+                                    isActive={relativePath === subItem.url}
+                                  >
+                                    <Link href={subHref} data-testid={`link-${subItem.title.toLowerCase().replace(/\s+/g, '-')}`}>
+                                      <subItem.icon className="h-4 w-4" />
+                                      <span>{subItem.title}</span>
+                                    </Link>
+                                  </SidebarMenuSubButton>
+                                </SidebarMenuSubItem>
+                              );
+                            })}
                           </SidebarMenuSub>
                         </CollapsibleContent>
                       </SidebarMenuItem>
@@ -226,8 +242,8 @@ function SettingsSidebar() {
 
                 return (
                   <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild isActive={location === item.url}>
-                      <Link href={item.url} data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
+                    <SidebarMenuButton asChild isActive={relativePath === item.url}>
+                      <Link href={href} data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, '-')}`}>
                         <item.icon />
                         <span>{item.title}</span>
                       </Link>
@@ -244,56 +260,41 @@ function SettingsSidebar() {
 }
 
 export default function SettingsLayout() {
-  const style = {
-    "--sidebar-width": "16rem",
-    "--sidebar-width-icon": "3rem",
-  };
-
   return (
-    <SidebarProvider style={style as React.CSSProperties}>
-      <div className="flex h-screen w-full">
-        <SettingsSidebar />
-        <div className="flex flex-col flex-1">
-          <header className="flex items-center justify-between p-2 border-b">
-            <SidebarTrigger data-testid="button-sidebar-toggle" />
-          </header>
-          <main className="flex-1 overflow-auto">
-            <Switch>
-              <Route path="/" component={() => <Redirect to="/user" />} />
-              <Route path="/user" component={UserOptionsPage} />
-              <Route path="/app" component={AppOptionsPage} />
-              <Route path="/data-types" component={DataTypesPage} />
-              <Route path="/image-tasks" component={ImageTasksSettingsPage} />
-              <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
-              <Route path="/image-storage/table" component={ImageTablePage} />
-              <Route path="/image-storage" component={ImageStorageSettingsPage} />
-              <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
-              <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
-              <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
-              <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
-              <Route path="/intelligence" component={IntelligenceSettingsPage} />
-              <Route path="/vector" component={VectorSettingsPage} />
-              <Route path="/instagram" component={InstagramSettingsPage} />
-              <Route path="/tasks" component={TasksSettingsPage} />
-              <Route path="/task/:id" component={TaskDetailPage} />
-              <Route path="/social-graph" component={SocialGraphSettingsPage} />
-              <Route path="/recognition/images" component={RecognitionImagesPage} />
-              <Route path="/recognition/faces" component={RecognitionFacesPage} />
-              <Route path="/recognition" component={RecognitionSettingsPage} />
-              <Route path="/import-export/contacts" component={ImportContactsPage} />
-              <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
-              <Route path="/import-export/application" component={ImportExportApplicationPage} />
-              <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
-              <Route path="/import-export" component={ImportExportHome} />
-              <Route path="/api-settings" component={ApiSettingsPage} />
-              <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
-              <Route path="/api" component={ApiDocs} />
-              <Route path="/delete" component={DeleteOptionsPage} />
-              <Route component={NotFound} />
-            </Switch>
-          </main>
-        </div>
-      </div>
-    </SidebarProvider>
+    <div className="flex flex-col flex-1 h-full overflow-auto">
+      <Switch>
+        <Route path="/" component={() => <Redirect to="/user" />} />
+        <Route path="/user" component={UserOptionsPage} />
+        <Route path="/app" component={AppOptionsPage} />
+        <Route path="/data-types" component={DataTypesPage} />
+        <Route path="/image-tasks" component={ImageTasksSettingsPage} />
+        <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
+        <Route path="/image-storage/table" component={ImageTablePage} />
+        <Route path="/image-storage" component={ImageStorageSettingsPage} />
+        <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
+        <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
+        <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
+        <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
+        <Route path="/intelligence" component={IntelligenceSettingsPage} />
+        <Route path="/vector" component={VectorSettingsPage} />
+        <Route path="/instagram" component={InstagramSettingsPage} />
+        <Route path="/tasks" component={TasksSettingsPage} />
+        <Route path="/task/:id" component={TaskDetailPage} />
+        <Route path="/social-graph" component={SocialGraphSettingsPage} />
+        <Route path="/recognition/images" component={RecognitionImagesPage} />
+        <Route path="/recognition/faces" component={RecognitionFacesPage} />
+        <Route path="/recognition" component={RecognitionSettingsPage} />
+        <Route path="/import-export/contacts" component={ImportContactsPage} />
+        <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
+        <Route path="/import-export/application" component={ImportExportApplicationPage} />
+        <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
+        <Route path="/import-export" component={ImportExportHome} />
+        <Route path="/api-settings" component={ApiSettingsPage} />
+        <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
+        <Route path="/api" component={ApiDocs} />
+        <Route path="/delete" component={DeleteOptionsPage} />
+        <Route component={NotFound} />
+      </Switch>
+    </div>
   );
 }
