@@ -178,7 +178,7 @@ function SocialSearch({ value, onChange }: { value: SocialOption | null; onChang
       if (!res.ok) return [];
       const data = await res.json();
       const accounts: any[] = Array.isArray(data) ? data : data.accounts ?? [];
-      return accounts.map((a: any) => ({ uuid: a.uuid, username: a.username, nickname: a.currentProfile?.nickname ?? a.nickname ?? null }));
+      return accounts.map((a: any) => ({ uuid: a.id || a.uuid, username: a.username, nickname: a.currentProfile?.nickname ?? a.nickname ?? null }));
     },
     enabled: debouncedQuery.length >= 3,
     staleTime: 10000,

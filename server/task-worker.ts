@@ -1375,7 +1375,7 @@ async function processMultiImageDownload(
   try {
     const user = (await storage.getAllUsers())[0];
     if (user) {
-      storageMode = await storage.getImageStorageMode(user.id);
+      storageMode = (await storage.getImageStorageMode(user.id)) as "local" | "s3";
     }
   } catch (err) {
     log(`[TaskWorker] Error getting image storage mode: ${err}`);

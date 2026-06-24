@@ -82,6 +82,7 @@ export default function SocialAccountsList() {
       const params = new URLSearchParams();
       params.set("offset", String(pageParam));
       params.set("limit", String(PAGE_SIZE));
+      params.set("full", "true");
       if (debouncedSearch) params.set("search", debouncedSearch);
       if (selectedTypeId && selectedTypeId !== "all") params.set("typeId", selectedTypeId);
       if (showFollowsYou) params.set("followsYou", "true");

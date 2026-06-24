@@ -138,7 +138,7 @@ function SocialSearch({
       const data = await res.json();
       const accounts: any[] = Array.isArray(data) ? data : data.accounts ?? [];
       return accounts.map((a: any) => ({
-        uuid: a.uuid,
+        uuid: a.id || a.uuid,
         username: a.username,
         nickname: a.currentProfile?.nickname ?? a.nickname ?? null,
       }));

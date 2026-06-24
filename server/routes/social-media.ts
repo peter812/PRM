@@ -117,6 +117,7 @@ export function registerRoutes(app: Express) {
         const searchQuery = req.query.search as string | undefined;
         const typeId = req.query.typeId as string | undefined;
         const followsYou = req.query.followsYou === "true";
+        const full = req.query.full === "true";
   
         let followsAccountIds: string[] | undefined;
   
@@ -143,7 +144,25 @@ export function registerRoutes(app: Express) {
           typeId: typeId || undefined,
           followsAccountIds,
         });
-        res.json(accounts);
+
+        if (full) {
+          res.json(accounts);
+        } else {
+          const sanitized = accounts.map(a => {
+            const {
+              createdAt,
+              deletedPosts,
+              internalAccountCreationType,
+              latestState,
+              ownerUuid,
+              vectorId,
+              vectorSyncedAt,
+              ...rest
+            } = a;
+            return rest;
+          });
+          res.json(sanitized);
+        }
       } catch (error) {
         console.error("Error fetching paginated social accounts:", error);
         res.status(500).json({ error: "Failed to fetch social accounts" });
