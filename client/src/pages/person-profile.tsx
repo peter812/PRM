@@ -47,6 +47,12 @@ export default function PersonProfile() {
   });
   const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
 
+  const { data: settings } = useQuery<Record<string, string>>({
+    queryKey: ["/api/settings"],
+  });
+  const imagesTabEnabled = settings?.images_tab_enabled !== "false";
+  const showPhotosTab = facialIntelligenceEnabled && imagesTabEnabled;
+
   const params = new URLSearchParams(window.location.search);
   const from = params.get('from');
   const groupId = params.get('groupId');
@@ -223,7 +229,7 @@ export default function PersonProfile() {
                       <CalendarDays className="h-4 w-4" />
                       Interaction
                     </DropdownMenuItem>
-                    {facialIntelligenceEnabled && (
+                    {showPhotosTab && (
                       <>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -368,7 +374,7 @@ export default function PersonProfile() {
             >
               Groups
             </TabsTrigger>
-            {facialIntelligenceEnabled && (
+            {showPhotosTab && (
               <TabsTrigger
                 value="photos"
                 className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
@@ -421,7 +427,7 @@ export default function PersonProfile() {
             />
           </TabsContent>
 
-          {facialIntelligenceEnabled && (
+          {showPhotosTab && (
             <TabsContent value="photos" className="mt-0 h-full">
               <PersonPhotosTab personId={person.id} />
             </TabsContent>

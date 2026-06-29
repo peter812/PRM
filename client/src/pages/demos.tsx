@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { Scan, Sparkles, MessagesSquare } from "lucide-react";
+import { Scan, Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function DemosPage() {
@@ -74,19 +74,7 @@ export default function DemosPage() {
           </Card>
         </Link>
 
-        <Link href="/ai-chat-demo">
-          <Card className="hover:bg-accent cursor-pointer transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <MessagesSquare className="h-5 w-5" />
-                Chat
-              </CardTitle>
-              <CardDescription>
-                Interactive AI chat for relationship insights and queries.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
+
       </div>
     </div>
   );

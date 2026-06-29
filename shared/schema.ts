@@ -336,6 +336,7 @@ export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   type: text("type").notNull(), // e.g. 'get_img'
   status: text("status").notNull().default("pending"), // 'pending', 'in_progress', 'completed', 'failed'
+  title: text("title"), // Name/username of the entity targeted by the task
   payload: text("payload").notNull(), // JSON string with task-specific data
   result: text("result"), // JSON string with task result or error message
   progress: integer("progress").notNull().default(0), // 0-100 percent complete

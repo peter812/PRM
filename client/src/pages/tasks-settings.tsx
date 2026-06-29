@@ -515,7 +515,7 @@ export default function TasksSettingsPage() {
                     <div className="flex flex-col gap-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-medium" data-testid={`text-task-type-${task.id}`}>
-                          {getTaskLabel(task.type)}
+                          {task.title ? `${task.title} - ${getTaskLabel(task.type)}` : getTaskLabel(task.type)}
                         </span>
                         <TaskStatusBadge status={task.status} />
                       </div>

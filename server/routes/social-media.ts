@@ -363,6 +363,8 @@ export function registerRoutes(app: Express) {
         const skippedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
         const failedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
         const importedAccountIds = new Set<string>();
+        const socialAccountIdMap = new Map<string, string>();
+        const allSocialAccounts = await storage.getAllSocialAccounts();
   
         const socialAccountTypeBlocks = parseAllTags("social_account_type", xmlText);
         for (const block of socialAccountTypeBlocks) {
@@ -409,9 +411,12 @@ export function registerRoutes(app: Express) {
             const following = parseXmlArray("following", "account_id", block);
             const followers = parseXmlArray("followers", "account_id", block);
   
-            const existing = await storage.getSocialAccountById(id);
+            const existing = allSocialAccounts.find(
+              acc => acc.id === id || (acc.username.toLowerCase() === username.toLowerCase() && acc.typeId === (typeId || null))
+            );
             if (existing) {
               skippedCounts.socialAccounts++;
+              socialAccountIdMap.set(id, existing.id);
               importedAccountIds.add(id);
               continue;
             }
@@ -422,6 +427,8 @@ export function registerRoutes(app: Express) {
               ownerUuid: ownerUuid || null,
               typeId: typeId || null,
             });
+            socialAccountIdMap.set(id, id);
+            allSocialAccounts.push(created);
   
             if (nickname || accountUrl || imageUrl) {
               if (created.currentProfile) {
@@ -464,8 +471,9 @@ export function registerRoutes(app: Express) {
   
             if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
   
+            const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
             await storage.createProfileVersion({
-              socialAccountId,
+              socialAccountId: mappedAccountId,
               nickname: pvNickname || null,
               bio: pvBio || null,
               accountUrl: pvAccountUrl || null,
@@ -490,8 +498,9 @@ export function registerRoutes(app: Express) {
   
             if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
   
+            const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
             await storage.upsertNetworkState({
-              socialAccountId,
+              socialAccountId: mappedAccountId,
               followerCount,
               followingCount,
               followers: snFollowers,
@@ -515,8 +524,9 @@ export function registerRoutes(app: Express) {
             if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
             if (!changeType || !direction || !targetAccountId) continue;
   
+            const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
             await db.insert(socialNetworkChanges).values({
-              socialAccountId,
+              socialAccountId: mappedAccountId,
               changeType,
               direction,
               targetAccountId,
@@ -622,6 +632,59 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error deleting all social accounts:", error);
         res.status(500).json({ error: "Failed to delete all social accounts" });
+      }
+    });
+
+    app.post("/api/social-accounts/remove-duplicates", async (req, res) => {
+      try {
+        // Find duplicate accounts and their vector IDs before we delete them
+        const allAccounts = await db.select().from(socialAccounts);
+        const groups = new Map<string, typeof allAccounts>();
+        for (const acc of allAccounts) {
+          const key = `${acc.username.toLowerCase()}::${acc.typeId || "null"}`;
+          if (!groups.has(key)) {
+            groups.set(key, []);
+          }
+          groups.get(key)!.push(acc);
+        }
+
+        const duplicateVectorIds: string[] = [];
+        const keptAccountIds: string[] = [];
+
+        for (const [key, group] of groups.entries()) {
+          if (group.length <= 1) continue;
+          const sorted = group.sort((a, b) => {
+            const timeA = a.createdAt ? a.createdAt.getTime() : 0;
+            const timeB = b.createdAt ? b.createdAt.getTime() : 0;
+            return timeA - timeB;
+          });
+          const keptAccount = sorted[0];
+          keptAccountIds.push(keptAccount.id);
+          const duplicates = sorted.slice(1);
+          for (const dup of duplicates) {
+            if (dup.vectorId) {
+              duplicateVectorIds.push(dup.vectorId);
+            }
+          }
+        }
+
+        // Call database cleanup
+        const count = await storage.removeDuplicateSocialAccounts();
+
+        // Delete vector points for deleted accounts
+        for (const vectorId of duplicateVectorIds) {
+          void deleteEntityVector("social_account", vectorId);
+        }
+
+        // Sync vector points for kept accounts
+        for (const id of keptAccountIds) {
+          void syncEntityInBackground("social_account", id);
+        }
+
+        res.json({ success: true, deleted: count });
+      } catch (error) {
+        console.error("Error removing duplicate social accounts:", error);
+        res.status(500).json({ error: "Failed to remove duplicate social accounts" });
       }
     });
   
@@ -1385,6 +1448,7 @@ export function registerRoutes(app: Express) {
         const task = await storage.createTask({
           type: "refresh_follower_count",
           status: "pending",
+          title: account.username,
           payload: JSON.stringify({ socialAccountId }),
         });
         triggerTaskWorker();
@@ -1856,6 +1920,23 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error deleting Instagram image URLs:", error);
         res.status(500).json({ error: "Failed to delete Instagram image URLs" });
+      }
+    });
+
+    app.post("/api/image-storage/delete-orphans", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const result = await storage.deleteOrphanPhotos();
+        const vectorIds = result.deletedPhotos?.map((p) => p.vectorId).filter(Boolean) as string[];
+        if (vectorIds?.length) {
+          void deleteEntityVector("image", vectorIds);
+        }
+        res.json(result);
+      } catch (error) {
+        console.error("Error deleting orphan photos:", error);
+        res.status(500).json({ error: "Failed to delete orphan photos" });
       }
     });
   

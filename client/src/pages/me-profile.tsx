@@ -20,6 +20,7 @@ import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
 import { FamilyTreeTab } from "@/components/family-tree-tab";
+import { FamilyTab } from "@/components/family-tab";
 import { getInitials } from "@/lib/utils";
 
 export default function MeProfile() {
@@ -39,6 +40,12 @@ export default function MeProfile() {
     queryKey: ["/api/prm-face/facial-intelligence"],
   });
   const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
+
+  const { data: settings } = useQuery<Record<string, string>>({
+    queryKey: ["/api/settings"],
+  });
+  const imagesTabEnabled = settings?.images_tab_enabled !== "false";
+  const showPhotosTab = facialIntelligenceEnabled && imagesTabEnabled;
 
   const addPhotoMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -182,7 +189,7 @@ export default function MeProfile() {
                       <CalendarDays className="h-4 w-4" />
                       Interaction
                     </DropdownMenuItem>
-                    {facialIntelligenceEnabled && (
+                    {showPhotosTab && (
                       <>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -276,6 +283,13 @@ export default function MeProfile() {
               Relationships
             </TabsTrigger>
             <TabsTrigger
+              value="family"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-family"
+            >
+              Family
+            </TabsTrigger>
+            <TabsTrigger
               value="tree"
               className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
               data-testid="tab-tree"
@@ -289,7 +303,7 @@ export default function MeProfile() {
             >
               Groups
             </TabsTrigger>
-            {facialIntelligenceEnabled && (
+            {showPhotosTab && (
               <TabsTrigger
                 value="photos"
                 className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
@@ -320,6 +334,13 @@ export default function MeProfile() {
             />
           </TabsContent>
 
+          <TabsContent value="family" className="mt-0 h-full">
+            <FamilyTab
+              personId={person.id}
+              personName={`${person.firstName} ${person.lastName}`.trim()}
+            />
+          </TabsContent>
+
           <TabsContent value="tree" className="mt-0 h-full">
             <FamilyTreeTab
               personId={person.id}
@@ -334,7 +355,7 @@ export default function MeProfile() {
             />
           </TabsContent>
 
-          {facialIntelligenceEnabled && (
+          {showPhotosTab && (
             <TabsContent value="photos" className="mt-0 h-full">
               <PersonPhotosTab personId={person.id} />
             </TabsContent>

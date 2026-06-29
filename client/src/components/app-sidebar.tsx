@@ -23,7 +23,8 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Sidebar,
   SidebarContent,
@@ -51,6 +52,11 @@ const menuItems = [
     title: "Home",
     url: "/home",
     icon: Home,
+  },
+  {
+    title: "AI Chat",
+    url: "/ai-chat-demo",
+    icon: MessagesSquare,
   },
   {
     title: "Me",
@@ -121,11 +127,7 @@ const menuItems = [
         url: "/images",
         icon: Image,
       },
-      {
-        title: "Family Tree (Dev)",
-        url: "/family-tree-dev-version",
-        icon: GitBranch,
-      },
+
       {
         title: "PRM Face Demo",
         url: "/prm-face-demo",
@@ -141,11 +143,6 @@ const menuItems = [
         url: "/ai-desc-demo",
         icon: Sparkles,
       },
-      {
-        title: "Chat",
-        url: "/ai-chat-demo",
-        icon: MessagesSquare,
-      },
     ],
   },
 ];
@@ -154,6 +151,16 @@ export function AppSidebar() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
   const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
+
+  const { data: settings } = useQuery<Record<string, string>>({
+    queryKey: ["/api/settings"],
+  });
+  const demosEnabled = settings?.experimental_demos_enabled === "true";
+
+  const displayedMenuItems = useMemo(() => {
+    if (demosEnabled) return menuItems;
+    return menuItems.filter(item => item.title !== "Demos");
+  }, [demosEnabled]);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | null;
@@ -203,7 +210,7 @@ export function AppSidebar() {
           <SidebarGroupLabel>PRM 2.0</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {menuItems.map((item) => {
+              {displayedMenuItems.map((item) => {
                 const isActive = location === item.url || (item.subItems?.some(sub => location === sub.url) ?? false);
                 
                 if (item.subItems) {

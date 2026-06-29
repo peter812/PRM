@@ -110,6 +110,8 @@ import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
+import { deleteImageLocally, isLocalImageUrl } from "./local-storage";
+import { deleteImageFromS3 } from "./s3";
 
 const PostgresSessionStore = connectPg(session);
 
@@ -331,6 +333,7 @@ export interface IStorage {
   updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
   deleteSocialAccount(id: string): Promise<void>;
   deleteAllSocialAccounts(): Promise<number>;
+  removeDuplicateSocialAccounts(): Promise<number>;
 
   // V1 Social account search/bulk operations
   searchSocialAccountsByUsername(options: {
@@ -413,6 +416,11 @@ export interface IStorage {
     postsCleared: number;
     photosDeleted: number;
     deletedPhotos?: { id: string; vectorId: string | null }[];
+  }>;
+  deleteOrphanPhotos(): Promise<{
+    photosDeleted: number;
+    filesDeleted: number;
+    deletedPhotos?: { id: string; location: string; vectorId: string | null }[];
   }>;
 
   // Image task operations
@@ -2721,6 +2729,83 @@ export class DatabaseStorage implements IStorage {
     return count;
   }
 
+  async removeDuplicateSocialAccounts(): Promise<number> {
+    const allAccounts = await db.select().from(socialAccounts);
+    
+    // Group by username (lowercase) and typeId (nullable string)
+    const groups = new Map<string, typeof allAccounts>();
+    for (const acc of allAccounts) {
+      const key = `${acc.username.toLowerCase()}::${acc.typeId || "null"}`;
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key)!.push(acc);
+    }
+    
+    let deletedCount = 0;
+    
+    for (const [key, group] of groups.entries()) {
+      if (group.length <= 1) continue;
+      
+      // Sort: oldest first (by createdAt or internalAccountCreationDate)
+      const sorted = group.sort((a, b) => {
+        const timeA = a.createdAt ? a.createdAt.getTime() : 0;
+        const timeB = b.createdAt ? b.createdAt.getTime() : 0;
+        return timeA - timeB;
+      });
+      
+      const keptAccount = sorted[0];
+      const duplicates = sorted.slice(1);
+      
+      for (const dup of duplicates) {
+        // 1. Update posts
+        await db
+          .update(socialAccountPosts)
+          .set({ socialAccountId: keptAccount.id })
+          .where(eq(socialAccountPosts.socialAccountId, dup.id));
+          
+        // 2. Update profile versions, ensuring isCurrent is false so we don't have multiple currents
+        await db
+          .update(socialProfileVersions)
+          .set({ socialAccountId: keptAccount.id, isCurrent: false })
+          .where(eq(socialProfileVersions.socialAccountId, dup.id));
+          
+        // 3. Delete network state of duplicate
+        await db
+          .delete(socialNetworkState)
+          .where(eq(socialNetworkState.socialAccountId, dup.id));
+          
+        // 4. Update network changes
+        await db
+          .update(socialNetworkChanges)
+          .set({ socialAccountId: keptAccount.id })
+          .where(eq(socialNetworkChanges.socialAccountId, dup.id));
+          
+        // 5. Update people
+        const allPeople = await db.select().from(people);
+        for (const person of allPeople) {
+          if (person.socialAccountUuids && person.socialAccountUuids.includes(dup.id)) {
+            let updated = person.socialAccountUuids.map(id => id === dup.id ? keptAccount.id : id);
+            updated = Array.from(new Set(updated));
+            await db
+              .update(people)
+              .set({ socialAccountUuids: updated })
+              .where(eq(people.id, person.id));
+          }
+        }
+        
+        // 6. Delete duplicate account
+        await db
+          .delete(socialAccounts)
+          .where(eq(socialAccounts.id, dup.id));
+          
+        deletedCount++;
+      }
+    }
+    
+    return deletedCount;
+  }
+
   // V1 Social account search by username with fuzzy matching and pagination
   async searchSocialAccountsByUsername(options: {
     username: string;
@@ -3427,6 +3512,7 @@ export class DatabaseStorage implements IStorage {
         id: tasks.id,
         type: tasks.type,
         status: tasks.status,
+        title: tasks.title,
         payload: tasks.payload,
         result: sql<string | null>`LEFT(${tasks.result}, 2000)`,
         progress: tasks.progress,
@@ -3447,6 +3533,7 @@ export class DatabaseStorage implements IStorage {
         id: tasks.id,
         type: tasks.type,
         status: tasks.status,
+        title: tasks.title,
         payload: tasks.payload,
         result: sql<string | null>`LEFT(${tasks.result}, 2000)`,
         progress: tasks.progress,
@@ -3818,6 +3905,123 @@ export class DatabaseStorage implements IStorage {
       postsCleared: postsResult.length,
       photosDeleted: photosResult.length,
       deletedPhotos: photosResult,
+    };
+  }
+
+  async deleteOrphanPhotos(): Promise<{
+    photosDeleted: number;
+    filesDeleted: number;
+    deletedPhotos?: { id: string; location: string; vectorId: string | null }[];
+  }> {
+    // 1. Gather all active image URLs and UUIDs
+    const activeUrls = new Set<string>();
+    const activeUuids = new Set<string>();
+
+    // Query active URLs/UUIDs from each table
+    const [
+      peopleRows,
+      noteRows,
+      interactionRows,
+      groupRows,
+      profileRows,
+      postRows,
+    ] = await Promise.all([
+      db.select({ imageUrl: people.imageUrl }).from(people),
+      db.select({ imageUrl: notes.imageUrl, imageUuid: notes.imageUuid }).from(notes),
+      db.select({ imageUrl: interactions.imageUrl, imageUuid: interactions.imageUuid }).from(interactions),
+      db.select({ imageUrl: groups.imageUrl }).from(groups),
+      db.select({ imageUrl: socialProfileVersions.imageUrl, externalImageUrl: socialProfileVersions.externalImageUrl }).from(socialProfileVersions),
+      db.select({ content: socialAccountPosts.content }).from(socialAccountPosts),
+    ]);
+
+    for (const r of peopleRows) if (r.imageUrl) activeUrls.add(r.imageUrl);
+    for (const r of noteRows) {
+      if (r.imageUrl) activeUrls.add(r.imageUrl);
+      if (r.imageUuid) activeUuids.add(r.imageUuid);
+    }
+    for (const r of interactionRows) {
+      if (r.imageUrl) activeUrls.add(r.imageUrl);
+      if (r.imageUuid) activeUuids.add(r.imageUuid);
+    }
+    for (const r of groupRows) if (r.imageUrl) activeUrls.add(r.imageUrl);
+    for (const r of profileRows) {
+      if (r.imageUrl) activeUrls.add(r.imageUrl);
+      if (r.externalImageUrl) activeUrls.add(r.externalImageUrl);
+    }
+    for (const r of postRows) {
+      if (r.content) {
+        try {
+          const urls = JSON.parse(r.content);
+          if (Array.isArray(urls)) {
+            for (const u of urls) if (u) activeUrls.add(u);
+          }
+        } catch {}
+      }
+    }
+
+    // 2. Fetch all photos in the database
+    const allPhotos = await db.select().from(photos);
+
+    // 3. Determine which ones are active
+    const activePhotoIds = new Set<string>();
+
+    // Pass 1: Mark photos active by direct URL or UUID match
+    for (const photo of allPhotos) {
+      if (activeUrls.has(photo.location) || activeUuids.has(photo.id)) {
+        activePhotoIds.add(photo.id);
+      }
+    }
+
+    // Pass 2: Mark sub-images (face crops) active if their parent is active.
+    // A sub-image has isSubImage = true. In the parent photo's faceUuids jsonb array,
+    // we find entries like { subImagePhotoId: string }
+    for (const photo of allPhotos) {
+      if (photo.faceUuids && activePhotoIds.has(photo.id)) {
+        const faceArr = photo.faceUuids as Array<{ subImagePhotoId?: string }>;
+        if (Array.isArray(faceArr)) {
+          for (const item of faceArr) {
+            if (item?.subImagePhotoId) {
+              activePhotoIds.add(item.subImagePhotoId);
+            }
+          }
+        }
+      }
+    }
+
+    // 4. Identify orphans
+    const orphans = allPhotos.filter(photo => !activePhotoIds.has(photo.id));
+
+    // 5. Delete orphans (both records and files)
+    let filesDeleted = 0;
+    const deletedPhotosList: Array<{ id: string; location: string; vectorId: string | null }> = [];
+
+    for (const orphan of orphans) {
+      // Try to delete physical file from local or S3
+      try {
+        if (isLocalImageUrl(orphan.location)) {
+          await deleteImageLocally(orphan.location);
+          filesDeleted++;
+        } else if (orphan.location.includes(process.env.S3_BUCKET || '')) {
+          await deleteImageFromS3(orphan.location);
+          filesDeleted++;
+        }
+      } catch (err) {
+        console.error(`Failed to delete physical file for orphan photo ${orphan.id} at ${orphan.location}:`, err);
+      }
+
+      // Delete from DB
+      await db.delete(photos).where(eq(photos.id, orphan.id));
+      deletedPhotosList.push({
+        id: orphan.id,
+        location: orphan.location,
+        vectorId: orphan.vectorId,
+      });
+    }
+
+    return {
+      photosDeleted: orphans.length,
+      filesDeleted,
+      deletedPhotos: deletedPhotosList,
     };
   }
 
