@@ -625,6 +625,82 @@ async function validateAndSyncSchema(): Promise<void> {
     // Migrate social_accounts to historical model (v2)
     await migrateSocialAccountsToHistorical();
 
+    // Create conversations table if it doesn't exist
+    const conversationsExists = await tableExists("conversations");
+    if (!conversationsExists) {
+      log("Creating conversations table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS conversations (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          title TEXT,
+          channel_type TEXT NOT NULL,
+          social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
+          external_url TEXT,
+          metadata JSONB,
+          last_message_at TIMESTAMP,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      log("conversations table created successfully");
+    }
+
+    // Create messages table if it doesn't exist
+    const messagesExists = await tableExists("messages");
+    if (!messagesExists) {
+      log("Creating messages table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          conversation_id VARCHAR NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          sender_person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
+          sender_social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
+          content TEXT,
+          content_type TEXT NOT NULL DEFAULT 'text',
+          image_uuids TEXT[] DEFAULT ARRAY[]::text[],
+          attachments JSONB,
+          external_id TEXT,
+          sent_at TIMESTAMP,
+          metadata JSONB,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      log("messages table created successfully");
+    }
+
+    // Create message_recipients table if it doesn't exist
+    const recipientsExists = await tableExists("message_recipients");
+    if (!recipientsExists) {
+      log("Creating message_recipients table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS message_recipients (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          message_id VARCHAR NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+          person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
+          social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
+          recipient_type TEXT NOT NULL DEFAULT 'to'
+        )
+      `);
+      log("message_recipients table created successfully");
+    }
+
+    // Create conversation_participants table if it doesn't exist
+    const participantsExists = await tableExists("conversation_participants");
+    if (!participantsExists) {
+      log("Creating conversation_participants table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS conversation_participants (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          conversation_id VARCHAR NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
+          social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
+          role TEXT NOT NULL DEFAULT 'participant',
+          joined_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      log("conversation_participants table created successfully");
+    }
+
     log("Schema validation completed");
   } catch (error) {
     log(`Schema validation error: ${error}`);

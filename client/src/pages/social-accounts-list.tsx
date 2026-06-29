@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload } from "lucide-react";
+import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -35,6 +35,14 @@ import type { SocialAccount, SocialAccountWithCurrentProfile, Person, SocialAcco
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
 
+type ViewMode = "details" | "snug" | "expanded";
+
+const VIEW_OPTIONS: { value: ViewMode; label: string; icon: React.ReactNode }[] = [
+  { value: "details", label: "Details", icon: <LayoutList className="h-4 w-4" /> },
+  { value: "snug", label: "Snug", icon: <LayoutGrid className="h-4 w-4" /> },
+  { value: "expanded", label: "Expanded", icon: <Maximize2 className="h-4 w-4" /> },
+];
+
 const PAGE_SIZE = 30;
 
 export default function SocialAccountsList() {
@@ -50,6 +58,10 @@ export default function SocialAccountsList() {
   const [showFollowsYou, setShowFollowsYou] = useState(false);
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = localStorage.getItem("social-accounts-view-mode");
+    return (saved as ViewMode) || "snug";
+  });
 
   const urlParams = new URLSearchParams(searchParams);
   const typeIdFromUrl = urlParams.get("type") || "";
@@ -203,6 +215,30 @@ export default function SocialAccountsList() {
               Follows you
             </Label>
           </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Select
+              value={viewMode}
+              onValueChange={(val) => {
+                const mode = val as ViewMode;
+                setViewMode(mode);
+                localStorage.setItem("social-accounts-view-mode", mode);
+              }}
+            >
+              <SelectTrigger className="w-[120px] md:w-40" data-testid="select-view-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VIEW_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} data-testid={`select-item-view-${opt.value}`}>
+                    <span className="flex items-center gap-2">
+                      {opt.icon}
+                      {opt.label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <Button
             variant="outline"
             size="icon"
@@ -221,19 +257,107 @@ export default function SocialAccountsList() {
 
       <div className="flex-1 px-4 py-3">
         {isLoading ? (
-          <div className="flex flex-col gap-1">
-            {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-2">
-                <div className="flex items-center gap-3">
-                  <Skeleton className="w-10 h-10 rounded-full" />
-                  <div className="flex-1 space-y-2">
-                    <Skeleton className="h-4 w-1/3" />
-                    <Skeleton className="h-3 w-1/4" />
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
+          <>
+            {/* Details View Skeleton */}
+            {viewMode === "details" && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="table-accounts-details-skeleton">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 px-3 font-medium">Username</th>
+                      <th className="py-2 px-3 font-medium">Nickname</th>
+                      <th className="py-2 px-3 font-medium">Type</th>
+                      <th className="py-2 px-3 font-medium">Status</th>
+                      <th className="py-2 px-3 font-medium">Followers</th>
+                      <th className="py-2 px-3 font-medium">Following</th>
+                      <th className="py-2 px-3 font-medium w-10">Link</th>
+                      <th className="py-2 px-3 font-medium w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <tr key={i} className="border-b">
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-24" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-20" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
+                        <td className="py-2 px-3">
+                          <div className="flex gap-1">
+                            <Skeleton className="h-4 w-4" />
+                            <Skeleton className="h-4 w-4" />
+                            <Skeleton className="h-4 w-4" />
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Snug View Skeleton */}
+            {viewMode === "snug" && (
+              <div className="flex flex-col gap-1" data-testid="accounts-snug-skeleton">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <Card key={i} className="p-2">
+                    <div className="flex items-center gap-3">
+                      <Skeleton className="w-10 h-10 rounded-full" />
+                      <div className="flex-1 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Skeleton className="h-4 w-1/3" />
+                          <Skeleton className="h-4 w-12" />
+                        </div>
+                        <Skeleton className="h-3 w-1/4" />
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="h-3 w-16" />
+                          <Skeleton className="h-3 w-16" />
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+
+            {/* Expanded View Skeleton */}
+            {viewMode === "expanded" && (
+              <div className="flex flex-col gap-3" data-testid="accounts-expanded-skeleton">
+                {[1, 2, 3, 4].map((i) => (
+                  <Card key={i} className="p-4">
+                    <div className="flex items-center gap-4">
+                      <Skeleton className="w-16 h-16 rounded-full" />
+                      <div className="flex-1 space-y-2">
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="h-5 w-1/3" />
+                          <Skeleton className="h-5 w-16" />
+                          <Skeleton className="h-5 w-16" />
+                        </div>
+                        <Skeleton className="h-4 w-1/4" />
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="h-3.5 w-20" />
+                          <Skeleton className="h-3.5 w-20" />
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </>
         ) : isError ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mb-4">
@@ -248,57 +372,50 @@ export default function SocialAccountsList() {
             </Button>
           </div>
         ) : accounts.length > 0 ? (
-          <div className="flex flex-col gap-1">
-            {accounts.map((account) => {
-              const isFollowingYou = meAccountIds.some((meId) =>
-                account.latestState?.followers?.includes(meId)
-              );
-              const accountType = account.typeId 
-                ? socialAccountTypes?.find(t => t.id === account.typeId) 
-                : null;
-              
-              return (
-                <div
-                  key={account.id}
-                  onClick={() => navigate(`/social-accounts/${account.id}`)}
-                  className="cursor-pointer"
-                >
-                  <Card
-                    className="p-2 hover-elevate transition-all"
-                    data-testid={`card-account-${account.id}`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Avatar className="w-10 h-10">
-                        {account.currentProfile?.imageUrl && (
-                          <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
-                        )}
-                        <AvatarFallback>
-                          {getInitials(account.username)}
-                        </AvatarFallback>
-                      </Avatar>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="font-bold md:truncate break-words" data-testid={`text-username-${account.id}`}>
+          <>
+            {/* Details View - Table-like */}
+            {viewMode === "details" && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="table-accounts-details">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 px-3 font-medium">Username</th>
+                      <th className="py-2 px-3 font-medium">Nickname</th>
+                      <th className="py-2 px-3 font-medium">Type</th>
+                      <th className="py-2 px-3 font-medium">Status</th>
+                      <th className="py-2 px-3 font-medium">Followers</th>
+                      <th className="py-2 px-3 font-medium">Following</th>
+                      <th className="py-2 px-3 font-medium w-10">Link</th>
+                      <th className="py-2 px-3 font-medium w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accounts.map((account) => {
+                      const isFollowingYou = meAccountIds.some((meId) =>
+                        account.latestState?.followers?.includes(meId)
+                      );
+                      const accountType = account.typeId 
+                        ? socialAccountTypes?.find(t => t.id === account.typeId) 
+                        : null;
+                      return (
+                        <tr
+                          key={account.id}
+                          className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
+                          onClick={() => navigate(`/social-accounts/${account.id}`)}
+                          data-testid={`row-account-${account.id}`}
+                        >
+                          <td className="py-2 px-3 font-medium">
                             {account.username}
-                          </h3>
-                          {accountType && (
-                            <>
-                              <span
-                                className="md:hidden w-2.5 h-2.5 rounded-full shrink-0 cursor-pointer"
-                                style={isValidHexColor(accountType.color) ? { backgroundColor: accountType.color } : undefined}
-                                data-testid={`dot-type-${account.id}`}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  navigate(`/social-accounts?type=${accountType.id}`);
-                                }}
-                              />
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {account.currentProfile?.nickname || "-"}
+                          </td>
+                          <td className="py-2 px-3">
+                            {accountType && (
                               <Badge 
                                 variant="outline" 
-                                className="text-xs cursor-pointer hidden md:inline-flex"
+                                className="text-xs cursor-pointer"
                                 style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                                data-testid={`badge-type-${account.id}`}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
@@ -307,102 +424,418 @@ export default function SocialAccountsList() {
                               >
                                 {accountType.name}
                               </Badge>
-                            </>
-                          )}
-                          {isFollowingYou && (
-                            <Badge variant="secondary" className="text-xs">
-                              Follows you
-                            </Badge>
-                          )}
-                        </div>
-                        {account.currentProfile?.nickname && (
-                          <p className="text-sm text-muted-foreground md:truncate break-words" data-testid={`text-nickname-${account.id}`}>
-                            {account.currentProfile?.nickname}
-                          </p>
-                        )}
-                        
-                        <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                          <span data-testid={`text-followers-${account.id}`}>
-                            {account.latestState?.followerCount || 0} followers
-                          </span>
-                          <span>•</span>
-                          <span data-testid={`text-following-${account.id}`}>
-                            {account.latestState?.followingCount || 0} following
-                          </span>
-                        </div>
-                      </div>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            {isFollowingYou && (
+                              <Badge variant="secondary" className="text-xs">
+                                Follows you
+                              </Badge>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {account.latestState?.followerCount ?? 0}
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {account.latestState?.followingCount ?? 0}
+                          </td>
+                          <td className="py-2 px-3">
+                            {account.currentProfile?.accountUrl && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  window.open(account.currentProfile?.accountUrl ?? undefined, "_blank");
+                                }}
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                              </Button>
+                            )}
+                          </td>
+                          <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => setAccountToExport(account)}
+                              >
+                                <Download className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => setAccountToEdit(account)}
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => setAccountToDelete(account)}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            window.open(account.currentProfile?.accountUrl ?? undefined, "_blank");
-                          }}
-                          data-testid={`button-goto-profile-${account.id}`}
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="hidden md:inline-flex"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setAccountToExport(account);
-                          }}
-                          data-testid={`button-export-${account.id}`}
-                        >
-                          <Download className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="hidden md:inline-flex"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setAccountToEdit(account);
-                          }}
-                          data-testid={`button-edit-${account.id}`}
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="hidden md:inline-flex text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setAccountToDelete(account);
-                          }}
-                          data-testid={`button-delete-${account.id}`}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  </Card>
-                </div>
-              );
-            })}
-            {isFetchingNextPage && (
+            {/* Snug View - Current layout */}
+            {viewMode === "snug" && (
               <div className="flex flex-col gap-1">
-                {[1, 2].map((i) => (
-                  <Card key={`loading-${i}`} className="p-2 animate-pulse">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-muted" />
-                      <div className="flex-1 space-y-2">
-                        <div className="h-4 bg-muted rounded w-1/3" />
-                        <div className="h-3 bg-muted rounded w-1/4" />
-                      </div>
+                {accounts.map((account) => {
+                  const isFollowingYou = meAccountIds.some((meId) =>
+                    account.latestState?.followers?.includes(meId)
+                  );
+                  const accountType = account.typeId 
+                    ? socialAccountTypes?.find(t => t.id === account.typeId) 
+                    : null;
+                  
+                  return (
+                    <div
+                      key={account.id}
+                      onClick={() => navigate(`/social-accounts/${account.id}`)}
+                      className="cursor-pointer"
+                    >
+                      <Card
+                        className="p-2 hover-elevate transition-all"
+                        data-testid={`card-account-${account.id}`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <Avatar className="w-10 h-10">
+                            {account.currentProfile?.imageUrl && (
+                              <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
+                            )}
+                            <AvatarFallback>
+                              {getInitials(account.username)}
+                            </AvatarFallback>
+                          </Avatar>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="font-bold md:truncate break-words" data-testid={`text-username-${account.id}`}>
+                                {account.username}
+                              </h3>
+                              {accountType && (
+                                <>
+                                  <span
+                                    className="md:hidden w-2.5 h-2.5 rounded-full shrink-0 cursor-pointer"
+                                    style={isValidHexColor(accountType.color) ? { backgroundColor: accountType.color } : undefined}
+                                    data-testid={`dot-type-${account.id}`}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      navigate(`/social-accounts?type=${accountType.id}`);
+                                    }}
+                                  />
+                                  <Badge 
+                                    variant="outline" 
+                                    className="text-xs cursor-pointer hidden md:inline-flex"
+                                    style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                                    data-testid={`badge-type-${account.id}`}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      navigate(`/social-accounts?type=${accountType.id}`);
+                                    }}
+                                  >
+                                    {accountType.name}
+                                  </Badge>
+                                </>
+                              )}
+                              {isFollowingYou && (
+                                <Badge variant="secondary" className="text-xs">
+                                  Follows you
+                                </Badge>
+                              )}
+                            </div>
+                            {account.currentProfile?.nickname && (
+                              <p className="text-sm text-muted-foreground md:truncate break-words" data-testid={`text-nickname-${account.id}`}>
+                                {account.currentProfile?.nickname}
+                              </p>
+                            )}
+                            
+                            <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                              <span data-testid={`text-followers-${account.id}`}>
+                                {account.latestState?.followerCount || 0} followers
+                              </span>
+                              <span>•</span>
+                              <span data-testid={`text-following-${account.id}`}>
+                                {account.latestState?.followingCount || 0} following
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                window.open(account.currentProfile?.accountUrl ?? undefined, "_blank");
+                              }}
+                              data-testid={`button-goto-profile-${account.id}`}
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="hidden md:inline-flex"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setAccountToExport(account);
+                              }}
+                              data-testid={`button-export-${account.id}`}
+                            >
+                              <Download className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="hidden md:inline-flex"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setAccountToEdit(account);
+                              }}
+                              data-testid={`button-edit-${account.id}`}
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="hidden md:inline-flex text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setAccountToDelete(account);
+                              }}
+                              data-testid={`button-delete-${account.id}`}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </Card>
                     </div>
-                  </Card>
-                ))}
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Expanded View - Large profile images and fonts */}
+            {viewMode === "expanded" && (
+              <div className="flex flex-col gap-3">
+                {accounts.map((account) => {
+                  const isFollowingYou = meAccountIds.some((meId) =>
+                    account.latestState?.followers?.includes(meId)
+                  );
+                  const accountType = account.typeId 
+                    ? socialAccountTypes?.find(t => t.id === account.typeId) 
+                    : null;
+                  
+                  return (
+                    <div
+                      key={account.id}
+                      onClick={() => navigate(`/social-accounts/${account.id}`)}
+                      className="cursor-pointer"
+                    >
+                      <Card
+                        className="p-4 hover-elevate transition-all"
+                        data-testid={`card-account-${account.id}`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <Avatar className="w-16 h-16">
+                            {account.currentProfile?.imageUrl && (
+                              <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
+                            )}
+                            <AvatarFallback className="text-lg">
+                              {getInitials(account.username)}
+                            </AvatarFallback>
+                          </Avatar>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="text-lg font-bold md:truncate break-words" data-testid={`text-username-${account.id}`}>
+                                {account.username}
+                              </h3>
+                              {accountType && (
+                                <Badge 
+                                  variant="outline" 
+                                  className="text-xs cursor-pointer"
+                                  style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    navigate(`/social-accounts?type=${accountType.id}`);
+                                  }}
+                                >
+                                  {accountType.name}
+                                </Badge>
+                              )}
+                              {isFollowingYou && (
+                                <Badge variant="secondary" className="text-xs">
+                                  Follows you
+                                </Badge>
+                              )}
+                            </div>
+                            {account.currentProfile?.nickname && (
+                              <p className="text-base text-muted-foreground md:truncate break-words mt-0.5" data-testid={`text-nickname-${account.id}`}>
+                                {account.currentProfile?.nickname}
+                              </p>
+                            )}
+                            
+                            <div className="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
+                              <span data-testid={`text-followers-${account.id}`}>
+                                {account.latestState?.followerCount || 0} followers
+                              </span>
+                              <span>•</span>
+                              <span data-testid={`text-following-${account.id}`}>
+                                {account.latestState?.followingCount || 0} following
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                window.open(account.currentProfile?.accountUrl ?? undefined, "_blank");
+                              }}
+                              data-testid={`button-goto-profile-${account.id}`}
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setAccountToExport(account);
+                              }}
+                              data-testid={`button-export-${account.id}`}
+                            >
+                              <Download className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setAccountToEdit(account);
+                              }}
+                              data-testid={`button-edit-${account.id}`}
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setAccountToDelete(account);
+                              }}
+                              data-testid={`button-delete-${account.id}`}
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </Card>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {isFetchingNextPage && (
+              <div className="mt-4">
+                {/* Details View Skeleton for next page */}
+                {viewMode === "details" && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <tbody>
+                        {[1, 2].map((i) => (
+                          <tr key={`loading-${i}`} className="border-b animate-pulse">
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-24" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-20" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
+                            <td className="py-2 px-3">
+                              <div className="flex gap-1">
+                                <Skeleton className="h-4 w-4" />
+                                <Skeleton className="h-4 w-4" />
+                                <Skeleton className="h-4 w-4" />
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Snug View Skeleton for next page */}
+                {viewMode === "snug" && (
+                  <div className="flex flex-col gap-1">
+                    {[1, 2].map((i) => (
+                      <Card key={`loading-${i}`} className="p-2 animate-pulse">
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="w-10 h-10 rounded-full" />
+                          <div className="flex-1 space-y-2">
+                            <Skeleton className="h-4 w-1/3" />
+                            <Skeleton className="h-3 w-1/4" />
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+
+                {/* Expanded View Skeleton for next page */}
+                {viewMode === "expanded" && (
+                  <div className="flex flex-col gap-3">
+                    {[1, 2].map((i) => (
+                      <Card key={`loading-${i}`} className="p-4 animate-pulse">
+                        <div className="flex items-center gap-4">
+                          <Skeleton className="w-16 h-16 rounded-full" />
+                          <div className="flex-1 space-y-2">
+                            <Skeleton className="h-5 w-1/3" />
+                            <Skeleton className="h-4 w-1/4" />
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {!hasNextPage && accounts.length >= PAGE_SIZE && (
@@ -410,7 +843,7 @@ export default function SocialAccountsList() {
                 All accounts loaded
               </p>
             )}
-          </div>
+          </>
         ) : (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Users2 className="h-16 w-16 text-muted-foreground mb-4" />

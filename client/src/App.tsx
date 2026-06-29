@@ -51,6 +51,8 @@ import DailyNotesList from "@/pages/daily-notes";
 import DailyNoteDetail from "@/pages/daily-note-detail";
 import SuperSearchPage from "@/pages/super-search";
 import FamilyTreePage from "@/pages/family-tree";
+import MessagesListPage from "@/pages/messages-list";
+import MessageConversationPage from "@/pages/message-conversation";
 import NotFound from "@/pages/not-found";
 
 const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
@@ -139,6 +141,8 @@ function Router() {
       <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
       <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
       <ProtectedRoute path="/super-search" component={SuperSearchPage} />
+      <ProtectedRoute path="/messages" component={MessagesListPage} />
+      <ProtectedRoute path="/messages/:id" component={MessageConversationPage} />
       <ProtectedRoute path="/settings" nest component={SettingsLayout} />
       <Route component={NotFound} />
     </Switch>

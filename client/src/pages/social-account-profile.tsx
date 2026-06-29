@@ -26,6 +26,7 @@ import { PersonDialog } from "@/components/person-dialog";
 import { PostDialog } from "@/components/post-dialog";
 import { PostDetailDialog } from "@/components/post-detail-dialog";
 import { SiInstagram } from "react-icons/si";
+import { MessagesTab } from "@/components/messages-tab";
 import {
   Dialog,
   DialogContent,
@@ -658,6 +659,13 @@ export default function SocialAccountProfile() {
               >
                 Posts
               </TabsTrigger>
+              <TabsTrigger
+                value="messages"
+                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                data-testid="tab-messages"
+              >
+                Messages
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -955,6 +963,13 @@ export default function SocialAccountProfile() {
                   <p className="text-xs mt-1">Click "Add Post" to create the first post</p>
                 </div>
               )}
+            </div>
+          </TabsContent>
+
+          {/* Messages Tab */}
+          <TabsContent value="messages" className="mt-0">
+            <div className="px-6 py-6">
+              <MessagesTab socialAccountId={account.id} />
             </div>
           </TabsContent>
         </Tabs>

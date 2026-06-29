@@ -413,6 +413,9 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
   notes: many(notes),
   relationshipsFrom: many(relationships, { relationName: "relationshipsFrom" }),
   relationshipsTo: many(relationships, { relationName: "relationshipsTo" }),
+  conversationParticipants: many(conversationParticipants),
+  sentMessages: many(messages),
+  receivedMessages: many(messageRecipients),
 }));
 
 export const notesRelations = relations(notes, ({ one }) => ({
@@ -478,6 +481,10 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one, many })
   networkState: many(socialNetworkState),
   networkChanges: many(socialNetworkChanges),
   posts: many(socialAccountPosts),
+  conversations: many(conversations),
+  conversationParticipants: many(conversationParticipants),
+  sentMessages: many(messages),
+  receivedMessages: many(messageRecipients),
 }));
 
 export const socialProfileVersionsRelations = relations(socialProfileVersions, ({ one }) => ({
@@ -1208,3 +1215,135 @@ export type UuidLookupResult = {
   id: string;
   route: string;
 };
+
+// ── Conversations & Messages Tables ──
+
+export const conversations = pgTable("conversations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  title: text("title"),                          // Optional display name (e.g. email subject, group chat name)
+  channelType: text("channel_type").notNull(),   // "phone" | "instagram" | "email" | "discord" | "x" | "facebook" | "generic"
+  socialAccountId: varchar("social_account_id")  // Optional FK
+    .references(() => socialAccounts.id, { onDelete: "set null" }),
+  externalUrl: text("external_url"),              // Optional link back to source
+  metadata: jsonb("metadata"),                   // Extensible JSON
+  lastMessageAt: timestamp("last_message_at"),   // Denormalized for sorting
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const messages = pgTable("messages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  conversationId: varchar("conversation_id").notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  senderPersonId: varchar("sender_person_id")
+    .references(() => people.id, { onDelete: "set null" }),
+  senderSocialAccountId: varchar("sender_social_account_id")
+    .references(() => socialAccounts.id, { onDelete: "set null" }),
+  content: text("content"),                        // Message body (plain text or HTML)
+  contentType: text("content_type").notNull().default("text"),  // "text" | "html" | "media"
+  imageUuids: text("image_uuids").array().default(sql`ARRAY[]::text[]`),  // Optional array of image UUIDs
+  attachments: jsonb("attachments"),               // Array of metadata objects
+  externalId: text("external_id"),                 // Platform-specific ID
+  sentAt: timestamp("sent_at"),                    // Custom date sent (e.g., historical messages)
+  metadata: jsonb("metadata"),                     // Extensible
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const messageRecipients = pgTable("message_recipients", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  messageId: varchar("message_id").notNull()
+    .references(() => messages.id, { onDelete: "cascade" }),
+  personId: varchar("person_id")
+    .references(() => people.id, { onDelete: "set null" }),
+  socialAccountId: varchar("social_account_id")
+    .references(() => socialAccounts.id, { onDelete: "set null" }),
+  recipientType: text("recipient_type").notNull().default("to"),  // "to" | "cc" | "bcc"
+});
+
+export const conversationParticipants = pgTable("conversation_participants", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  conversationId: varchar("conversation_id").notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  personId: varchar("person_id")
+    .references(() => people.id, { onDelete: "set null" }),
+  socialAccountId: varchar("social_account_id")
+    .references(() => socialAccounts.id, { onDelete: "set null" }),
+  role: text("role").notNull().default("participant"),  // "participant" | "owner"
+  joinedAt: timestamp("joined_at").notNull().defaultNow(),
+});
+
+// Zod insert schemas
+export const insertConversationSchema = createInsertSchema(conversations).omit({ id: true, createdAt: true });
+export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });
+export const insertMessageRecipientSchema = createInsertSchema(messageRecipients).omit({ id: true });
+export const insertConversationParticipantSchema = createInsertSchema(conversationParticipants).omit({ id: true });
+
+// Types
+export type Conversation = typeof conversations.$inferSelect;
+export type InsertConversation = z.infer<typeof insertConversationSchema>;
+export type Message = typeof messages.$inferSelect;
+export type InsertMessage = z.infer<typeof insertMessageSchema>;
+export type MessageRecipient = typeof messageRecipients.$inferSelect;
+export type InsertMessageRecipient = z.infer<typeof insertMessageRecipientSchema>;
+export type ConversationParticipant = typeof conversationParticipants.$inferSelect;
+export type InsertConversationParticipant = z.infer<typeof insertConversationParticipantSchema>;
+
+// Relations
+export const conversationsRelations = relations(conversations, ({ one, many }) => ({
+  user: one(users, {
+    fields: [conversations.userId],
+    references: [users.id],
+  }),
+  socialAccount: one(socialAccounts, {
+    fields: [conversations.socialAccountId],
+    references: [socialAccounts.id],
+  }),
+  messages: many(messages),
+  participants: many(conversationParticipants),
+}));
+
+export const messagesRelations = relations(messages, ({ one, many }) => ({
+  conversation: one(conversations, {
+    fields: [messages.conversationId],
+    references: [conversations.id],
+  }),
+  senderPerson: one(people, {
+    fields: [messages.senderPersonId],
+    references: [people.id],
+  }),
+  senderSocialAccount: one(socialAccounts, {
+    fields: [messages.senderSocialAccountId],
+    references: [socialAccounts.id],
+  }),
+  recipients: many(messageRecipients),
+}));
+
+export const messageRecipientsRelations = relations(messageRecipients, ({ one }) => ({
+  message: one(messages, {
+    fields: [messageRecipients.messageId],
+    references: [messages.id],
+  }),
+  person: one(people, {
+    fields: [messageRecipients.personId],
+    references: [people.id],
+  }),
+  socialAccount: one(socialAccounts, {
+    fields: [messageRecipients.socialAccountId],
+    references: [socialAccounts.id],
+  }),
+}));
+
+export const conversationParticipantsRelations = relations(conversationParticipants, ({ one }) => ({
+  conversation: one(conversations, {
+    fields: [conversationParticipants.conversationId],
+    references: [conversations.id],
+  }),
+  person: one(people, {
+    fields: [conversationParticipants.personId],
+    references: [people.id],
+  }),
+  socialAccount: one(socialAccounts, {
+    fields: [conversationParticipants.socialAccountId],
+    references: [socialAccounts.id],
+  }),
+}));

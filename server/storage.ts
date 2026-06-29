@@ -2,6 +2,18 @@
 import {
   people,
   notes,
+  conversations,
+  messages,
+  messageRecipients,
+  conversationParticipants,
+  type Conversation,
+  type InsertConversation,
+  type Message,
+  type InsertMessage,
+  type MessageRecipient,
+  type InsertMessageRecipient,
+  type ConversationParticipant,
+  type InsertConversationParticipant,
   interactions,
   interactionTypes,
   relationships,
@@ -187,6 +199,18 @@ export interface SuggestedFamilyConnection {
   confidence: "high" | "medium" | "low";
   reason: string;
 }
+
+export type ConversationWithParticipants = Conversation & {
+  participants: (ConversationParticipant & { person?: Person; socialAccount?: SocialAccount })[];
+  lastMessage?: Message;
+  messageCount: number;
+};
+
+export type MessageWithRecipients = Message & {
+  senderPerson?: Person;
+  senderSocialAccount?: SocialAccount;
+  recipients: (MessageRecipient & { person?: Person; socialAccount?: SocialAccount })[];
+};
 
 export interface IStorage {
   getAppSetting(key: string): Promise<string | null>;
@@ -443,6 +467,29 @@ export interface IStorage {
   replaceDailyNoteParties(dailyNoteId: string, parties: Array<{ partyType: string; refId: string }>): Promise<DailyNoteInvolvedParty[]>;
   addDailyNoteAuditLog(dailyNoteId: string, action: string, pinUsed: boolean): Promise<DailyNoteAuditLog>;
   getDailyNoteAuditLogs(dailyNoteId: string): Promise<DailyNoteAuditLog[]>;
+
+  // ── Conversations & Messages ──
+  createConversation(data: InsertConversation): Promise<Conversation>;
+  getConversation(id: string): Promise<Conversation | undefined>;
+  getConversationsPaginated(offset: number, limit: number, filters?: {
+    channelType?: string;
+    personId?: string;
+    socialAccountId?: string;
+    search?: string;
+  }): Promise<{ conversations: ConversationWithParticipants[]; total: number }>;
+  updateConversation(id: string, data: Partial<InsertConversation>): Promise<Conversation>;
+  deleteConversation(id: string): Promise<void>;
+
+  addConversationParticipant(data: InsertConversationParticipant): Promise<ConversationParticipant>;
+  removeConversationParticipant(conversationId: string, personId: string): Promise<void>;
+  getConversationParticipants(conversationId: string): Promise<ConversationParticipant[]>;
+
+  createMessage(data: InsertMessage, recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>): Promise<Message>;
+  getMessagesByConversation(conversationId: string, offset: number, limit: number): Promise<{ messages: MessageWithRecipients[]; total: number }>;
+  deleteMessage(id: string): Promise<void>;
+
+  getConversationsByPerson(personId: string, offset: number, limit: number): Promise<{ conversations: ConversationWithParticipants[]; total: number }>;
+  getConversationsBySocialAccount(socialAccountId: string, offset: number, limit: number): Promise<{ conversations: ConversationWithParticipants[]; total: number }>;
 
   // Session store
   sessionStore: session.Store;
@@ -1835,19 +1882,6 @@ export class DatabaseStorage implements IStorage {
       case "social_profile_versions":
         await db.update(socialProfileVersions).set({ imageUrl: newUrl }).where(eq(socialProfileVersions.id, id));
         break;
-      case "messages": {
-        // The `messages` table is not defined in the Drizzle schema; this
-        // branch is preserved for parity with legacy callers but is currently
-        // unreachable. Suppress the resulting "cannot find name" errors.
-        // @ts-expect-error - messages table is not part of the current schema
-        const [msg] = await db.select({ imageUrls: messages.imageUrls }).from(messages).where(eq(messages.id, id));
-        if (msg?.imageUrls) {
-          const updatedUrls = msg.imageUrls.map((u: string) => u === oldUrl ? newUrl : u);
-          // @ts-expect-error - messages table is not part of the current schema
-          await db.update(messages).set({ imageUrls: updatedUrls }).where(eq(messages.id, id));
-        }
-        break;
-      }
     }
   }
 
@@ -4023,6 +4057,258 @@ export class DatabaseStorage implements IStorage {
       filesDeleted,
       deletedPhotos: deletedPhotosList,
     };
+  }
+
+  // ── Conversations & Messages Implementation ──
+
+  async createConversation(data: InsertConversation): Promise<Conversation> {
+    const [row] = await db.insert(conversations).values(data).returning();
+    return row;
+  }
+
+  async getConversation(id: string): Promise<Conversation | undefined> {
+    const [row] = await db.select().from(conversations).where(eq(conversations.id, id));
+    return row;
+  }
+
+  async getConversationsPaginated(
+    offset: number,
+    limit: number,
+    filters?: {
+      channelType?: string;
+      personId?: string;
+      socialAccountId?: string;
+      search?: string;
+    }
+  ): Promise<{ conversations: ConversationWithParticipants[]; total: number }> {
+    const conditions = [];
+
+    if (filters?.channelType) {
+      conditions.push(eq(conversations.channelType, filters.channelType));
+    }
+    if (filters?.socialAccountId) {
+      conditions.push(eq(conversations.socialAccountId, filters.socialAccountId));
+    }
+    if (filters?.personId) {
+      const pSubquery = db
+        .select({ conversationId: conversationParticipants.conversationId })
+        .from(conversationParticipants)
+        .where(eq(conversationParticipants.personId, filters.personId));
+      conditions.push(inArray(conversations.id, pSubquery));
+    }
+    if (filters?.search) {
+      conditions.push(ilike(conversations.title, `%${filters.search}%`));
+    }
+
+    const queryWhere = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const totalResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(conversations)
+      .where(queryWhere);
+    const total = Number(totalResult[0]?.count ?? 0);
+
+    const rows = await db
+      .select()
+      .from(conversations)
+      .where(queryWhere)
+      .orderBy(desc(conversations.lastMessageAt), desc(conversations.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const conversationsWithDetails = await Promise.all(
+      rows.map(async (conv) => {
+        const parts = await db
+          .select()
+          .from(conversationParticipants)
+          .where(eq(conversationParticipants.conversationId, conv.id));
+
+        const participantsWithDetails = await Promise.all(
+          parts.map(async (p) => {
+            let personDetails;
+            let socialAccountDetails;
+            if (p.personId) {
+              personDetails = await db.select().from(people).where(eq(people.id, p.personId)).then((r) => r[0]);
+            }
+            if (p.socialAccountId) {
+              socialAccountDetails = await db.select().from(socialAccounts).where(eq(socialAccounts.id, p.socialAccountId)).then((r) => r[0]);
+            }
+            return {
+              ...p,
+              person: personDetails,
+              socialAccount: socialAccountDetails,
+            };
+          })
+        );
+
+        const [lastMsg] = await db
+          .select()
+          .from(messages)
+          .where(eq(messages.conversationId, conv.id))
+          .orderBy(desc(messages.sentAt), desc(messages.createdAt))
+          .limit(1);
+
+        const countRes = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(messages)
+          .where(eq(messages.conversationId, conv.id));
+        const messageCount = Number(countRes[0]?.count ?? 0);
+
+        return {
+          ...conv,
+          participants: participantsWithDetails,
+          lastMessage: lastMsg,
+          messageCount,
+        };
+      })
+    );
+
+    return { conversations: conversationsWithDetails, total };
+  }
+
+  async updateConversation(id: string, data: Partial<InsertConversation>): Promise<Conversation> {
+    const [row] = await db
+      .update(conversations)
+      .set(data)
+      .where(eq(conversations.id, id))
+      .returning();
+    if (!row) throw new Error("Conversation not found");
+    return row;
+  }
+
+  async deleteConversation(id: string): Promise<void> {
+    await db.delete(conversations).where(eq(conversations.id, id));
+  }
+
+  async addConversationParticipant(data: InsertConversationParticipant): Promise<ConversationParticipant> {
+    const [row] = await db.insert(conversationParticipants).values(data).returning();
+    return row;
+  }
+
+  async removeConversationParticipant(conversationId: string, personId: string): Promise<void> {
+    await db
+      .delete(conversationParticipants)
+      .where(
+        and(
+          eq(conversationParticipants.conversationId, conversationId),
+          eq(conversationParticipants.personId, personId)
+        )
+      );
+  }
+
+  async getConversationParticipants(conversationId: string): Promise<ConversationParticipant[]> {
+    return await db
+      .select()
+      .from(conversationParticipants)
+      .where(eq(conversationParticipants.conversationId, conversationId));
+  }
+
+  async createMessage(data: InsertMessage, recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>): Promise<Message> {
+    return await db.transaction(async (tx) => {
+      const [messageRow] = await tx.insert(messages).values(data).returning();
+
+      if (recipients.length > 0) {
+        const recipientsToInsert = recipients.map((r) => ({
+          messageId: messageRow.id,
+          personId: r.personId,
+          socialAccountId: r.socialAccountId,
+          recipientType: r.recipientType || "to",
+        }));
+        await tx.insert(messageRecipients).values(recipientsToInsert);
+      }
+
+      await tx
+        .update(conversations)
+        .set({ lastMessageAt: messageRow.sentAt || messageRow.createdAt })
+        .where(eq(conversations.id, messageRow.conversationId));
+
+      return messageRow;
+    });
+  }
+
+  async getMessagesByConversation(
+    conversationId: string,
+    offset: number,
+    limit: number
+  ): Promise<{ messages: MessageWithRecipients[]; total: number }> {
+    const totalResult = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId));
+    const total = Number(totalResult[0]?.count ?? 0);
+
+    const rows = await db
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+      .orderBy(desc(messages.sentAt), desc(messages.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const messagesWithDetails = await Promise.all(
+      rows.map(async (msg) => {
+        let senderPerson;
+        let senderSocialAccount;
+        if (msg.senderPersonId) {
+          senderPerson = await db.select().from(people).where(eq(people.id, msg.senderPersonId)).then((r) => r[0]);
+        }
+        if (msg.senderSocialAccountId) {
+          senderSocialAccount = await db.select().from(socialAccounts).where(eq(socialAccounts.id, msg.senderSocialAccountId)).then((r) => r[0]);
+        }
+
+        const recs = await db
+          .select()
+          .from(messageRecipients)
+          .where(eq(messageRecipients.messageId, msg.id));
+
+        const recipientsWithDetails = await Promise.all(
+          recs.map(async (r) => {
+            let personDetails;
+            let socialAccountDetails;
+            if (r.personId) {
+              personDetails = await db.select().from(people).where(eq(people.id, r.personId)).then((r) => r[0]);
+            }
+            if (r.socialAccountId) {
+              socialAccountDetails = await db.select().from(socialAccounts).where(eq(socialAccounts.id, r.socialAccountId)).then((r) => r[0]);
+            }
+            return {
+              ...r,
+              person: personDetails,
+              socialAccount: socialAccountDetails,
+            };
+          })
+        );
+
+        return {
+          ...msg,
+          senderPerson,
+          senderSocialAccount,
+          recipients: recipientsWithDetails,
+        };
+      })
+    );
+
+    return { messages: messagesWithDetails, total };
+  }
+
+  async deleteMessage(id: string): Promise<void> {
+    await db.delete(messages).where(eq(messages.id, id));
+  }
+
+  async getConversationsByPerson(
+    personId: string,
+    offset: number,
+    limit: number
+  ): Promise<{ conversations: ConversationWithParticipants[]; total: number }> {
+    return this.getConversationsPaginated(offset, limit, { personId });
+  }
+
+  async getConversationsBySocialAccount(
+    socialAccountId: string,
+    offset: number,
+    limit: number
+  ): Promise<{ conversations: ConversationWithParticipants[]; total: number }> {
+    return this.getConversationsPaginated(offset, limit, { socialAccountId });
   }
 
   async getAppSetting(key: string): Promise<string | null> {

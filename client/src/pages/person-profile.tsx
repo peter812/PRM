@@ -29,6 +29,7 @@ import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { FamilyTab } from "@/components/family-tab";
 import { getInitials } from "@/lib/utils";
+import { MessagesTab } from "@/components/messages-tab";
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -374,6 +375,13 @@ export default function PersonProfile() {
             >
               Groups
             </TabsTrigger>
+            <TabsTrigger
+              value="messages"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-messages"
+            >
+              Messages
+            </TabsTrigger>
             {showPhotosTab && (
               <TabsTrigger
                 value="photos"
@@ -425,6 +433,10 @@ export default function PersonProfile() {
               personId={person.id}
               personGroups={person.groups}
             />
+          </TabsContent>
+
+          <TabsContent value="messages" className="mt-0 h-full p-6 overflow-auto">
+            <MessagesTab personId={person.id} />
           </TabsContent>
 
           {showPhotosTab && (

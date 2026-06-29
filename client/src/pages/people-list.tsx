@@ -219,19 +219,97 @@ export default function PeopleList() {
 
       <div className="flex-1 px-3 md:px-6 py-6">
         {isLoading ? (
-          <div className="flex flex-col gap-[5px]">
-            {[1, 2, 3, 4].map((i) => (
-              <Card key={i} className="p-2">
-                <div className="flex items-center gap-2">
-                  <Skeleton className="w-12 h-12 rounded-full" />
-                  <div className="flex-1 space-y-1">
-                    <Skeleton className="h-4 w-1/3" />
-                    <Skeleton className="h-3 w-1/4" />
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
+          <>
+            {/* Details View Skeleton */}
+            {viewMode === "details" && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="table-people-details-skeleton">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 px-3 font-medium">Name</th>
+                      <th className="py-2 px-3 font-medium">Relationship</th>
+                      <th className="py-2 px-3 font-medium">Tags</th>
+                      <th className="py-2 px-3 font-medium w-10"></th>
+                      <th className="py-2 px-3 font-medium">Phone</th>
+                      <th className="py-2 px-3 font-medium">Email</th>
+                      <th className="py-2 px-3 font-medium">Social</th>
+                      <th className="py-2 px-3 font-medium w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <tr key={i} className="border-b">
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-24" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                        <td className="py-2 px-3">
+                          <div className="flex gap-1">
+                            <Skeleton className="h-4 w-12" />
+                            <Skeleton className="h-4 w-8" />
+                          </div>
+                        </td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-20" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-32" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-8" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Snug View Skeleton */}
+            {viewMode === "snug" && (
+              <div className="flex flex-col gap-[5px]" data-testid="people-snug-skeleton">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <Card key={i} className="p-2">
+                    <div className="flex items-center gap-2">
+                      <Skeleton className="w-12 h-12 rounded-full" />
+                      <div className="flex-1 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <Skeleton className="h-4 w-1/4" />
+                          <Skeleton className="h-4 w-4" />
+                        </div>
+                        <Skeleton className="h-3 w-1/3" />
+                        <div className="flex gap-1 mt-1">
+                          <Skeleton className="h-3.5 w-12" />
+                          <Skeleton className="h-3.5 w-16" />
+                        </div>
+                      </div>
+                      <Skeleton className="h-8 w-8 rounded-md" />
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+
+            {/* Expanded View Skeleton */}
+            {viewMode === "expanded" && (
+              <div className="flex flex-col gap-3" data-testid="people-expanded-skeleton">
+                {[1, 2, 3, 4].map((i) => (
+                  <Card key={i} className="p-4">
+                    <div className="flex items-center gap-4">
+                      <Skeleton className="w-20 h-20 rounded-full" />
+                      <div className="flex-1 space-y-2">
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="h-6 w-1/3" />
+                          <Skeleton className="h-6 w-6" />
+                        </div>
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-3 w-1/4" />
+                        <div className="flex gap-1 mt-2">
+                          <Skeleton className="h-4 w-16" />
+                          <Skeleton className="h-4 w-20" />
+                        </div>
+                      </div>
+                      <Skeleton className="h-8 w-8 rounded-md" />
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </>
         ) : isError ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mb-4">
