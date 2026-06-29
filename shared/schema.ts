@@ -1228,6 +1228,8 @@ export const conversations = pgTable("conversations", {
   externalUrl: text("external_url"),              // Optional link back to source
   metadata: jsonb("metadata"),                   // Extensible JSON
   lastMessageAt: timestamp("last_message_at"),   // Denormalized for sorting
+  importDate: timestamp("import_date"),
+  importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -1246,6 +1248,8 @@ export const messages = pgTable("messages", {
   externalId: text("external_id"),                 // Platform-specific ID
   sentAt: timestamp("sent_at"),                    // Custom date sent (e.g., historical messages)
   metadata: jsonb("metadata"),                     // Extensible
+  importDate: timestamp("import_date"),
+  importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -1258,6 +1262,8 @@ export const messageRecipients = pgTable("message_recipients", {
   socialAccountId: varchar("social_account_id")
     .references(() => socialAccounts.id, { onDelete: "set null" }),
   recipientType: text("recipient_type").notNull().default("to"),  // "to" | "cc" | "bcc"
+  importDate: timestamp("import_date"),
+  importUuid: varchar("import_uuid"),
 });
 
 export const conversationParticipants = pgTable("conversation_participants", {
@@ -1270,6 +1276,8 @@ export const conversationParticipants = pgTable("conversation_participants", {
     .references(() => socialAccounts.id, { onDelete: "set null" }),
   role: text("role").notNull().default("participant"),  // "participant" | "owner"
   joinedAt: timestamp("joined_at").notNull().defaultNow(),
+  importDate: timestamp("import_date"),
+  importUuid: varchar("import_uuid"),
 });
 
 // Zod insert schemas

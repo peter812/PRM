@@ -423,6 +423,22 @@ async function validateAndSyncSchema(): Promise<void> {
       tasks: {
         title: "TEXT",
       },
+      conversations: {
+        import_date: "TIMESTAMP",
+        import_uuid: "VARCHAR",
+      },
+      messages: {
+        import_date: "TIMESTAMP",
+        import_uuid: "VARCHAR",
+      },
+      message_recipients: {
+        import_date: "TIMESTAMP",
+        import_uuid: "VARCHAR",
+      },
+      conversation_participants: {
+        import_date: "TIMESTAMP",
+        import_uuid: "VARCHAR",
+      },
     };
 
     // Check and add missing columns
@@ -639,6 +655,8 @@ async function validateAndSyncSchema(): Promise<void> {
           external_url TEXT,
           metadata JSONB,
           last_message_at TIMESTAMP,
+          import_date TIMESTAMP,
+          import_uuid VARCHAR,
           created_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
       `);
@@ -662,6 +680,8 @@ async function validateAndSyncSchema(): Promise<void> {
           external_id TEXT,
           sent_at TIMESTAMP,
           metadata JSONB,
+          import_date TIMESTAMP,
+          import_uuid VARCHAR,
           created_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
       `);
@@ -678,7 +698,9 @@ async function validateAndSyncSchema(): Promise<void> {
           message_id VARCHAR NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
           person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
           social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
-          recipient_type TEXT NOT NULL DEFAULT 'to'
+          recipient_type TEXT NOT NULL DEFAULT 'to',
+          import_date TIMESTAMP,
+          import_uuid VARCHAR
         )
       `);
       log("message_recipients table created successfully");
@@ -695,7 +717,9 @@ async function validateAndSyncSchema(): Promise<void> {
           person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
           social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
           role TEXT NOT NULL DEFAULT 'participant',
-          joined_at TIMESTAMP NOT NULL DEFAULT NOW()
+          joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          import_date TIMESTAMP,
+          import_uuid VARCHAR
         )
       `);
       log("conversation_participants table created successfully");

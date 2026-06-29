@@ -4213,6 +4213,8 @@ export class DatabaseStorage implements IStorage {
           personId: r.personId,
           socialAccountId: r.socialAccountId,
           recipientType: r.recipientType || "to",
+          importDate: data.importDate,
+          importUuid: data.importUuid,
         }));
         await tx.insert(messageRecipients).values(recipientsToInsert);
       }

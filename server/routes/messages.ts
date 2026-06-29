@@ -87,6 +87,8 @@ export function registerRoutes(app: any) {
         metadata: z.any().optional(),
         participantPersonIds: z.array(z.string()),
         participantSocialAccountIds: z.array(z.string()).optional(),
+        importDate: z.string().optional().transform(val => val ? new Date(val) : null),
+        importUuid: z.string().nullable().optional(),
       });
 
       const parsed = createSchema.parse(req.body);
@@ -101,6 +103,8 @@ export function registerRoutes(app: any) {
         externalUrl: parsed.externalUrl || null,
         metadata: parsed.metadata || null,
         lastMessageAt: null,
+        importDate: parsed.importDate || null,
+        importUuid: parsed.importUuid || null,
       });
 
       // 2. Add participants
@@ -110,6 +114,8 @@ export function registerRoutes(app: any) {
           personId: pId,
           socialAccountId: null,
           role: "participant",
+          importDate: parsed.importDate || null,
+          importUuid: parsed.importUuid || null,
         });
       }
 
@@ -120,6 +126,8 @@ export function registerRoutes(app: any) {
             personId: null,
             socialAccountId: saId,
             role: "participant",
+            importDate: parsed.importDate || null,
+            importUuid: parsed.importUuid || null,
           });
         }
       }
@@ -192,6 +200,8 @@ export function registerRoutes(app: any) {
         attachments: z.any().optional(),
         externalId: z.string().optional(),
         sentAt: z.string().optional().transform(val => val ? new Date(val) : new Date()),
+        importDate: z.string().optional().transform(val => val ? new Date(val) : null),
+        importUuid: z.string().nullable().optional(),
         recipients: z.array(
           z.object({
             personId: z.string().nullable().optional(),
@@ -215,6 +225,8 @@ export function registerRoutes(app: any) {
           externalId: parsed.externalId || null,
           sentAt: parsed.sentAt,
           metadata: null,
+          importDate: parsed.importDate || null,
+          importUuid: parsed.importUuid || null,
         },
         parsed.recipients || []
       );
@@ -247,6 +259,8 @@ export function registerRoutes(app: any) {
         personId: z.string().nullable().optional(),
         socialAccountId: z.string().nullable().optional(),
         role: z.string().optional().default("participant"),
+        importDate: z.string().optional().transform(val => val ? new Date(val) : null),
+        importUuid: z.string().nullable().optional(),
       });
 
       const parsed = participantSchema.parse(req.body);
@@ -255,6 +269,8 @@ export function registerRoutes(app: any) {
         personId: parsed.personId || null,
         socialAccountId: parsed.socialAccountId || null,
         role: parsed.role,
+        importDate: parsed.importDate || null,
+        importUuid: parsed.importUuid || null,
       });
 
       res.status(201).json(participant);
