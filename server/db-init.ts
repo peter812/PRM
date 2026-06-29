@@ -403,10 +403,17 @@ async function validateAndSyncSchema(): Promise<void> {
       groups: {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
+        center_account_id: "VARCHAR(255) REFERENCES social_accounts(id) ON DELETE SET NULL",
+        crowd_members: "TEXT[] DEFAULT ARRAY[]::text[]",
+        crowd_last_calculated_at: "TIMESTAMP",
       },
       social_accounts: {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
+      },
+      social_network_state: {
+        followers: "TEXT[] DEFAULT ARRAY[]::text[]",
+        following: "TEXT[] DEFAULT ARRAY[]::text[]",
       },
       ai_chats: {
         vector_id: "TEXT",

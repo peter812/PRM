@@ -12,6 +12,7 @@ import { GroupDialog } from "@/components/group-dialog";
 import { MembersTab } from "@/components/members-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { InteractionDialog } from "@/components/interaction-dialog";
+import { CrowdTab } from "@/components/crowd-tab";
 import { getInitials } from "@/lib/utils";
 
 type GroupWithMembers = Group & {
@@ -175,6 +176,13 @@ export default function GroupProfile() {
             >
               Interactions
             </TabsTrigger>
+            <TabsTrigger
+              value="crowd"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-crowd"
+            >
+              Crowd
+            </TabsTrigger>
           </TabsList>
         </div>
 
@@ -187,6 +195,13 @@ export default function GroupProfile() {
               interactions={group.interactions || []}
               groupId={group.id}
               onAddInteraction={() => setIsAddInteractionOpen(true)}
+            />
+          </TabsContent>
+          <TabsContent value="crowd" className="mt-0 h-full">
+            <CrowdTab
+              groupId={group.id}
+              centerAccountId={group.centerAccountId || null}
+              crowdLastCalculatedAt={group.crowdLastCalculatedAt ? new Date(group.crowdLastCalculatedAt).toISOString() : null}
             />
           </TabsContent>
         </div>

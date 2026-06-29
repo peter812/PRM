@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Plus, LayoutList, LayoutGrid, X } from "lucide-react";
+import { Plus, LayoutList, LayoutGrid, X, Sparkles } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -99,6 +99,12 @@ export default function GroupsList() {
                 <LayoutGrid className="h-4 w-4" />
               </Button>
             </div>
+            <Link href="/groups/potential">
+              <Button variant="outline" className="flex items-center gap-2" data-testid="button-find-potential-groups">
+                <Sparkles className="h-4 w-4 text-primary animate-pulse" />
+                Find Potential Groups
+              </Button>
+            </Link>
             <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-group">
               <Plus className="h-4 w-4" />
               Add Group

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import { Button } from "@/components/ui/button";
-import { Settings, X } from "lucide-react";
+import { Settings, X, Users } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -19,6 +19,9 @@ import {
 import { getInitials } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import type { PersonGraphData } from "@shared/schema";
+import * as THREE from "three";
+import { Slider } from "@/components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface GraphNode {
   id: string;
@@ -26,6 +29,8 @@ interface GraphNode {
   type: "person" | "group";
   color?: string;
   val?: number;
+  isCenter?: boolean;
+  isCrowd?: boolean;
 }
 
 interface GraphLink {
@@ -51,9 +56,11 @@ interface ForceGraphInstance {
   nodeLabel: (key: string) => ForceGraphInstance;
   nodeColor: (key: string) => ForceGraphInstance;
   nodeVal: (key: string) => ForceGraphInstance;
-  linkColor: (key: string) => ForceGraphInstance;
+  nodeThreeObject: (cb: (node: any) => THREE.Object3D) => ForceGraphInstance;
+  scene: () => THREE.Scene;
+  linkColor: (c: any) => ForceGraphInstance;
   linkOpacity: (n: number) => ForceGraphInstance;
-  linkWidth: (n: number) => ForceGraphInstance;
+  linkWidth: (w: any) => ForceGraphInstance;
   enableNodeDrag: (b: boolean) => ForceGraphInstance;
   enableNavigationControls: (b: boolean) => ForceGraphInstance;
   showNavInfo: (b: boolean) => ForceGraphInstance;
@@ -105,6 +112,10 @@ export default function PersonGraphView({
   );
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [showCrowds, setShowCrowds] = useState(true);
+  const [minFollowIntersection, setMinFollowIntersection] = useState(5);
+  const [crowdColorScheme, setCrowdColorScheme] = useState<"pastel" | "emerald" | "amber" | "sky">("pastel");
+  const crowdSphereMeshRef = useRef<THREE.Mesh | null>(null);
 
   const { data: graphData } = useQuery<PersonGraphData>({
     queryKey: ["/api/social-graph", "person"],
@@ -141,17 +152,48 @@ export default function PersonGraphView({
     if (!graphRef.current) return;
     if (!people.length) return;
 
+    const group = highlightedGroupId ? groups.find((g) => g.id === highlightedGroupId) : null;
+    const centerOwnerId = group?.centerAccountId
+      ? allPeople.find(p => p.socialAccountBriefs?.some(sa => sa.id === group.centerAccountId))?.id
+      : null;
+
+    const crowdColorMap = {
+      pastel: "#a7f3d0",
+      emerald: "#10b981",
+      amber: "#f59e0b",
+      sky: "#0ea5e9",
+    };
+    const crowdColor = crowdColorMap[crowdColorScheme];
+
     let nodes: GraphNode[] = [
-      ...people.map((p) => ({
-        id: p.id,
-        name:
-          anonymizePeople && p.id !== meData?.id
+      ...people.map((p) => {
+        const isCenter = p.id === centerOwnerId;
+        const isCrowd = group?.crowdMembers?.includes(p.id) || false;
+        const isMember = group?.members?.includes(p.id) || false;
+
+        let color = p.id === selectedPersonId ? "#ef4444" : "#6366f1";
+        if (highlightedGroupId && group) {
+          if (isMember) {
+            color = group.color || "#8b5cf6";
+          } else if (isCenter) {
+            color = "#ec4899";
+          } else if (isCrowd && showCrowds) {
+            color = crowdColor;
+          }
+        }
+
+        return {
+          id: p.id,
+          name: anonymizePeople && p.id !== meData?.id
             ? "Anonymous"
             : `${p.firstName} ${p.lastName}`,
-        type: "person" as const,
-        color: p.id === selectedPersonId ? "#ef4444" : "#6366f1",
-        val: 10,
-      })),
+          type: "person" as const,
+          color,
+          val: isCenter ? 15 : (isMember ? 12 : (isCrowd && showCrowds ? 8 : 10)),
+          isCenter,
+          isCrowd: isCrowd && showCrowds,
+        };
+      }),
     ];
 
     if (showGroups) {
@@ -177,6 +219,8 @@ export default function PersonGraphView({
 
     if (showGroups) {
       groups.forEach((g) => {
+        const isHighlight = highlightedGroupId === g.id;
+        
         g.members.forEach((memberId) => {
           if (people.some((p) => p.id === memberId)) {
             links.push({
@@ -187,6 +231,19 @@ export default function PersonGraphView({
             });
           }
         });
+
+        if (isHighlight && showCrowds && g.crowdMembers) {
+          g.crowdMembers.forEach((crowdId) => {
+            if (people.some((p) => p.id === crowdId)) {
+              links.push({
+                source: `group-${g.id}`,
+                target: crowdId,
+                type: "group-member" as const,
+                color: crowdColor,
+              });
+            }
+          });
+        }
       });
     }
 
@@ -202,9 +259,9 @@ export default function PersonGraphView({
       });
 
       const userGroupIds = new Set<string>();
-      groups.forEach((group) => {
-        if (group.members.includes(highlightedPersonId)) {
-          userGroupIds.add(`group-${group.id}`);
+      groups.forEach((g) => {
+        if (g.members.includes(highlightedPersonId)) {
+          userGroupIds.add(`group-${g.id}`);
         }
       });
 
@@ -228,27 +285,26 @@ export default function PersonGraphView({
       });
     }
 
-    if (highlightedGroupId && !highlightedPersonId) {
-      const group = groups.find((g) => g.id === highlightedGroupId);
-      if (group) {
-        const memberIds = new Set<string>(group.members);
-        const groupNodeId = `group-${group.id}`;
+    if (highlightedGroupId && !highlightedPersonId && group) {
+      const memberIds = new Set<string>(group.members);
+      const crowdIds = new Set<string>(group.crowdMembers || []);
+      const groupNodeId = `group-${group.id}`;
 
-        nodes = nodes.filter((node) => {
-          if (node.type === "group") return node.id === groupNodeId;
-          return memberIds.has(node.id);
-        });
+      nodes = nodes.filter((node) => {
+        if (node.type === "group") return node.id === groupNodeId;
+        return memberIds.has(node.id) || (crowdIds.has(node.id) && showCrowds) || node.id === centerOwnerId;
+      });
 
-        links = links.filter((link) => {
-          const sourceId = getLinkEndpointId(link.source);
-          const targetId = getLinkEndpointId(link.target);
+      links = links.filter((link) => {
+        const sourceId = getLinkEndpointId(link.source);
+        const targetId = getLinkEndpointId(link.target);
 
-          if (link.type === "group-member") {
-            return sourceId === groupNodeId && memberIds.has(targetId);
-          }
-          return memberIds.has(sourceId) && memberIds.has(targetId);
-        });
-      }
+        if (link.type === "group-member") {
+          return sourceId === groupNodeId && (memberIds.has(targetId) || (crowdIds.has(targetId) && showCrowds));
+        }
+        return (memberIds.has(sourceId) || (crowdIds.has(sourceId) && showCrowds) || sourceId === centerOwnerId) &&
+               (memberIds.has(targetId) || (crowdIds.has(targetId) && showCrowds) || targetId === centerOwnerId);
+      });
     }
 
     const gData = { nodes, links };
@@ -258,11 +314,68 @@ export default function PersonGraphView({
     const values = backgroundHSL.split(" ").map((v) => parseFloat(v));
     const bgColor = `hsl(${values[0]}, ${values[1]}%, ${values[2]}%)`;
 
+    const updateBoundingSphere = () => {
+      const fg = fgRef.current;
+      const crowdMembers = group?.crowdMembers;
+      if (!fg || !showCrowds || !group || !crowdMembers || crowdMembers.length === 0) {
+        if (crowdSphereMeshRef.current && fg) {
+          fg.scene().remove(crowdSphereMeshRef.current);
+          crowdSphereMeshRef.current = null;
+        }
+        return;
+      }
+
+      const graphNodes = fg.graphData().nodes as any[];
+      const crowdNodes = graphNodes.filter(n => crowdMembers.includes(n.id) && n.x !== undefined);
+
+      if (crowdNodes.length === 0) {
+        if (crowdSphereMeshRef.current) {
+          fg.scene().remove(crowdSphereMeshRef.current);
+          crowdSphereMeshRef.current = null;
+        }
+        return;
+      }
+
+      let sumX = 0, sumY = 0, sumZ = 0;
+      for (const n of crowdNodes) {
+        sumX += n.x;
+        sumY += n.y;
+        sumZ += n.z;
+      }
+      const centroidX = sumX / crowdNodes.length;
+      const centroidY = sumY / crowdNodes.length;
+      const centroidZ = sumZ / crowdNodes.length;
+
+      const distances = crowdNodes.map(n => {
+        const dx = n.x - centroidX;
+        const dy = n.y - centroidY;
+        const dz = n.z - centroidZ;
+        return Math.sqrt(dx*dx + dy*dy + dz*dz);
+      });
+      distances.sort((a, b) => a - b);
+      const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
+      const radius = Math.max(15, distances[percentileIndex] || 15);
+
+      if (!crowdSphereMeshRef.current) {
+        const geom = new THREE.SphereGeometry(1, 32, 32);
+        const mat = new THREE.MeshBasicMaterial({
+          color: crowdColor,
+          transparent: true,
+          opacity: 0.15,
+          wireframe: true,
+        });
+        const mesh = new THREE.Mesh(geom, mat);
+        fg.scene().add(mesh);
+        crowdSphereMeshRef.current = mesh;
+      }
+
+      const mesh = crowdSphereMeshRef.current;
+      mesh.position.set(centroidX, centroidY, centroidZ);
+      mesh.scale.set(radius, radius, radius);
+      (mesh.material as THREE.MeshBasicMaterial).color.set(crowdColor);
+    };
+
     if (!fgRef.current) {
-      // The 3d-force-graph lib uses a Kapsule factory at runtime:
-      // `ForceGraph3D({ opts })(element)`. Its bundled .d.ts only types the
-      // constructor form, so we cast the factory call result to our local
-      // typed surface to keep the rest of this file fully typed.
       const factory = ForceGraph3D as unknown as (
         opts: { controlType: string; rendererConfig: { antialias: boolean; alpha: boolean } }
       ) => (el: HTMLElement) => ForceGraphInstance;
@@ -275,11 +388,37 @@ export default function PersonGraphView({
         .graphData(gData)
         .backgroundColor(bgColor)
         .nodeLabel("name")
-        .nodeColor("color")
+        .nodeThreeObject((node: any) => {
+          if (node.isCenter) {
+            const groupMesh = new THREE.Group();
+            const sphereMat = new THREE.MeshBasicMaterial({
+              color: node.color || "#ec4899",
+              transparent: true,
+              opacity: 0.5,
+            });
+            const sphereMesh = new THREE.Mesh(new THREE.SphereGeometry(6, 16, 16), sphereMat);
+            groupMesh.add(sphereMesh);
+
+            const ringMat = new THREE.MeshBasicMaterial({
+              color: node.color || "#ec4899",
+              side: THREE.DoubleSide,
+            });
+            const ringMesh = new THREE.Mesh(new THREE.RingGeometry(7, 8, 32), ringMat);
+            groupMesh.add(ringMesh);
+            return groupMesh;
+          }
+
+          const mat = new THREE.MeshLambertMaterial({
+            color: node.color || "#6366f1",
+            transparent: node.isCrowd,
+            opacity: node.isCrowd ? 0.6 : 1.0,
+          });
+          return new THREE.Mesh(new THREE.SphereGeometry(node.type === "group" ? 8 : 4, 16, 16), mat);
+        })
         .nodeVal("val")
-        .linkColor("color")
+        .linkColor((link: any) => link.color || "#6b7280")
         .linkOpacity(0.6)
-        .linkWidth(2)
+        .linkWidth((link: any) => link.color === crowdColor ? 1 : 2)
         .enableNodeDrag(true)
         .enableNavigationControls(true)
         .showNavInfo(false)
@@ -301,13 +440,21 @@ export default function PersonGraphView({
         .warmupTicks(100)
         .cooldownTime(15000);
 
+      (fg as any).onEngineTick(updateBoundingSphere);
+      (fg as any).onEngineStop(updateBoundingSphere);
+
       fgRef.current = fg;
     } else {
       fgRef.current.graphData(gData);
+      setTimeout(updateBoundingSphere, 100);
     }
 
     return () => {
       if (fgRef.current) {
+        if (crowdSphereMeshRef.current) {
+          fgRef.current.scene().remove(crowdSphereMeshRef.current);
+          crowdSphereMeshRef.current = null;
+        }
         fgRef.current._destructor();
         fgRef.current = null;
       }
@@ -324,6 +471,8 @@ export default function PersonGraphView({
     meData?.id,
     selectedPersonId,
     setSelectedPersonId,
+    showCrowds,
+    crowdColorScheme,
   ]);
 
   // Re-center camera on the currently selected person whenever it changes
@@ -610,6 +759,54 @@ export default function PersonGraphView({
                   onCheckedChange={setHideOrphans}
                   data-testid="switch-hide-orphans"
                 />
+              </div>
+
+              <div className="pt-4 border-t space-y-3">
+                <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5" />
+                  Crowds Settings
+                </h4>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
+                  <Switch
+                    id="show-crowds"
+                    checked={showCrowds}
+                    onCheckedChange={setShowCrowds}
+                    data-testid="switch-show-crowds"
+                  />
+                </div>
+                {showCrowds && (
+                  <>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs">
+                        <Label>Min Follows</Label>
+                        <span className="font-mono">{minFollowIntersection}</span>
+                      </div>
+                      <Slider
+                        min={1}
+                        max={15}
+                        step={1}
+                        value={[minFollowIntersection]}
+                        onValueChange={(val) => setMinFollowIntersection(val[0])}
+                        data-testid="slider-min-follow"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
+                      <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
+                        <SelectTrigger id="crowd-color-scheme" className="h-8">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="pastel">Pastel Green</SelectItem>
+                          <SelectItem value="emerald">Emerald</SelectItem>
+                          <SelectItem value="amber">Amber</SelectItem>
+                          <SelectItem value="sky">Sky Blue</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="pt-4 border-t space-y-2">

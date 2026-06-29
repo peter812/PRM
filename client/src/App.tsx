@@ -28,6 +28,7 @@ import MeProfile from "@/pages/me-profile";
 import HomePage from "@/pages/home";
 import GroupsList from "@/pages/groups-list";
 import GroupProfile from "@/pages/group-profile";
+import PotentialGroupsPage from "@/pages/potential-groups";
 import SocialAccountsList from "@/pages/social-accounts-list";
 import SocialAccountProfile from "@/pages/social-account-profile";
 import Graph from "@/pages/graph";
@@ -120,6 +121,7 @@ function Router() {
       <ProtectedRoute path="/home" component={HomePage} />
       <ProtectedRoute path="/me" component={MeProfile} />
       <ProtectedRoute path="/groups" component={GroupsList} />
+      <ProtectedRoute path="/groups/potential" component={PotentialGroupsPage} />
       <ProtectedRoute path="/group/:id" component={GroupProfile} />
       <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
       <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />

@@ -5,7 +5,7 @@ import ForceGraph3D from "3d-force-graph";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Settings, X, Filter, Palette } from "lucide-react";
+import { Settings, X, Filter, Palette, Users } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import type { SocialAccount, SocialAccountType, SocialAccountWithCurrentProfile, SocialGraphData } from "@shared/schema";
+import type { SocialAccount, SocialAccountType, SocialAccountWithCurrentProfile, SocialGraphData, Group } from "@shared/schema";
 import PersonGraphView from "./person-graph-view";
 import {
   EXTRAS_STEPS,
@@ -294,6 +294,17 @@ function SocialGraphContent({
   const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(initialDefaults.blobMergeMultiplier);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(initialDefaults.blobForceMultiplier);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
+  const [showCrowds, setShowCrowds] = useState(true);
+  const [minFollowIntersection, setMinFollowIntersection] = useState(5);
+  const [crowdColorScheme, setCrowdColorScheme] = useState<'pastel' | 'emerald' | 'amber' | 'sky'>('pastel');
+  const crowdSphereMeshRef = useRef<THREE.Mesh | null>(null);
+  const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('highlightGroup')
+  );
+
+  const { data: groupsList } = useQuery<Group[]>({
+    queryKey: ['/api/groups'],
+  });
 
   const extrasSteps = EXTRAS_STEPS;
   const mergeMultiplierSteps = MERGE_MULTIPLIER_STEPS;
@@ -512,6 +523,28 @@ function SocialGraphContent({
   useEffect(() => {
     if (!graphRef.current || !graphData || !graphData.nodes.length) return;
 
+    const group = highlightedGroupId ? groupsList?.find((g) => g.id === highlightedGroupId) : null;
+    const centerAccountId = group?.centerAccountId;
+
+    const crowdColorMap = {
+      pastel: "#a7f3d0",
+      emerald: "#10b981",
+      amber: "#f59e0b",
+      sky: "#0ea5e9",
+    };
+    const crowdColor = crowdColorMap[crowdColorScheme];
+
+    const centerFollowers = new Set<string>();
+    if (centerAccountId) {
+      graphData.links.forEach(l => {
+        const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
+        const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+        if (tgt === centerAccountId) {
+          centerFollowers.add(src);
+        }
+      });
+    }
+
     const colorMap = computeColorMap();
     nodeColorMapRef.current = colorMap;
 
@@ -520,12 +553,30 @@ function SocialGraphContent({
       if (n.mergedNames && n.mergedNames.length > 0) {
         label = `${n.name} (+${n.mergedNames.length} merged)`;
       }
+
+      const isCenter = n.id === centerAccountId;
+      const isMember = n.ownerPersonId && group?.members?.includes(n.ownerPersonId) || false;
+      const isCrowd = n.ownerPersonId && group?.crowdMembers?.includes(n.ownerPersonId) || false;
+
+      let color = colorMap.get(n.id) || n.typeColor;
+      if (highlightedGroupId && group) {
+        if (isMember) {
+          color = group.color || "#8b5cf6";
+        } else if (isCenter) {
+          color = "#ec4899";
+        } else if (isCrowd && showCrowds) {
+          color = crowdColor;
+        }
+      }
+
       return {
         id: n.id,
         name: label,
         type: 'social-account' as const,
-        color: colorMap.get(n.id) || n.typeColor,
-        val: graphMode === 'blob' ? (n.size - 50 + 1) * n.val : n.val,
+        color,
+        val: graphMode === 'blob' ? (n.size - 50 + 1) * n.val : (isCenter ? 15 : (isMember ? 12 : (isCrowd && showCrowds ? 8 : n.val))),
+        isCenter,
+        isCrowd: isCrowd && showCrowds,
       };
     });
 
@@ -535,8 +586,17 @@ function SocialGraphContent({
     const links: GraphLink[] = graphData.links.map(l => {
       const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
       const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+
+      const srcNode = graphData.nodes.find(n => n.id === src);
+      const isSrcCrowd = (srcNode?.ownerPersonId && group?.crowdMembers?.includes(srcNode.ownerPersonId)) || false;
+      const isTgtCenterFollower = centerFollowers.has(tgt);
+      
+      const isCrowdLink = highlightedGroupId && showCrowds && isSrcCrowd && isTgtCenterFollower;
+
       let color: string;
-      if (isSingleMode && (src === targetId || tgt === targetId)) {
+      if (isCrowdLink) {
+        color = crowdColor;
+      } else if (isSingleMode && (src === targetId || tgt === targetId)) {
         if (l.mutual) {
           color = singleLinkMutualColor;
         } else if (src === targetId) {
@@ -549,7 +609,7 @@ function SocialGraphContent({
       } else {
         color = l.mutual ? linkMutualColor : linkDefaultColor;
       }
-      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual };
+      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual, isCrowdLink };
     });
 
     let filteredLinks = links;
@@ -564,16 +624,78 @@ function SocialGraphContent({
     const values = backgroundHSL.split(' ').map(v => parseFloat(v));
     const bgColor = `hsl(${values[0]}, ${values[1]}%, ${values[2]}%)`;
 
-    const getMaterial = (color: string) => {
+    const getMaterial = (color: string, dashed = false) => {
       const cache = materialCacheRef.current;
-      if (!cache.has(color)) {
-        cache.set(color, new THREE.LineBasicMaterial({
-          color,
-          transparent: true,
-          opacity: 0.6,
-        }));
+      const key = `${color}-${dashed}`;
+      if (!cache.has(key)) {
+        cache.set(key, dashed
+          ? new THREE.LineDashedMaterial({ color, dashSize: 3, gapSize: 2, transparent: true, opacity: 0.8 })
+          : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6 })
+        );
       }
-      return cache.get(color)!;
+      return cache.get(key)!;
+    };
+
+    const updateBoundingSphere = () => {
+      if (!fgRef.current || !showCrowds || !group || !group.crowdMembers || group.crowdMembers.length === 0) {
+        if (crowdSphereMeshRef.current) {
+          fgRef.current.scene().remove(crowdSphereMeshRef.current);
+          crowdSphereMeshRef.current = null;
+        }
+        return;
+      }
+
+      const graphNodes = fgRef.current.graphData().nodes as any[];
+      const crowdNodes = graphNodes.filter(n => {
+        const ownerId = graphData.nodes.find(dn => dn.id === n.id)?.ownerPersonId;
+        return ownerId && group.crowdMembers?.includes(ownerId) && n.x !== undefined;
+      });
+
+      if (crowdNodes.length === 0) {
+        if (crowdSphereMeshRef.current) {
+          fgRef.current.scene().remove(crowdSphereMeshRef.current);
+          crowdSphereMeshRef.current = null;
+        }
+        return;
+      }
+
+      let sumX = 0, sumY = 0, sumZ = 0;
+      for (const n of crowdNodes) {
+        sumX += n.x;
+        sumY += n.y;
+        sumZ += n.z;
+      }
+      const centroidX = sumX / crowdNodes.length;
+      const centroidY = sumY / crowdNodes.length;
+      const centroidZ = sumZ / crowdNodes.length;
+
+      const distances = crowdNodes.map(n => {
+        const dx = n.x - centroidX;
+        const dy = n.y - centroidY;
+        const dz = n.z - centroidZ;
+        return Math.sqrt(dx*dx + dy*dy + dz*dz);
+      });
+      distances.sort((a, b) => a - b);
+      const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
+      const radius = Math.max(15, distances[percentileIndex] || 15);
+
+      if (!crowdSphereMeshRef.current) {
+        const geom = new THREE.SphereGeometry(1, 32, 32);
+        const mat = new THREE.MeshBasicMaterial({
+          color: crowdColor,
+          transparent: true,
+          opacity: 0.15,
+          wireframe: true,
+        });
+        const mesh = new THREE.Mesh(geom, mat);
+        fgRef.current.scene().add(mesh);
+        crowdSphereMeshRef.current = mesh;
+      }
+
+      const mesh = crowdSphereMeshRef.current;
+      mesh.position.set(centroidX, centroidY, centroidZ);
+      mesh.scale.set(radius, radius, radius);
+      (mesh.material as THREE.MeshBasicMaterial).color.set(crowdColor);
     };
 
     if (!fgRef.current) {
@@ -584,7 +706,33 @@ function SocialGraphContent({
         .graphData(gData)
         .backgroundColor(bgColor)
         .nodeLabel('name')
-        .nodeColor((node: any) => nodeColorMapRef.current.get(node.id) || '#10b981')
+        .nodeThreeObject((node: any) => {
+          if (node.isCenter) {
+            const groupMesh = new THREE.Group();
+            const sphereMat = new THREE.MeshBasicMaterial({
+              color: node.color || "#ec4899",
+              transparent: true,
+              opacity: 0.5,
+            });
+            const sphereMesh = new THREE.Mesh(new THREE.SphereGeometry(6, 16, 16), sphereMat);
+            groupMesh.add(sphereMesh);
+
+            const ringMat = new THREE.MeshBasicMaterial({
+              color: node.color || "#ec4899",
+              side: THREE.DoubleSide,
+            });
+            const ringMesh = new THREE.Mesh(new THREE.RingGeometry(7, 8, 32), ringMat);
+            groupMesh.add(ringMesh);
+            return groupMesh;
+          }
+
+          const mat = new THREE.MeshLambertMaterial({
+            color: node.color || "#10b981",
+            transparent: node.isCrowd,
+            opacity: node.isCrowd ? 0.6 : 1.0,
+          });
+          return new THREE.Mesh(new THREE.SphereGeometry(4, 16, 16), mat);
+        })
         .nodeVal('val')
         .enableNodeDrag(true)
         .enableNavigationControls(true)
@@ -593,8 +741,10 @@ function SocialGraphContent({
           const positions = new Float32Array(6);
           const geometry = new THREE.BufferGeometry();
           geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          const material = getMaterial(link.color || '#6b7280');
-          return new THREE.Line(geometry, material);
+          const material = getMaterial(link.color || '#6b7280', link.isCrowdLink);
+          return link.isCrowdLink 
+            ? new THREE.LineSegments(geometry, material)
+            : new THREE.Line(geometry, material);
         })
         .linkPositionUpdate((obj: any, { start, end }: { start: any; end: any }) => {
           const line = obj as THREE.Line;
@@ -607,6 +757,9 @@ function SocialGraphContent({
           positions.array[5] = end.z;
           positions.needsUpdate = true;
           line.geometry.computeBoundingSphere();
+          if ((line as any).computeLineDistances) {
+            (line as any).computeLineDistances();
+          }
           return true;
         })
         .linkDirectionalArrowLength((link: any) => link.mutual ? 0 : 4)
@@ -640,9 +793,13 @@ function SocialGraphContent({
         }
       } catch (_) { }
 
+      (fg as any).onEngineTick(updateBoundingSphere);
+      (fg as any).onEngineStop(updateBoundingSphere);
+
       fgRef.current = fg;
     } else {
       fgRef.current.graphData(gData);
+      setTimeout(updateBoundingSphere, 100);
       try {
         const chargeForce = fgRef.current.d3Force('charge');
         if (chargeForce && typeof chargeForce.strength === 'function') {
@@ -657,13 +814,17 @@ function SocialGraphContent({
 
     return () => {
       if (fgRef.current) {
+        if (crowdSphereMeshRef.current) {
+          fgRef.current.scene().remove(crowdSphereMeshRef.current);
+          crowdSphereMeshRef.current = null;
+        }
         fgRef.current._destructor();
         fgRef.current = null;
       }
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor]);
+  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, highlightedGroupId, groupsList, showCrowds, crowdColorScheme, minFollowIntersection]);
 
   useEffect(() => {
     if (!fgRef.current || !graphData || !graphData.nodes.length) return;
@@ -1426,6 +1587,54 @@ function SocialGraphContent({
                 </div>
               </TabsContent>
             </Tabs>
+
+            <div className="pt-2 border-t space-y-3">
+              <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5" />
+                Crowds Settings
+              </h4>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
+                <Switch
+                  id="show-crowds"
+                  checked={showCrowds}
+                  onCheckedChange={setShowCrowds}
+                  data-testid="switch-show-crowds"
+                />
+              </div>
+              {showCrowds && (
+                <>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs">
+                      <Label>Min Follows</Label>
+                      <span className="font-mono">{minFollowIntersection}</span>
+                    </div>
+                    <Slider
+                      min={1}
+                      max={15}
+                      step={1}
+                      value={[minFollowIntersection]}
+                      onValueChange={(val) => setMinFollowIntersection(val[0])}
+                      data-testid="slider-min-follow"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
+                    <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
+                      <SelectTrigger id="crowd-color-scheme" className="h-8">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pastel">Pastel Green</SelectItem>
+                        <SelectItem value="emerald">Emerald</SelectItem>
+                        <SelectItem value="amber">Amber</SelectItem>
+                        <SelectItem value="sky">Sky Blue</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              )}
+            </div>
 
             <div className="pt-2 border-t space-y-2">
               <Button
