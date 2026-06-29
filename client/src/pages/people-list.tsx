@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Plus, X, Star, Trophy, ArrowUpDown, CalendarDays } from "lucide-react";
+import { Plus, X, Star, Trophy, ArrowUpDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 type SortOption = "relationship" | "added" | "starred" | "elo_high" | "elo_low";
+type ViewMode = "details" | "snug" | "expanded";
 
 const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: "relationship", label: "Relationship type" },
@@ -38,6 +39,12 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: "starred", label: "Starred" },
   { value: "elo_high", label: "ELO score (high)" },
   { value: "elo_low", label: "ELO score (low)" },
+];
+
+const VIEW_OPTIONS: { value: ViewMode; label: string; icon: React.ReactNode }[] = [
+  { value: "details", label: "Details", icon: <LayoutList className="h-4 w-4" /> },
+  { value: "snug", label: "Snug", icon: <LayoutGrid className="h-4 w-4" /> },
+  { value: "expanded", label: "Expanded", icon: <Maximize2 className="h-4 w-4" /> },
 ];
 
 type PersonWithRelationship = Person & {
@@ -53,6 +60,10 @@ export default function PeopleList() {
   const [personToDelete, setPersonToDelete] = useState<PersonWithRelationship | null>(null);
   const [starredStates, setStarredStates] = useState<Record<string, number>>({});
   const [sortBy, setSortBy] = useState<SortOption>("relationship");
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = localStorage.getItem("people-list-view-mode");
+    return (saved as ViewMode) || "snug";
+  });
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -174,6 +185,30 @@ export default function PeopleList() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex items-center gap-2">
+              <Select
+                value={viewMode}
+                onValueChange={(val) => {
+                  const mode = val as ViewMode;
+                  setViewMode(mode);
+                  localStorage.setItem("people-list-view-mode", mode);
+                }}
+              >
+                <SelectTrigger className="w-40" data-testid="select-view-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {VIEW_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} data-testid={`select-item-view-${opt.value}`}>
+                      <span className="flex items-center gap-2">
+                        {opt.icon}
+                        {opt.label}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person">
               <Plus className="h-4 w-4" />
               Add Person
@@ -211,116 +246,353 @@ export default function PeopleList() {
             </Button>
           </div>
         ) : people && people.length > 0 ? (
-          <div className="flex flex-col gap-[5px]">
-            {people.map((person) => {
-              const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
-              return (
-              <Link key={person.id} href={`/person/${person.id}`}>
-                <Card
-                  className="p-2 hover-elevate transition-all cursor-pointer"
-                  style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
-                  data-testid={`card-person-${person.id}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Avatar className="w-12 h-12">
-                      {person.imageUrl && (
-                        <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
-                      )}
-                      <AvatarFallback>
-                        {getInitials(person.firstName, person.lastName)}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
+          <>
+            {/* Details View - Table-like */}
+            {viewMode === "details" && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" data-testid="table-people-details">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 px-3 font-medium">Name</th>
+                      <th className="py-2 px-3 font-medium">Relationship</th>
+                      <th className="py-2 px-3 font-medium">Tags</th>
+                      <th className="py-2 px-3 font-medium w-10"></th>
+                      <th className="py-2 px-3 font-medium">Phone</th>
+                      <th className="py-2 px-3 font-medium">Email</th>
+                      <th className="py-2 px-3 font-medium">Social</th>
+                      <th className="py-2 px-3 font-medium w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {people.map((person) => {
+                      const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
+                      const starredVal = starredStates[person.id] ?? (person.isStarred || 0);
+                      return (
+                        <tr
+                          key={person.id}
+                          className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
+                          style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
+                          data-testid={`row-person-${person.id}`}
+                        >
+                          <td className="py-2 px-3">
+                            <Link href={`/person/${person.id}`} className="font-medium hover:underline" data-testid={`text-name-${person.id}`}>
+                              {person.firstName} {person.lastName}
+                            </Link>
+                          </td>
+                          <td className="py-2 px-3">
+                            {person.relationshipTypeName && (
+                              <Badge
+                                variant="secondary"
+                                className="text-xs"
+                                style={{
+                                  backgroundColor: person.relationshipTypeColor || undefined,
+                                  color: 'white',
+                                }}
+                                data-testid={`badge-relationship-${person.id}`}
+                              >
+                                {person.relationshipTypeName}
+                              </Badge>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            <div className="flex flex-wrap gap-1">
+                              {person.tags && person.tags.map((tag, idx) => (
+                                <Badge key={idx} variant="secondary" className="text-xs">
+                                  {tag}
+                                </Badge>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleStarClick(person);
+                              }}
+                              data-testid={`button-star-${person.id}`}
+                            >
+                              <Star className={`h-4 w-4 ${starredVal === 1 ? "fill-current" : ""}`} />
+                            </Button>
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {person.phone && (
+                              <span className="flex items-center gap-1" data-testid={`text-phone-${person.id}`}>
+                                <Phone className="h-3 w-3" />
+                                {person.phone}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {person.email && (
+                              <a
+                                href={`mailto:${person.email}`}
+                                className="flex items-center gap-1 hover:underline"
+                                onClick={(e) => e.stopPropagation()}
+                                data-testid={`text-email-${person.id}`}
+                              >
+                                <Mail className="h-3 w-3" />
+                                {person.email}
+                              </a>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            {person.socialAccountUuids && person.socialAccountUuids.length > 0 && (
+                              <Link href={`/person/${person.id}`}>
+                                <Badge variant="outline" className="text-xs cursor-pointer" data-testid={`badge-social-${person.id}`}>
+                                  <ExternalLink className="h-3 w-3 mr-1" />
+                                  {person.socialAccountUuids.length}
+                                </Badge>
+                              </Link>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setPersonToDelete(person);
+                              }}
+                              data-testid={`button-delete-${person.id}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Snug View - Current layout */}
+            {viewMode === "snug" && (
+              <div className="flex flex-col gap-[5px]">
+                {people.map((person) => {
+                  const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
+                  return (
+                  <Link key={person.id} href={`/person/${person.id}`}>
+                    <Card
+                      className="p-2 hover-elevate transition-all cursor-pointer"
+                      style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
+                      data-testid={`card-person-${person.id}`}
+                    >
                       <div className="flex items-center gap-2">
-                        <h3 className="text-sm md:text-lg font-medium" data-testid={`text-name-${person.id}`}>
-                          {person.firstName} {person.lastName}
-                        </h3>
+                        <Avatar className="w-12 h-12">
+                          {person.imageUrl && (
+                            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                          )}
+                          <AvatarFallback>
+                            {getInitials(person.firstName, person.lastName)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-sm md:text-lg font-medium" data-testid={`text-name-${person.id}`}>
+                              {person.firstName} {person.lastName}
+                            </h3>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleStarClick(person);
+                              }}
+                              data-testid={`button-star-${person.id}`}
+                            >
+                              <Star className={`h-4 w-4 ${(starredStates[person.id] ?? (person.isStarred || 0)) === 1 ? "fill-current" : ""}`} />
+                            </Button>
+                          </div>
+                          <div className="flex items-center gap-1 text-xs md:text-sm text-muted-foreground">
+                            {person.company && (
+                              <span data-testid={`text-company-${person.id}`}>
+                                {person.company}
+                              </span>
+                            )}
+                            {person.title && person.company && <span>•</span>}
+                            {person.title && (
+                              <span data-testid={`text-title-${person.id}`}>
+                                {person.title}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {showEloBadge && (
+                              <Badge
+                                variant="secondary"
+                                className="text-[0.65rem] md:text-xs"
+                                data-testid={`badge-elo-${person.id}`}
+                              >
+                                <Trophy className="h-3 w-3 mr-1" />
+                                {person.eloScore}
+                              </Badge>
+                            )}
+                            {sortBy === "added" && person.createdAt && (
+                              <Badge
+                                variant="secondary"
+                                className="text-[0.65rem] md:text-xs"
+                                data-testid={`badge-added-${person.id}`}
+                              >
+                                <CalendarDays className="h-3 w-3 mr-1" />
+                                {new Date(person.createdAt).toLocaleDateString()}
+                              </Badge>
+                            )}
+                            {person.relationshipTypeName && (
+                              <Badge
+                                variant="secondary"
+                                className="text-[0.65rem] md:text-xs"
+                                style={{
+                                  backgroundColor: person.relationshipTypeColor || undefined,
+                                  color: 'white',
+                                }}
+                                data-testid={`badge-relationship-${person.id}`}
+                              >
+                                {person.relationshipTypeName}
+                              </Badge>
+                            )}
+                            {person.tags && person.tags.map((tag, idx) => (
+                              <Badge key={idx} variant="secondary" className="text-[0.65rem] md:text-xs">
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
+                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            handleStarClick(person);
+                            setPersonToDelete(person);
                           }}
-                          data-testid={`button-star-${person.id}`}
+                          data-testid={`button-delete-${person.id}`}
                         >
-                          <Star className={`h-4 w-4 ${(starredStates[person.id] ?? (person.isStarred || 0)) === 1 ? "fill-current" : ""}`} />
+                          <X className="h-4 w-4" />
                         </Button>
                       </div>
-                      <div className="flex items-center gap-1 text-xs md:text-sm text-muted-foreground">
-                        {person.company && (
-                          <span data-testid={`text-company-${person.id}`}>
-                            {person.company}
-                          </span>
-                        )}
-                        {person.title && person.company && <span>•</span>}
-                        {person.title && (
-                          <span data-testid={`text-title-${person.id}`}>
-                            {person.title}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {showEloBadge && (
-                          <Badge
-                            variant="secondary"
-                            className="text-[0.65rem] md:text-xs"
-                            data-testid={`badge-elo-${person.id}`}
-                          >
-                            <Trophy className="h-3 w-3 mr-1" />
-                            {person.eloScore}
-                          </Badge>
-                        )}
-                        {sortBy === "added" && person.createdAt && (
-                          <Badge
-                            variant="secondary"
-                            className="text-[0.65rem] md:text-xs"
-                            data-testid={`badge-added-${person.id}`}
-                          >
-                            <CalendarDays className="h-3 w-3 mr-1" />
-                            {new Date(person.createdAt).toLocaleDateString()}
-                          </Badge>
-                        )}
-                        {person.relationshipTypeName && (
-                          <Badge
-                            variant="secondary"
-                            className="text-[0.65rem] md:text-xs"
-                            style={{
-                              backgroundColor: person.relationshipTypeColor || undefined,
-                              color: 'white',
-                            }}
-                            data-testid={`badge-relationship-${person.id}`}
-                          >
-                            {person.relationshipTypeName}
-                          </Badge>
-                        )}
-                        {person.tags && person.tags.map((tag, idx) => (
-                          <Badge key={idx} variant="secondary" className="text-[0.65rem] md:text-xs">
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setPersonToDelete(person);
-                      }}
-                      data-testid={`button-delete-${person.id}`}
+                    </Card>
+                  </Link>
+                );
+                })}
+              </div>
+            )}
+
+            {/* Expanded View - Large profile images and fonts */}
+            {viewMode === "expanded" && (
+              <div className="flex flex-col gap-3">
+                {people.map((person) => {
+                  const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
+                  const starredVal = starredStates[person.id] ?? (person.isStarred || 0);
+                  return (
+                  <Link key={person.id} href={`/person/${person.id}`}>
+                    <Card
+                      className="p-4 hover-elevate transition-all cursor-pointer"
+                      style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
+                      data-testid={`card-person-${person.id}`}
                     >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </Card>
-              </Link>
-            );
-            })}
+                      <div className="flex items-center gap-4">
+                        <Avatar className="w-20 h-20">
+                          {person.imageUrl && (
+                            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                          )}
+                          <AvatarFallback className="text-xl">
+                            {getInitials(person.firstName, person.lastName)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-3">
+                            <h3 className="text-xl md:text-2xl font-semibold" data-testid={`text-name-${person.id}`}>
+                              {person.firstName} {person.lastName}
+                            </h3>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-yellow-500 hover:text-yellow-600 p-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleStarClick(person);
+                              }}
+                              data-testid={`button-star-${person.id}`}
+                            >
+                              <Star className={`h-6 w-6 ${starredVal === 1 ? "fill-current" : ""}`} />
+                            </Button>
+                          </div>
+                          {person.relationshipTypeName && (
+                            <Badge
+                              variant="secondary"
+                              className="text-sm mt-1"
+                              style={{
+                                backgroundColor: person.relationshipTypeColor || undefined,
+                                color: 'white',
+                              }}
+                              data-testid={`badge-relationship-${person.id}`}
+                            >
+                              {person.relationshipTypeName}
+                            </Badge>
+                          )}
+                          <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
+                            {person.company && (
+                              <span data-testid={`text-company-${person.id}`}>
+                                {person.company}
+                              </span>
+                            )}
+                            {person.title && person.company && <span>•</span>}
+                            {person.title && (
+                              <span data-testid={`text-title-${person.id}`}>
+                                {person.title}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {showEloBadge && (
+                              <Badge
+                                variant="secondary"
+                                className="text-xs"
+                                data-testid={`badge-elo-${person.id}`}
+                              >
+                                <Trophy className="h-3 w-3 mr-1" />
+                                {person.eloScore}
+                              </Badge>
+                            )}
+                            {person.tags && person.tags.map((tag, idx) => (
+                              <Badge key={idx} variant="secondary" className="text-xs">
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setPersonToDelete(person);
+                          }}
+                          data-testid={`button-delete-${person.id}`}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </Card>
+                  </Link>
+                );
+                })}
+              </div>
+            )}
+
             {isFetchingNextPage && (
               <div className="flex justify-center py-4">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -329,7 +601,7 @@ export default function PeopleList() {
                 </div>
               </div>
             )}
-          </div>
+          </>
         ) : (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Users className="h-16 w-16 text-muted-foreground mb-4" />
