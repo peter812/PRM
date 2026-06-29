@@ -1190,7 +1190,7 @@ export function registerRoutes(app: Express) {
             ollamaResp = await fetch(`${ctx.base}/api/chat`, {
               method: "POST",
               headers: { ...ctx.headers, "Content-Type": "application/json" },
-              body: JSON.stringify({ model, messages, stream: true, ...(tools ? { tools } : {}) }),
+              body: JSON.stringify({ model, messages, stream: true, options: { num_predict: -1 }, ...(tools ? { tools } : {}) }),
               signal: iterController.signal,
             });
           } catch (err: any) {
@@ -1540,7 +1540,7 @@ export function registerRoutes(app: Express) {
           const resp = await fetch(`${ctx.base}/api/chat`, {
             method: "POST",
             headers: ctx.headers,
-            body: JSON.stringify({ model, messages: ollamaMessages, stream: false }),
+            body: JSON.stringify({ model, messages: ollamaMessages, stream: false, options: { num_predict: -1 } }),
             signal: controller.signal,
           });
           clearTimeout(timeout);

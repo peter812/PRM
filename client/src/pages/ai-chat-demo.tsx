@@ -282,12 +282,7 @@ export default function AiChatDemoPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingUserMessage, setStreamingUserMessage] = useState<ChatMessage | null>(null);
-  // Word-by-word smoothing: drains the raw stream one token at a time into displayedContent.
-  const [displayedContent, setDisplayedContent] = useState("");
-  const wordQueueRef = useRef<string[]>([]);
-  const drainIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isStreamingRef = useRef(false);
-  const lastQueuedLenRef = useRef(0);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
@@ -320,49 +315,14 @@ export default function AiChatDemoPage() {
     scrollEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeChat?.messages?.length, activeChatId]);
 
-  // Start the word-drain interval when streaming begins; let it self-terminate when
-  // the queue empties after streaming ends. Clean up on unmount.
-  useEffect(() => {
-    isStreamingRef.current = isStreaming;
-    if (isStreaming) {
-      if (drainIntervalRef.current) clearInterval(drainIntervalRef.current);
-      wordQueueRef.current = [];
-      lastQueuedLenRef.current = 0;
-      setDisplayedContent("");
-      drainIntervalRef.current = setInterval(() => {
-        const word = wordQueueRef.current.shift();
-        if (word !== undefined) {
-          setDisplayedContent((prev) => prev + word);
-        } else if (!isStreamingRef.current) {
-          clearInterval(drainIntervalRef.current!);
-          drainIntervalRef.current = null;
-        }
-      }, 200);
-    }
-  }, [isStreaming]);
 
-  // Unmount cleanup only — don't clear on isStreaming change so the queue can finish draining.
-  useEffect(() => {
-    return () => {
-      if (drainIntervalRef.current) clearInterval(drainIntervalRef.current);
-    };
-  }, []);
 
-  // When new raw content arrives from the stream, split into tokens and enqueue them.
-  useEffect(() => {
-    const newText = streamingContent.slice(lastQueuedLenRef.current);
-    if (!newText) return;
-    lastQueuedLenRef.current = streamingContent.length;
-    const tokens = newText.split(/(\s+)/).filter((t) => t.length > 0);
-    wordQueueRef.current.push(...tokens);
-  }, [streamingContent]);
-
-  // While streaming, keep scrolling to bottom as displayed content grows.
+  // While streaming, keep scrolling to bottom as new content arrives.
   useEffect(() => {
     if (isStreaming) {
       scrollEndRef.current?.scrollIntoView({ behavior: "instant" });
     }
-  }, [displayedContent, isStreaming]);
+  }, [streamingContent, isStreaming]);
 
   const createChatMutation = useMutation({
     mutationFn: async () => {
@@ -928,7 +888,7 @@ export default function AiChatDemoPage() {
                     <ThoughtChain calls={streamingToolCalls} live dataTestidPrefix="streaming" />
                   )}
                   {streamingContent ? (
-                    <MarkdownMessage content={displayedContent} />
+                    <MarkdownMessage content={streamingContent} />
                   ) : (
                     <div className="py-1">
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
