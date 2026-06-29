@@ -54,6 +54,7 @@ import {
   searchDailyNotes,
 } from "../vector";
 import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
+import { autoPassInImageForPerson } from "../image-pass-in-utils";
 
 const scryptAsync = promisify(scrypt);
 
@@ -309,7 +310,11 @@ export function registerRoutes(app: Express) {
           });
         }
         
-        const person = await storage.createPerson(validatedData);
+        let person = await storage.createPerson(validatedData);
+        if (validatedData.socialAccountUuids && validatedData.socialAccountUuids.length > 0) {
+          await autoPassInImageForPerson(person.id);
+          person = await storage.getPersonById(person.id) || person;
+        }
         syncEntityInBackground("person", person.id);
         res.status(201).json(person);
       } catch (error) {
@@ -328,23 +333,16 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Person not found" });
         }
   
+        let finalPerson = person;
         if (!person.imageUrl && validatedData.socialAccountUuids) {
-          const uuids = validatedData.socialAccountUuids;
-          for (const uuid of uuids) {
-            const account = await storage.getSocialAccountById(uuid);
-            if (account?.currentProfile?.imageUrl) {
-              const updated = await storage.updatePerson(id, { imageUrl: account.currentProfile.imageUrl });
-              if (updated) {
-                syncEntityInBackground("person", id);
-                return res.json(updated);
-              }
-              break;
-            }
+          const didPass = await autoPassInImageForPerson(id);
+          if (didPass) {
+            finalPerson = await storage.getPersonById(id) || person;
           }
         }
   
         syncEntityInBackground("person", id);
-        res.json(person);
+        res.json(finalPerson);
       } catch (error) {
         console.error("Error updating person:", error);
         res.status(400).json({ error: "Failed to update person" });

@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, Share2, Database, ChevronRight, ImageIcon } from "lucide-react";
+import { Users, Share2, Database, ChevronRight, ImageIcon, Camera } from "lucide-react";
 
 const importExportSections = [
   {
@@ -20,6 +20,12 @@ const importExportSections = [
     description: "Export all your CRM data to an XML backup file, or restore from a previous backup. Includes people, relationships, groups, interactions, notes, social accounts, and more.",
     icon: Database,
     url: "/import-export/application",
+  },
+  {
+    title: "Instagram XML Transfer",
+    description: "Export and import Instagram accounts via XML files for internal data transfer between CRM instances.",
+    icon: Camera,
+    url: "/import-export/instagram-xml",
   },
   {
     title: "Image Pass In",

@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, lineage, partnerships, photos, dailyNoteEvents, dailyNoteInvolvedParties, dailyNoteAuditLogs, sexGuessQueue, appSettings, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -644,9 +644,9 @@ export function registerRoutes(app: Express) {
         if (!req.user) {
           return res.status(401).json({ error: "Not authenticated" });
         }
-  
+
         const includeHistory = req.query.includeHistory === "true";
-  
+
         // Fetch all data from database in parallel for better performance
         const [
           allUsers,
@@ -663,6 +663,16 @@ export function registerRoutes(app: Express) {
           allProfileVersions,
           allNetworkStates,
           mePersonResult,
+          allLineages,
+          allPartnerships,
+          allPhotos,
+          allDailyNotes,
+          allDailyNoteEvents,
+          allDailyNoteInvolvedParties,
+          allDailyNoteAuditLogs,
+          allSexGuesses,
+          allAiChats,
+          allAppSettings,
         ] = await Promise.all([
           storage.getAllUsers(),
           storage.getAllPeople(),
@@ -678,6 +688,16 @@ export function registerRoutes(app: Express) {
           storage.getAllProfileVersions(),
           storage.getAllNetworkStates(),
           db.select().from(people).where(isNotNull(people.userId)).limit(1),
+          db.select().from(lineage),
+          db.select().from(partnerships),
+          db.select().from(photos),
+          db.select().from(dailyNotes),
+          db.select().from(dailyNoteEvents),
+          db.select().from(dailyNoteInvolvedParties),
+          db.select().from(dailyNoteAuditLogs),
+          db.select().from(sexGuessQueue),
+          db.select().from(aiChats),
+          db.select().from(appSettings),
         ]);
         
         const user = allUsers[0];
@@ -687,7 +707,16 @@ export function registerRoutes(app: Express) {
         
         // Filter out ME user from people export
         const peopleToExport = allPeople.filter(p => p.id !== mePersonId);
-  
+
+        // Helper to map mePersonId to ZERO_UUID in photos.prmLocation
+        const mapPrmLocationExport = (loc: string | null): string => {
+          if (!loc) return "";
+          if (mePersonId && loc.includes(mePersonId)) {
+            return loc.replace(mePersonId, ZERO_UUID);
+          }
+          return loc;
+        };
+
         // Helper function to escape XML special characters
         const escapeXml = (str: any): string => {
           if (str === null || str === undefined) return "";
@@ -698,23 +727,23 @@ export function registerRoutes(app: Express) {
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&apos;");
         };
-  
+
         // Helper function to convert array to XML
         const arrayToXml = (arr: any[], itemName: string): string => {
           if (!arr || arr.length === 0) return "";
           return arr.map(item => `<${itemName}>${escapeXml(item)}</${itemName}>`).join("");
         };
-  
+
         // Build XML document
         let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
         xml += '<crm_data>\n';
-  
+
         // Export user profile
         xml += '  <user_profile>\n';
         xml += `    <name>${escapeXml(user?.name || "")}</name>\n`;
         xml += `    <nickname>${escapeXml(user?.nickname || "")}</nickname>\n`;
         xml += '  </user_profile>\n';
-  
+
         // Export relationship types
         xml += '  <relationship_types>\n';
         for (const type of allRelationshipTypes) {
@@ -728,7 +757,7 @@ export function registerRoutes(app: Express) {
           xml += '    </relationship_type>\n';
         }
         xml += '  </relationship_types>\n';
-  
+
         // Export interaction types
         xml += '  <interaction_types>\n';
         for (const type of allInteractionTypes) {
@@ -742,7 +771,7 @@ export function registerRoutes(app: Express) {
           xml += '    </interaction_type>\n';
         }
         xml += '  </interaction_types>\n';
-  
+
         // Export people (excluding ME user)
         xml += '  <people>\n';
         for (const person of peopleToExport) {
@@ -760,11 +789,13 @@ export function registerRoutes(app: Express) {
           xml += `      <is_starred>${escapeXml(person.isStarred)}</is_starred>\n`;
           xml += `      <elo_score>${escapeXml(person.eloScore)}</elo_score>\n`;
           xml += `      <no_social_media>${escapeXml(person.noSocialMedia ?? 0)}</no_social_media>\n`;
+          xml += `      <sex>${escapeXml(person.sex || "unknown")}</sex>\n`;
+          xml += `      <elo_rankable>${escapeXml(person.eloRankable ?? 1)}</elo_rankable>\n`;
           xml += `      <created_at>${escapeXml(person.createdAt)}</created_at>\n`;
           xml += '    </person>\n';
         }
         xml += '  </people>\n';
-  
+
         // Export relationships (encode ME user UUID as all zeros)
         xml += '  <relationships>\n';
         for (const rel of allRelationships) {
@@ -777,11 +808,12 @@ export function registerRoutes(app: Express) {
           xml += `      <to_person_id>${escapeXml(toPersonId)}</to_person_id>\n`;
           xml += `      <type_id>${escapeXml(rel.typeId)}</type_id>\n`;
           xml += `      <notes>${escapeXml(rel.notes || "")}</notes>\n`;
+          xml += `      <family_relationship_type>${escapeXml(rel.familyRelationshipType || "")}</family_relationship_type>\n`;
           xml += `      <created_at>${escapeXml(rel.createdAt)}</created_at>\n`;
           xml += '    </relationship>\n';
         }
         xml += '  </relationships>\n';
-  
+
         // Export groups (encode ME user UUID as all zeros in members)
         xml += '  <groups>\n';
         for (const group of groups) {
@@ -800,7 +832,7 @@ export function registerRoutes(app: Express) {
           xml += '    </group>\n';
         }
         xml += '  </groups>\n';
-  
+
         // Export interactions (encode ME user UUID as all zeros in peopleIds)
         xml += '  <interactions>\n';
         for (const interaction of allInteractions) {
@@ -822,7 +854,7 @@ export function registerRoutes(app: Express) {
           xml += '    </interaction>\n';
         }
         xml += '  </interactions>\n';
-  
+
         // Export notes (exclude notes for ME user)
         xml += '  <notes>\n';
         for (const note of allNotes) {
@@ -838,7 +870,7 @@ export function registerRoutes(app: Express) {
           xml += '    </note>\n';
         }
         xml += '  </notes>\n';
-  
+
         // Export group notes
         xml += '  <group_notes>\n';
         for (const note of allGroupNotes) {
@@ -850,9 +882,9 @@ export function registerRoutes(app: Express) {
           xml += '    </group_note>\n';
         }
         xml += '  </group_notes>\n';
-  
+
         const networkStateMap = new Map(allNetworkStates.map(s => [s.socialAccountId, s]));
-  
+
         xml += '  <social_accounts>\n';
         for (const account of allSocialAccounts) {
           const ownerUuid = account.ownerUuid === mePersonId ? ZERO_UUID : account.ownerUuid;
@@ -871,11 +903,14 @@ export function registerRoutes(app: Express) {
           xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
           xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
           xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
+          xml += `      <last_scraped_at>${escapeXml(account.lastScrapedAt)}</last_scraped_at>\n`;
+          xml += `      <current_posts>${escapeXml(account.currentPosts || "")}</current_posts>\n`;
+          xml += `      <deleted_posts>${escapeXml(account.deletedPosts || "")}</deleted_posts>\n`;
           xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
           xml += '    </social_account>\n';
         }
         xml += '  </social_accounts>\n';
-  
+
         // Export social account types
         xml += '  <social_account_types>\n';
         for (const type of allSocialAccountTypes) {
@@ -887,8 +922,8 @@ export function registerRoutes(app: Express) {
           xml += '    </social_account_type>\n';
         }
         xml += '  </social_account_types>\n';
-  
-        // Export social account posts (non-deleted)
+
+        // Export social account posts
         const allPosts = await storage.getAllPosts();
         xml += '  <social_account_posts>\n';
         for (const post of allPosts) {
@@ -902,12 +937,165 @@ export function registerRoutes(app: Express) {
           xml += `      <comment_count>${escapeXml(post.commentCount)}</comment_count>\n`;
           xml += `      <comments>${escapeXml(post.comments || "")}</comments>\n`;
           xml += `      <mentioned_accounts>${escapeXml(post.mentionedAccounts || "")}</mentioned_accounts>\n`;
+          xml += `      <face_ids>${escapeXml(post.faceIds || "")}</face_ids>\n`;
+          xml += `      <is_deleted>${escapeXml(post.isDeleted)}</is_deleted>\n`;
           xml += `      <posted_at>${escapeXml(post.postedAt || "")}</posted_at>\n`;
           xml += `      <created_at>${escapeXml(post.createdAt)}</created_at>\n`;
           xml += '    </social_account_post>\n';
         }
         xml += '  </social_account_posts>\n';
-  
+
+        // Export photos (new)
+        xml += '  <photos>\n';
+        for (const photo of allPhotos) {
+          xml += '    <photo_entry>\n';
+          xml += `      <id>${escapeXml(photo.id)}</id>\n`;
+          xml += `      <location>${escapeXml(photo.location)}</location>\n`;
+          xml += `      <uploaded_at>${escapeXml(photo.uploadedAt)}</uploaded_at>\n`;
+          xml += `      <is_sub_image>${escapeXml(photo.isSubImage)}</is_sub_image>\n`;
+          xml += `      <processed_at>${escapeXml(photo.processedAt)}</processed_at>\n`;
+          xml += `      <image_description_at>${escapeXml(photo.imageDescriptionAt)}</image_description_at>\n`;
+          xml += `      <image_description>${escapeXml(photo.imageDescription || "")}</image_description>\n`;
+          xml += `      <face_id_at>${escapeXml(photo.faceIdAt)}</face_id_at>\n`;
+          xml += `      <face_uuids>${escapeXml(photo.faceUuids ? JSON.stringify(photo.faceUuids) : "")}</face_uuids>\n`;
+          xml += `      <prm_location>${escapeXml(mapPrmLocationExport(photo.prmLocation))}</prm_location>\n`;
+          xml += `      <metadata>${escapeXml(photo.metadata ? JSON.stringify(photo.metadata) : "")}</metadata>\n`;
+          xml += `      <og_metadata>${escapeXml(photo.ogMetadata ? JSON.stringify(photo.ogMetadata) : "")}</og_metadata>\n`;
+          xml += `      <file_hash>${escapeXml(photo.fileHash || "")}</file_hash>\n`;
+          xml += `      <width_px>${escapeXml(photo.widthPx)}</width_px>\n`;
+          xml += `      <height_px>${escapeXml(photo.heightPx)}</height_px>\n`;
+          xml += '    </photo_entry>\n';
+        }
+        xml += '  </photos>\n';
+
+        // Export lineages (new)
+        xml += '  <lineages>\n';
+        for (const lin of allLineages) {
+          const childId = lin.childId === mePersonId ? ZERO_UUID : lin.childId;
+          const parentId = lin.parentId === mePersonId ? ZERO_UUID : lin.parentId;
+          xml += '    <lineage_entry>\n';
+          xml += `      <id>${escapeXml(lin.id)}</id>\n`;
+          xml += `      <child_id>${escapeXml(childId)}</child_id>\n`;
+          xml += `      <parent_id>${escapeXml(parentId)}</parent_id>\n`;
+          xml += `      <lineage_type>${escapeXml(lin.lineageType)}</lineage_type>\n`;
+          xml += `      <created_at>${escapeXml(lin.createdAt)}</created_at>\n`;
+          xml += '    </lineage_entry>\n';
+        }
+        xml += '  </lineages>\n';
+
+        // Export partnerships (new)
+        xml += '  <partnerships>\n';
+        for (const part of allPartnerships) {
+          const person1Id = part.person1Id === mePersonId ? ZERO_UUID : part.person1Id;
+          const person2Id = part.person2Id === mePersonId ? ZERO_UUID : part.person2Id;
+          xml += '    <partnership_entry>\n';
+          xml += `      <id>${escapeXml(part.id)}</id>\n`;
+          xml += `      <person1_id>${escapeXml(person1Id)}</person1_id>\n`;
+          xml += `      <person2_id>${escapeXml(person2Id)}</person2_id>\n`;
+          xml += `      <status>${escapeXml(part.status)}</status>\n`;
+          xml += `      <created_at>${escapeXml(part.createdAt)}</created_at>\n`;
+          xml += '    </partnership_entry>\n';
+        }
+        xml += '  </partnerships>\n';
+
+        // Export daily notes (new)
+        xml += '  <daily_notes>\n';
+        for (const dn of allDailyNotes) {
+          xml += '    <daily_note_entry>\n';
+          xml += `      <id>${escapeXml(dn.id)}</id>\n`;
+          xml += `      <date>${escapeXml(dn.date)}</date>\n`;
+          xml += `      <user_title>${escapeXml(dn.userTitle)}</user_title>\n`;
+          xml += `      <body>${escapeXml(dn.body)}</body>\n`;
+          xml += `      <created_at>${escapeXml(dn.createdAt)}</created_at>\n`;
+          xml += `      <updated_at>${escapeXml(dn.updatedAt)}</updated_at>\n`;
+          xml += '    </daily_note_entry>\n';
+        }
+        xml += '  </daily_notes>\n';
+
+        // Export daily note events (new)
+        xml += '  <daily_note_events>\n';
+        for (const ev of allDailyNoteEvents) {
+          xml += '    <daily_note_event_entry>\n';
+          xml += `      <id>${escapeXml(ev.id)}</id>\n`;
+          xml += `      <daily_note_id>${escapeXml(ev.dailyNoteId)}</daily_note_id>\n`;
+          xml += `      <text>${escapeXml(ev.text)}</text>\n`;
+          xml += `      <position>${escapeXml(ev.position)}</position>\n`;
+          xml += `      <created_at>${escapeXml(ev.createdAt)}</created_at>\n`;
+          xml += '    </daily_note_event_entry>\n';
+        }
+        xml += '  </daily_note_events>\n';
+
+        // Export daily note involved parties (new)
+        xml += '  <daily_note_involved_parties>\n';
+        for (const party of allDailyNoteInvolvedParties) {
+          let refId = party.refId;
+          if (party.partyType === "person" && refId === mePersonId) {
+            refId = ZERO_UUID;
+          }
+          xml += '    <daily_note_involved_party_entry>\n';
+          xml += `      <id>${escapeXml(party.id)}</id>\n`;
+          xml += `      <daily_note_id>${escapeXml(party.dailyNoteId)}</daily_note_id>\n`;
+          xml += `      <party_type>${escapeXml(party.partyType)}</party_type>\n`;
+          xml += `      <ref_id>${escapeXml(refId)}</ref_id>\n`;
+          xml += '    </daily_note_involved_party_entry>\n';
+        }
+        xml += '  </daily_note_involved_parties>\n';
+
+        // Export daily note audit logs (new)
+        xml += '  <daily_note_audit_logs>\n';
+        for (const log of allDailyNoteAuditLogs) {
+          xml += '    <daily_note_audit_log_entry>\n';
+          xml += `      <id>${escapeXml(log.id)}</id>\n`;
+          xml += `      <daily_note_id>${escapeXml(log.dailyNoteId)}</daily_note_id>\n`;
+          xml += `      <action>${escapeXml(log.action)}</action>\n`;
+          xml += `      <timestamp>${escapeXml(log.timestamp)}</timestamp>\n`;
+          xml += `      <pin_used>${escapeXml(log.pinUsed)}</pin_used>\n`;
+          xml += '    </daily_note_audit_log_entry>\n';
+        }
+        xml += '  </daily_note_audit_logs>\n';
+
+        // Export sex guesses queue (new)
+        xml += '  <sex_guess_records>\n';
+        for (const guess of allSexGuesses) {
+          const personId = guess.personId === mePersonId ? ZERO_UUID : guess.personId;
+          xml += '    <sex_guess_entry>\n';
+          xml += `      <id>${escapeXml(guess.id)}</id>\n`;
+          xml += `      <person_id>${escapeXml(personId)}</person_id>\n`;
+          xml += `      <guessed_sex>${escapeXml(guess.guessedSex)}</guessed_sex>\n`;
+          xml += `      <reasoning>${escapeXml(guess.reasoning)}</reasoning>\n`;
+          xml += `      <date_added>${escapeXml(guess.dateAdded)}</date_added>\n`;
+          xml += `      <answered>${escapeXml(guess.answered)}</answered>\n`;
+          xml += `      <snooze_until>${escapeXml(guess.snoozedUntil)}</snooze_until>\n`;
+          xml += '    </sex_guess_entry>\n';
+        }
+        xml += '  </sex_guess_records>\n';
+
+        // Export AI chats (new)
+        xml += '  <ai_chats>\n';
+        for (const chat of allAiChats) {
+          if (chat.userId !== req.user.id) continue;
+          xml += '    <ai_chat_entry>\n';
+          xml += `      <id>${escapeXml(chat.id)}</id>\n`;
+          xml += `      <title>${escapeXml(chat.title)}</title>\n`;
+          xml += `      <system_message>${escapeXml(chat.systemMessage)}</system_message>\n`;
+          xml += `      <model>${escapeXml(chat.model)}</model>\n`;
+          xml += `      <messages>${escapeXml(chat.messages ? JSON.stringify(chat.messages) : "[]")}</messages>\n`;
+          xml += `      <created_at>${escapeXml(chat.createdAt)}</created_at>\n`;
+          xml += `      <updated_at>${escapeXml(chat.updatedAt)}</updated_at>\n`;
+          xml += '    </ai_chat_entry>\n';
+        }
+        xml += '  </ai_chats>\n';
+
+        // Export app settings (new)
+        xml += '  <app_settings_list>\n';
+        for (const setting of allAppSettings) {
+          xml += '    <app_setting_entry>\n';
+          xml += `      <key>${escapeXml(setting.key)}</key>\n`;
+          xml += `      <value>${escapeXml(setting.value)}</value>\n`;
+          xml += '    </app_setting_entry>\n';
+        }
+        xml += '  </app_settings_list>\n';
+
         if (includeHistory) {
           // Export social profile versions
           xml += '  <social_profile_versions>\n';
@@ -925,7 +1113,7 @@ export function registerRoutes(app: Express) {
             xml += '    </social_profile_version>\n';
           }
           xml += '  </social_profile_versions>\n';
-  
+
           // Export social network states (current snapshots)
           xml += '  <social_network_snapshots>\n';
           for (const state of allNetworkStates) {
@@ -940,7 +1128,7 @@ export function registerRoutes(app: Express) {
             xml += '    </social_network_snapshot>\n';
           }
           xml += '  </social_network_snapshots>\n';
-  
+
           // Export social network changes
           const allNetworkChanges = await storage.getAllNetworkChanges();
           xml += '  <social_network_changes>\n';
@@ -957,9 +1145,9 @@ export function registerRoutes(app: Express) {
           }
           xml += '  </social_network_changes>\n';
         }
-  
+
         xml += '</crm_data>';
-  
+
         // Set headers for file download
         res.setHeader("Content-Type", "application/xml");
         res.setHeader("Content-Disposition", `attachment; filename="crm_export_${new Date().toISOString().split('T')[0]}.xml"`);
@@ -1023,6 +1211,14 @@ export function registerRoutes(app: Express) {
           if (!mePersonId) return uuid;
           return uuid === ZERO_UUID ? mePersonId : uuid;
         };
+
+        const mapPrmLocationImport = (loc: string | null): string => {
+          if (!loc) return "";
+          if (mePersonId && loc.includes(ZERO_UUID)) {
+            return loc.replace(ZERO_UUID, mePersonId);
+          }
+          return loc;
+        };
   
         let importedCounts: Record<string, number> = {
           relationshipTypes: 0,
@@ -1038,6 +1234,16 @@ export function registerRoutes(app: Express) {
           posts: 0,
           messages: 0,
           networkChanges: 0,
+          photos: 0,
+          lineages: 0,
+          partnerships: 0,
+          dailyNotes: 0,
+          dailyNoteEvents: 0,
+          dailyNoteInvolvedParties: 0,
+          dailyNoteAuditLogs: 0,
+          sexGuessQueue: 0,
+          aiChats: 0,
+          appSettings: 0,
         };
         
         let skippedCounts: Record<string, number> = {
@@ -1112,6 +1318,48 @@ export function registerRoutes(app: Express) {
             console.error(`Error importing interaction type ${id}:`, error);
           }
         }
+
+        // Parse and import photos (import early so entity imageUuid references resolve)
+        const photoBlocks = parseAllTags("photo_entry", xmlText);
+        for (const block of photoBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const location = unescapeXml(parseXmlTag("location", block));
+          const uploadedAtStr = unescapeXml(parseXmlTag("uploaded_at", block));
+          const isSubImage = parseXmlTag("is_sub_image", block) === "true";
+          const processedAtStr = unescapeXml(parseXmlTag("processed_at", block));
+          const imageDescriptionAtStr = unescapeXml(parseXmlTag("image_description_at", block));
+          const imageDescription = unescapeXml(parseXmlTag("image_description", block));
+          const faceIdAtStr = unescapeXml(parseXmlTag("face_id_at", block));
+          const faceUuidsStr = unescapeXml(parseXmlTag("face_uuids", block));
+          const prmLocation = mapPrmLocationImport(unescapeXml(parseXmlTag("prm_location", block)));
+          const metadataStr = unescapeXml(parseXmlTag("metadata", block));
+          const ogMetadataStr = unescapeXml(parseXmlTag("og_metadata", block));
+          const fileHash = unescapeXml(parseXmlTag("file_hash", block));
+          const widthPxStr = unescapeXml(parseXmlTag("width_px", block));
+          const heightPxStr = unescapeXml(parseXmlTag("height_px", block));
+
+          try {
+            await db.insert(photos).values({
+              id, location,
+              uploadedAt: uploadedAtStr ? new Date(uploadedAtStr) : new Date(),
+              isSubImage,
+              processedAt: processedAtStr ? new Date(processedAtStr) : null,
+              imageDescriptionAt: imageDescriptionAtStr ? new Date(imageDescriptionAtStr) : null,
+              imageDescription: imageDescription || null,
+              faceIdAt: faceIdAtStr ? new Date(faceIdAtStr) : null,
+              faceUuids: faceUuidsStr ? JSON.parse(faceUuidsStr) : null,
+              prmLocation,
+              metadata: metadataStr ? JSON.parse(metadataStr) : null,
+              ogMetadata: ogMetadataStr ? JSON.parse(ogMetadataStr) : null,
+              fileHash: fileHash || null,
+              widthPx: widthPxStr ? parseInt(widthPxStr) : null,
+              heightPx: heightPxStr ? parseInt(heightPxStr) : null,
+            }).onConflictDoNothing();
+            importedCounts.photos++;
+          } catch (error) {
+            console.error(`Error importing photo entry ${id}:`, error);
+          }
+        }
   
         // Parse and import people
         // Create a map for fast lookup by firstName + UUID
@@ -1135,6 +1383,8 @@ export function registerRoutes(app: Express) {
           const isStarred = parseInt(parseXmlTag("is_starred", block)) || 0;
           const eloScore = parseInt(parseXmlTag("elo_score", block)) || 1200;
           const noSocialMedia = parseInt(parseXmlTag("no_social_media", block)) || 0;
+          const sex = unescapeXml(parseXmlTag("sex", block)) || "unknown";
+          const eloRankable = parseXmlTag("elo_rankable", block) !== "" ? (parseInt(parseXmlTag("elo_rankable", block)) || 0) : 1;
   
           // Check for duplicate by First Name AND UUID
           const lookupKey = `${firstName.toLowerCase()}:${id}`;
@@ -1158,6 +1408,8 @@ export function registerRoutes(app: Express) {
               isStarred: isStarred,
               eloScore: eloScore,
               noSocialMedia: noSocialMedia,
+              sex,
+              eloRankable,
             });
             importedCounts.people++;
             existingPeopleMap.set(lookupKey, true);
@@ -1200,8 +1452,9 @@ export function registerRoutes(app: Express) {
           const id = unescapeXml(parseXmlTag("id", block));
           const fromPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("from_person_id", block)));
           const toPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("to_person_id", block)));
-          const typeId = unescapeXml(parseXmlTag("type_id", block));
+          const typeId = unescapeXml(parseXmlTag("type_id", block)) || null;
           const notes = unescapeXml(parseXmlTag("notes", block));
+          const familyRelationshipType = unescapeXml(parseXmlTag("family_relationship_type", block)) || null;
   
           // Check for duplicate by UUID
           if (existingRelationshipUuids.has(id)) {
@@ -1216,11 +1469,52 @@ export function registerRoutes(app: Express) {
               toPersonId,
               typeId,
               notes: notes || null,
+              familyRelationshipType: (familyRelationshipType || null) as any,
             });
             importedCounts.relationships++;
             existingRelationshipUuids.add(id);
           } catch (error) {
             console.error(`Error importing relationship ${id}:`, error);
+          }
+        }
+
+        // Parse and import lineages (new)
+        const lineageBlocks = parseAllTags("lineage_entry", xmlText);
+        for (const block of lineageBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const childId = replaceZeroUUID(unescapeXml(parseXmlTag("child_id", block)));
+          const parentId = replaceZeroUUID(unescapeXml(parseXmlTag("parent_id", block)));
+          const lineageType = unescapeXml(parseXmlTag("lineage_type", block)) || "biological";
+          const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+          try {
+            await db.insert(lineage).values({
+              id, childId, parentId, lineageType,
+              createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+            }).onConflictDoNothing();
+            importedCounts.lineages++;
+          } catch (error) {
+            console.error(`Error importing lineage entry ${id}:`, error);
+          }
+        }
+
+        // Parse and import partnerships (new)
+        const partnershipBlocks = parseAllTags("partnership_entry", xmlText);
+        for (const block of partnershipBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const person1Id = replaceZeroUUID(unescapeXml(parseXmlTag("person1_id", block)));
+          const person2Id = replaceZeroUUID(unescapeXml(parseXmlTag("person2_id", block)));
+          const status = unescapeXml(parseXmlTag("status", block)) || "partner";
+          const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+          try {
+            await db.insert(partnerships).values({
+              id, person1Id, person2Id, status,
+              createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+            }).onConflictDoNothing();
+            importedCounts.partnerships++;
+          } catch (error) {
+            console.error(`Error importing partnership entry ${id}:`, error);
           }
         }
   
@@ -1333,6 +1627,9 @@ export function registerRoutes(app: Express) {
           const followers = parseXmlArray("followers", "account_id", block);
           const internalAccountCreationDateStr = unescapeXml(parseXmlTag("internal_account_creation_date", block));
           const internalAccountCreationType = unescapeXml(parseXmlTag("internal_account_creation_type", block));
+          const lastScrapedAtStr = unescapeXml(parseXmlTag("last_scraped_at", block));
+          const currentPosts = unescapeXml(parseXmlTag("current_posts", block)) || null;
+          const deletedPosts = unescapeXml(parseXmlTag("deleted_posts", block)) || null;
   
           if (existingSocialAccountUuids.has(id)) {
             skippedCounts.socialAccounts++;
@@ -1350,6 +1647,13 @@ export function registerRoutes(app: Express) {
               internalAccountCreationType: internalAccountCreationType || "Import",
               internalAccountCreationDate: internalAccountCreationDateStr ? new Date(internalAccountCreationDateStr) : undefined,
             });
+
+            // Update extra columns using Drizzle
+            await db.update(socialAccounts).set({
+              lastScrapedAt: lastScrapedAtStr ? new Date(lastScrapedAtStr) : null,
+              currentPosts: currentPosts || null,
+              deletedPosts: deletedPosts || null,
+            }).where(eq(socialAccounts.id, id));
   
             if (nickname || accountUrl || imageUrl) {
               if (created.currentProfile) {
@@ -1473,6 +1777,8 @@ export function registerRoutes(app: Express) {
             const commentCount = parseInt(parseXmlTag("comment_count", block)) || 0;
             const comments = unescapeXml(parseXmlTag("comments", block));
             const mentionedAccounts = unescapeXml(parseXmlTag("mentioned_accounts", block));
+            const faceIds = unescapeXml(parseXmlTag("face_ids", block));
+            const isDeleted = parseXmlTag("is_deleted", block) === "true";
             const postedAtStr = unescapeXml(parseXmlTag("posted_at", block));
             const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
   
@@ -1490,6 +1796,8 @@ export function registerRoutes(app: Express) {
               commentCount,
               comments: comments || null,
               mentionedAccounts: mentionedAccounts || null,
+              faceIds: faceIds || null,
+              isDeleted,
               postedAt: postedAtStr ? new Date(postedAtStr) : null,
               createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
             }).onConflictDoNothing();
@@ -1497,6 +1805,157 @@ export function registerRoutes(app: Express) {
             importedCounts.posts++;
           } catch (error) {
             console.error("Error importing social account post:", error);
+          }
+        }
+
+        // Parse and import daily notes (new)
+        const dailyNoteBlocks = parseAllTags("daily_note_entry", xmlText);
+        for (const block of dailyNoteBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const date = unescapeXml(parseXmlTag("date", block));
+          const userTitle = unescapeXml(parseXmlTag("user_title", block));
+          const body = unescapeXml(parseXmlTag("body", block));
+          const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+          const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
+
+          try {
+            await db.insert(dailyNotes).values({
+              id, date, userTitle, body,
+              createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+              updatedAt: updatedAtStr ? new Date(updatedAtStr) : null,
+            }).onConflictDoNothing();
+            importedCounts.dailyNotes++;
+          } catch (error) {
+            console.error(`Error importing daily note ${id}:`, error);
+          }
+        }
+
+        // Parse and import daily note events (new)
+        const dailyNoteEventBlocks = parseAllTags("daily_note_event_entry", xmlText);
+        for (const block of dailyNoteEventBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
+          const text = unescapeXml(parseXmlTag("text", block));
+          const position = parseInt(parseXmlTag("position", block)) || 0;
+          const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+          try {
+            await db.insert(dailyNoteEvents).values({
+              id, dailyNoteId, text, position,
+              createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+            }).onConflictDoNothing();
+            importedCounts.dailyNoteEvents++;
+          } catch (error) {
+            console.error(`Error importing daily note event ${id}:`, error);
+          }
+        }
+
+        // Parse and import daily note involved parties (new)
+        const involvedPartyBlocks = parseAllTags("daily_note_involved_party_entry", xmlText);
+        for (const block of involvedPartyBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
+          const partyType = unescapeXml(parseXmlTag("party_type", block));
+          let refId = unescapeXml(parseXmlTag("ref_id", block));
+          if (partyType === "person") {
+            refId = replaceZeroUUID(refId);
+          }
+
+          try {
+            await db.insert(dailyNoteInvolvedParties).values({
+              id, dailyNoteId, partyType, refId,
+            }).onConflictDoNothing();
+            importedCounts.dailyNoteInvolvedParties++;
+          } catch (error) {
+            console.error(`Error importing daily note involved party ${id}:`, error);
+          }
+        }
+
+        // Parse and import daily note audit logs (new)
+        const auditLogBlocks = parseAllTags("daily_note_audit_log_entry", xmlText);
+        for (const block of auditLogBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
+          const action = unescapeXml(parseXmlTag("action", block));
+          const timestampStr = unescapeXml(parseXmlTag("timestamp", block));
+          const pinUsed = parseXmlTag("pin_used", block) === "true";
+
+          try {
+            await db.insert(dailyNoteAuditLogs).values({
+              id, dailyNoteId, action,
+              timestamp: timestampStr ? new Date(timestampStr) : new Date(),
+              pinUsed,
+            }).onConflictDoNothing();
+            importedCounts.dailyNoteAuditLogs++;
+          } catch (error) {
+            console.error(`Error importing daily note audit log ${id}:`, error);
+          }
+        }
+
+        // Parse and import sex guess records (new)
+        const sexGuessBlocks = parseAllTags("sex_guess_entry", xmlText);
+        for (const block of sexGuessBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
+          const guessedSex = unescapeXml(parseXmlTag("guessed_sex", block));
+          const reasoning = unescapeXml(parseXmlTag("reasoning", block));
+          const dateAddedStr = unescapeXml(parseXmlTag("date_added", block));
+          const answered = parseInt(parseXmlTag("answered", block)) || 0;
+          const snoozeUntilStr = unescapeXml(parseXmlTag("snooze_until", block));
+
+          try {
+            await db.insert(sexGuessQueue).values({
+              id, personId, guessedSex, reasoning,
+              dateAdded: dateAddedStr ? new Date(dateAddedStr) : new Date(),
+              answered,
+              snoozedUntil: snoozeUntilStr ? new Date(snoozeUntilStr) : null,
+            }).onConflictDoNothing();
+            importedCounts.sexGuessQueue++;
+          } catch (error) {
+            console.error(`Error importing sex guess entry ${id}:`, error);
+          }
+        }
+
+        // Parse and import AI chats (new)
+        const aiChatBlocks = parseAllTags("ai_chat_entry", xmlText);
+        for (const block of aiChatBlocks) {
+          const id = unescapeXml(parseXmlTag("id", block));
+          const title = unescapeXml(parseXmlTag("title", block)) || "New chat";
+          const systemMessage = unescapeXml(parseXmlTag("system_message", block));
+          const model = unescapeXml(parseXmlTag("model", block));
+          const messagesStr = unescapeXml(parseXmlTag("messages", block));
+          const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+          const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
+
+          try {
+            await db.insert(aiChats).values({
+              id, userId: req.user.id, title, systemMessage, model,
+              messages: messagesStr ? JSON.parse(messagesStr) : [],
+              createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+              updatedAt: updatedAtStr ? new Date(updatedAtStr) : new Date(),
+            }).onConflictDoNothing();
+            importedCounts.aiChats++;
+          } catch (error) {
+            console.error(`Error importing AI chat ${id}:`, error);
+          }
+        }
+
+        // Parse and import app settings (new)
+        const appSettingBlocks = parseAllTags("app_setting_entry", xmlText);
+        for (const block of appSettingBlocks) {
+          const key = unescapeXml(parseXmlTag("key", block));
+          const value = unescapeXml(parseXmlTag("value", block));
+          if (!key) continue;
+
+          try {
+            await db.insert(appSettings).values({ key, value })
+              .onConflictDoUpdate({
+                target: appSettings.key,
+                set: { value }
+              });
+            importedCounts.appSettings++;
+          } catch (error) {
+            console.error(`Error importing app setting ${key}:`, error);
           }
         }
   

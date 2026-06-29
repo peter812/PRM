@@ -8,7 +8,7 @@ import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } 
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -53,6 +53,7 @@ import {
   searchDailyNotes,
 } from "../vector";
 import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
+import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "../image-pass-in-utils";
 
 const scryptAsync = promisify(scrypt);
 
@@ -538,6 +539,8 @@ export function registerRoutes(app: Express) {
             console.error("Error importing network change:", error);
           }
         }
+
+        await runAutomaticImagePassIn();
   
         res.json({
           imported: importedCounts,
@@ -615,6 +618,8 @@ export function registerRoutes(app: Express) {
         if (!account) {
           return res.status(404).json({ error: "Social account not found" });
         }
+
+        await autoPassInImageForSocialAccount(id);
   
         sseManager.broadcast("social_account.updated", { id });
         syncEntityInBackground("social_account", id);
@@ -1244,50 +1249,8 @@ export function registerRoutes(app: Express) {
   
     app.post("/api/image-pass-in", async (req, res) => {
       try {
-        const allPeople = await storage.getAllPeople();
-        const peopleWithoutImages = allPeople.filter(p => !p.imageUrl);
-  
-        let updated = 0;
-        let skipped = 0;
-        let noSocialAccount = 0;
-        const updates: { personId: string; personName: string; imageUrl: string }[] = [];
-  
-        for (const person of peopleWithoutImages) {
-          const socialUuids = person.socialAccountUuids || [];
-          if (socialUuids.length === 0) {
-            noSocialAccount++;
-            continue;
-          }
-  
-          let foundImage: string | null = null;
-          for (const uuid of socialUuids) {
-            const account = await storage.getSocialAccountById(uuid);
-            if (account?.currentProfile?.imageUrl) {
-              foundImage = account.currentProfile.imageUrl;
-              break;
-            }
-          }
-  
-          if (foundImage) {
-            await storage.updatePerson(person.id, { imageUrl: foundImage });
-            updates.push({
-              personId: person.id,
-              personName: `${person.firstName} ${person.lastName}`.trim(),
-              imageUrl: foundImage,
-            });
-            updated++;
-          } else {
-            skipped++;
-          }
-        }
-  
-        res.json({
-          totalPeopleWithoutImages: peopleWithoutImages.length,
-          updated,
-          skipped,
-          noSocialAccount,
-          updates,
-        });
+        const result = await runAutomaticImagePassIn();
+        res.json(result);
       } catch (error) {
         console.error("Error in image pass-in:", error);
         res.status(500).json({ error: "Failed to process image pass-in" });
@@ -2290,6 +2253,385 @@ export function registerRoutes(app: Express) {
     app.post("/api/v1/posts/import", importInstagramPostHandler);
     app.post("/api/posts/instagram/check", checkPostDuplicatesHandler);
     app.post("/api/v1/posts/check", checkPostDuplicatesHandler);
+
+    // ========================
+    // New Social Accounts & Posts Endpoints
+    // ========================
+
+    // Add follower
+    app.post("/api/social-accounts/:id/followers", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { followerId } = req.body;
+        if (!followerId) {
+          return res.status(400).json({ error: "followerId is required" });
+        }
+
+        const account = await storage.getSocialAccountById(id);
+        const followerAccount = await storage.getSocialAccountById(followerId);
+        if (!account || !followerAccount) {
+          return res.status(404).json({ error: "One or both social accounts not found" });
+        }
+
+        // Update target account's followers
+        const targetState = await storage.getNetworkState(id);
+        const targetFollowers = new Set(targetState?.followers || []);
+        targetFollowers.add(followerId);
+
+        // Update follower account's following
+        const followerState = await storage.getNetworkState(followerId);
+        const followerFollowing = new Set(followerState?.following || []);
+        followerFollowing.add(id);
+
+        const batchId = crypto.randomUUID();
+        const changes = [
+          { socialAccountId: id, changeType: 'follow', direction: 'follower', targetAccountId: followerId, batchId },
+          { socialAccountId: followerId, changeType: 'follow', direction: 'following', targetAccountId: id, batchId }
+        ];
+        await storage.recordNetworkChanges(changes);
+
+        const updatedTargetState = await storage.upsertNetworkState({
+          socialAccountId: id,
+          followerCount: targetFollowers.size,
+          followingCount: targetState?.followingCount || 0,
+          followers: Array.from(targetFollowers),
+          following: targetState?.following || [],
+        });
+
+        await storage.upsertNetworkState({
+          socialAccountId: followerId,
+          followerCount: followerState?.followerCount || 0,
+          followingCount: followerFollowing.size,
+          followers: followerState?.followers || [],
+          following: Array.from(followerFollowing),
+        });
+
+        res.json({ success: true, networkState: updatedTargetState });
+      } catch (error) {
+        console.error("Error adding follower:", error);
+        res.status(500).json({ error: "Failed to add follower" });
+      }
+    });
+
+    // Remove follower
+    app.delete("/api/social-accounts/:id/followers/:fId", async (req, res) => {
+      try {
+        const { id, fId } = req.params;
+        const account = await storage.getSocialAccountById(id);
+        const followerAccount = await storage.getSocialAccountById(fId);
+        if (!account || !followerAccount) {
+          return res.status(404).json({ error: "One or both social accounts not found" });
+        }
+
+        const targetState = await storage.getNetworkState(id);
+        const targetFollowers = new Set(targetState?.followers || []);
+        if (!targetFollowers.has(fId)) {
+          return res.status(400).json({ error: "Follower relationship does not exist" });
+        }
+        targetFollowers.delete(fId);
+
+        const followerState = await storage.getNetworkState(fId);
+        const followerFollowing = new Set(followerState?.following || []);
+        followerFollowing.delete(id);
+
+        const batchId = crypto.randomUUID();
+        const changes = [
+          { socialAccountId: id, changeType: 'unfollow', direction: 'follower', targetAccountId: fId, batchId },
+          { socialAccountId: fId, changeType: 'unfollow', direction: 'following', targetAccountId: id, batchId }
+        ];
+        await storage.recordNetworkChanges(changes);
+
+        const updatedTargetState = await storage.upsertNetworkState({
+          socialAccountId: id,
+          followerCount: targetFollowers.size,
+          followingCount: targetState?.followingCount || 0,
+          followers: Array.from(targetFollowers),
+          following: targetState?.following || [],
+        });
+
+        await storage.upsertNetworkState({
+          socialAccountId: fId,
+          followerCount: followerState?.followerCount || 0,
+          followingCount: followerFollowing.size,
+          followers: followerState?.followers || [],
+          following: Array.from(followerFollowing),
+        });
+
+        res.json({ success: true, networkState: updatedTargetState });
+      } catch (error) {
+        console.error("Error removing follower:", error);
+        res.status(500).json({ error: "Failed to remove follower" });
+      }
+    });
+
+    // Add following
+    app.post("/api/social-accounts/:id/following", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { followingId } = req.body;
+        if (!followingId) {
+          return res.status(400).json({ error: "followingId is required" });
+        }
+
+        const account = await storage.getSocialAccountById(id);
+        const followingAccount = await storage.getSocialAccountById(followingId);
+        if (!account || !followingAccount) {
+          return res.status(404).json({ error: "One or both social accounts not found" });
+        }
+
+        const targetState = await storage.getNetworkState(id);
+        const targetFollowing = new Set(targetState?.following || []);
+        targetFollowing.add(followingId);
+
+        const followingState = await storage.getNetworkState(followingId);
+        const followingFollowers = new Set(followingState?.followers || []);
+        followingFollowers.add(id);
+
+        const batchId = crypto.randomUUID();
+        const changes = [
+          { socialAccountId: id, changeType: 'follow', direction: 'following', targetAccountId: followingId, batchId },
+          { socialAccountId: followingId, changeType: 'follow', direction: 'follower', targetAccountId: id, batchId }
+        ];
+        await storage.recordNetworkChanges(changes);
+
+        const updatedTargetState = await storage.upsertNetworkState({
+          socialAccountId: id,
+          followerCount: targetState?.followerCount || 0,
+          followingCount: targetFollowing.size,
+          followers: targetState?.followers || [],
+          following: Array.from(targetFollowing),
+        });
+
+        await storage.upsertNetworkState({
+          socialAccountId: followingId,
+          followerCount: followingFollowers.size,
+          followingCount: followingState?.followingCount || 0,
+          followers: Array.from(followingFollowers),
+          following: followingState?.following || [],
+        });
+
+        res.json({ success: true, networkState: updatedTargetState });
+      } catch (error) {
+        console.error("Error adding following:", error);
+        res.status(500).json({ error: "Failed to add following" });
+      }
+    });
+
+    // Remove following
+    app.delete("/api/social-accounts/:id/following/:fId", async (req, res) => {
+      try {
+        const { id, fId } = req.params;
+        const account = await storage.getSocialAccountById(id);
+        const followingAccount = await storage.getSocialAccountById(fId);
+        if (!account || !followingAccount) {
+          return res.status(404).json({ error: "One or both social accounts not found" });
+        }
+
+        const targetState = await storage.getNetworkState(id);
+        const targetFollowing = new Set(targetState?.following || []);
+        if (!targetFollowing.has(fId)) {
+          return res.status(400).json({ error: "Following relationship does not exist" });
+        }
+        targetFollowing.delete(fId);
+
+        const followingState = await storage.getNetworkState(fId);
+        const followingFollowers = new Set(followingState?.followers || []);
+        followingFollowers.delete(id);
+
+        const batchId = crypto.randomUUID();
+        const changes = [
+          { socialAccountId: id, changeType: 'unfollow', direction: 'following', targetAccountId: fId, batchId },
+          { socialAccountId: fId, changeType: 'unfollow', direction: 'follower', targetAccountId: id, batchId }
+        ];
+        await storage.recordNetworkChanges(changes);
+
+        const updatedTargetState = await storage.upsertNetworkState({
+          socialAccountId: id,
+          followerCount: targetState?.followerCount || 0,
+          followingCount: targetFollowing.size,
+          followers: targetState?.followers || [],
+          following: Array.from(targetFollowing),
+        });
+
+        await storage.upsertNetworkState({
+          socialAccountId: fId,
+          followerCount: followingFollowers.size,
+          followingCount: followingState?.followingCount || 0,
+          followers: Array.from(followingFollowers),
+          following: followingState?.following || [],
+        });
+
+        res.json({ success: true, networkState: updatedTargetState });
+      } catch (error) {
+        console.error("Error removing following:", error);
+        res.status(500).json({ error: "Failed to remove following" });
+      }
+    });
+
+    // Get social account directly by platform and username
+    app.get("/api/social-accounts/platform/:platform/username/:username", async (req, res) => {
+      try {
+        const { platform, username } = req.params;
+        const normalizedUsername = username.trim().toLowerCase();
+        
+        const type = await storage.getSocialAccountTypeByName(platform);
+        if (!type) {
+          return res.status(404).json({ error: `Platform '${platform}' not found` });
+        }
+
+        const [account] = await db
+          .select()
+          .from(socialAccounts)
+          .where(
+            and(
+              eq(sql`LOWER(${socialAccounts.username})`, normalizedUsername),
+              eq(socialAccounts.typeId, type.id)
+            )
+          )
+          .limit(1);
+
+        if (!account) {
+          return res.status(404).json({ error: `Social account not found with username '${username}' on platform '${platform}'` });
+        }
+
+        const enriched = await storage.getSocialAccountById(account.id);
+        res.json(enriched);
+      } catch (error) {
+        console.error("Error fetching social account by username:", error);
+        res.status(500).json({ error: "Failed to fetch social account" });
+      }
+    });
+
+    // Get all network changes (paginated)
+    app.get("/api/social-accounts/network-changes", async (req, res) => {
+      try {
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 30));
+        const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+        
+        const rows = await db
+          .select()
+          .from(socialNetworkChanges)
+          .orderBy(desc(socialNetworkChanges.detectedAt))
+          .limit(limit)
+          .offset(offset);
+
+        res.json(rows);
+      } catch (error) {
+        console.error("Error fetching network changes:", error);
+        res.status(500).json({ error: "Failed to fetch network changes" });
+      }
+    });
+
+    // Get all profile versions (paginated)
+    app.get("/api/social-accounts/profile-versions", async (req, res) => {
+      try {
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 30));
+        const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+
+        const rows = await db
+          .select()
+          .from(socialProfileVersions)
+          .orderBy(desc(socialProfileVersions.detectedAt))
+          .limit(limit)
+          .offset(offset);
+
+        res.json(rows);
+      } catch (error) {
+        console.error("Error fetching profile versions:", error);
+        res.status(500).json({ error: "Failed to fetch profile versions" });
+      }
+    });
+
+    // List all posts paginated (offset / limit)
+    app.get("/api/social-account-posts", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 30));
+        const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+        const postType = req.query.postType as string | undefined;
+        const socialAccountId = req.query.socialAccountId as string | undefined;
+
+        const conditions = [eq(socialAccountPosts.isDeleted, false)];
+        if (postType) conditions.push(eq(socialAccountPosts.postType, postType));
+        if (socialAccountId) conditions.push(eq(socialAccountPosts.socialAccountId, socialAccountId));
+
+        const rows = await db
+          .select()
+          .from(socialAccountPosts)
+          .where(and(...conditions))
+          .orderBy(desc(socialAccountPosts.postedAt))
+          .limit(limit)
+          .offset(offset);
+
+        res.json(rows);
+      } catch (error) {
+        console.error("Error fetching posts:", error);
+        res.status(500).json({ error: "Failed to fetch posts" });
+      }
+    });
+
+    // List all posts paginated (V1 structure: page / per_page with totals)
+    app.get("/api/v1/posts", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+        const page = Math.max(1, parseInt(req.query.page as string) || 1);
+        const perPage = Math.min(100, Math.max(1, parseInt(req.query.per_page as string) || 20));
+        const offset = (page - 1) * perPage;
+        const postType = req.query.postType as string | undefined;
+        const socialAccountId = req.query.socialAccountId as string | undefined;
+
+        const conditions = [eq(socialAccountPosts.isDeleted, false)];
+        if (postType) conditions.push(eq(socialAccountPosts.postType, postType));
+        if (socialAccountId) conditions.push(eq(socialAccountPosts.socialAccountId, socialAccountId));
+
+        const totalRows = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(socialAccountPosts)
+          .where(and(...conditions));
+        const total = totalRows[0]?.count || 0;
+
+        const rows = await db
+          .select()
+          .from(socialAccountPosts)
+          .where(and(...conditions))
+          .orderBy(desc(socialAccountPosts.postedAt))
+          .limit(perPage)
+          .offset(offset);
+
+        res.json({
+          results: rows,
+          total,
+          page,
+          per_page: perPage,
+        });
+      } catch (error) {
+        console.error("Error fetching v1 posts:", error);
+        res.status(500).json({ error: "Failed to fetch posts" });
+      }
+    });
+
+    // Bulk delete posts
+    app.delete("/api/social-account-posts", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+        const { ids } = req.body;
+        if (!Array.isArray(ids)) {
+          return res.status(400).json({ error: "ids must be an array" });
+        }
+        if (ids.length === 0) {
+          return res.json({ success: true, deletedCount: 0 });
+        }
+        await db
+          .update(socialAccountPosts)
+          .set({ isDeleted: true })
+          .where(inArray(socialAccountPosts.id, ids));
+
+        res.json({ success: true, deletedCount: ids.length });
+      } catch (error) {
+        console.error("Error bulk deleting posts:", error);
+        res.status(500).json({ error: "Failed to delete posts" });
+      }
+    });
 
 }
 

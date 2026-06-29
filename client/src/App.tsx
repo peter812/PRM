@@ -19,6 +19,7 @@ import { InteractionDialog } from "@/components/interaction-dialog";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { UniversalAddButton } from "@/components/universal-add-button";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { Button } from "@/components/ui/button";
 import { Settings, LogOut } from "lucide-react";
 import PeopleList from "@/pages/people-list";
@@ -251,6 +252,7 @@ function AppLayout() {
           <DailyNoteModal open={isAddDailyNoteDialogOpen} onOpenChange={setIsAddDailyNoteDialogOpen} />
           <InteractionDialog open={isAddInteractionDialogOpen} onOpenChange={setIsAddInteractionDialogOpen} />
           <AddNoteDialog open={isAddNoteDialogOpen} onOpenChange={setIsAddNoteDialogOpen} personId="" />
+          <TaskTrackerModal />
         </>
       )}
     </SidebarProvider>

@@ -33,7 +33,7 @@ import ImportContactsPage from "@/pages/import-contacts";
 import ImportSocialMediaPage from "@/pages/import-social-media";
 import ImportExportApplicationPage from "@/pages/import-export-application";
 import ImagePassInPage from "@/pages/image-pass-in";
-import InstagramSettingsPage from "@/pages/instagram-settings";
+import InstagramXmlTransferPage from "@/pages/instagram-xml-transfer";
 import TasksSettingsPage from "@/pages/tasks-settings";
 import ImageStorageSettingsPage from "@/pages/image-storage-settings";
 import ImageTablePage from "@/pages/image-table-page";
@@ -123,7 +123,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Social Media", url: "/import-export/social-media", icon: Share2 },
       { title: "Application Data", url: "/import-export/application", icon: Database },
       { title: "Image Pass In", url: "/import-export/image-pass-in", icon: ImageIcon },
-      { title: "Instagram Settings", url: "/instagram", icon: Camera },
+      { title: "Instagram XML Transfer", url: "/import-export/instagram-xml", icon: Camera },
     ],
   },
   {
@@ -277,7 +277,8 @@ export default function SettingsLayout() {
               <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
               <Route path="/intelligence" component={IntelligenceSettingsPage} />
               <Route path="/vector" component={VectorSettingsPage} />
-              <Route path="/instagram" component={InstagramSettingsPage} />
+              <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />
+              <Route path="/instagram" component={() => <Redirect to="/import-export/instagram-xml" />} />
               <Route path="/tasks" component={TasksSettingsPage} />
               <Route path="/task/:id" component={TaskDetailPage} />
               <Route path="/social-graph" component={SocialGraphSettingsPage} />

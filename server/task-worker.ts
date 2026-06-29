@@ -4,6 +4,7 @@ import { syncEntityInBackground } from "./vector-universal";
 import { uploadImageToS3, deleteImageFromS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, isLocalImageUrl } from "./local-storage";
 import { log } from "./vite";
+import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
 import fs from "fs";
 import path from "path";
 import os from "os";
@@ -17,6 +18,19 @@ import {
   interactionTypes,
   socialNetworkChanges,
   socialAccountPosts,
+  lineage,
+  partnerships,
+  photos,
+  dailyNotes,
+  dailyNoteEvents,
+  dailyNoteInvolvedParties,
+  dailyNoteAuditLogs,
+  sexGuessQueue,
+  aiChats,
+  appSettings,
+  socialAccounts,
+  socialProfileVersions,
+  socialNetworkState,
 } from "@shared/schema";
 
 // ── Image dimension helper ────────────────────────────────────────────────────
@@ -181,6 +195,9 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
 
   // Link the photo to this image task
   await db.update(imageTasks).set({ photoId: photo.id }).where(eq(imageTasks.id, imageTaskId));
+
+  // Automatically pass in the image to any linked person who doesn't have an image
+  await autoPassInImageForSocialAccount(socialAccountId);
 
   return JSON.stringify({ cdnUrl, socialAccountId, photoId: photo.id, widthPx: dims?.width ?? null });
 }
@@ -458,10 +475,60 @@ async function processExportXmlTask(taskId: string, payload: {
     db.select().from(people).where(isNotNull(people.userId)).limit(1),
   ]);
 
+  const [
+    allLineages,
+    allPartnerships,
+    allPhotos,
+    allDailyNotes,
+    allDailyNoteEvents,
+    allDailyNoteInvolvedParties,
+    allDailyNoteAuditLogs,
+    allSexGuesses,
+    allAiChats,
+    allAppSettings,
+  ] = await Promise.all([
+    db.select().from(lineage),
+    db.select().from(partnerships),
+    db.select().from(photos),
+    db.select().from(dailyNotes),
+    db.select().from(dailyNoteEvents),
+    db.select().from(dailyNoteInvolvedParties),
+    db.select().from(dailyNoteAuditLogs),
+    db.select().from(sexGuessQueue),
+    db.select().from(aiChats),
+    db.select().from(appSettings),
+  ]);
+
   const user = allUsers[0];
   const mePersonId = mePersonResult[0]?.id || null;
   const peopleToExport = allPeople.filter(p => p.id !== mePersonId);
   const networkStateMap = new Map(allNetworkStates.map(s => [s.socialAccountId, s]));
+
+  // Helper to map mePersonId to ZERO_UUID in photos.prmLocation
+  const mapPrmLocationExport = (loc: string | null): string => {
+    if (!loc) return "";
+    if (mePersonId && loc.includes(mePersonId)) {
+      return loc.replace(mePersonId, ZERO_UUID);
+    }
+    return loc;
+  };
+
+  // Helper function to escape XML special characters
+  const escapeXml = (str: any): string => {
+    if (str === null || str === undefined) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&apos;");
+  };
+
+  // Helper function to convert array to XML
+  const arrayToXml = (arr: any[], itemName: string): string => {
+    if (!arr || arr.length === 0) return "";
+    return arr.map(item => `<${itemName}>${escapeXml(item)}</${itemName}>`).join("");
+  };
 
   await storage.updateTaskProgress(taskId, 8, "Building export file…");
 
@@ -516,6 +583,8 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <is_starred>${escapeXml(person.isStarred)}</is_starred>\n`;
     xml += `      <elo_score>${escapeXml(person.eloScore)}</elo_score>\n`;
     xml += `      <no_social_media>${escapeXml(person.noSocialMedia ?? 0)}</no_social_media>\n`;
+    xml += `      <sex>${escapeXml(person.sex || "unknown")}</sex>\n`;
+    xml += `      <elo_rankable>${escapeXml(person.eloRankable ?? 1)}</elo_rankable>\n`;
     xml += `      <created_at>${escapeXml(person.createdAt)}</created_at>\n`;
     xml += '    </person>\n';
   }
@@ -533,6 +602,7 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <to_person_id>${escapeXml(toPersonId)}</to_person_id>\n`;
     xml += `      <type_id>${escapeXml(rel.typeId)}</type_id>\n`;
     xml += `      <notes>${escapeXml(rel.notes || "")}</notes>\n`;
+    xml += `      <family_relationship_type>${escapeXml(rel.familyRelationshipType || "")}</family_relationship_type>\n`;
     xml += `      <created_at>${escapeXml(rel.createdAt)}</created_at>\n`;
     xml += '    </relationship>\n';
   }
@@ -619,6 +689,9 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
     xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
     xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
+    xml += `      <last_scraped_at>${escapeXml(account.lastScrapedAt)}</last_scraped_at>\n`;
+    xml += `      <current_posts>${escapeXml(account.currentPosts || "")}</current_posts>\n`;
+    xml += `      <deleted_posts>${escapeXml(account.deletedPosts || "")}</deleted_posts>\n`;
     xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
     xml += '    </social_account>\n';
   }
@@ -652,11 +725,164 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <comment_count>${escapeXml(post.commentCount)}</comment_count>\n`;
     xml += `      <comments>${escapeXml(post.comments || "")}</comments>\n`;
     xml += `      <mentioned_accounts>${escapeXml(post.mentionedAccounts || "")}</mentioned_accounts>\n`;
+    xml += `      <face_ids>${escapeXml(post.faceIds || "")}</face_ids>\n`;
+    xml += `      <is_deleted>${escapeXml(post.isDeleted)}</is_deleted>\n`;
     xml += `      <posted_at>${escapeXml(post.postedAt || "")}</posted_at>\n`;
     xml += `      <created_at>${escapeXml(post.createdAt)}</created_at>\n`;
     xml += '    </social_account_post>\n';
   }
   xml += '  </social_account_posts>\n';
+
+  // Export photos (new)
+  xml += '  <photos>\n';
+  for (const photo of allPhotos) {
+    xml += '    <photo_entry>\n';
+    xml += `      <id>${escapeXml(photo.id)}</id>\n`;
+    xml += `      <location>${escapeXml(photo.location)}</location>\n`;
+    xml += `      <uploaded_at>${escapeXml(photo.uploadedAt)}</uploaded_at>\n`;
+    xml += `      <is_sub_image>${escapeXml(photo.isSubImage)}</is_sub_image>\n`;
+    xml += `      <processed_at>${escapeXml(photo.processedAt)}</processed_at>\n`;
+    xml += `      <image_description_at>${escapeXml(photo.imageDescriptionAt)}</image_description_at>\n`;
+    xml += `      <image_description>${escapeXml(photo.imageDescription || "")}</image_description>\n`;
+    xml += `      <face_id_at>${escapeXml(photo.faceIdAt)}</face_id_at>\n`;
+    xml += `      <face_uuids>${escapeXml(photo.faceUuids ? JSON.stringify(photo.faceUuids) : "")}</face_uuids>\n`;
+    xml += `      <prm_location>${escapeXml(mapPrmLocationExport(photo.prmLocation))}</prm_location>\n`;
+    xml += `      <metadata>${escapeXml(photo.metadata ? JSON.stringify(photo.metadata) : "")}</metadata>\n`;
+    xml += `      <og_metadata>${escapeXml(photo.ogMetadata ? JSON.stringify(photo.ogMetadata) : "")}</og_metadata>\n`;
+    xml += `      <file_hash>${escapeXml(photo.fileHash || "")}</file_hash>\n`;
+    xml += `      <width_px>${escapeXml(photo.widthPx)}</width_px>\n`;
+    xml += `      <height_px>${escapeXml(photo.heightPx)}</height_px>\n`;
+    xml += '    </photo_entry>\n';
+  }
+  xml += '  </photos>\n';
+
+  // Export lineages (new)
+  xml += '  <lineages>\n';
+  for (const lin of allLineages) {
+    const childId = lin.childId === mePersonId ? ZERO_UUID : lin.childId;
+    const parentId = lin.parentId === mePersonId ? ZERO_UUID : lin.parentId;
+    xml += '    <lineage_entry>\n';
+    xml += `      <id>${escapeXml(lin.id)}</id>\n`;
+    xml += `      <child_id>${escapeXml(childId)}</child_id>\n`;
+    xml += `      <parent_id>${escapeXml(parentId)}</parent_id>\n`;
+    xml += `      <lineage_type>${escapeXml(lin.lineageType)}</lineage_type>\n`;
+    xml += `      <created_at>${escapeXml(lin.createdAt)}</created_at>\n`;
+    xml += '    </lineage_entry>\n';
+  }
+  xml += '  </lineages>\n';
+
+  // Export partnerships (new)
+  xml += '  <partnerships>\n';
+  for (const part of allPartnerships) {
+    const person1Id = part.person1Id === mePersonId ? ZERO_UUID : part.person1Id;
+    const person2Id = part.person2Id === mePersonId ? ZERO_UUID : part.person2Id;
+    xml += '    <partnership_entry>\n';
+    xml += `      <id>${escapeXml(part.id)}</id>\n`;
+    xml += `      <person1_id>${escapeXml(person1Id)}</person1_id>\n`;
+    xml += `      <person2_id>${escapeXml(person2Id)}</person2_id>\n`;
+    xml += `      <status>${escapeXml(part.status)}</status>\n`;
+    xml += `      <created_at>${escapeXml(part.createdAt)}</created_at>\n`;
+    xml += '    </partnership_entry>\n';
+  }
+  xml += '  </partnerships>\n';
+
+  // Export daily notes (new)
+  xml += '  <daily_notes>\n';
+  for (const dn of allDailyNotes) {
+    xml += '    <daily_note_entry>\n';
+    xml += `      <id>${escapeXml(dn.id)}</id>\n`;
+    xml += `      <date>${escapeXml(dn.date)}</date>\n`;
+    xml += `      <user_title>${escapeXml(dn.userTitle)}</user_title>\n`;
+    xml += `      <body>${escapeXml(dn.body)}</body>\n`;
+    xml += `      <created_at>${escapeXml(dn.createdAt)}</created_at>\n`;
+    xml += `      <updated_at>${escapeXml(dn.updatedAt)}</updated_at>\n`;
+    xml += '    </daily_note_entry>\n';
+  }
+  xml += '  </daily_notes>\n';
+
+  // Export daily note events (new)
+  xml += '  <daily_note_events>\n';
+  for (const ev of allDailyNoteEvents) {
+    xml += '    <daily_note_event_entry>\n';
+    xml += `      <id>${escapeXml(ev.id)}</id>\n`;
+    xml += `      <daily_note_id>${escapeXml(ev.dailyNoteId)}</daily_note_id>\n`;
+    xml += `      <text>${escapeXml(ev.text)}</text>\n`;
+    xml += `      <position>${escapeXml(ev.position)}</position>\n`;
+    xml += `      <created_at>${escapeXml(ev.createdAt)}</created_at>\n`;
+    xml += '    </daily_note_event_entry>\n';
+  }
+  xml += '  </daily_note_events>\n';
+
+  // Export daily note involved parties (new)
+  xml += '  <daily_note_involved_parties>\n';
+  for (const party of allDailyNoteInvolvedParties) {
+    let refId = party.refId;
+    if (party.partyType === "person" && refId === mePersonId) {
+      refId = ZERO_UUID;
+    }
+    xml += '    <daily_note_involved_party_entry>\n';
+    xml += `      <id>${escapeXml(party.id)}</id>\n`;
+    xml += `      <daily_note_id>${escapeXml(party.dailyNoteId)}</daily_note_id>\n`;
+    xml += `      <party_type>${escapeXml(party.partyType)}</party_type>\n`;
+    xml += `      <ref_id>${escapeXml(refId)}</ref_id>\n`;
+    xml += '    </daily_note_involved_party_entry>\n';
+  }
+  xml += '  </daily_note_involved_parties>\n';
+
+  // Export daily note audit logs (new)
+  xml += '  <daily_note_audit_logs>\n';
+  for (const log of allDailyNoteAuditLogs) {
+    xml += '    <daily_note_audit_log_entry>\n';
+    xml += `      <id>${escapeXml(log.id)}</id>\n`;
+    xml += `      <daily_note_id>${escapeXml(log.dailyNoteId)}</daily_note_id>\n`;
+    xml += `      <action>${escapeXml(log.action)}</action>\n`;
+    xml += `      <timestamp>${escapeXml(log.timestamp)}</timestamp>\n`;
+    xml += `      <pin_used>${escapeXml(log.pinUsed)}</pin_used>\n`;
+    xml += '    </daily_note_audit_log_entry>\n';
+  }
+  xml += '  </daily_note_audit_logs>\n';
+
+  // Export sex guesses queue (new)
+  xml += '  <sex_guess_records>\n';
+  for (const guess of allSexGuesses) {
+    const personId = guess.personId === mePersonId ? ZERO_UUID : guess.personId;
+    xml += '    <sex_guess_entry>\n';
+    xml += `      <id>${escapeXml(guess.id)}</id>\n`;
+    xml += `      <person_id>${escapeXml(personId)}</person_id>\n`;
+    xml += `      <guessed_sex>${escapeXml(guess.guessedSex)}</guessed_sex>\n`;
+    xml += `      <reasoning>${escapeXml(guess.reasoning)}</reasoning>\n`;
+    xml += `      <date_added>${escapeXml(guess.dateAdded)}</date_added>\n`;
+    xml += `      <answered>${escapeXml(guess.answered)}</answered>\n`;
+    xml += `      <snooze_until>${escapeXml(guess.snoozedUntil)}</snooze_until>\n`;
+    xml += '    </sex_guess_entry>\n';
+  }
+  xml += '  </sex_guess_records>\n';
+
+  // Export AI chats (new)
+  xml += '  <ai_chats>\n';
+  for (const chat of allAiChats) {
+    if (chat.userId !== payload.userId) continue;
+    xml += '    <ai_chat_entry>\n';
+    xml += `      <id>${escapeXml(chat.id)}</id>\n`;
+    xml += `      <title>${escapeXml(chat.title)}</title>\n`;
+    xml += `      <system_message>${escapeXml(chat.systemMessage)}</system_message>\n`;
+    xml += `      <model>${escapeXml(chat.model)}</model>\n`;
+    xml += `      <messages>${escapeXml(chat.messages ? JSON.stringify(chat.messages) : "[]")}</messages>\n`;
+    xml += `      <created_at>${escapeXml(chat.createdAt)}</created_at>\n`;
+    xml += `      <updated_at>${escapeXml(chat.updatedAt)}</updated_at>\n`;
+    xml += '    </ai_chat_entry>\n';
+  }
+  xml += '  </ai_chats>\n';
+
+  // Export app settings (new)
+  xml += '  <app_settings_list>\n';
+  for (const setting of allAppSettings) {
+    xml += '    <app_setting_entry>\n';
+    xml += `      <key>${escapeXml(setting.key)}</key>\n`;
+    xml += `      <value>${escapeXml(setting.value)}</value>\n`;
+    xml += '    </app_setting_entry>\n';
+  }
+  xml += '  </app_settings_list>\n';
 
   if (includeHistory) {
     await storage.updateTaskProgress(taskId, 84, "Exporting profile history…");
@@ -741,15 +967,48 @@ async function processImportXmlTask(taskId: string, payload: {
     return uuid === ZERO_UUID ? mePersonId : uuid;
   };
 
+  const mapPrmLocationImport = (loc: string | null): string => {
+    if (!loc) return "";
+    if (mePersonId && loc.includes(ZERO_UUID)) {
+      return loc.replace(ZERO_UUID, mePersonId);
+    }
+    return loc;
+  };
+
   let importedCounts: Record<string, number> = {
-    relationshipTypes: 0, interactionTypes: 0, people: 0,
-    relationships: 0, groups: 0, interactions: 0,
-    notes: 0, groupNotes: 0, socialAccounts: 0,
-    socialAccountTypes: 0, posts: 0, messages: 0, networkChanges: 0,
+    relationshipTypes: 0,
+    interactionTypes: 0,
+    people: 0,
+    relationships: 0,
+    groups: 0,
+    interactions: 0,
+    notes: 0,
+    groupNotes: 0,
+    socialAccounts: 0,
+    socialAccountTypes: 0,
+    posts: 0,
+    messages: 0,
+    networkChanges: 0,
+    photos: 0,
+    lineages: 0,
+    partnerships: 0,
+    dailyNotes: 0,
+    dailyNoteEvents: 0,
+    dailyNoteInvolvedParties: 0,
+    dailyNoteAuditLogs: 0,
+    sexGuessQueue: 0,
+    aiChats: 0,
+    appSettings: 0,
   };
   let skippedCounts: Record<string, number> = {
-    relationshipTypes: 0, interactionTypes: 0, people: 0,
-    relationships: 0, interactions: 0, socialAccounts: 0, socialAccountTypes: 0, messages: 0,
+    relationshipTypes: 0,
+    interactionTypes: 0,
+    people: 0,
+    relationships: 0,
+    interactions: 0,
+    socialAccounts: 0,
+    socialAccountTypes: 0,
+    messages: 0,
   };
 
   await storage.updateTaskProgress(taskId, 5, "Loading existing data…");
@@ -806,6 +1065,48 @@ async function processImportXmlTask(taskId: string, payload: {
     } catch (e) { console.error(`Error importing interaction type ${id}:`, e); }
   }
 
+  // Parse and import photos (import early so entity imageUuid references resolve)
+  const photoBlocks = parseAllTags("photo_entry", xmlText);
+  for (const block of photoBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const location = unescapeXml(parseXmlTag("location", block));
+    const uploadedAtStr = unescapeXml(parseXmlTag("uploaded_at", block));
+    const isSubImage = parseXmlTag("is_sub_image", block) === "true";
+    const processedAtStr = unescapeXml(parseXmlTag("processed_at", block));
+    const imageDescriptionAtStr = unescapeXml(parseXmlTag("image_description_at", block));
+    const imageDescription = unescapeXml(parseXmlTag("image_description", block));
+    const faceIdAtStr = unescapeXml(parseXmlTag("face_id_at", block));
+    const faceUuidsStr = unescapeXml(parseXmlTag("face_uuids", block));
+    const prmLocation = mapPrmLocationImport(unescapeXml(parseXmlTag("prm_location", block)));
+    const metadataStr = unescapeXml(parseXmlTag("metadata", block));
+    const ogMetadataStr = unescapeXml(parseXmlTag("og_metadata", block));
+    const fileHash = unescapeXml(parseXmlTag("file_hash", block));
+    const widthPxStr = unescapeXml(parseXmlTag("width_px", block));
+    const heightPxStr = unescapeXml(parseXmlTag("height_px", block));
+
+    try {
+      await db.insert(photos).values({
+        id, location,
+        uploadedAt: uploadedAtStr ? new Date(uploadedAtStr) : new Date(),
+        isSubImage,
+        processedAt: processedAtStr ? new Date(processedAtStr) : null,
+        imageDescriptionAt: imageDescriptionAtStr ? new Date(imageDescriptionAtStr) : null,
+        imageDescription: imageDescription || null,
+        faceIdAt: faceIdAtStr ? new Date(faceIdAtStr) : null,
+        faceUuids: faceUuidsStr ? JSON.parse(faceUuidsStr) : null,
+        prmLocation,
+        metadata: metadataStr ? JSON.parse(metadataStr) : null,
+        ogMetadata: ogMetadataStr ? JSON.parse(ogMetadataStr) : null,
+        fileHash: fileHash || null,
+        widthPx: widthPxStr ? parseInt(widthPxStr) : null,
+        heightPx: heightPxStr ? parseInt(heightPxStr) : null,
+      }).onConflictDoNothing();
+      importedCounts.photos++;
+    } catch (e) {
+      console.error(`Error importing photo entry ${id}:`, e);
+    }
+  }
+
   await storage.updateTaskProgress(taskId, 20, "Importing people…");
 
   const existingPeopleMap = new Map<string, boolean>();
@@ -826,6 +1127,8 @@ async function processImportXmlTask(taskId: string, payload: {
     const isStarred = parseInt(parseXmlTag("is_starred", block)) || 0;
     const eloScore = parseInt(parseXmlTag("elo_score", block)) || 1200;
     const noSocialMedia = parseInt(parseXmlTag("no_social_media", block)) || 0;
+    const sex = unescapeXml(parseXmlTag("sex", block)) || "unknown";
+    const eloRankable = parseXmlTag("elo_rankable", block) !== "" ? (parseInt(parseXmlTag("elo_rankable", block)) || 0) : 1;
     const lookupKey = `${firstName.toLowerCase()}:${id}`;
     if (existingPeopleMap.has(lookupKey)) { skippedCounts.people++; continue; }
     try {
@@ -836,6 +1139,7 @@ async function processImportXmlTask(taskId: string, payload: {
         imageUrl: imageUrl || null,
         socialAccountUuids: socialAccountUuids.length > 0 ? socialAccountUuids : [],
         isStarred, eloScore, noSocialMedia,
+        sex, eloRankable,
       });
       importedCounts.people++;
       existingPeopleMap.set(lookupKey, true);
@@ -869,14 +1173,55 @@ async function processImportXmlTask(taskId: string, payload: {
     const id = unescapeXml(parseXmlTag("id", block));
     const fromPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("from_person_id", block)));
     const toPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("to_person_id", block)));
-    const typeId = unescapeXml(parseXmlTag("type_id", block));
+    const typeId = unescapeXml(parseXmlTag("type_id", block)) || null;
     const notes = unescapeXml(parseXmlTag("notes", block));
+    const familyRelationshipType = unescapeXml(parseXmlTag("family_relationship_type", block)) || null;
     if (existingRelationshipUuids.has(id)) { skippedCounts.relationships++; continue; }
     try {
-      await storage.createRelationshipWithId({ id, fromPersonId, toPersonId, typeId, notes: notes || null });
+      await storage.createRelationshipWithId({
+        id, fromPersonId, toPersonId, typeId,
+        notes: notes || null,
+        familyRelationshipType: (familyRelationshipType || null) as any,
+      });
       importedCounts.relationships++;
       existingRelationshipUuids.add(id);
     } catch (e) { console.error(`Error importing relationship ${id}:`, e); }
+  }
+
+  // Parse and import lineages (new)
+  const lineageBlocks = parseAllTags("lineage_entry", xmlText);
+  for (const block of lineageBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const childId = replaceZeroUUID(unescapeXml(parseXmlTag("child_id", block)));
+    const parentId = replaceZeroUUID(unescapeXml(parseXmlTag("parent_id", block)));
+    const lineageType = unescapeXml(parseXmlTag("lineage_type", block)) || "biological";
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+    try {
+      await db.insert(lineage).values({
+        id, childId, parentId, lineageType,
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.lineages++;
+    } catch (e) { console.error(`Error importing lineage entry ${id}:`, e); }
+  }
+
+  // Parse and import partnerships (new)
+  const partnershipBlocks = parseAllTags("partnership_entry", xmlText);
+  for (const block of partnershipBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const person1Id = replaceZeroUUID(unescapeXml(parseXmlTag("person1_id", block)));
+    const person2Id = replaceZeroUUID(unescapeXml(parseXmlTag("person2_id", block)));
+    const status = unescapeXml(parseXmlTag("status", block)) || "partner";
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+    try {
+      await db.insert(partnerships).values({
+        id, person1Id, person2Id, status,
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.partnerships++;
+    } catch (e) { console.error(`Error importing partnership entry ${id}:`, e); }
   }
 
   for (const block of parseAllTags("interaction", xmlText)) {
@@ -960,6 +1305,9 @@ async function processImportXmlTask(taskId: string, payload: {
     const followers = parseXmlArray("followers", "account_id", block);
     const internalAccountCreationDateStr = unescapeXml(parseXmlTag("internal_account_creation_date", block));
     const internalAccountCreationType = unescapeXml(parseXmlTag("internal_account_creation_type", block));
+    const lastScrapedAtStr = unescapeXml(parseXmlTag("last_scraped_at", block));
+    const currentPosts = unescapeXml(parseXmlTag("current_posts", block)) || null;
+    const deletedPosts = unescapeXml(parseXmlTag("deleted_posts", block)) || null;
     
     const existing = existingSocialAccounts.find(
       s => s.id === id || (s.username.toLowerCase() === username.toLowerCase() && s.typeId === (typeId || null))
@@ -980,6 +1328,14 @@ async function processImportXmlTask(taskId: string, payload: {
         internalAccountCreationType: internalAccountCreationType || "Import",
         internalAccountCreationDate: internalAccountCreationDateStr ? new Date(internalAccountCreationDateStr) : undefined,
       });
+
+      // Update extra columns using Drizzle
+      await db.update(socialAccounts).set({
+        lastScrapedAt: lastScrapedAtStr ? new Date(lastScrapedAtStr) : null,
+        currentPosts: currentPosts || null,
+        deletedPosts: deletedPosts || null,
+      }).where(eq(socialAccounts.id, id));
+
       socialAccountIdMap.set(id, id);
       existingSocialAccountUuids.add(id);
       existingSocialAccounts.push(created);
@@ -1019,6 +1375,8 @@ async function processImportXmlTask(taskId: string, payload: {
       const commentCount = parseInt(parseXmlTag("comment_count", block)) || 0;
       const comments = unescapeXml(parseXmlTag("comments", block));
       const mentionedAccounts = unescapeXml(parseXmlTag("mentioned_accounts", block));
+      const faceIds = unescapeXml(parseXmlTag("face_ids", block));
+      const isDeleted = parseXmlTag("is_deleted", block) === "true";
       const postedAtStr = unescapeXml(parseXmlTag("posted_at", block));
       const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
       if (!id || !postSocialAccountId) continue;
@@ -1032,6 +1390,8 @@ async function processImportXmlTask(taskId: string, payload: {
         content: content || null, description: description || null,
         likeCount, commentCount,
         comments: comments || null, mentionedAccounts: mentionedAccounts || null,
+        faceIds: faceIds || null,
+        isDeleted,
         postedAt: postedAtStr ? new Date(postedAtStr) : null,
         createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
       }).onConflictDoNothing();
@@ -1099,7 +1459,159 @@ async function processImportXmlTask(taskId: string, payload: {
     } catch (e) { console.error("Error importing network change:", e); }
   }
 
+  // Parse and import daily notes (new)
+  const dailyNoteBlocks = parseAllTags("daily_note_entry", xmlText);
+  for (const block of dailyNoteBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const date = unescapeXml(parseXmlTag("date", block));
+    const userTitle = unescapeXml(parseXmlTag("user_title", block));
+    const body = unescapeXml(parseXmlTag("body", block));
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+    const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
+
+    try {
+      await db.insert(dailyNotes).values({
+        id, date, userTitle, body,
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+        updatedAt: updatedAtStr ? new Date(updatedAtStr) : null,
+      }).onConflictDoNothing();
+      importedCounts.dailyNotes++;
+    } catch (e) {
+      console.error(`Error importing daily note ${id}:`, e);
+    }
+  }
+
+  // Parse and import daily note events (new)
+  const dailyNoteEventBlocks = parseAllTags("daily_note_event_entry", xmlText);
+  for (const block of dailyNoteEventBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
+    const text = unescapeXml(parseXmlTag("text", block));
+    const position = parseInt(parseXmlTag("position", block)) || 0;
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+    try {
+      await db.insert(dailyNoteEvents).values({
+        id, dailyNoteId, text, position,
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.dailyNoteEvents++;
+    } catch (e) {
+      console.error(`Error importing daily note event ${id}:`, e);
+    }
+  }
+
+  // Parse and import daily note involved parties (new)
+  const involvedPartyBlocks = parseAllTags("daily_note_involved_party_entry", xmlText);
+  for (const block of involvedPartyBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
+    const partyType = unescapeXml(parseXmlTag("party_type", block));
+    let refId = unescapeXml(parseXmlTag("ref_id", block));
+    if (partyType === "person") {
+      refId = replaceZeroUUID(refId);
+    }
+
+    try {
+      await db.insert(dailyNoteInvolvedParties).values({
+        id, dailyNoteId, partyType, refId,
+      }).onConflictDoNothing();
+      importedCounts.dailyNoteInvolvedParties++;
+    } catch (e) {
+      console.error(`Error importing daily note involved party ${id}:`, e);
+    }
+  }
+
+  // Parse and import daily note audit logs (new)
+  const auditLogBlocks = parseAllTags("daily_note_audit_log_entry", xmlText);
+  for (const block of auditLogBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
+    const action = unescapeXml(parseXmlTag("action", block));
+    const timestampStr = unescapeXml(parseXmlTag("timestamp", block));
+    const pinUsed = parseXmlTag("pin_used", block) === "true";
+
+    try {
+      await db.insert(dailyNoteAuditLogs).values({
+        id, dailyNoteId, action,
+        timestamp: timestampStr ? new Date(timestampStr) : new Date(),
+        pinUsed,
+      }).onConflictDoNothing();
+      importedCounts.dailyNoteAuditLogs++;
+    } catch (e) {
+      console.error(`Error importing daily note audit log ${id}:`, e);
+    }
+  }
+
+  // Parse and import sex guess records (new)
+  const sexGuessBlocks = parseAllTags("sex_guess_entry", xmlText);
+  for (const block of sexGuessBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
+    const guessedSex = unescapeXml(parseXmlTag("guessed_sex", block));
+    const reasoning = unescapeXml(parseXmlTag("reasoning", block));
+    const dateAddedStr = unescapeXml(parseXmlTag("date_added", block));
+    const answered = parseInt(parseXmlTag("answered", block)) || 0;
+    const snoozeUntilStr = unescapeXml(parseXmlTag("snooze_until", block));
+
+    try {
+      await db.insert(sexGuessQueue).values({
+        id, personId, guessedSex, reasoning,
+        dateAdded: dateAddedStr ? new Date(dateAddedStr) : new Date(),
+        answered,
+        snoozedUntil: snoozeUntilStr ? new Date(snoozeUntilStr) : null,
+      }).onConflictDoNothing();
+      importedCounts.sexGuessQueue++;
+    } catch (e) {
+      console.error(`Error importing sex guess entry ${id}:`, e);
+    }
+  }
+
+  // Parse and import AI chats (new)
+  const aiChatBlocks = parseAllTags("ai_chat_entry", xmlText);
+  for (const block of aiChatBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const title = unescapeXml(parseXmlTag("title", block)) || "New chat";
+    const systemMessage = unescapeXml(parseXmlTag("system_message", block));
+    const model = unescapeXml(parseXmlTag("model", block));
+    const messagesStr = unescapeXml(parseXmlTag("messages", block));
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+    const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
+
+    try {
+      await db.insert(aiChats).values({
+        id, userId: payload.userId, title, systemMessage, model,
+        messages: messagesStr ? JSON.parse(messagesStr) : [],
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+        updatedAt: updatedAtStr ? new Date(updatedAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.aiChats++;
+    } catch (e) {
+      console.error(`Error importing AI chat ${id}:`, e);
+    }
+  }
+
+  // Parse and import app settings (new)
+  const appSettingBlocks = parseAllTags("app_setting_entry", xmlText);
+  for (const block of appSettingBlocks) {
+    const key = unescapeXml(parseXmlTag("key", block));
+    const value = unescapeXml(parseXmlTag("value", block));
+    if (!key) continue;
+
+    try {
+      await db.insert(appSettings).values({ key, value })
+        .onConflictDoUpdate({
+          target: appSettings.key,
+          set: { value }
+        });
+      importedCounts.appSettings++;
+    } catch (e) {
+      console.error(`Error importing app setting ${key}:`, e);
+    }
+  }
+
   await storage.updateTaskProgress(taskId, 99, "Finalizing…");
+  await runAutomaticImagePassIn();
   return JSON.stringify({ imported: importedCounts, skipped: skippedCounts });
 }
 

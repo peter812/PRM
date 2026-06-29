@@ -404,7 +404,17 @@ export default function ImportExportApplicationPage() {
                       {importState.result.imported.notes ?? 0} notes,{" "}
                       {importState.result.imported.socialAccounts ?? 0} social accounts,{" "}
                       {importState.result.imported.socialAccountTypes ?? 0} social account types,{" "}
-                      {importState.result.imported.posts ?? 0} posts
+                      {importState.result.imported.posts ?? 0} posts,{" "}
+                      {importState.result.imported.photos ?? 0} photos,{" "}
+                      {importState.result.imported.lineages ?? 0} lineages,{" "}
+                      {importState.result.imported.partnerships ?? 0} partnerships,{" "}
+                      {importState.result.imported.dailyNotes ?? 0} daily notes,{" "}
+                      {importState.result.imported.dailyNoteEvents ?? 0} daily note events,{" "}
+                      {importState.result.imported.dailyNoteInvolvedParties ?? 0} daily note parties,{" "}
+                      {importState.result.imported.dailyNoteAuditLogs ?? 0} daily note audit logs,{" "}
+                      {importState.result.imported.sexGuessQueue ?? 0} sex guesses,{" "}
+                      {importState.result.imported.aiChats ?? 0} AI chats,{" "}
+                      {importState.result.imported.appSettings ?? 0} app settings
                     </p>
                     {importState.result.skipped && Object.values(importState.result.skipped).some(v => v > 0) && (
                       <p className="text-sm text-muted-foreground">

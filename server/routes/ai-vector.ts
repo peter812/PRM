@@ -2893,4 +2893,373 @@ Respond with ONLY a JSON array, no other text.`;
         res.status(500).json({ error: "Failed to skip item" });
       }
     });
+
+    // ========================
+    // New AI Chat Endpoints
+    // ========================
+
+    // Clear messages for a specific chat
+    app.post("/api/ai-chats/:id/clear", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const existing = await db.query.aiChats.findFirst({
+          where: eq(aiChats.id, req.params.id)
+        });
+        if (!existing) return res.status(404).json({ error: "Chat not found" });
+
+        await db
+          .update(aiChats)
+          .set({ messages: [] })
+          .where(eq(aiChats.id, req.params.id));
+
+        res.json({ success: true });
+      } catch (error: any) {
+        console.error("Error clearing chat messages:", error);
+        res.status(500).json({ error: `Failed to clear chat: ${error.message}` });
+      }
+    });
+
+    // Delete all AI chats
+    app.delete("/api/ai-chats", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        await db.delete(aiChats);
+        res.json({ success: true });
+      } catch (error: any) {
+        console.error("Error deleting all chats:", error);
+        res.status(500).json({ error: `Failed to delete chats: ${error.message}` });
+      }
+    });
+
+    // ========================
+    // New Face Recognition Proxy Endpoints
+    // ========================
+
+    // Single face-to-person manual assignment
+    app.post("/api/prm-face/face/assign", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+
+      const { face_uuid, person_uuid, name } = req.body;
+      if (!face_uuid || !person_uuid) {
+        return res.status(400).json({ error: "face_uuid and person_uuid are required." });
+      }
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/assign`, {
+          method: "POST",
+          headers: { 
+            "x-api-key": apiKey, 
+            "Content-Type": "application/x-www-form-urlencoded" 
+          },
+          body: new URLSearchParams({ face_uuid, person_uuid, name: name || "" }).toString(),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Temp lookup (alias/duplicate of pickout-temp)
+    app.post("/api/prm-face/img/temp-lookup", upload.single("image"), async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (!req.file) return res.status(400).json({ error: "No image provided" });
+  
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+  
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+  
+      try {
+        const formData = new FormData();
+        const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
+        formData.append("image", blob, req.file.originalname || "image.jpg");
+        if (req.body.max_faces) formData.append("max_faces", String(req.body.max_faces));
+        if (req.body.limit) formData.append("limit", String(req.body.limit));
+  
+        const response = await fetch(`${prmBase(apiUrl)}/api/img/temp-lookup`, {
+          method: "POST",
+          headers: { "X-API-Key": apiKey },
+          body: formData,
+          signal: AbortSignal.timeout(30000),
+        });
+  
+        if (!response.ok) {
+          const errBody = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${errBody}` });
+        }
+  
+        res.json(await response.json());
+      } catch (error: any) {
+        console.error("Error calling PRM-Face temp-lookup:", error);
+        res.status(500).json({ error: `Failed to contact PRM-Face server: ${error.message}` });
+      }
+    });
+
+    // Match image
+    app.post("/api/prm-face/img/match", upload.single("image"), async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (!req.file) return res.status(400).json({ error: "No image provided." });
+
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+
+      try {
+        const formData = new FormData();
+        formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
+        if (req.body.max_faces) formData.append("max_faces", String(req.body.max_faces));
+        if (req.body.limit) formData.append("limit", String(req.body.limit));
+
+        const response = await fetch(`${prmBase(apiUrl)}/api/img/match`, {
+          method: "POST",
+          headers: { "x-api-key": apiKey },
+          body: formData,
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Create person record
+    app.post("/api/prm-face/person/add", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const formData = new FormData();
+        if (req.body.name) formData.append("name", String(req.body.name));
+        if (req.body.person_uuid) formData.append("person_uuid", String(req.body.person_uuid));
+        
+        const response = await fetch(`${prmBase(apiUrl)}/api/person/add`, {
+          method: "POST",
+          headers: { "x-api-key": apiKey },
+          body: formData,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Merge person records
+    app.post("/api/prm-face/person/merge", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const formData = new FormData();
+        formData.append("primary_person_uuid", String(req.body.primary_person_uuid));
+        formData.append("secondary_person_uuid", String(req.body.secondary_person_uuid));
+        const response = await fetch(`${prmBase(apiUrl)}/api/person/merge`, {
+          method: "POST",
+          headers: { "x-api-key": apiKey },
+          body: formData,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Delete person
+    app.delete("/api/prm-face/person/remove", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const formData = new FormData();
+        formData.append("person_uuid", String(req.body.person_uuid || req.query.person_uuid || req.body.personUuid));
+        const response = await fetch(`${prmBase(apiUrl)}/api/person/remove`, {
+          method: "DELETE",
+          headers: { "x-api-key": apiKey },
+          body: formData,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Get image info
+    app.get("/api/prm-face/img/get", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const uuid = req.query.uuid as string;
+      if (!uuid) return res.status(400).json({ error: "uuid is required." });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/img/get?uuid=${uuid}`, {
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Get face details
+    app.get("/api/prm-face/face/get", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const uuid = req.query.uuid as string;
+      if (!uuid) return res.status(400).json({ error: "uuid is required." });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/get?uuid=${uuid}`, {
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Get person info
+    app.get("/api/prm-face/person/get", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const uuid = req.query.uuid as string;
+      if (!uuid) return res.status(400).json({ error: "uuid is required." });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/person/get?uuid=${uuid}`, {
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // List named faces
+    app.get("/api/prm-face/face/with-name", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const page = req.query.page || "1";
+      const pageSize = req.query.page_size || req.query.pageSize || "25";
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/with-name?page=${page}&page_size=${pageSize}`, {
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // List orphan faces
+    app.get("/api/prm-face/face/without-name", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const page = req.query.page || "1";
+      const pageSize = req.query.page_size || req.query.pageSize || "25";
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/without-name?page=${page}&page_size=${pageSize}`, {
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Get person faces
+    app.get("/api/prm-face/person/:personUuid/faces", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { personUuid } = req.params;
+      const page = req.query.page || "1";
+      const pageSize = req.query.page_size || req.query.pageSize || "25";
+      const order = req.query.order || "newest";
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/person/${personUuid}/faces?page=${page}&page_size=${pageSize}&order=${order}`, {
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
 }
