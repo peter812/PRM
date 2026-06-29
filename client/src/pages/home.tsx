@@ -14,6 +14,8 @@ import {
   BookOpen,
   Plus,
   MessageSquare,
+  Scan,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +37,8 @@ type CardId =
   | "recent-people"
   | "recent-social"
   | "recent-photos"
-  | "recent-events";
+  | "recent-events"
+  | "demos";
 
 const DEFAULT_ORDER: CardId[] = [
   "things-to-do",
@@ -44,6 +47,7 @@ const DEFAULT_ORDER: CardId[] = [
   "recent-social",
   "recent-photos",
   "recent-events",
+  "demos",
 ];
 
 const LAYOUT_STORAGE_KEY = "home_card_order_v1";
@@ -492,10 +496,55 @@ function QuickChatContent() {
   );
 }
 
+function DemosContent() {
+  return (
+    <div className="flex flex-col gap-2">
+      <Button
+        asChild
+        variant="outline"
+        className="justify-start"
+        data-testid="home-demo-link-face"
+      >
+        <Link href="/prm-face-demo">
+          <Scan className="mr-2 h-4 w-4" />
+          PRM Face Demo
+        </Link>
+      </Button>
+      <Button
+        asChild
+        variant="outline"
+        className="justify-start"
+        data-testid="home-demo-link-face-save"
+      >
+        <Link href="/prm-face-save-demo">
+          <Scan className="mr-2 h-4 w-4" />
+          PRM Face Save Demo
+        </Link>
+      </Button>
+      <Button
+        asChild
+        variant="outline"
+        className="justify-start"
+        data-testid="home-demo-link-ai-desc"
+      >
+        <Link href="/ai-desc-demo">
+          <Sparkles className="mr-2 h-4 w-4" />
+          AI Description Demo
+        </Link>
+      </Button>
+    </div>
+  );
+}
+
 const CARD_DEFINITIONS: Record<
   CardId,
   { title: string; icon: React.ReactNode; render: () => React.ReactNode }
 > = {
+  "demos": {
+    title: "Demos",
+    icon: <Sparkles className="h-4 w-4" />,
+    render: () => <DemosContent />,
+  },
   "things-to-do": {
     title: "Things to do",
     icon: <ListTodo className="h-4 w-4" />,
@@ -557,10 +606,32 @@ export default function HomePage() {
     saveOrder(order);
   }, [order]);
 
+  const { data: settings } = useQuery<Record<string, string>>({
+    queryKey: ["/api/settings"],
+  });
+  const demosEnabled = settings?.experimental_demos_enabled === "true";
+
+  useEffect(() => {
+    if (demosEnabled && !order.includes("demos")) {
+      setOrder(prev => [...prev, "demos"]);
+    }
+  }, [demosEnabled, order]);
+
+  const displayedOrder = useMemo<CardId[]>(() => {
+    if (demosEnabled) {
+      if (!order.includes("demos")) {
+        return [...order, "demos"];
+      }
+      return order;
+    } else {
+      return order.filter((id): id is CardId => id !== "demos");
+    }
+  }, [order, demosEnabled]);
+
   const cols = useColumnCount();
   const columns = useMemo(
-    () => distributeIntoColumns(order, cols),
-    [order, cols],
+    () => distributeIntoColumns(displayedOrder, cols),
+    [displayedOrder, cols],
   );
 
   const handleDragStart = (id: CardId) => {

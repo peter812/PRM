@@ -420,6 +420,9 @@ async function validateAndSyncSchema(): Promise<void> {
       relationships: {
         family_relationship_type: "VARCHAR(50)",
       },
+      tasks: {
+        title: "TEXT",
+      },
     };
 
     // Check and add missing columns
@@ -503,6 +506,7 @@ async function validateAndSyncSchema(): Promise<void> {
           id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
           type TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'pending',
+          title TEXT,
           payload TEXT NOT NULL,
           result TEXT,
           created_at TIMESTAMP NOT NULL DEFAULT NOW(),

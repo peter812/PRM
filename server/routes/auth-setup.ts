@@ -1587,6 +1587,7 @@ export function registerRoutes(app: Express) {
         const task = await storage.createTask({
           type: "import_instagram",
           status: "pending",
+          title: targetAccount.username,
           payload: JSON.stringify({
             accountId: targetAccount.id,
             targetAccountUsername: targetAccount.username,
@@ -2471,6 +2472,40 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error in SSO callback:", error);
         res.redirect('/?error=callback_failed');
+      }
+    });
+
+    app.get("/api/settings", async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+        const keys = ["experimental_demos_enabled", "images_tab_enabled"];
+        const settings: Record<string, string | null> = {};
+        for (const key of keys) {
+          settings[key] = await storage.getAppSetting(key);
+        }
+        res.json(settings);
+      } catch (error) {
+        console.error("Error fetching settings:", error);
+        res.status(500).json({ error: "Failed to fetch settings" });
+      }
+    });
+
+    app.post("/api/settings", async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+        const { key, value } = req.body;
+        if (!key || typeof value !== "string") {
+          return res.status(400).json({ error: "Invalid key or value" });
+        }
+        await storage.setAppSetting(key, value);
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error saving setting:", error);
+        res.status(500).json({ error: "Failed to save setting" });
       }
     });
   

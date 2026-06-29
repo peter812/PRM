@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { HardDrive, Cloud, ArrowRightLeft, Loader2, ImageIcon, TriangleAlert, Database, Trash2 } from "lucide-react";
+import { HardDrive, Cloud, ArrowRightLeft, Loader2, ImageIcon, TriangleAlert, Database, Trash2, Wrench } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -32,9 +32,14 @@ type DeleteInstagramResult = {
   photosDeleted: number;
 };
 
+type DeleteOrphansResult = {
+  photosDeleted: number;
+  filesDeleted: number;
+};
+
 export default function ImageStorageSettingsPage() {
   const { toast } = useToast();
-  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | "backfill" | "delete-instagram" | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<"to-local" | "to-s3" | "switch-to-local" | "switch-to-s3" | "backfill" | "delete-instagram" | "delete-orphans" | null>(null);
 
   const { data: storageData, isLoading: modeLoading } = useQuery<StorageModeResponse>({
     queryKey: ["/api/image-storage/mode"],
@@ -115,6 +120,24 @@ export default function ImageStorageSettingsPage() {
       toast({
         title: "Instagram URLs removed",
         description: `${data.profileVersionsCleared} profile image${data.profileVersionsCleared !== 1 ? "s" : ""}, ${data.postsCleared} post${data.postsCleared !== 1 ? "s" : ""}, ${data.photosDeleted} photo record${data.photosDeleted !== 1 ? "s" : ""} cleared.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteOrphansMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/image-storage/delete-orphans");
+      return res.json() as Promise<DeleteOrphansResult>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
+      toast({
+        title: "Orphan images removed",
+        description: `Deleted ${data.photosDeleted} photo database record${data.photosDeleted !== 1 ? "s" : ""} and ${data.filesDeleted} physical image file${data.filesDeleted !== 1 ? "s" : ""}.`,
       });
     },
     onError: (error: Error) => {
@@ -301,73 +324,113 @@ export default function ImageStorageSettingsPage() {
           </CardContent>
         </Card>
 
-        <Card data-testid="card-add-photos-to-db">
+        <Card data-testid="card-storage-maintenance">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
-              <Database className="h-5 w-5" />
-              Add Photos to DB
+              <Wrench className="h-5 w-5" />
+              Storage Maintenance
             </CardTitle>
-            <CardDescription>Register existing image URLs in the photos table.</CardDescription>
+            <CardDescription>Perform database cleanup and maintenance tasks for your images.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-backfill-danger">
-              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-destructive">Danger — do at your own risk</p>
-                <p className="text-xs text-muted-foreground">
-                  This scans every image URL in the database and registers it in the photos table. It is safe to run multiple times (duplicates are skipped), but may be slow on large datasets. New uploads are registered automatically going forward.
-                </p>
+          <CardContent className="space-y-6">
+            {/* Section 1: Add Photos to DB */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium flex items-center gap-2">
+                <Database className="h-4 w-4" />
+                Add Photos to DB
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Register existing image URLs in the photos table.
+              </p>
+              <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-backfill-danger">
+                <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-destructive">Danger — do at your own risk</p>
+                  <p className="text-xs text-muted-foreground">
+                    This scans every image URL in the database and registers it in the photos table. It is safe to run multiple times (duplicates are skipped), but may be slow on large datasets. New uploads are registered automatically going forward.
+                  </p>
+                </div>
               </div>
+              <Button
+                variant="outline"
+                onClick={() => setConfirmDialog("backfill")}
+                disabled={backfillMutation.isPending}
+                data-testid="button-add-photos-to-db"
+              >
+                {backfillMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Database className="h-4 w-4 mr-2" />
+                )}
+                Scan and Register Photos
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmDialog("backfill")}
-              disabled={backfillMutation.isPending}
-              data-testid="button-add-photos-to-db"
-            >
-              {backfillMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Database className="h-4 w-4 mr-2" />
-              )}
-              Scan and Register Photos
-            </Button>
-          </CardContent>
-        </Card>
 
-        <Card data-testid="card-delete-instagram-urls">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Trash2 className="h-5 w-5" />
-              Delete Instagram &amp; Facebook CDN Image URLs
-            </CardTitle>
-            <CardDescription>
-              This will remove all cdninstagram.com and fbcdn.net URLs from images. These are temporary URLs (72hr) added when we do imports from Instagram — these should not be stored permanently.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-instagram-danger">
-              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-destructive">Danger — this is destructive and cannot be undone</p>
-                <p className="text-xs text-muted-foreground">
-                  Removes all image URLs from social media posts and social profile photos, and removes all photo DB table entries that have cdninstagram.com or fbcdn.net as their image URL.
-                </p>
+            {/* Section 2: Delete Instagram & Facebook CDN URLs */}
+            <div className="border-t pt-6 space-y-3">
+              <h3 className="text-sm font-medium flex items-center gap-2">
+                <Trash2 className="h-4 w-4" />
+                Delete Instagram &amp; Facebook CDN Image URLs
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Remove temporary CDN URLs (cdninstagram.com and fbcdn.net) from images and social profile versions.
+              </p>
+              <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-instagram-danger">
+                <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-destructive">Danger — this is destructive and cannot be undone</p>
+                  <p className="text-xs text-muted-foreground">
+                    Removes all image URLs from social media posts and social profile photos, and removes all photo DB table entries that have cdninstagram.com or fbcdn.net as their image URL.
+                  </p>
+                </div>
               </div>
+              <Button
+                variant="outline"
+                onClick={() => setConfirmDialog("delete-instagram")}
+                disabled={deleteInstagramMutation.isPending}
+                data-testid="button-delete-instagram-urls"
+              >
+                {deleteInstagramMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4 mr-2" />
+                )}
+                Delete CDN Image URLs
+              </Button>
             </div>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmDialog("delete-instagram")}
-              disabled={deleteInstagramMutation.isPending}
-              data-testid="button-delete-instagram-urls"
-            >
-              {deleteInstagramMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Trash2 className="h-4 w-4 mr-2" />
-              )}
-              Delete CDN Image URLs
-            </Button>
+
+            {/* Section 3: Delete Orphan Images */}
+            <div className="border-t pt-6 space-y-3">
+              <h3 className="text-sm font-medium flex items-center gap-2">
+                <Trash2 className="h-4 w-4 text-destructive" />
+                Delete Orphan Images
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Remove image records and files that are no longer associated with any people, notes, interactions, groups, or social profile posts.
+              </p>
+              <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-delete-orphans-danger">
+                <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-destructive">Danger — this will permanently delete files and DB records</p>
+                  <p className="text-xs text-muted-foreground">
+                    This scans the database for photos that are no longer referenced by any active entity. It will permanently delete these files from local storage/S3 and remove their entries from the database.
+                  </p>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => setConfirmDialog("delete-orphans")}
+                disabled={deleteOrphansMutation.isPending}
+                data-testid="button-delete-orphan-images"
+              >
+                {deleteOrphansMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4 mr-2" />
+                )}
+                Delete Orphan Images
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -481,6 +544,26 @@ export default function ImageStorageSettingsPage() {
               data-testid="button-confirm-delete-instagram"
             >
               Delete CDN URLs
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === "delete-orphans"} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Orphan Images?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all image records in the photos database table that are no longer referenced by any active entity, and delete their physical files from local storage or S3. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-delete-orphans">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => { deleteOrphansMutation.mutate(); setConfirmDialog(null); }}
+              data-testid="button-confirm-delete-orphans"
+            >
+              Delete Orphans
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

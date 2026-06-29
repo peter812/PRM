@@ -125,7 +125,9 @@ export default function TaskDetailPage() {
       </div>
 
       <div className="flex items-start justify-between gap-4 mb-2 flex-wrap">
-        <h1 className="text-2xl font-semibold" data-testid="text-task-title">{getTaskLabel(task.type)}</h1>
+        <h1 className="text-2xl font-semibold" data-testid="text-task-title">
+          {task.title ? `${task.title} - ${getTaskLabel(task.type)}` : getTaskLabel(task.type)}
+        </h1>
         <StatusPill status={task.status} />
       </div>
       <p className="text-xs font-mono text-muted-foreground mb-6 break-all" data-testid="text-task-id">{task.id}</p>

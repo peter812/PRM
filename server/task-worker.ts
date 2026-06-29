@@ -775,6 +775,7 @@ async function processImportXmlTask(taskId: string, payload: {
   const existingRelationshipUuids = new Set(existingRelationships.map(r => r.id));
   const existingInteractionUuids = new Set(existingInteractions.map(i => i.id));
   const existingSocialAccountUuids = new Set(existingSocialAccounts.map(s => s.id));
+  const socialAccountIdMap = new Map<string, string>();
 
   await storage.updateTaskProgress(taskId, 10, "Importing relationship types…");
 
@@ -959,7 +960,17 @@ async function processImportXmlTask(taskId: string, payload: {
     const followers = parseXmlArray("followers", "account_id", block);
     const internalAccountCreationDateStr = unescapeXml(parseXmlTag("internal_account_creation_date", block));
     const internalAccountCreationType = unescapeXml(parseXmlTag("internal_account_creation_type", block));
-    if (existingSocialAccountUuids.has(id)) { skippedCounts.socialAccounts++; continue; }
+    
+    const existing = existingSocialAccounts.find(
+      s => s.id === id || (s.username.toLowerCase() === username.toLowerCase() && s.typeId === (typeId || null))
+    );
+    if (existing) {
+      skippedCounts.socialAccounts++;
+      socialAccountIdMap.set(id, existing.id);
+      existingSocialAccountUuids.add(existing.id);
+      continue;
+    }
+
     const processedOwnerUuid = replaceZeroUUID(ownerUuid);
     try {
       const created = await storage.createSocialAccountWithId({
@@ -969,6 +980,10 @@ async function processImportXmlTask(taskId: string, payload: {
         internalAccountCreationType: internalAccountCreationType || "Import",
         internalAccountCreationDate: internalAccountCreationDateStr ? new Date(internalAccountCreationDateStr) : undefined,
       });
+      socialAccountIdMap.set(id, id);
+      existingSocialAccountUuids.add(id);
+      existingSocialAccounts.push(created);
+
       if (nickname || accountUrl || imageUrl) {
         if (created.currentProfile) {
           await storage.updateProfileVersion(created.currentProfile.id, {
@@ -985,7 +1000,6 @@ async function processImportXmlTask(taskId: string, payload: {
         });
       }
       importedCounts.socialAccounts++;
-      existingSocialAccountUuids.add(id);
     } catch (e) { console.error(`Error importing social account ${id}:`, e); }
   }
 
@@ -1009,9 +1023,12 @@ async function processImportXmlTask(taskId: string, payload: {
       const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
       if (!id || !postSocialAccountId) continue;
       if (existingPostIds.has(id)) continue;
-      if (!existingSocialAccountUuids.has(postSocialAccountId)) continue;
+      
+      const mappedAccountId = socialAccountIdMap.get(postSocialAccountId) || postSocialAccountId;
+      if (!existingSocialAccountUuids.has(mappedAccountId)) continue;
+
       await db.insert(socialAccountPosts).values({
-        id, socialAccountId: postSocialAccountId, postType,
+        id, socialAccountId: mappedAccountId, postType,
         content: content || null, description: description || null,
         likeCount, commentCount,
         comments: comments || null, mentionedAccounts: mentionedAccounts || null,
@@ -1028,7 +1045,9 @@ async function processImportXmlTask(taskId: string, payload: {
   for (const block of parseAllTags("social_profile_version", xmlText)) {
     try {
       const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-      if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
+      const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
+      if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
+
       const pvNickname = unescapeXml(parseXmlTag("nickname", block));
       const pvBio = unescapeXml(parseXmlTag("bio", block));
       const pvAccountUrl = unescapeXml(parseXmlTag("account_url", block));
@@ -1036,7 +1055,7 @@ async function processImportXmlTask(taskId: string, payload: {
       const pvExternalImageUrl = unescapeXml(parseXmlTag("external_image_url", block));
       const pvIsCurrent = parseXmlTag("is_current", block) === "true";
       await storage.createProfileVersion({
-        socialAccountId, nickname: pvNickname || null, bio: pvBio || null,
+        socialAccountId: mappedAccountId, nickname: pvNickname || null, bio: pvBio || null,
         accountUrl: pvAccountUrl || null, imageUrl: pvImageUrl || null,
         externalImageUrl: pvExternalImageUrl || null, isCurrent: pvIsCurrent,
       });
@@ -1046,12 +1065,14 @@ async function processImportXmlTask(taskId: string, payload: {
   for (const block of parseAllTags("social_network_snapshot", xmlText)) {
     try {
       const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-      if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
+      const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
+      if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
+
       const followerCount = parseInt(parseXmlTag("follower_count", block)) || 0;
       const followingCount = parseInt(parseXmlTag("following_count", block)) || 0;
       const snFollowers = parseXmlArray("followers", "account_id", block);
       const snFollowing = parseXmlArray("following", "account_id", block);
-      await storage.upsertNetworkState({ socialAccountId, followerCount, followingCount, followers: snFollowers, following: snFollowing });
+      await storage.upsertNetworkState({ socialAccountId: mappedAccountId, followerCount, followingCount, followers: snFollowers, following: snFollowing });
     } catch (e) { console.error("Error importing network snapshot:", e); }
   }
 
@@ -1060,15 +1081,17 @@ async function processImportXmlTask(taskId: string, payload: {
   for (const block of parseAllTags("social_network_change", xmlText)) {
     try {
       const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+      const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
+      if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
+
       const changeType = unescapeXml(parseXmlTag("change_type", block));
       const direction = unescapeXml(parseXmlTag("direction", block));
       const targetAccountId = unescapeXml(parseXmlTag("target_account_id", block));
       const detectedAtStr = unescapeXml(parseXmlTag("detected_at", block));
       const batchId = unescapeXml(parseXmlTag("batch_id", block));
-      if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
       if (!changeType || !direction || !targetAccountId) continue;
       await db.insert(socialNetworkChanges).values({
-        socialAccountId, changeType, direction, targetAccountId,
+        socialAccountId: mappedAccountId, changeType, direction, targetAccountId,
         detectedAt: detectedAtStr ? new Date(detectedAtStr) : new Date(),
         batchId: batchId || null,
       });

@@ -28,8 +28,8 @@ const APP_OPTIONS = [
 
 export default function AppOptionsPage() {
   return (
-    <div className="container max-w-full md:max-w-2xl py-6 md:py-10 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="mb-8">
+    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="mb-6">
         <h1 className="text-2xl font-semibold" data-testid="text-app-options-title">
           App Options
         </h1>

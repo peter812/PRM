@@ -167,6 +167,39 @@ export default function DeleteOptionsPage() {
     }
   };
 
+  const removeDuplicatesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/social-accounts/remove-duplicates", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to remove duplicate social accounts");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Duplicate accounts cleaned",
+        description: `Successfully removed ${data.deleted} duplicate social accounts.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Cleanup Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleRemoveDuplicates = () => {
+    removeDuplicatesMutation.mutate();
+  };
+
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="mb-8">
@@ -253,6 +286,52 @@ export default function DeleteOptionsPage() {
               <>
                 <Trash2 className="h-4 w-4" />
                 Remove All Social Accounts
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6 border-orange-500/50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-orange-500 font-semibold text-lg">
+            <Users className="h-5 w-5" />
+            Remove Duplicate Social Accounts
+          </CardTitle>
+          <CardDescription>Scan and remove duplicate social accounts (same username and platform), merging their posts and profiles</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="rounded-md bg-orange-500/10 border border-orange-500/20 p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 text-orange-500" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-orange-500">How duplicate removal works:</p>
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground mt-2">
+                  <li>Keeps the oldest account for each platform/username pair</li>
+                  <li>Re-links posts, profile versions, and network history to the kept account</li>
+                  <li>Updates person links to point to the kept account</li>
+                  <li>Permanently deletes the duplicate social account records</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <Button
+            variant="outline"
+            onClick={handleRemoveDuplicates}
+            disabled={removeDuplicatesMutation.isPending}
+            className="border-orange-500/50 hover:bg-orange-500/10 hover:text-orange-500 gap-2"
+            data-testid="button-remove-duplicate-social-accounts"
+          >
+            {removeDuplicatesMutation.isPending ? (
+              <>
+                <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <Trash2 className="h-4 w-4 text-orange-500" />
+                Remove Duplicate Social Accounts
               </>
             )}
           </Button>

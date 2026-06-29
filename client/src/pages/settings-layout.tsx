@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/collapsible";
 import UserOptionsPage from "@/pages/user-options";
 import AppOptionsPage from "@/pages/app-options";
+import ExperimentalFeaturesPage from "@/pages/experimental-features";
 import DataTypesPage from "@/pages/data-types";
 import ApiSettingsPage from "@/pages/api-settings";
 import ChromeExtensionSettingsPage from "@/pages/chrome-extension-settings";
@@ -76,6 +77,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Social Graph", url: "/social-graph", icon: Network },
       { title: "Chrome Extension", url: "/chrome-extension", icon: Chrome },
       { title: "API Settings", url: "/api-settings", icon: Key },
+      { title: "Experimental Features", url: "/experimental", icon: Sparkles },
     ],
   },
   {
@@ -155,7 +157,8 @@ function SettingsSidebar() {
     location.startsWith("/app") ||
     location.startsWith("/social-graph") ||
     location === "/chrome-extension" ||
-    location === "/api-settings";
+    location === "/api-settings" ||
+    location === "/experimental";
   const isImageStorageActive = location.startsWith("/image-storage") && location !== "/image-storage/tasks";
   const isIntelligenceActive = location.startsWith("/intelligence") || location === "/vector";
   const isTasksActive = location.startsWith("/tasks") || location === "/image-tasks" || location === "/image-storage/tasks";
@@ -253,7 +256,7 @@ export default function SettingsLayout() {
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
         <SettingsSidebar />
-        <div className="flex flex-col flex-1">
+        <div className="flex flex-col flex-1 overflow-hidden">
           <header className="flex items-center justify-between p-2 border-b">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
           </header>
@@ -262,6 +265,7 @@ export default function SettingsLayout() {
               <Route path="/" component={() => <Redirect to="/user" />} />
               <Route path="/user" component={UserOptionsPage} />
               <Route path="/app" component={AppOptionsPage} />
+              <Route path="/experimental" component={ExperimentalFeaturesPage} />
               <Route path="/data-types" component={DataTypesPage} />
               <Route path="/image-tasks" component={ImageTasksSettingsPage} />
               <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
