@@ -538,6 +538,8 @@ export class DatabaseStorage implements IStorage {
         name: groups.name,
         color: groups.color,
         members: groups.members,
+        centerAccountId: groups.centerAccountId,
+        crowdMembers: groups.crowdMembers,
       })
       .from(groups);
 
@@ -561,6 +563,8 @@ export class DatabaseStorage implements IStorage {
         name: g.name,
         color: g.color,
         members: g.members || [],
+        centerAccountId: g.centerAccountId || null,
+        crowdMembers: g.crowdMembers || [],
       })),
     };
   }

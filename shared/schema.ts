@@ -159,6 +159,9 @@ export const groups = pgTable("groups", {
   type: text("type").array().default(sql`ARRAY[]::text[]`), // list of group types
   members: text("members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs
   imageUrl: text("image_url"),
+  centerAccountId: varchar("center_account_id").references(() => socialAccounts.id, { onDelete: "set null" }),
+  crowdMembers: text("crowd_members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs in the crowd
+  crowdLastCalculatedAt: timestamp("crowd_last_calculated_at"),
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -1186,7 +1189,15 @@ export type PersonGraphData = {
     toPersonId: string;
     typeColor: string | null;
   }>;
-  groups: Array<{ id: string; name: string; color: string; members: string[] }>;
+  groups: Array<{
+    id: string;
+    name: string;
+    color: string;
+    members: string[];
+    centerAccountId?: string | null;
+    crowdMembers?: string[] | null;
+    crowdLastCalculatedAt?: string | null;
+  }>;
 };
 
 export type SocialGraphLink = {

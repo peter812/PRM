@@ -31,6 +31,8 @@ import {
   socialAccounts,
   socialProfileVersions,
   socialNetworkState,
+  groups,
+  relationships,
 } from "@shared/schema";
 
 // ── Image dimension helper ────────────────────────────────────────────────────
@@ -2037,6 +2039,395 @@ async function processMultiImageDownload(
   return JSON.stringify(responsePayload);
 }
 
+async function processCalculateCrowd(taskId: string, payload: { groupId: string }): Promise<string> {
+  const { groupId } = payload;
+  await storage.updateTaskProgress(taskId, 10, "Fetching group details...");
+  const group = await storage.getGroupById(groupId);
+  if (!group) {
+    throw new Error("Group not found");
+  }
+  if (!group.centerAccountId) {
+    throw new Error("No center account associated with this group.");
+  }
+
+  await storage.updateTaskProgress(taskId, 20, "Fetching center account followers...");
+  const centerState = await storage.getNetworkState(group.centerAccountId);
+  const F_center = new Set(centerState?.followers || []);
+
+  if (F_center.size === 0) {
+    await storage.updateGroup(groupId, { crowdMembers: [], crowdLastCalculatedAt: new Date() });
+    return JSON.stringify({
+      peopleCheckedCount: 0,
+      crowdMembersFound: 0,
+      message: "Center account has no followers. Crowd is empty."
+    });
+  }
+
+  await storage.updateTaskProgress(taskId, 30, "Retrieving all people and social connections...");
+  const allPeople = await storage.getAllPeople();
+  const allSocialAccounts = await db.select().from(socialAccounts);
+  const allNetworkStates = await storage.getAllNetworkStates();
+
+  // Map each person to their social account IDs
+  const personSocialAccountsMap = new Map<string, Set<string>>();
+  for (const p of allPeople) {
+    personSocialAccountsMap.set(p.id, new Set(p.socialAccountUuids || []));
+  }
+  for (const sa of allSocialAccounts) {
+    if (sa.ownerUuid) {
+      if (!personSocialAccountsMap.has(sa.ownerUuid)) {
+        personSocialAccountsMap.set(sa.ownerUuid, new Set());
+      }
+      personSocialAccountsMap.get(sa.ownerUuid)!.add(sa.id);
+    }
+  }
+
+  // Map each social account ID to their followed accounts
+  const followingMap = new Map<string, Set<string>>();
+  for (const ns of allNetworkStates) {
+    followingMap.set(ns.socialAccountId, new Set(ns.following || []));
+  }
+
+  await storage.updateTaskProgress(taskId, 40, "Scanning follower networks...");
+  const crowdPersonIds: string[] = [];
+  const totalPeople = allPeople.length;
+
+  for (let i = 0; i < totalPeople; i++) {
+    const person = allPeople[i];
+    const S_P = personSocialAccountsMap.get(person.id) || new Set<string>();
+    
+    // Union of all accounts followed by person P
+    const Following_P = new Set<string>();
+    for (const saId of S_P) {
+      const followed = followingMap.get(saId);
+      if (followed) {
+        for (const f of followed) {
+          Following_P.add(f);
+        }
+      }
+    }
+
+    // Intersection with center account followers
+    let intersectionCount = 0;
+    for (const f of F_center) {
+      if (Following_P.has(f)) {
+        intersectionCount++;
+      }
+    }
+
+    if (intersectionCount > 5) {
+      crowdPersonIds.push(person.id);
+    }
+
+    if (totalPeople > 10 && i % Math.ceil(totalPeople / 10) === 0) {
+      const progressPercent = 40 + Math.round((i / totalPeople) * 50);
+      await storage.updateTaskProgress(taskId, progressPercent, `Scanning follower networks: processed ${i}/${totalPeople} people...`);
+    }
+  }
+
+  await storage.updateTaskProgress(taskId, 95, "Updating group crowd list...");
+  await storage.updateGroup(groupId, {
+    crowdMembers: crowdPersonIds,
+    crowdLastCalculatedAt: new Date()
+  });
+
+  return JSON.stringify({
+    peopleCheckedCount: totalPeople,
+    crowdMembersFound: crowdPersonIds.length,
+    message: `Successfully calculated crowd for group: ${crowdPersonIds.length} members found.`
+  });
+}
+
+async function processFindPotentialGroups(taskId: string, payload: {
+  entityType: "people" | "social_accounts";
+  minGroupSize?: number;
+  minDensityMultiplier?: number;
+  linkDefinition: "any" | "mutual" | "family";
+}): Promise<string> {
+  const { entityType, linkDefinition } = payload;
+  const minGroupSize = payload.minGroupSize ?? 3;
+  const minDensityMultiplier = payload.minDensityMultiplier ?? 1.5;
+
+  await storage.updateTaskProgress(taskId, 15, "Loading graph nodes...");
+  let nodes: string[] = [];
+  const edges: [string, string][] = [];
+
+  if (entityType === "people") {
+    const allPeople = await storage.getAllPeople();
+    nodes = allPeople.map(p => p.id);
+
+    await storage.updateTaskProgress(taskId, 30, "Loading relationship links...");
+    
+    if (linkDefinition === "family") {
+      // 1. Lineage links
+      const allLin = await db.select().from(lineage);
+      for (const l of allLin) {
+        edges.push([l.childId, l.parentId]);
+      }
+      // 2. Partnership links
+      const allParts = await db.select().from(partnerships);
+      for (const p of allParts) {
+        edges.push([p.person1Id, p.person2Id]);
+      }
+      // 3. Family marked relationships
+      const allRels = await storage.getAllRelationships();
+      for (const r of allRels) {
+        if (r.familyRelationshipType) {
+          edges.push([r.fromPersonId, r.toPersonId]);
+        }
+      }
+    } else if (linkDefinition === "mutual") {
+      const allRels = await storage.getAllRelationships();
+      const relKeys = new Set<string>();
+      for (const r of allRels) {
+        relKeys.add(`${r.fromPersonId}->${r.toPersonId}`);
+      }
+      const addedKeys = new Set<string>();
+      for (const r of allRels) {
+        const backKey = `${r.toPersonId}->${r.fromPersonId}`;
+        if (relKeys.has(backKey)) {
+          const key = r.fromPersonId < r.toPersonId ? `${r.fromPersonId}-${r.toPersonId}` : `${r.toPersonId}-${r.fromPersonId}`;
+          if (!addedKeys.has(key)) {
+            edges.push([r.fromPersonId, r.toPersonId]);
+            addedKeys.add(key);
+          }
+        }
+      }
+      const allParts = await db.select().from(partnerships);
+      for (const p of allParts) {
+        const key = p.person1Id < p.person2Id ? `${p.person1Id}-${p.person2Id}` : `${p.person2Id}-${p.person1Id}`;
+        if (!addedKeys.has(key)) {
+          edges.push([p.person1Id, p.person2Id]);
+          addedKeys.add(key);
+        }
+      }
+    } else { // any
+      const allRels = await storage.getAllRelationships();
+      for (const r of allRels) {
+        edges.push([r.fromPersonId, r.toPersonId]);
+      }
+      const allParts = await db.select().from(partnerships);
+      for (const p of allParts) {
+        edges.push([p.person1Id, p.person2Id]);
+      }
+      const allLin = await db.select().from(lineage);
+      for (const l of allLin) {
+        edges.push([l.childId, l.parentId]);
+      }
+    }
+  } else { // social_accounts
+    const allAccounts = await db.select().from(socialAccounts);
+    nodes = allAccounts.map(a => a.id);
+
+    await storage.updateTaskProgress(taskId, 30, "Loading follow networks...");
+    const allNetworkStates = await storage.getAllNetworkStates();
+
+    if (linkDefinition === "mutual") {
+      const followMap = new Set<string>();
+      for (const ns of allNetworkStates) {
+        const following = ns.following || [];
+        for (const fId of following) {
+          followMap.add(`${ns.socialAccountId}->${fId}`);
+        }
+      }
+      const addedKeys = new Set<string>();
+      for (const ns of allNetworkStates) {
+        const following = ns.following || [];
+        for (const fId of following) {
+          const backKey = `${fId}->${ns.socialAccountId}`;
+          if (followMap.has(backKey)) {
+            const key = ns.socialAccountId < fId ? `${ns.socialAccountId}-${fId}` : `${fId}-${ns.socialAccountId}`;
+            if (!addedKeys.has(key)) {
+              edges.push([ns.socialAccountId, fId]);
+              addedKeys.add(key);
+            }
+          }
+        }
+      }
+    } else if (linkDefinition === "any") {
+      const addedKeys = new Set<string>();
+      for (const ns of allNetworkStates) {
+        const following = ns.following || [];
+        for (const fId of following) {
+          const key = ns.socialAccountId < fId ? `${ns.socialAccountId}-${fId}` : `${fId}-${ns.socialAccountId}`;
+          if (!addedKeys.has(key)) {
+            edges.push([ns.socialAccountId, fId]);
+            addedKeys.add(key);
+          }
+        }
+      }
+    }
+  }
+
+  await storage.updateTaskProgress(taskId, 50, "Running Label Propagation clustering...");
+  
+  const nodeSet = new Set(nodes);
+  const validEdges: [string, string][] = [];
+  const uniqueEdges = new Set<string>();
+
+  for (const [u, v] of edges) {
+    if (nodeSet.has(u) && nodeSet.has(v) && u !== v) {
+      const key = u < v ? `${u}-${v}` : `${v}-${u}`;
+      if (!uniqueEdges.has(key)) {
+        uniqueEdges.add(key);
+        validEdges.push([u, v]);
+      }
+    }
+  }
+
+  const communities = runLabelPropagation(nodes, validEdges);
+
+  await storage.updateTaskProgress(taskId, 80, "Calculating modularity and densities...");
+
+  const E_total = uniqueEdges.size;
+  const V_total = nodes.length;
+  const D_global = V_total > 1 ? (2 * E_total) / (V_total * (V_total - 1)) : 0;
+
+  const allPeople = entityType === "people" ? await storage.getAllPeople() : [];
+  const allAccounts = entityType === "social_accounts" ? await db.select().from(socialAccounts) : [];
+
+  const results: any[] = [];
+  const adjacency = new Map<string, string[]>();
+  for (const node of nodes) {
+    adjacency.set(node, []);
+  }
+  for (const [u, v] of validEdges) {
+    adjacency.get(u)?.push(v);
+    adjacency.get(v)?.push(u);
+  }
+
+  for (const [lbl, communityNodes] of communities.entries()) {
+    const C_size = communityNodes.length;
+    if (C_size < minGroupSize) continue;
+
+    const communitySet = new Set(communityNodes);
+    let E_in = 0;
+    for (const edgeKey of uniqueEdges) {
+      const [u, v] = edgeKey.split('-');
+      if (communitySet.has(u) && communitySet.has(v)) {
+        E_in++;
+      }
+    }
+
+    const D_C = C_size > 1 ? (2 * E_in) / (C_size * (C_size - 1)) : 0;
+
+    if (D_global > 0) {
+      const ratio = D_C / D_global;
+      if (ratio < minDensityMultiplier) continue;
+    } else {
+      if (E_in === 0) continue;
+    }
+
+    const degrees = new Map<string, number>();
+    for (const node of communityNodes) {
+      let deg = 0;
+      const neighbors = adjacency.get(node) || [];
+      for (const nbr of neighbors) {
+        if (communitySet.has(nbr)) deg++;
+      }
+      degrees.set(node, deg);
+    }
+
+    const sortedNodes = [...communityNodes].sort((a, b) => (degrees.get(b) || 0) - (degrees.get(a) || 0));
+    const topNodes = sortedNodes.slice(0, 2);
+
+    let clusteredAround = "";
+    if (entityType === "people") {
+      const names = topNodes.map(id => {
+        const p = allPeople.find(person => person.id === id);
+        return p ? `${p.firstName} ${p.lastName}` : "Unknown";
+      });
+      clusteredAround = names.join(" & ");
+    } else {
+      const names = topNodes.map(id => {
+        const a = allAccounts.find(acc => acc.id === id);
+        return a ? `@${a.username}` : "Unknown";
+      });
+      clusteredAround = names.join(" & ");
+    }
+
+    const suggestedName = `Potential Group (Clustered around ${clusteredAround})`;
+
+    results.push({
+      suggestedName,
+      memberIds: communityNodes,
+      density: D_C,
+      globalDensity: D_global,
+      densityRatio: D_global > 0 ? D_C / D_global : 1.0,
+      internalEdgesCount: E_in,
+    });
+  }
+
+  results.sort((a, b) => b.densityRatio - a.densityRatio);
+
+  await storage.updateTaskProgress(taskId, 100, "Group detection analysis complete.");
+  return JSON.stringify(results);
+}
+
+function runLabelPropagation(nodes: string[], edges: [string, string][], maxIterations = 20): Map<string, string[]> {
+  const labels = new Map<string, string>();
+  const adjacency = new Map<string, string[]>();
+
+  for (const node of nodes) {
+    labels.set(node, node);
+    adjacency.set(node, []);
+  }
+
+  for (const [u, v] of edges) {
+    adjacency.get(u)?.push(v);
+    adjacency.get(v)?.push(u);
+  }
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    let changed = false;
+    const shuffledNodes = [...nodes];
+    for (let i = shuffledNodes.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffledNodes[i], shuffledNodes[j]] = [shuffledNodes[j], shuffledNodes[i]];
+    }
+
+    for (const node of shuffledNodes) {
+      const neighbors = adjacency.get(node) || [];
+      if (neighbors.length === 0) continue;
+
+      const counts = new Map<string, number>();
+      for (const neighbor of neighbors) {
+        const lbl = labels.get(neighbor)!;
+        counts.set(lbl, (counts.get(lbl) || 0) + 1);
+      }
+
+      let maxFreq = 0;
+      let bestLabels: string[] = [];
+      for (const [lbl, freq] of counts.entries()) {
+        if (freq > maxFreq) {
+          maxFreq = freq;
+          bestLabels = [lbl];
+        } else if (freq === maxFreq) {
+          bestLabels.push(lbl);
+        }
+      }
+
+      const chosenLabel = bestLabels[Math.floor(Math.random() * bestLabels.length)];
+      if (labels.get(node) !== chosenLabel) {
+        labels.set(node, chosenLabel);
+        changed = true;
+      }
+    }
+
+    if (!changed) break;
+  }
+
+  const communities = new Map<string, string[]>();
+  for (const [node, lbl] of labels.entries()) {
+    if (!communities.has(lbl)) {
+      communities.set(lbl, []);
+    }
+    communities.get(lbl)!.push(node);
+  }
+
+  return communities;
+}
+
 async function processNextTask(): Promise<boolean> {
   const task = await storage.getNextPendingTask();
   if (!task) return false;
@@ -2048,6 +2439,16 @@ async function processNextTask(): Promise<boolean> {
     let result: string;
 
     switch (task.type) {
+      case "calculate_crowd": {
+        const payload = JSON.parse(task.payload);
+        result = await processCalculateCrowd(task.id, payload);
+        break;
+      }
+      case "find_potential_groups": {
+        const payload = JSON.parse(task.payload);
+        result = await processFindPotentialGroups(task.id, payload);
+        break;
+      }
       case "multi_image_download": {
         const payload = JSON.parse(task.payload);
         result = await processMultiImageDownload(task.id, payload);
@@ -2087,8 +2488,6 @@ async function processNextTask(): Promise<boolean> {
       }
       case "import_xml": {
         const payload = JSON.parse(task.payload);
-        // Scrub the raw XML from the persisted task payload immediately after
-        // parsing to avoid retaining large PII strings in the database.
         await db.update(tasks).set({
           payload: JSON.stringify({ userId: payload.userId, xmlCleared: true }),
         }).where(eq(tasks.id, task.id));

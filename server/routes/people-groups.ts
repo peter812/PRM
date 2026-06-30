@@ -1112,5 +1112,181 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to compute social graph" });
       }
     });
-  
+
+    // Recalculate crowd endpoint
+    app.post("/api/groups/:id/calculate-crowd", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const group = await storage.getGroupById(id);
+        if (!group) {
+          return res.status(404).json({ error: "Group not found" });
+        }
+        if (!group.centerAccountId) {
+          return res.status(400).json({ error: "No center account associated with this group." });
+        }
+        const task = await storage.createTask({
+          type: "calculate_crowd",
+          status: "pending",
+          title: `Crowd for ${group.name}`,
+          payload: JSON.stringify({ groupId: id }),
+        });
+        triggerTaskWorker();
+        res.json({ taskId: task.id });
+      } catch (error) {
+        console.error("Error queueing crowd calculation:", error);
+        res.status(500).json({ error: "Failed to queue crowd calculation" });
+      }
+    });
+
+    // Get crowd members details and connection strength
+    app.get("/api/groups/:id/crowd", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const group = await storage.getGroupById(id);
+        if (!group) {
+          return res.status(404).json({ error: "Group not found" });
+        }
+        
+        const crowdMembers = group.crowdMembers || [];
+        if (crowdMembers.length === 0 || !group.centerAccountId) {
+          return res.json([]);
+        }
+
+        const centerState = await storage.getNetworkState(group.centerAccountId);
+        const F_center = new Set(centerState?.followers || []);
+
+        const peopleList = await db.select().from(people).where(inArray(people.id, crowdMembers));
+        const allSocialAccounts = await db.select().from(socialAccounts).where(inArray(socialAccounts.ownerUuid, crowdMembers));
+        const allNetworkStates = await storage.getAllNetworkStates();
+
+        const followingMap = new Map<string, Set<string>>();
+        for (const ns of allNetworkStates) {
+          followingMap.set(ns.socialAccountId, new Set(ns.following || []));
+        }
+
+        const personSocialAccountsMap = new Map<string, string[]>();
+        for (const sa of allSocialAccounts) {
+          if (sa.ownerUuid) {
+            if (!personSocialAccountsMap.has(sa.ownerUuid)) {
+              personSocialAccountsMap.set(sa.ownerUuid, []);
+            }
+            personSocialAccountsMap.get(sa.ownerUuid)!.push(sa.id);
+          }
+        }
+
+        const results = peopleList.map(p => {
+          const saIds = personSocialAccountsMap.get(p.id) || [];
+          const Following_P = new Set<string>();
+          for (const saId of saIds) {
+            const followed = followingMap.get(saId);
+            if (followed) {
+              for (const f of followed) {
+                Following_P.add(f);
+              }
+            }
+          }
+
+          let intersectionCount = 0;
+          for (const f of F_center) {
+            if (Following_P.has(f)) {
+              intersectionCount++;
+            }
+          }
+
+          return {
+            id: p.id,
+            firstName: p.firstName,
+            lastName: p.lastName,
+            imageUrl: p.imageUrl,
+            company: p.company,
+            title: p.title,
+            connectionStrength: intersectionCount
+          };
+        });
+
+        results.sort((a, b) => b.connectionStrength - a.connectionStrength);
+        res.json(results);
+      } catch (error) {
+        console.error("Error fetching group crowd details:", error);
+        res.status(500).json({ error: "Failed to fetch group crowd details" });
+      }
+    });
+
+    // Start connection analysis to find potential groups
+    app.post("/api/potential-groups/analyze", async (req, res) => {
+      try {
+        const settings = req.body as {
+          entityType: "people" | "social_accounts";
+          minGroupSize?: number;
+          minDensityMultiplier?: number;
+          linkDefinition: "any" | "mutual" | "family";
+        };
+        if (!settings.entityType || !settings.linkDefinition) {
+          return res.status(400).json({ error: "entityType and linkDefinition are required." });
+        }
+        const task = await storage.createTask({
+          type: "find_potential_groups",
+          status: "pending",
+          title: `Community detection: ${settings.entityType} (${settings.linkDefinition})`,
+          payload: JSON.stringify(settings),
+        });
+        triggerTaskWorker();
+        res.json({ taskId: task.id });
+      } catch (error) {
+        console.error("Error queueing community detection:", error);
+        res.status(500).json({ error: "Failed to queue community detection" });
+      }
+    });
+
+    // Check task status & fetch community detection results
+    app.get("/api/potential-groups/results/:taskId", async (req, res) => {
+      try {
+        const { taskId } = req.params;
+        const task = await storage.getTaskById(taskId);
+        if (!task) {
+          return res.status(404).json({ error: "Task not found" });
+        }
+        let results = [];
+        if (task.status === "completed" && task.result) {
+          try {
+            results = JSON.parse(task.result);
+          } catch (e) {
+            console.error("Error parsing task result:", e);
+          }
+        }
+        res.json({
+          status: task.status,
+          progress: task.progress,
+          progressMessage: task.progressMessage,
+          results,
+        });
+      } catch (error) {
+        console.error("Error fetching analysis results:", error);
+        res.status(500).json({ error: "Failed to fetch analysis results" });
+      }
+    });
+
+    // Promote potential group to actual group
+    app.post("/api/potential-groups/create", async (req, res) => {
+      try {
+        const { name, color, members } = req.body as {
+          name: string;
+          color: string;
+          members: string[];
+        };
+        if (!name || !color) {
+          return res.status(400).json({ error: "Name and color are required." });
+        }
+        const group = await storage.createGroup({
+          name,
+          color,
+          members: members || [],
+        });
+        res.json({ success: true, groupId: group.id });
+      } catch (error) {
+        console.error("Error creating group from analysis:", error);
+        res.status(500).json({ error: "Failed to create group" });
+      }
+    });
+
 }
