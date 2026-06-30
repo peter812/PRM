@@ -587,6 +587,7 @@ export function registerRoutes(app: Express) {
         const registryFields: Record<string, any> = {};
         if (body.username !== undefined) registryFields.username = body.username;
         if (body.ownerUuid !== undefined) registryFields.ownerUuid = body.ownerUuid;
+        if (body.groupId !== undefined) registryFields.groupId = body.groupId;
         if (body.typeId !== undefined) registryFields.typeId = body.typeId;
         if (body.internalAccountCreationType !== undefined) registryFields.internalAccountCreationType = body.internalAccountCreationType;
         if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;

@@ -48,6 +48,9 @@ import {
   type DailyNoteWithDetails,
   type ImageTask,
   type InsertImageTask,
+  schooling,
+  type Schooling,
+  type InsertSchooling,
   type Person,
   type InsertPerson,
   type Note,
@@ -235,6 +238,10 @@ export interface IStorage {
   updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }>;
   getRandomPeoplePair(): Promise<Person[]>;
 
+  // Schooling operations
+  getSchoolingByPersonId(personId: string): Promise<Schooling | undefined>;
+  upsertSchooling(schooling: InsertSchooling): Promise<Schooling>;
+
   // Note operations
   createNote(note: InsertNote): Promise<Note>;
   deleteNote(id: string): Promise<void>;
@@ -353,6 +360,7 @@ export interface IStorage {
   getSocialAccountById(id: string): Promise<SocialAccountWithCurrentProfile | undefined>;
   getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]>;
   getSocialAccountsByOwner(ownerUuid: string): Promise<SocialAccountWithCurrentProfile[]>;
+  getSocialAccountsByGroup(groupId: string): Promise<SocialAccountWithCurrentProfile[]>;
   createSocialAccount(account: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile>;
   updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
   deleteSocialAccount(id: string): Promise<void>;
@@ -824,7 +832,7 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Run all independent queries in parallel
-    const [personNotes, personInteractions, personGroups, relationshipsFrom, relationshipsTo] = await Promise.all([
+    const [personNotes, personInteractions, personGroups, relationshipsFrom, relationshipsTo, personSchooling] = await Promise.all([
       db.select().from(notes).where(eq(notes.personId, id)),
       db.select().from(interactions).where(sql`${id} = ANY(${interactions.peopleIds})`),
       db.select().from(groups).where(arrayContains(groups.members, [id])),
@@ -860,6 +868,7 @@ export class DatabaseStorage implements IStorage {
         .innerJoin(people, eq(relationships.fromPersonId, people.id))
         .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
         .where(eq(relationships.toPersonId, id)),
+      db.select().from(schooling).where(eq(schooling.personId, id)),
     ]);
 
     // Combine both directions
@@ -880,6 +889,7 @@ export class DatabaseStorage implements IStorage {
       interactions: personInteractions,
       groups: personGroups,
       relationships: allRelationships,
+      schooling: personSchooling[0] || null,
     };
   }
 
@@ -918,6 +928,30 @@ export class DatabaseStorage implements IStorage {
     
     // Delete person (cascade will handle notes, relationships)
     await db.delete(people).where(eq(people.id, id));
+  }
+
+  async getSchoolingByPersonId(personId: string): Promise<Schooling | undefined> {
+    const [result] = await db.select().from(schooling).where(eq(schooling.personId, personId));
+    return result || undefined;
+  }
+
+  async upsertSchooling(schoolingData: InsertSchooling): Promise<Schooling> {
+    const existing = await this.getSchoolingByPersonId(schoolingData.personId);
+    if (existing) {
+      const [updated] = await db
+        .update(schooling)
+        .set({
+          highSchool: schoolingData.highSchool,
+          colleges: schoolingData.colleges,
+          additionalSchooling: schoolingData.additionalSchooling,
+        })
+        .where(eq(schooling.personId, schoolingData.personId))
+        .returning();
+      return updated;
+    } else {
+      const [inserted] = await db.insert(schooling).values(schoolingData).returning();
+      return inserted;
+    }
   }
 
   async updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }> {
@@ -1820,12 +1854,18 @@ export class DatabaseStorage implements IStorage {
       })),
     ];
 
+    const personSchooling = await db
+      .select()
+      .from(schooling)
+      .where(eq(schooling.personId, person.id));
+
     return {
       ...person,
       notes: personNotes,
       interactions: personInteractions,
       groups: personGroups,
       relationships: allRelationships,
+      schooling: personSchooling[0] || null,
     };
   }
 
@@ -2704,6 +2744,25 @@ export class DatabaseStorage implements IStorage {
     return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
   }
 
+  async getSocialAccountsByGroup(groupId: string): Promise<SocialAccountWithCurrentProfile[]> {
+    const rows = await db
+      .select({
+        account: socialAccounts,
+        profile: socialProfileVersions,
+      })
+      .from(socialAccounts)
+      .leftJoin(
+        socialProfileVersions,
+        and(
+          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
+          eq(socialProfileVersions.isCurrent, true)
+        )
+      )
+      .where(eq(socialAccounts.groupId, groupId));
+
+    return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
+  }
+
   async createSocialAccount(insertAccount: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile> {
     const [account] = await db.insert(socialAccounts).values({
       ...insertAccount,
@@ -2723,10 +2782,11 @@ export class DatabaseStorage implements IStorage {
     id: string,
     accountData: Partial<InsertSocialAccount>
   ): Promise<SocialAccount | undefined> {
-    const { username, ownerUuid, typeId, internalAccountCreationType, lastScrapedAt } = accountData as any;
+    const { username, ownerUuid, groupId, typeId, internalAccountCreationType, lastScrapedAt } = accountData as any;
     const updateFields: Record<string, any> = {};
     if (username !== undefined) updateFields.username = username;
     if (ownerUuid !== undefined) updateFields.ownerUuid = ownerUuid;
+    if (groupId !== undefined) updateFields.groupId = groupId;
     if (typeId !== undefined) updateFields.typeId = typeId;
     if (internalAccountCreationType !== undefined) updateFields.internalAccountCreationType = internalAccountCreationType;
     if (lastScrapedAt !== undefined) updateFields.lastScrapedAt = lastScrapedAt;

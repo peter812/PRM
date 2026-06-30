@@ -1,8 +1,30 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, AnyPgColumn } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+
+// Career and Education interfaces for database JSONB columns
+export interface JobExperience {
+  company: string;
+  position: string;
+  startDate?: string | null;
+  endDate?: string | null;
+}
+
+export interface CollegeExperience {
+  name: string;
+  degree: string;
+  startDate?: string | null;
+  endDate?: string | null;
+}
+
+export interface AdditionalSchoolingExperience {
+  name: string;
+  course?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+}
 
 // Users table for authentication
 export const users = pgTable("users", {
@@ -67,6 +89,8 @@ export const people = pgTable("people", {
   sex: text("sex").notNull().default("unknown"), // 'male', 'female', or 'unknown'
   vectorId: text("vector_id"), // Qdrant point ID for universal vector search
   vectorSyncedAt: timestamp("vector_synced_at"), // Last successful vector sync
+  maidenName: text("maiden_name"),
+  jobs: jsonb("jobs").$type<JobExperience[]>().default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -151,6 +175,16 @@ export const partnerships = pgTable("partnerships", {
   unq: unique().on(t.person1Id, t.person2Id),
 }));
 
+// Schooling table
+export const schooling = pgTable("schooling", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  highSchool: text("high_school"),
+  colleges: jsonb("colleges").$type<CollegeExperience[]>().default(sql`'[]'::jsonb`), // array of { name: string, degree: string, startDate?: string, endDate?: string }
+  additionalSchooling: jsonb("additional_schooling").$type<AdditionalSchoolingExperience[]>().default(sql`'[]'::jsonb`), // array of { name: string, course?: string, startDate?: string, endDate?: string }
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Groups table
 export const groups = pgTable("groups", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -159,7 +193,7 @@ export const groups = pgTable("groups", {
   type: text("type").array().default(sql`ARRAY[]::text[]`), // list of group types
   members: text("members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs
   imageUrl: text("image_url"),
-  centerAccountId: varchar("center_account_id").references(() => socialAccounts.id, { onDelete: "set null" }),
+  centerAccountId: varchar("center_account_id").references((): AnyPgColumn => socialAccounts.id, { onDelete: "set null" }),
   crowdMembers: text("crowd_members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs in the crowd
   crowdLastCalculatedAt: timestamp("crowd_last_calculated_at"),
   vectorId: text("vector_id"),
@@ -188,6 +222,7 @@ export const socialAccounts = pgTable("social_accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull(),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
+  groupId: varchar("group_id").references((): AnyPgColumn => groups.id, { onDelete: "cascade" }),
   typeId: varchar("type_id").references(() => socialAccountTypes.id, { onDelete: "set null" }),
   internalAccountCreationDate: timestamp("internal_account_creation_date").notNull().defaultNow(),
   internalAccountCreationType: text("internal_account_creation_type").notNull().default("User"),
@@ -419,6 +454,17 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
   conversationParticipants: many(conversationParticipants),
   sentMessages: many(messages),
   receivedMessages: many(messageRecipients),
+  schooling: one(schooling, {
+    fields: [people.id],
+    references: [schooling.personId],
+  }),
+}));
+
+export const schoolingRelations = relations(schooling, ({ one }) => ({
+  person: one(people, {
+    fields: [schooling.personId],
+    references: [people.id],
+  }),
 }));
 
 export const notesRelations = relations(notes, ({ one }) => ({
@@ -462,6 +508,7 @@ export const interactionsRelations = relations(interactions, ({ one }) => ({
 
 export const groupsRelations = relations(groups, ({ many }) => ({
   notes: many(groupNotes),
+  socialAccounts: many(socialAccounts),
 }));
 
 export const groupNotesRelations = relations(groupNotes, ({ one }) => ({
@@ -479,6 +526,10 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one, many })
   type: one(socialAccountTypes, {
     fields: [socialAccounts.typeId],
     references: [socialAccountTypes.id],
+  }),
+  group: one(groups, {
+    fields: [socialAccounts.groupId],
+    references: [groups.id],
   }),
   profileVersions: many(socialProfileVersions),
   networkState: many(socialNetworkState),
@@ -546,10 +597,45 @@ export const dailyNoteAuditLogsRelations = relations(dailyNoteAuditLogs, ({ one 
 }));
 
 // Insert schemas
-export const insertPersonSchema = createInsertSchema(people).omit({
-  id: true,
-  createdAt: true,
+export const jobExperienceZodSchema = z.object({
+  company: z.string(),
+  position: z.string(),
+  startDate: z.string().nullable().optional(),
+  endDate: z.string().nullable().optional(),
 });
+
+export const collegeExperienceZodSchema = z.object({
+  name: z.string(),
+  degree: z.string(),
+  startDate: z.string().nullable().optional(),
+  endDate: z.string().nullable().optional(),
+});
+
+export const additionalSchoolingExperienceZodSchema = z.object({
+  name: z.string(),
+  course: z.string().nullable().optional(),
+  startDate: z.string().nullable().optional(),
+  endDate: z.string().nullable().optional(),
+});
+
+export const insertPersonSchema = createInsertSchema(people)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    jobs: z.array(jobExperienceZodSchema).optional(),
+  });
+
+export const insertSchoolingSchema = createInsertSchema(schooling)
+  .omit({
+    id: true,
+    createdAt: true,
+  })
+  .extend({
+    colleges: z.array(collegeExperienceZodSchema).optional(),
+    additionalSchooling: z.array(additionalSchoolingExperienceZodSchema).optional(),
+  });
 
 export const insertNoteSchema = createInsertSchema(notes).omit({
   id: true,
@@ -1059,6 +1145,9 @@ export type InsertDailyNoteInvolvedParty = z.infer<typeof insertDailyNoteInvolve
 export type DailyNoteAuditLog = typeof dailyNoteAuditLogs.$inferSelect;
 export type InsertDailyNoteAuditLog = z.infer<typeof insertDailyNoteAuditLogSchema>;
 
+export type Schooling = typeof schooling.$inferSelect;
+export type InsertSchooling = typeof schooling.$inferInsert;
+
 export type DailyNoteInvolvedPartyWithLabel = DailyNoteInvolvedParty & { label: string };
 
 export type DailyNoteWithDetails = DailyNote & {
@@ -1106,6 +1195,7 @@ export type PersonWithRelations = Person & {
   interactions: Interaction[];
   groups: Group[];
   relationships: RelationshipWithPerson[];
+  schooling?: Schooling | null;
 };
 
 export type GroupWithNotes = Group & {

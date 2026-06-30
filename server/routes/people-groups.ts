@@ -11,6 +11,7 @@ import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
 import {
   insertPersonSchema,
+  insertSchoolingSchema,
   insertNoteSchema,
   insertInteractionSchema,
   insertInteractionTypeSchema,
@@ -295,7 +296,8 @@ export function registerRoutes(app: Express) {
   
     app.post("/api/people", async (req, res) => {
       try {
-        const validatedData = insertPersonSchema.parse(req.body);
+        const { schooling: schoolingData, ...personBody } = req.body;
+        const validatedData = insertPersonSchema.parse(personBody);
         
         // Check for duplicate names
         const allPeople = await storage.getAllPeople();
@@ -311,12 +313,24 @@ export function registerRoutes(app: Express) {
         }
         
         let person = await storage.createPerson(validatedData);
+        
+        if (schoolingData) {
+          const validatedSchooling = insertSchoolingSchema.omit({ personId: true }).partial().parse(schoolingData);
+          await storage.upsertSchooling({
+            personId: person.id,
+            highSchool: validatedSchooling.highSchool ?? null,
+            colleges: validatedSchooling.colleges ?? [],
+            additionalSchooling: validatedSchooling.additionalSchooling ?? [],
+          });
+        }
+
         if (validatedData.socialAccountUuids && validatedData.socialAccountUuids.length > 0) {
           await autoPassInImageForPerson(person.id);
-          person = await storage.getPersonById(person.id) || person;
         }
+        
+        const finalPerson = await storage.getPersonById(person.id) || person;
         syncEntityInBackground("person", person.id);
-        res.status(201).json(person);
+        res.status(201).json(finalPerson);
       } catch (error) {
         console.error("Error creating person:", error);
         res.status(400).json({ error: "Failed to create person" });
@@ -326,18 +340,29 @@ export function registerRoutes(app: Express) {
     app.patch("/api/people/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        const validatedData = insertPersonSchema.partial().parse(req.body);
+        const { schooling: schoolingData, ...personBody } = req.body;
+        const validatedData = insertPersonSchema.partial().parse(personBody);
         const person = await storage.updatePerson(id, validatedData);
   
         if (!person) {
           return res.status(404).json({ error: "Person not found" });
         }
   
-        let finalPerson = person;
-        if (!person.imageUrl && validatedData.socialAccountUuids) {
+        if (schoolingData) {
+          const validatedSchooling = insertSchoolingSchema.omit({ personId: true }).partial().parse(schoolingData);
+          await storage.upsertSchooling({
+            personId: id,
+            highSchool: validatedSchooling.highSchool ?? null,
+            colleges: validatedSchooling.colleges ?? [],
+            additionalSchooling: validatedSchooling.additionalSchooling ?? [],
+          });
+        }
+
+        let finalPerson = await storage.getPersonById(id) || person;
+        if (!finalPerson.imageUrl && validatedData.socialAccountUuids) {
           const didPass = await autoPassInImageForPerson(id);
           if (didPass) {
-            finalPerson = await storage.getPersonById(id) || person;
+            finalPerson = await storage.getPersonById(id) || finalPerson;
           }
         }
   
@@ -959,6 +984,21 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error fetching group:", error);
         res.status(500).json({ error: "Failed to fetch group" });
+      }
+    });
+
+    app.get("/api/groups/:id/social-accounts", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const group = await storage.getGroupById(id);
+        if (!group) {
+          return res.status(404).json({ error: "Group not found" });
+        }
+        const accounts = await storage.getSocialAccountsByGroup(id);
+        res.json(accounts);
+      } catch (error) {
+        console.error("Error fetching group social accounts:", error);
+        res.status(500).json({ error: "Failed to fetch group social accounts" });
       }
     });
   

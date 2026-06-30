@@ -384,6 +384,13 @@ async function validateAndSyncSchema(): Promise<void> {
         sex: "TEXT NOT NULL DEFAULT 'unknown'",
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
+        maiden_name: "TEXT",
+        jobs: "JSONB DEFAULT '[]'::jsonb",
+      },
+      schooling: {
+        high_school: "TEXT",
+        colleges: "JSONB DEFAULT '[]'::jsonb",
+        additional_schooling: "JSONB DEFAULT '[]'::jsonb",
       },
       photos: {
         og_metadata: "JSONB",
@@ -501,6 +508,23 @@ async function validateAndSyncSchema(): Promise<void> {
         )
       `);
       log("Lineage table created successfully");
+    }
+
+    // Ensure schooling table exists
+    const schoolingExists = await tableExists("schooling");
+    if (!schoolingExists) {
+      log("Creating schooling table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS schooling (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          person_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          high_school TEXT,
+          colleges JSONB DEFAULT '[]'::jsonb,
+          additional_schooling JSONB DEFAULT '[]'::jsonb,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      log("Schooling table created successfully");
     }
 
     // Ensure partnerships table exists

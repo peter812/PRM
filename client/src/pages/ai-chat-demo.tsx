@@ -514,6 +514,8 @@ export default function AiChatDemoPage() {
       old ? { ...old, messages: trimmed } : old
     );
 
+    setEditingPrompt(null);
+
     setIsStreaming(true);
     setStreamingContent("");
     setStreamingToolCalls([]);
@@ -521,7 +523,6 @@ export default function AiChatDemoPage() {
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       await runStream(activeChatId, `/api/ai-chats/${activeChatId}/regenerate/stream`, payload);
-      setEditingPrompt(null);
     } catch (err: any) {
       // Revert the optimistic trim on error so the user doesn't lose their history.
       if (currentChat) queryClient.setQueryData(["/api/ai-chats", activeChatId], currentChat);

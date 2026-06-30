@@ -13,6 +13,7 @@ import { MembersTab } from "@/components/members-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { InteractionDialog } from "@/components/interaction-dialog";
 import { CrowdTab } from "@/components/crowd-tab";
+import { GroupSocialAccountsTab } from "@/components/group-social-accounts-tab";
 import { getInitials } from "@/lib/utils";
 
 type GroupWithMembers = Group & {
@@ -177,6 +178,13 @@ export default function GroupProfile() {
               Interactions
             </TabsTrigger>
             <TabsTrigger
+              value="social"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-social-accounts"
+            >
+              Social Accounts
+            </TabsTrigger>
+            <TabsTrigger
               value="crowd"
               className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
               data-testid="tab-crowd"
@@ -196,6 +204,9 @@ export default function GroupProfile() {
               groupId={group.id}
               onAddInteraction={() => setIsAddInteractionOpen(true)}
             />
+          </TabsContent>
+          <TabsContent value="social" className="mt-0 h-full">
+            <GroupSocialAccountsTab groupId={group.id} />
           </TabsContent>
           <TabsContent value="crowd" className="mt-0 h-full">
             <CrowdTab
