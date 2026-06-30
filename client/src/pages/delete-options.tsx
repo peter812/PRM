@@ -4,13 +4,6 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -28,17 +21,16 @@ export default function DeleteOptionsPage() {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [confirmSliderValue, setConfirmSliderValue] = useState([0]);
   const [includeExamples, setIncludeExamples] = useState(false);
-  const [confirmSwitch1, setConfirmSwitch1] = useState(false);
-  const [confirmSwitch2, setConfirmSwitch2] = useState(false);
-  const [confirmSwitch3, setConfirmSwitch3] = useState(false);
-  const [confirmFamilySwitch1, setConfirmFamilySwitch1] = useState(false);
-  const [confirmFamilySwitch2, setConfirmFamilySwitch2] = useState(false);
+
+  const [isDeleteSocialsDialogOpen, setIsDeleteSocialsDialogOpen] = useState(false);
+  const [confirmDeleteSocials, setConfirmDeleteSocials] = useState(false);
+
+  const [isDeleteFamilyDialogOpen, setIsDeleteFamilyDialogOpen] = useState(false);
+  const [confirmDeleteFamily, setConfirmDeleteFamily] = useState(false);
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
-
-  const allSwitchesOn = confirmSwitch1 && confirmSwitch2 && confirmSwitch3;
-  const allFamilySwitchesOn = confirmFamilySwitch1 && confirmFamilySwitch2;
 
   const resetDatabaseMutation = useMutation({
     mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
@@ -101,9 +93,8 @@ export default function DeleteOptionsPage() {
         description: `Successfully deleted ${data.deleted} social accounts.`,
       });
 
-      setConfirmSwitch1(false);
-      setConfirmSwitch2(false);
-      setConfirmSwitch3(false);
+      setIsDeleteSocialsDialogOpen(false);
+      setConfirmDeleteSocials(false);
 
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
     },
@@ -123,7 +114,7 @@ export default function DeleteOptionsPage() {
   };
 
   const handleDeleteAllSocialAccounts = () => {
-    if (allSwitchesOn) {
+    if (confirmDeleteSocials) {
       deleteAllSocialAccountsMutation.mutate();
     }
   };
@@ -147,8 +138,8 @@ export default function DeleteOptionsPage() {
         description: `Successfully deleted ${data.deleted} family relationships.`,
       });
 
-      setConfirmFamilySwitch1(false);
-      setConfirmFamilySwitch2(false);
+      setIsDeleteFamilyDialogOpen(false);
+      setConfirmDeleteFamily(false);
 
       queryClient.invalidateQueries();
     },
@@ -162,7 +153,7 @@ export default function DeleteOptionsPage() {
   });
 
   const handleDeleteAllFamilyRelationships = () => {
-    if (allFamilySwitchesOn) {
+    if (confirmDeleteFamily) {
       deleteAllFamilyRelationshipsMutation.mutate();
     }
   };
@@ -202,285 +193,300 @@ export default function DeleteOptionsPage() {
 
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold" data-testid="text-page-title">Delete Options</h1>
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold" data-testid="text-page-title">Delete Options</h1>
         <p className="text-muted-foreground">Manage destructive operations for your data</p>
       </div>
 
-      <Card className="border-destructive/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-destructive">
-            <Users className="h-5 w-5" />
-            Remove All Social Accounts
-          </CardTitle>
-          <CardDescription>Permanently delete all social accounts from the database</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
-              <div className="space-y-1 text-sm">
-                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>All social accounts will be permanently deleted</li>
-                  <li>Follower and following relationships will be lost</li>
-                  <li>Links to people will be removed</li>
-                </ul>
+      <div className="space-y-6">
+        {/* Card 1: Data Maintenance */}
+        <Card className="border-orange-500/50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-orange-500 font-semibold text-lg">
+              <Users className="h-5 w-5" />
+              Data Maintenance
+            </CardTitle>
+            <CardDescription>
+              Scan, clean, and optimize your database records
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border bg-card">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm">Remove Duplicate Social Accounts</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Merges profiles sharing the platform and username. Keeps the oldest account, updates contacts, and merges posts/history.
+                </p>
               </div>
+              <Button
+                variant="outline"
+                onClick={handleRemoveDuplicates}
+                disabled={removeDuplicatesMutation.isPending}
+                className="border-orange-500/50 hover:bg-orange-500/10 hover:text-orange-500 shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-remove-duplicate-social-accounts"
+              >
+                {removeDuplicatesMutation.isPending ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 text-orange-500" />
+                    Remove Duplicates
+                  </>
+                )}
+              </Button>
             </div>
-          </div>
+          </CardContent>
+        </Card>
 
-          <div className="space-y-4">
-            <p className="text-sm font-medium">Confirm by enabling all three switches:</p>
+        {/* Card 2: Danger Zone */}
+        <Card className="border-destructive/50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-destructive font-semibold text-lg">
+              <Trash2 className="h-5 w-5" />
+              Danger Zone
+            </CardTitle>
+            <CardDescription className="text-destructive/80">
+              Irreversible and highly destructive operations. Proceed with absolute caution.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
             
+            {/* Row 1: Remove All Social Accounts */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Remove All Social Accounts</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Permanently deletes all social profiles, social posts, follow relations, and linked contacts.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsDeleteSocialsDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-delete-all-social-accounts-trigger"
+              >
+                <Trash2 className="h-4 w-4" />
+                Remove Social Accounts...
+              </Button>
+            </div>
+
+            {/* Row 2: Remove All Family Relationships */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Remove All Family Relationships</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Permanently deletes all family tree associations. Custom categories (e.g. Friends, Colleagues) are unaffected.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsDeleteFamilyDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-delete-all-family-relationships-trigger"
+              >
+                <Network className="h-4 w-4" />
+                Remove Family...
+              </Button>
+            </div>
+
+            {/* Row 3: Reset Database */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Reset Database</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Removes all tables and reinstalls a fresh copy. Optionally seed mockup records for testing.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsResetDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-reset-database-trigger"
+              >
+                <AlertCircle className="h-4 w-4" />
+                Reset Database...
+              </Button>
+            </div>
+
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Dialog: Delete Social Accounts */}
+      <Dialog open={isDeleteSocialsDialogOpen} onOpenChange={(open) => {
+        setIsDeleteSocialsDialogOpen(open);
+        if (!open) setConfirmDeleteSocials(false);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Social Accounts Deletion
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete all social accounts from the database.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>All social accounts will be permanently deleted</li>
+                <li>Follower and following relationships will be lost</li>
+                <li>Links to people will be removed</li>
+              </ul>
+            </div>
+
             <div className="flex items-center justify-between rounded-md border p-4">
-              <Label htmlFor="confirm-switch-1" className="text-sm">
-                I understand I am about to delete all social accounts
+              <Label htmlFor="confirm-delete-socials" className="text-sm font-medium pr-4 leading-normal">
+                I understand that this action is irreversible and wish to proceed
               </Label>
               <Switch
-                id="confirm-switch-1"
-                checked={confirmSwitch1}
-                onCheckedChange={setConfirmSwitch1}
+                id="confirm-delete-socials"
+                checked={confirmDeleteSocials}
+                onCheckedChange={setConfirmDeleteSocials}
                 data-testid="switch-confirm-1"
               />
             </div>
-
-            <div className="flex items-center justify-between rounded-md border p-4">
-              <Label htmlFor="confirm-switch-2" className="text-sm">
-                I understand I am about to delete all social accounts
-              </Label>
-              <Switch
-                id="confirm-switch-2"
-                checked={confirmSwitch2}
-                onCheckedChange={setConfirmSwitch2}
-                data-testid="switch-confirm-2"
-              />
-            </div>
-
-            <div className="flex items-center justify-between rounded-md border p-4">
-              <Label htmlFor="confirm-switch-3" className="text-sm">
-                I understand I am about to delete all social accounts
-              </Label>
-              <Switch
-                id="confirm-switch-3"
-                checked={confirmSwitch3}
-                onCheckedChange={setConfirmSwitch3}
-                data-testid="switch-confirm-3"
-              />
-            </div>
           </div>
 
-          <Button
-            variant="destructive"
-            onClick={handleDeleteAllSocialAccounts}
-            disabled={!allSwitchesOn || deleteAllSocialAccountsMutation.isPending}
-            className="gap-2"
-            data-testid="button-delete-all-social-accounts"
-          >
-            {deleteAllSocialAccountsMutation.isPending ? (
-              <>
-                <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
-                Deleting...
-              </>
-            ) : (
-              <>
-                <Trash2 className="h-4 w-4" />
-                Remove All Social Accounts
-              </>
-            )}
-          </Button>
-        </CardContent>
-      </Card>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsDeleteSocialsDialogOpen(false);
+                setConfirmDeleteSocials(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteAllSocialAccounts}
+              disabled={!confirmDeleteSocials || deleteAllSocialAccountsMutation.isPending}
+              data-testid="button-delete-all-social-accounts"
+            >
+              {deleteAllSocialAccountsMutation.isPending ? "Deleting..." : "Delete All Social Accounts"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      <Card className="mt-6 border-orange-500/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-orange-500 font-semibold text-lg">
-            <Users className="h-5 w-5" />
-            Remove Duplicate Social Accounts
-          </CardTitle>
-          <CardDescription>Scan and remove duplicate social accounts (same username and platform), merging their posts and profiles</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="rounded-md bg-orange-500/10 border border-orange-500/20 p-4">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 text-orange-500" />
-              <div className="space-y-1 text-sm">
-                <p className="font-medium text-orange-500">How duplicate removal works:</p>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground mt-2">
-                  <li>Keeps the oldest account for each platform/username pair</li>
-                  <li>Re-links posts, profile versions, and network history to the kept account</li>
-                  <li>Updates person links to point to the kept account</li>
-                  <li>Permanently deletes the duplicate social account records</li>
-                </ul>
-              </div>
+      {/* Dialog: Delete Family Relationships */}
+      <Dialog open={isDeleteFamilyDialogOpen} onOpenChange={(open) => {
+        setIsDeleteFamilyDialogOpen(open);
+        if (!open) setConfirmDeleteFamily(false);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Family Relationships Deletion
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete all family tree relationships from the database.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>All family-type relationships (spouse, sibling, parent, etc.) will be permanently deleted</li>
+                <li>Custom relationship categories (e.g. Friends) will be unaffected</li>
+                <li>Family propagation structure will be cleared</li>
+              </ul>
             </div>
-          </div>
 
-          <Button
-            variant="outline"
-            onClick={handleRemoveDuplicates}
-            disabled={removeDuplicatesMutation.isPending}
-            className="border-orange-500/50 hover:bg-orange-500/10 hover:text-orange-500 gap-2"
-            data-testid="button-remove-duplicate-social-accounts"
-          >
-            {removeDuplicatesMutation.isPending ? (
-              <>
-                <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
-                Processing...
-              </>
-            ) : (
-              <>
-                <Trash2 className="h-4 w-4 text-orange-500" />
-                Remove Duplicate Social Accounts
-              </>
-            )}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card className="mt-6 border-destructive/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-destructive">
-            <Network className="h-5 w-5" />
-            Remove All Family Relationships
-          </CardTitle>
-          <CardDescription>Permanently delete all family-type relationships from the database</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
-              <div className="space-y-1 text-sm">
-                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>All family-type relationships (e.g., spouse, parent, child, sibling, etc.) will be permanently deleted</li>
-                  <li>Custom relationship types (e.g., Friend, Colleague) will not be affected</li>
-                  <li>Family propagation structure will be cleared</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <p className="text-sm font-medium">Confirm by enabling both switches:</p>
-            
             <div className="flex items-center justify-between rounded-md border p-4">
-              <Label htmlFor="confirm-family-switch-1" className="text-sm font-normal">
-                I understand I am about to delete all family tree relationships
+              <Label htmlFor="confirm-delete-family" className="text-sm font-medium pr-4 leading-normal">
+                I understand that this action is irreversible and wish to proceed
               </Label>
               <Switch
-                id="confirm-family-switch-1"
-                checked={confirmFamilySwitch1}
-                onCheckedChange={setConfirmFamilySwitch1}
+                id="confirm-delete-family"
+                checked={confirmDeleteFamily}
+                onCheckedChange={setConfirmDeleteFamily}
                 data-testid="switch-confirm-family-1"
               />
             </div>
-
-            <div className="flex items-center justify-between rounded-md border p-4">
-              <Label htmlFor="confirm-family-switch-2" className="text-sm font-normal">
-                I understand that this action cannot be undone
-              </Label>
-              <Switch
-                id="confirm-family-switch-2"
-                checked={confirmFamilySwitch2}
-                onCheckedChange={setConfirmFamilySwitch2}
-                data-testid="switch-confirm-family-2"
-              />
-            </div>
           </div>
 
-          <Button
-            variant="destructive"
-            onClick={handleDeleteAllFamilyRelationships}
-            disabled={!allFamilySwitchesOn || deleteAllFamilyRelationshipsMutation.isPending}
-            className="gap-2"
-            data-testid="button-delete-all-family-relationships"
-          >
-            {deleteAllFamilyRelationshipsMutation.isPending ? (
-              <>
-                <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
-                Deleting...
-              </>
-            ) : (
-              <>
-                <Trash2 className="h-4 w-4" />
-                Remove All Family Relationships
-              </>
-            )}
-          </Button>
-        </CardContent>
-      </Card>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsDeleteFamilyDialogOpen(false);
+                setConfirmDeleteFamily(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteAllFamilyRelationships}
+              disabled={!confirmDeleteFamily || deleteAllFamilyRelationshipsMutation.isPending}
+              data-testid="button-delete-all-family-relationships"
+            >
+              {deleteAllFamilyRelationshipsMutation.isPending ? "Deleting..." : "Delete Family Relationships"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      <Card className="mt-6 border-destructive/50">
-        <CardHeader>
-          <CardTitle className="text-destructive">Reset Database</CardTitle>
-          <CardDescription>Remove all tables from database and reinstall</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
-              <div className="space-y-1 text-sm">
-                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
-                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                  <li>All existing data will be permanently deleted</li>
-                  <li>All tables will be dropped and recreated</li>
-                  <li>Default relationship and interaction types will be restored</li>
-                  <li>A new "Me" person entry will be created for your user account</li>
-                  <li>Optionally add example people and groups for testing</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between rounded-md border p-4">
-            <div className="space-y-0.5">
-              <Label htmlFor="include-examples" className="text-base font-medium">
-                Add Example Data
-              </Label>
-              <p className="text-sm text-muted-foreground">
-                Include 6 example people and 2 groups in the reset
-              </p>
-            </div>
-            <Switch
-              id="include-examples"
-              checked={includeExamples}
-              onCheckedChange={setIncludeExamples}
-              data-testid="switch-include-examples"
-            />
-          </div>
-
-          <Button
-            variant="destructive"
-            onClick={() => setIsResetDialogOpen(true)}
-            className="gap-2"
-            data-testid="button-reset-database"
-          >
-            <Trash2 className="h-4 w-4" />
-            Reset Database
-          </Button>
-        </CardContent>
-      </Card>
-
+      {/* Dialog: Reset Database */}
       <Dialog open={isResetDialogOpen} onOpenChange={(open) => {
         setIsResetDialogOpen(open);
         if (!open) {
           setConfirmSliderValue([0]);
+          setIncludeExamples(false);
         }
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className="text-destructive">Confirm Database Reset</DialogTitle>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Database Reset
+            </DialogTitle>
             <DialogDescription>
-              This will permanently delete all your data. Slide to confirm.
+              This will permanently delete all your data and recreate all tables.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
-            <div className="space-y-3">
+          <div className="space-y-4 py-2">
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>All tables will be dropped and recreated fresh</li>
+                <li>All contacts, groups, interactions, and images will be lost</li>
+                <li>A new "Me" user record will be initialized</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="include-examples" className="text-sm font-semibold">
+                  Add Example Data
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Include 6 mock people and 2 groups
+                </p>
+              </div>
+              <Switch
+                id="include-examples"
+                checked={includeExamples}
+                onCheckedChange={setIncludeExamples}
+                data-testid="switch-include-examples"
+              />
+            </div>
+
+            <div className="space-y-3 pt-2">
               <div className="flex items-center justify-between">
                 <Label className="text-sm font-medium">
-                  Slide to confirm
+                  Slide to confirm reset
                 </Label>
                 <span className="text-xs text-muted-foreground">
                   {confirmSliderValue[0]}%
@@ -516,6 +522,7 @@ export default function DeleteOptionsPage() {
               onClick={() => {
                 setIsResetDialogOpen(false);
                 setConfirmSliderValue([0]);
+                setIncludeExamples(false);
               }}
               data-testid="button-cancel-reset"
             >
@@ -527,14 +534,7 @@ export default function DeleteOptionsPage() {
               disabled={confirmSliderValue[0] !== 100 || resetDatabaseMutation.isPending}
               data-testid="button-confirm-reset"
             >
-              {resetDatabaseMutation.isPending ? (
-                <>
-                  <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin mr-2" />
-                  Resetting...
-                </>
-              ) : (
-                "Reset Database"
-              )}
+              {resetDatabaseMutation.isPending ? "Resetting..." : "Reset Database"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -542,3 +542,4 @@ export default function DeleteOptionsPage() {
     </div>
   );
 }
+
