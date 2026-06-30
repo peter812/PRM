@@ -1,4 +1,4 @@
-import { Plus, User, AtSign, Heart, BookOpen, MessageSquare, StickyNote } from "lucide-react";
+import { Plus, User, AtSign, Heart, BookOpen, MessageSquare, StickyNote, Image as ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,6 +14,7 @@ interface UniversalAddButtonProps {
   onAddDailyNote: () => void;
   onAddInteraction: () => void;
   onAddNote: () => void;
+  onAddPhoto: () => void;
 }
 
 export function UniversalAddButton({
@@ -23,6 +24,7 @@ export function UniversalAddButton({
   onAddDailyNote,
   onAddInteraction,
   onAddNote,
+  onAddPhoto,
 }: UniversalAddButtonProps) {
   return (
     <DropdownMenu>
@@ -55,6 +57,10 @@ export function UniversalAddButton({
         <DropdownMenuItem onClick={onAddNote} data-testid="add-menu-note">
           <StickyNote className="h-4 w-4 mr-2" />
           Note
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onAddPhoto} data-testid="add-menu-photo">
+          <ImageIcon className="h-4 w-4 mr-2" />
+          Upload Photo
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

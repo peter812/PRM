@@ -18,6 +18,7 @@ import { DailyNoteModal } from "@/components/daily-note-modal";
 import { InteractionDialog } from "@/components/interaction-dialog";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { UniversalAddButton } from "@/components/universal-add-button";
+import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,7 @@ import GuessTheSex from "@/pages/guess-the-sex";
 import AccountMatching from "@/pages/account-matching";
 import PrmFaceDemo from "@/pages/prm-face-demo";
 import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
+import UnknownFaces from "@/pages/unknown-faces";
 import AiDescDemo from "@/pages/ai-desc-demo";
 import AiChatDemo from "@/pages/ai-chat-demo";
 import DemosPage from "@/pages/demos";
@@ -136,6 +138,7 @@ function Router() {
       <ProtectedRoute path="/games" component={GamesPage} />
       <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
       <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
+      <ProtectedRoute path="/unknown-faces" component={UnknownFaces} />
       <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
       <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
       <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
@@ -160,6 +163,7 @@ function AppLayout() {
   const [isAddDailyNoteDialogOpen, setIsAddDailyNoteDialogOpen] = useState(false);
   const [isAddInteractionDialogOpen, setIsAddInteractionDialogOpen] = useState(false);
   const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
+  const [isAddPhotoDialogOpen, setIsAddPhotoDialogOpen] = useState(false);
   useExportNotifier();
   const isAuthPage = location === "/auth" || location === "/auth-direct";
   const isWelcomePage = location === "/welcome";
@@ -212,6 +216,7 @@ function AppLayout() {
                     onAddDailyNote={() => setIsAddDailyNoteDialogOpen(true)}
                     onAddInteraction={() => setIsAddInteractionDialogOpen(true)}
                     onAddNote={() => setIsAddNoteDialogOpen(true)}
+                    onAddPhoto={() => setIsAddPhotoDialogOpen(true)}
                   />
                   <div className="hidden md:flex items-center gap-1">
                     <Button
@@ -258,6 +263,7 @@ function AppLayout() {
           <DailyNoteModal open={isAddDailyNoteDialogOpen} onOpenChange={setIsAddDailyNoteDialogOpen} />
           <InteractionDialog open={isAddInteractionDialogOpen} onOpenChange={setIsAddInteractionDialogOpen} />
           <AddNoteDialog open={isAddNoteDialogOpen} onOpenChange={setIsAddNoteDialogOpen} personId="" />
+          <PhotoUploadDialog open={isAddPhotoDialogOpen} onClose={() => setIsAddPhotoDialogOpen(false)} />
           <TaskTrackerModal />
         </>
       )}

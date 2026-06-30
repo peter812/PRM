@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -162,6 +162,11 @@ export function registerRoutes(app: Express) {
         const params = new URLSearchParams();
         params.append("setup_code", setupCode);
         params.append("label", label || "prm-app");
+        params.append("database_url", process.env.DATABASE_URL || "");
+        params.append("s3_endpoint", process.env.S3_ENDPOINT || "");
+        params.append("s3_bucket", process.env.S3_BUCKET || "");
+        params.append("s3_access_key", process.env.S3_ACCESS_KEY || "");
+        params.append("s3_secret_key", process.env.S3_SECRET_KEY || "");
   
         const response = await fetch(`${prmBase(apiUrl)}/api/get-api-key`, {
           method: "POST",
@@ -182,6 +187,439 @@ export function registerRoutes(app: Express) {
       } catch (error: any) {
         console.error("Error generating PRM-Face API key:", error);
         res.status(500).json({ error: `Failed to contact PRM-Face server: ${error.message}` });
+      }
+    });
+
+    app.get("/api/prm-face/config", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/config`, {
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    app.post("/api/prm-face/config", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+
+      const { maxFaces, minFaceSize, sureness } = req.body;
+      if (maxFaces === undefined || minFaceSize === undefined || sureness === undefined) {
+        return res.status(400).json({ error: "maxFaces, minFaceSize, and sureness are required." });
+      }
+
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/config`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+          },
+          body: JSON.stringify({
+            max_faces: Number(maxFaces),
+            min_face_size: Number(minFaceSize),
+            sureness: Number(sureness),
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    async function getImageBuffer(location: string): Promise<Buffer> {
+      if (isLocalImageUrl(location)) {
+        const localPath = getLocalImagePath(location);
+        if (!localPath) throw new Error("Invalid local image path");
+        return fs.promises.readFile(localPath);
+      } else {
+        const response = await fetch(location);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image from ${location}: status ${response.status}`);
+        }
+        return Buffer.from(await response.arrayBuffer());
+      }
+    }
+
+    async function describeImageWithOllama(photoId: string): Promise<string> {
+      const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
+      if (!photo) throw new Error("Photo not found");
+
+      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+      if (!apiUrl.trim()) throw new Error("No Ollama API URL configured");
+
+      const model = (await getOllamaSetting("ollama_model")) ?? "llava";
+      
+      const faces = (photo.facialIds as any[]) || [];
+      const resolvedFaces: string[] = [];
+      for (const face of faces) {
+        let name = "unknown person";
+        if (face.personId) {
+          const [person] = await db.select().from(people).where(eq(people.id, face.personId));
+          if (person) {
+            name = `${person.firstName} ${person.lastName}`;
+          }
+        }
+        
+        const coordStr = face.coordinates 
+          ? `at bounds [x:${face.coordinates.x}, y:${face.coordinates.y}, w:${face.coordinates.w}, h:${face.coordinates.h}]`
+          : "";
+        resolvedFaces.push(`Face ${coordStr}: ${name}`);
+      }
+
+      let prompt = (await getOllamaSetting("ollama_prompt")) || "Describe what is happening in this image.";
+      if (resolvedFaces.length > 0) {
+        prompt += `\n\nFor context, the following people have been recognized in the image:\n${resolvedFaces.join("\n")}`;
+      }
+
+      console.log(`[Ollama Describe] prompt: ${prompt}`);
+
+      const buffer = await getImageBuffer(photo.location);
+      const imageBase64 = buffer.toString("base64");
+
+      const base = apiUrl.replace(/\/+$/, "");
+      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (authRequired) {
+        const username = (await getOllamaSetting("ollama_username")) ?? "";
+        const password = (await getOllamaSetting("ollama_password")) ?? "";
+        headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+      }
+
+      const response = await fetch(`${base}/api/generate`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model, prompt, images: [imageBase64], stream: false }),
+        signal: AbortSignal.timeout(60000),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Ollama API error (${response.status}): ${text}`);
+      }
+
+      const data = await response.json() as { response?: string };
+      const description = data.response ?? "";
+
+      await db.update(photos)
+        .set({
+          imageDescription: description,
+          imageDescriptionAt: new Date(),
+        })
+        .where(eq(photos.id, photoId));
+
+      return description;
+    }
+
+    app.post("/api/prm-face/img/add-interactive", upload.single("image"), async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (!req.file) return res.status(400).json({ error: "No image file provided" });
+
+      try {
+        let storageMode = "s3";
+        if (req.user) {
+          storageMode = await storage.getImageStorageMode(req.user.id);
+        }
+
+        let imageUrl: string;
+        if (storageMode === "local") {
+          imageUrl = await uploadImageLocally(
+            req.file.buffer,
+            req.file.originalname,
+            req.file.mimetype
+          );
+        } else {
+          imageUrl = await uploadImageToS3(
+            req.file.buffer,
+            req.file.originalname,
+            req.file.mimetype
+          );
+        }
+
+        const prmLocation = (req.body?.prmLocation as string) || "unknown";
+        const photo = await storage.insertPhoto({ location: imageUrl, prmLocation, isSubImage: false });
+
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+
+        let faceDetectionData: any = { faces_detected: 0, results: [] };
+        if (apiUrl && apiKey) {
+          try {
+            const formData = new FormData();
+            formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
+            
+            const response = await fetch(`${prmBase(apiUrl)}/faces/pickout-temp`, {
+              method: "POST",
+              headers: { "X-API-Key": apiKey },
+              body: formData,
+              signal: AbortSignal.timeout(30000),
+            });
+            if (response.ok) {
+              faceDetectionData = await response.json();
+            } else {
+              console.warn("PRM-Face pickout-temp sync call failed with status:", response.status);
+            }
+          } catch (err: any) {
+            console.error("Error communicating with PRM-face for pickout-temp:", err.message);
+          }
+        }
+
+        res.json({
+          imageUrl,
+          photoId: photo.id,
+          faceDetection: faceDetectionData
+        });
+      } catch (error: any) {
+        console.error("Error in add-interactive upload:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.get("/api/image-questions/pending", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const questions = await db.select().from(imageQuestions).where(eq(imageQuestions.status, "pending"));
+        res.json(questions);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/image-questions/resolve", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { questionId, resolution, personId, name } = req.body;
+      if (!questionId || !resolution) {
+        return res.status(400).json({ error: "questionId and resolution are required." });
+      }
+
+      try {
+        const [question] = await db.select().from(imageQuestions).where(eq(imageQuestions.id, questionId));
+        if (!question) return res.status(404).json({ error: "Question not found" });
+
+        let resolvedPersonId: string | null = null;
+
+        if (resolution === "create_person") {
+          if (!name) return res.status(400).json({ error: "Name is required for create_person resolution." });
+          
+          const nameParts = name.trim().split(/\s+/);
+          const firstName = nameParts[0];
+          const lastName = nameParts.slice(1).join(" ") || "Person";
+
+          const [newPerson] = await db.insert(people).values({
+            firstName,
+            lastName,
+            userId: req.user?.id || null,
+          }).returning();
+          resolvedPersonId = newPerson.id;
+        } else if (resolution === "known_person") {
+          if (!personId) return res.status(400).json({ error: "personId is required for known_person resolution." });
+          resolvedPersonId = personId;
+        } else if (resolution === "unknown") {
+          resolvedPersonId = null;
+        } else {
+          return res.status(400).json({ error: "Invalid resolution type." });
+        }
+
+        await db.update(imageQuestions)
+          .set({
+            status: "resolved",
+            resolvedAs: resolution,
+            resolvedPersonId,
+            resolvedAt: new Date(),
+          })
+          .where(eq(imageQuestions.id, questionId));
+
+        const [photo] = await db.select().from(photos).where(eq(photos.id, question.photoId));
+        if (photo) {
+          let facialIds = (photo.facialIds as any[]) || [];
+          
+          facialIds = facialIds.map(f => {
+            if (f.faceUuid === question.faceUuid) {
+              return { ...f, personId: resolvedPersonId };
+            }
+            return f;
+          });
+
+          await db.update(photos)
+            .set({ facialIds })
+            .where(eq(photos.id, question.photoId));
+        }
+
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+        if (apiUrl && apiKey && resolvedPersonId) {
+          try {
+            const [person] = await db.select().from(people).where(eq(people.id, resolvedPersonId));
+            const displayName = person ? `${person.firstName} ${person.lastName}` : (name || "");
+            
+            const params = new URLSearchParams();
+            params.append("face_uuid", question.faceUuid);
+            params.append("person_uuid", resolvedPersonId);
+            params.append("name", displayName);
+
+            const assignRes = await fetch(`${prmBase(apiUrl)}/api/face/assign`, {
+              method: "POST",
+              headers: { 
+                "x-api-key": apiKey,
+                "Content-Type": "application/x-www-form-urlencoded"
+              },
+              body: params.toString(),
+              signal: AbortSignal.timeout(10000),
+            });
+            if (!assignRes.ok) {
+              console.warn("[PRM-Face] failed to assign face:", await assignRes.text());
+            }
+          } catch (assignErr: any) {
+            console.warn("[PRM-Face] assign error:", assignErr.message);
+          }
+        }
+
+        const pendingQuestions = await db.select()
+          .from(imageQuestions)
+          .where(and(eq(imageQuestions.photoId, question.photoId), eq(imageQuestions.status, "pending")));
+
+        let descriptionGenerated = false;
+        let description = "";
+        if (pendingQuestions.length === 0) {
+          const ollamaEnabled = (await getOllamaSetting("ollama_enabled")) === "true";
+          if (ollamaEnabled) {
+            try {
+              description = await describeImageWithOllama(question.photoId);
+              descriptionGenerated = true;
+            } catch (ollamaErr: any) {
+              console.error("Error auto-describing photo:", ollamaErr.message);
+            }
+          }
+        }
+
+        res.json({
+          success: true,
+          resolvedPersonId,
+          descriptionGenerated,
+          description,
+        });
+      } catch (error: any) {
+        console.error("Error resolving question:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/prm-face/photo/save-assignments", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { photoId, assignments, waitOllama } = req.body;
+      if (!photoId || !Array.isArray(assignments)) {
+        return res.status(400).json({ error: "photoId and assignments array are required." });
+      }
+
+      try {
+        const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
+        if (!photo) return res.status(404).json({ error: "Photo not found." });
+
+        const facialIds = [];
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+
+        for (const ass of assignments) {
+          const { faceUuid, subImageUrl, coordinates, personId, name, resolution, socialAccountId } = ass;
+          
+          let resolvedPersonId = personId || null;
+          if (resolution === "create_person" && name) {
+            const nameParts = name.trim().split(/\s+/);
+            const firstName = nameParts[0];
+            const lastName = nameParts.slice(1).join(" ") || "Person";
+            const [newPerson] = await db.insert(people).values({
+              firstName,
+              lastName,
+              userId: req.user?.id || null,
+            }).returning();
+            resolvedPersonId = newPerson.id;
+          }
+
+          facialIds.push({
+            faceUuid,
+            subImageUrl,
+            coordinates,
+            personId: resolvedPersonId,
+            socialAccountId: socialAccountId || null,
+          });
+
+          if (apiUrl && apiKey && resolvedPersonId) {
+            try {
+              const [p] = await db.select().from(people).where(eq(people.id, resolvedPersonId));
+              const dName = p ? `${p.firstName} ${p.lastName}` : (name || "");
+              
+              const params = new URLSearchParams();
+              params.append("face_uuid", faceUuid);
+              params.append("person_uuid", resolvedPersonId);
+              params.append("name", dName);
+
+              await fetch(`${prmBase(apiUrl)}/api/face/assign`, {
+                method: "POST",
+                headers: {
+                  "x-api-key": apiKey,
+                  "Content-Type": "application/x-www-form-urlencoded"
+                },
+                body: params.toString(),
+                signal: AbortSignal.timeout(10000),
+              });
+            } catch (err: any) {
+              console.warn("Error syncing face assignment to PRM-face:", err.message);
+            }
+          }
+        }
+
+        await db.update(photos)
+          .set({ facialIds })
+          .where(eq(photos.id, photoId));
+
+        let description = "";
+        if (waitOllama) {
+          try {
+            description = await describeImageWithOllama(photoId);
+          } catch (err: any) {
+            console.error("Error generating Ollama description:", err.message);
+          }
+        }
+
+        res.json({ success: true, description });
+      } catch (error: any) {
+        console.error("Error saving photo assignments:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/img/describe-llm", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { photoId } = req.body;
+      if (!photoId) return res.status(400).json({ error: "photoId is required" });
+
+      try {
+        const description = await describeImageWithOllama(photoId);
+        res.json({ success: true, description });
+      } catch (error: any) {
+        console.error("Error describing image:", error);
+        res.status(500).json({ error: error.message });
       }
     });
   

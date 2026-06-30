@@ -288,6 +288,7 @@ export const photos = pgTable("photos", {
   imageDescription: text("image_description"),
   faceIdAt: timestamp("face_id_at"),
   faceUuids: jsonb("face_uuids"), // Array of { faceUuid: string, subImagePhotoId: string }
+  facialIds: jsonb("facial_ids").default(sql`'[]'::jsonb`),
   prmLocation: text("prm_location").notNull(), // e.g. "post:UUID", "interaction:UUID", "profile_image:UUID"
   metadata: jsonb("metadata"), // EXIF / image metadata extracted by analyze_img_metadata
   ogMetadata: jsonb("og_metadata"), // OpenGraph-style metadata captured when the file is added to storage (source URL, content-type, content-length, last-modified, etag, etc.)
@@ -363,6 +364,20 @@ export const imageTasks = pgTable("image_tasks", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
+});
+
+// Image questions table - tracks unrecognized face assignments needed from the user
+export const imageQuestions = pgTable("image_questions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  photoId: varchar("photo_id").notNull().references(() => photos.id, { onDelete: "cascade" }),
+  faceUuid: varchar("face_uuid").notNull(),
+  subImageUrl: text("sub_image_url").notNull(),
+  coordinates: jsonb("coordinates").notNull(),
+  status: text("status").notNull().default("pending"), // 'pending' | 'resolved' | 'ignored'
+  resolvedAs: text("resolved_as"), // 'known_person' | 'create_person' | 'unknown'
+  resolvedPersonId: varchar("resolved_person_id").references(() => people.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at"),
 });
 
 // AI chats table - stores historical AI chat conversations so they can be recalled and continued
