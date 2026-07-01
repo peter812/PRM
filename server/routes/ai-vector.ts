@@ -912,7 +912,21 @@ export function registerRoutes(app: Express) {
       "person_pull_relationships to get up to 20 relationships (ideal when specifically asked about siblings, friends, family, or colleagues), and the other available tools as " +
       "needed. Combine tool results with your own reasoning to give accurate, helpful answers. " +
       "Important note: You also have a super_search tool which performs a semantic search across the entire PRM. " +
-      "You should only use this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) yield no results or yield bad/unhelpful results.";
+      "You should only use this tool if other specific search tools (like person_search, note_search, daily_note_search, interaction_search, or social_account_search) yield no results or yield bad/unhelpful results. " +
+      "You can send clickable links that will appear as buttons at the bottom of the chat bubble. " +
+      "You must use this capability to link the user to relevant data profiles (people, social accounts, images, etc.) or to pages where they can manage settings, data types, or make changes. " +
+      "To include a link, format it exactly as: \"URL\"{title} (for example, \"/person/some-uuid\"{John Doe} or \"https://instagram.com/jdoe\"{Instagram Profile}). " +
+      "You can place these links inline in your text or at the end of your response. The system will automatically parse them, convert them to standard markdown links in your text, and display them as clickable buttons at the bottom of the chat bubble. " +
+      "Always use the exact \"URL\"{title} format. Never write links as plain text or standard markdown. " +
+      "Examples of internal links you can use: " +
+      "- People: \"/person/UUID\"{Person Name} (or \"/person\"{Person Name} to resolve by name lookup) " +
+      "- Social accounts: \"/social-accounts/UUID\"{Username} (or \"/social-accounts\"{Username} to resolve by username lookup) " +
+      "- Images: \"/image/UUID\"{Image Description} " +
+      "- Groups: \"/group/UUID\"{Group Name} " +
+      "- Daily Notes: \"/daily-notes/UUID\"{Date} " +
+      "- Settings: \"/settings/user\"{User Settings}, \"/settings/data-types\"{Data Types}, \"/settings/experimental\"{Experimental Settings}, \"/settings/import-export/application\"{Import/Export Application}. " +
+      "Examples of external links you can use: \"https://example.com\"{Example website}. " +
+      "Always include these links when discussing specific people, social accounts, images, or configuration pages so that the user can navigate to them directly.";
     const MAX_CHAT_TITLE_LENGTH = 60;
     const DEFAULT_EVENTS_SYSTEM_PROMPT = [
       "You extract a list of distinct events from a daily journal entry.",
@@ -1559,7 +1573,12 @@ export function registerRoutes(app: Express) {
           return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
         }
   
-        const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+        const resolvedLinks = await resolveLinksInText(assistantContent);
+        const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
+        const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
+        if (resolvedLinks.length) {
+          assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
+        }
         const updatedMessages = [...history, userMessage, assistantMessage];
   
         // Derive a title from the first user message if the chat is still untitled.
@@ -1651,7 +1670,12 @@ export function registerRoutes(app: Express) {
           return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
         }
   
-        const assistantMessage: AiChatMessage = { role: "assistant", content: assistantContent };
+        const resolvedLinks = await resolveLinksInText(assistantContent);
+        const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
+        const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
+        if (resolvedLinks.length) {
+          assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
+        }
         const updatedMessages = [...trimmed, userMessage, assistantMessage];
         const [updated] = await db.update(aiChats)
           .set({ messages: updatedMessages, updatedAt: new Date() })

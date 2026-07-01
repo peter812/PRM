@@ -1126,6 +1126,8 @@ export type AiChatMessage = {
   attachments?: AiChatAttachment[];
   /** Present on assistant messages that involved tool calls. */
   toolCalls?: AiToolCallTrace[];
+  /** Clickable links displayed at the bottom of the chat bubble. */
+  links?: { url: string; title: string }[];
 };
 export type AiChat = typeof aiChats.$inferSelect;
 export type InsertAiChat = z.infer<typeof insertAiChatSchema>;
