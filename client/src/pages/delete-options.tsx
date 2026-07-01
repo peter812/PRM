@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertCircle, Trash2, Users, Network } from "lucide-react";
+import { AlertCircle, Trash2, Users, Network, ScanFace } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -33,12 +33,15 @@ export default function DeleteOptionsPage() {
   const [confirmSwitch3, setConfirmSwitch3] = useState(false);
   const [confirmFamilySwitch1, setConfirmFamilySwitch1] = useState(false);
   const [confirmFamilySwitch2, setConfirmFamilySwitch2] = useState(false);
+  const [confirmImagesSwitch1, setConfirmImagesSwitch1] = useState(false);
+  const [confirmImagesSwitch2, setConfirmImagesSwitch2] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
 
   const allSwitchesOn = confirmSwitch1 && confirmSwitch2 && confirmSwitch3;
   const allFamilySwitchesOn = confirmFamilySwitch1 && confirmFamilySwitch2;
+  const allImageSwitchesOn = confirmImagesSwitch1 && confirmImagesSwitch2;
 
   const resetDatabaseMutation = useMutation({
     mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
@@ -198,6 +201,50 @@ export default function DeleteOptionsPage() {
 
   const handleRemoveDuplicates = () => {
     removeDuplicatesMutation.mutate();
+  };
+
+  const resetImagesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/prm-face/reset-images", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to reset images and faces");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      const local = data.local ?? {};
+      let description = `Deleted ${local.photosDeleted ?? 0} images, ${local.facesDeleted ?? 0} faces, and cleared face links from ${local.peopleCleared ?? 0} people.`;
+      if (data.faceService?.attempted && !data.faceService?.ok) {
+        description += ` Note: PRM-Face reset did not complete (${data.faceService.error ?? "unknown error"}).`;
+      }
+      toast({
+        title: "Images & Faces Reset",
+        description,
+      });
+
+      setConfirmImagesSwitch1(false);
+      setConfirmImagesSwitch2(false);
+
+      queryClient.invalidateQueries();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Reset Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleResetImages = () => {
+    if (allImageSwitchesOn) {
+      resetImagesMutation.mutate();
+    }
   };
 
   return (
@@ -405,6 +452,80 @@ export default function DeleteOptionsPage() {
               <>
                 <Trash2 className="h-4 w-4" />
                 Remove All Family Relationships
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6 border-destructive/50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <ScanFace className="h-5 w-5" />
+            Reset Images & Faces (PRM-Face)
+          </CardTitle>
+          <CardDescription>Delete all recognition images and reset the PRM-Face store</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 text-destructive" />
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-destructive">Warning: This action cannot be undone</p>
+                <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                  <li>Every detected face and its cropped image are deleted from PRM-Face and S3 storage</li>
+                  <li>All recognition-pipeline images (post, interaction, and note photos) are removed from S3 and the database</li>
+                  <li>Face links are stripped from all people and social account posts</li>
+                  <li>Profile pictures and social avatars are preserved</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-sm font-medium">Confirm by enabling both switches:</p>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-images-switch-1" className="text-sm font-normal">
+                I understand I am about to delete all images and faces
+              </Label>
+              <Switch
+                id="confirm-images-switch-1"
+                checked={confirmImagesSwitch1}
+                onCheckedChange={setConfirmImagesSwitch1}
+                data-testid="switch-confirm-images-1"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-images-switch-2" className="text-sm font-normal">
+                I understand that this action cannot be undone
+              </Label>
+              <Switch
+                id="confirm-images-switch-2"
+                checked={confirmImagesSwitch2}
+                onCheckedChange={setConfirmImagesSwitch2}
+                data-testid="switch-confirm-images-2"
+              />
+            </div>
+          </div>
+
+          <Button
+            variant="destructive"
+            onClick={handleResetImages}
+            disabled={!allImageSwitchesOn || resetImagesMutation.isPending}
+            className="gap-2"
+            data-testid="button-reset-images"
+          >
+            {resetImagesMutation.isPending ? (
+              <>
+                <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
+                Resetting...
+              </>
+            ) : (
+              <>
+                <Trash2 className="h-4 w-4" />
+                Reset Images & Faces
               </>
             )}
           </Button>

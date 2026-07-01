@@ -27,12 +27,10 @@ import {
   AlertCircle,
   KeyRound,
   ImageIcon,
-  MapPin,
   Trash2,
   Download,
   User,
 } from "lucide-react";
-import { useLocation } from "wouter";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
@@ -155,7 +153,7 @@ function PhotoModal({
   onClose: () => void;
   onDeleted: (uuid: string) => void;
 }) {
-  const [, navigate] = useLocation();
+
   const { toast } = useToast();
   const [showPeople, setShowPeople] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -212,11 +210,6 @@ function PhotoModal({
     a.rel = "noopener noreferrer";
     a.click();
   }, [image]);
-
-  const handleGoToLocation = useCallback(() => {
-    onClose();
-    navigate("/settings/recognition/images");
-  }, [onClose, navigate]);
 
   const handleImgLoad = useCallback(() => {
     const el = imgRef.current;
@@ -304,16 +297,7 @@ function PhotoModal({
                 })}
               </div>
             )}
-
             <div className="flex flex-wrap gap-2 pt-1" data-testid="row-photo-actions">
-              <Button
-                variant="outline"
-                onClick={handleGoToLocation}
-                data-testid="button-goto-location"
-              >
-                <MapPin className="h-4 w-4 mr-2" />
-                Go to location
-              </Button>
               <Button
                 variant="outline"
                 onClick={handleDownload}
@@ -450,11 +434,7 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
         <ImageIcon className="h-10 w-10" />
         <p className="text-sm">No photos found for this person.</p>
         <p className="text-xs text-muted-foreground/70">
-          Upload and tag photos in{" "}
-          <Link href="/settings/recognition/images" className="underline hover:text-foreground">
-            Recognition &rsaquo; Images
-          </Link>
-          .
+          Upload photos using the Add menu on their profile.
         </p>
       </div>
     );

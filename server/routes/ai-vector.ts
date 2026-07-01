@@ -248,6 +248,50 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    // Delete all recognition-pipeline images & faces and reset PRM-Face.
+    // Wipes face crops + faces rows on the PRM-Face side, then deletes pipeline
+    // photos (posts/interactions/notes — NOT profile avatars) and their S3
+    // files locally, and strips every face association from people and posts.
+    app.post("/api/prm-face/reset-images", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        // 1. Reset PRM-Face (best-effort). If it isn't configured or is offline
+        //    we still wipe the local pipeline, and report what happened.
+        let faceService: { attempted: boolean; ok: boolean; result?: any; error?: string } = {
+          attempted: false,
+          ok: false,
+        };
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+        if (apiUrl && apiKey) {
+          faceService.attempted = true;
+          try {
+            const response = await fetch(`${prmBase(apiUrl)}/api/face/reset-all`, {
+              method: "POST",
+              headers: { "x-api-key": apiKey },
+            });
+            if (response.ok) {
+              faceService.ok = true;
+              faceService.result = await response.json();
+            } else {
+              faceService.error = `PRM-Face error ${response.status}: ${await response.text()}`;
+            }
+          } catch (err: any) {
+            faceService.error = `Failed to contact PRM-Face: ${err.message}`;
+          }
+        }
+
+        // 2. Reset the local recognition pipeline (photos, faces, tasks,
+        //    questions, and face associations).
+        const local = await storage.resetImagePipeline();
+
+        res.json({ success: true, local, faceService });
+      } catch (error: any) {
+        console.error("Error resetting images & faces:", error);
+        res.status(500).json({ error: `Failed to reset images & faces: ${error.message}` });
+      }
+    });
+
     async function getImageBuffer(location: string): Promise<Buffer> {
       if (isLocalImageUrl(location)) {
         const localPath = getLocalImagePath(location);
@@ -368,20 +412,28 @@ export function registerRoutes(app: Express) {
           try {
             const formData = new FormData();
             formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
-            
-            const response = await fetch(`${prmBase(apiUrl)}/faces/pickout-temp`, {
+            formData.append("max_faces", "100");
+
+            const response = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
               method: "POST",
               headers: { "X-API-Key": apiKey },
               body: formData,
               signal: AbortSignal.timeout(30000),
             });
             if (response.ok) {
-              faceDetectionData = await response.json();
+              const data = await response.json();
+              const detectedFaces = data.results ?? data.faces ?? [];
+              faceDetectionData = {
+                faces_detected: data.faces_detected ?? detectedFaces.length,
+                results: detectedFaces,
+                faces: detectedFaces,
+                image_uuid: data.image_uuid || data.query_image_uuid,
+              };
             } else {
-              console.warn("PRM-Face pickout-temp sync call failed with status:", response.status);
+              console.warn("PRM-Face img/add sync call failed with status:", response.status);
             }
           } catch (err: any) {
-            console.error("Error communicating with PRM-face for pickout-temp:", err.message);
+            console.error("Error communicating with PRM-face for img/add:", err.message);
           }
         }
 
@@ -923,14 +975,16 @@ export function registerRoutes(app: Express) {
           body: formData,
           signal: AbortSignal.timeout(30000),
         });
-  
+
         if (!response.ok) {
           const errBody = await response.text();
           return res.status(response.status).json({ error: `PRM-Face error: ${errBody}` });
         }
-  
-        const data = await response.json();
-        res.json(data);
+
+        const data = await response.json() as { faces_detected?: number; results?: any[]; faces?: any[] };
+        // PRM-Face returns detected faces under `results`; the demo UI reads `faces`.
+        const detectedFaces = data.results ?? data.faces ?? [];
+        res.json({ faces_detected: data.faces_detected ?? detectedFaces.length, faces: detectedFaces });
       } catch (error: any) {
         console.error("Error calling PRM-Face pickout-temp:", error);
         res.status(500).json({ error: `Failed to contact PRM-Face server: ${error.message}` });

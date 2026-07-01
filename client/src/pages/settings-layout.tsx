@@ -39,7 +39,6 @@ import ImageStorageSettingsPage from "@/pages/image-storage-settings";
 import ImageTablePage from "@/pages/image-table-page";
 import ImageTasksSettingsPage from "@/pages/image-tasks-settings";
 import RecognitionSettingsPage from "@/pages/recognition-settings";
-import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
 import IntelligenceSettingsPage from "@/pages/intelligence-settings";
@@ -131,7 +130,6 @@ const settingsMenuItems: MenuItem[] = [
     url: "/recognition",
     icon: Scan,
     subItems: [
-      { title: "Images", url: "/recognition/images", icon: ImageIcon },
       { title: "Faces", url: "/recognition/faces", icon: ScanFace },
     ],
   },
@@ -282,7 +280,6 @@ export default function SettingsLayout() {
               <Route path="/tasks" component={TasksSettingsPage} />
               <Route path="/task/:id" component={TaskDetailPage} />
               <Route path="/social-graph" component={SocialGraphSettingsPage} />
-              <Route path="/recognition/images" component={RecognitionImagesPage} />
               <Route path="/recognition/faces" component={RecognitionFacesPage} />
               <Route path="/recognition" component={RecognitionSettingsPage} />
               <Route path="/import-export/contacts" component={ImportContactsPage} />

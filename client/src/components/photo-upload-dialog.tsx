@@ -226,7 +226,7 @@ export function PhotoUploadDialog({ open, onClose }: PhotoUploadDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v && step !== "saving") onClose(); }}>
-      <DialogContent className="max-w-4xl w-full max-h-[90vh] flex flex-col p-0 gap-0">
+      <DialogContent className="max-w-4xl w-full max-h-[90vh] flex flex-col p-0 gap-0" hideCloseButton>
         <DialogHeader className="p-6 pb-4 border-b shrink-0 flex flex-row items-center justify-between">
           <div>
             <DialogTitle className="text-xl font-semibold flex items-center gap-2">
@@ -289,52 +289,54 @@ export function PhotoUploadDialog({ open, onClose }: PhotoUploadDialogProps) {
         {step === "identify" && imageDataUrl && (
           <div className="flex-1 overflow-y-auto p-6 flex flex-col md:flex-row gap-6">
             {/* Left Column: Image with bounding box overlays */}
-            <div className="flex-1 relative inline-block max-w-full bg-zinc-950 rounded-lg overflow-hidden border self-start">
-              <img
-                ref={imgRef}
-                src={imageDataUrl}
-                alt="Uploaded Scene"
-                className="max-w-full w-full block object-contain max-h-[50vh] md:max-h-[60vh]"
-                onLoad={handleImageLoad}
-              />
-              {naturalSize && faces.map((face, i) => {
-                const pos = pctBox(face.box, naturalSize);
-                const color = COLORS[i % COLORS.length];
-                return (
-                  <div
-                    key={face.face_uuid}
-                    style={{
-                      position: "absolute",
-                      left: pos.left,
-                      top: pos.top,
-                      width: pos.width,
-                      height: pos.height,
-                      border: `2.5px solid ${color}`,
-                      borderRadius: 3,
-                      boxSizing: "border-box",
-                      pointerEvents: "none",
-                    }}
-                  >
-                    <span
+            <div className="flex-1 bg-zinc-950 rounded-lg overflow-hidden border flex items-center justify-center p-4 min-h-[350px] md:min-h-[450px]">
+              <div className="relative inline-block max-w-full">
+                <img
+                  ref={imgRef}
+                  src={imageDataUrl}
+                  alt="Uploaded Scene"
+                  className="max-w-full h-auto block max-h-[50vh] md:max-h-[60vh] rounded-md"
+                  onLoad={handleImageLoad}
+                />
+                {naturalSize && faces.map((face, i) => {
+                  const pos = pctBox(face.box, naturalSize);
+                  const color = COLORS[i % COLORS.length];
+                  return (
+                    <div
+                      key={face.face_uuid}
                       style={{
                         position: "absolute",
-                        top: 2,
-                        right: 2,
-                        background: color,
-                        color: "#fff",
-                        fontSize: 10,
-                        fontWeight: 700,
-                        lineHeight: 1,
-                        padding: "2px 4px",
-                        borderRadius: 2,
-                        whiteSpace: "nowrap",
+                        left: pos.left,
+                        top: pos.top,
+                        width: pos.width,
+                        height: pos.height,
+                        border: `2.5px solid ${color}`,
+                        borderRadius: 3,
+                        boxSizing: "border-box",
+                        pointerEvents: "none",
                       }}
                     >
-                      {i + 1}
-                    </span>
-                  </div>
-                );
-              })}
+                      <span
+                        style={{
+                          position: "absolute",
+                          top: 2,
+                          right: 2,
+                          background: color,
+                          color: "#fff",
+                          fontSize: 10,
+                          fontWeight: 700,
+                          lineHeight: 1,
+                          padding: "2px 4px",
+                          borderRadius: 2,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {i + 1}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Right Column: Face lists & mapping controls */}
