@@ -9,11 +9,11 @@ const PAGE_SIZE = 24;
 
 type FaceItem = {
   face_uuid: string;
-  face_url: string;
-  person_uuid: string | null;
+  s3_url: string | null;
+  personface_uuid: string | null;
   person_name?: string | null;
   created_at?: string | null;
-  image_uuid?: string | null;
+  photo_id?: string | null;
 };
 
 type FaceListResponse = {
@@ -24,23 +24,12 @@ type FaceListResponse = {
   faces: FaceItem[];
 };
 
-type Settings = { apiUrl: string; hasApiKey: boolean };
-
-function buildFaceImgUrl(apiUrl: string, faceUuid: string): string {
-  return `${apiUrl.replace(/\/+$/, "")}/face-img/${faceUuid}.webp`;
-}
-
 export default function RecognitionFacesPage() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/prm-face/face/list"] });
   }, []);
-
-  const { data: settings } = useQuery<Settings>({
-    queryKey: ["/api/prm-face/settings"],
-  });
-  const apiUrl = settings?.apiUrl ?? "";
 
   const { data, isLoading, isError, error } = useQuery<FaceListResponse>({
     queryKey: ["/api/prm-face/face/list", page],
@@ -120,7 +109,7 @@ export default function RecognitionFacesPage() {
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4" data-testid="grid-faces">
               {faces.map((face) => {
-                const fullUrl = apiUrl && face.face_uuid ? buildFaceImgUrl(apiUrl, face.face_uuid) : null;
+                const fullUrl = face.s3_url ?? null;
                 const date = formatDate(face.created_at);
                 const hasName = !!face.person_name;
                 return (

@@ -89,6 +89,7 @@ export const people = pgTable("people", {
   sex: text("sex").notNull().default("unknown"), // 'male', 'female', or 'unknown'
   vectorId: text("vector_id"), // Qdrant point ID for universal vector search
   vectorSyncedAt: timestamp("vector_synced_at"), // Last successful vector sync
+  personfaceUuid: varchar("personface_uuid"), // links this person to a face group (faces.personface_uuid); written by PRM's face-resolution code
   maidenName: text("maiden_name"),
   jobs: jsonb("jobs").$type<JobExperience[]>().default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -323,6 +324,7 @@ export const photos = pgTable("photos", {
   imageDescription: text("image_description"),
   faceIdAt: timestamp("face_id_at"),
   faceUuids: jsonb("face_uuids"), // Array of { faceUuid: string, subImagePhotoId: string }
+  facialIds: jsonb("facial_ids").default(sql`'[]'::jsonb`),
   prmLocation: text("prm_location").notNull(), // e.g. "post:UUID", "interaction:UUID", "profile_image:UUID"
   metadata: jsonb("metadata"), // EXIF / image metadata extracted by analyze_img_metadata
   ogMetadata: jsonb("og_metadata"), // OpenGraph-style metadata captured when the file is added to storage (source URL, content-type, content-length, last-modified, etag, etc.)
@@ -398,6 +400,34 @@ export const imageTasks = pgTable("image_tasks", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
+});
+
+// Image questions table - tracks unrecognized face assignments needed from the user
+export const imageQuestions = pgTable("image_questions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  photoId: varchar("photo_id").notNull().references(() => photos.id, { onDelete: "cascade" }),
+  faceUuid: varchar("face_uuid").notNull(),
+  subImageUrl: text("sub_image_url").notNull(),
+  coordinates: jsonb("coordinates").notNull(),
+  status: text("status").notNull().default("pending"), // 'pending' | 'resolved' | 'ignored'
+  resolvedAs: text("resolved_as"), // 'known_person' | 'create_person' | 'unknown'
+  resolvedPersonId: varchar("resolved_person_id").references(() => people.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at"),
+});
+
+// Faces table - owned by PRM-face. One row per detected/cropped face: holds the
+// embedding used for similarity search, the S3 URL of the crop, and an optional
+// "personface" grouping UUID (faces sharing a personface_uuid are the same identity).
+export const faces = pgTable("faces", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), // FaceUUID
+  photoId: varchar("photo_id").references(() => photos.id, { onDelete: "cascade" }), // source image; null for sync uploads
+  s3Url: text("s3_url").notNull(), // S3 URL of the cropped face
+  embedding: jsonb("embedding").notNull(), // JSON array of floats (embedding vector)
+  personfaceUuid: varchar("personface_uuid"), // optional grouping identity
+  detectionConfidence: text("detection_confidence"),
+  coordinates: jsonb("coordinates"), // { x, y, w, h } bbox in the source image
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 // AI chats table - stores historical AI chat conversations so they can be recalled and continued
@@ -973,6 +1003,11 @@ export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
   completedAt: true,
 });
 
+export const insertFaceSchema = createInsertSchema(faces).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertAiChatSchema = createInsertSchema(aiChats).omit({
   id: true,
   createdAt: true,
@@ -1090,6 +1125,9 @@ export type InsertTask = z.infer<typeof insertTaskSchema>;
 
 export type ImageTask = typeof imageTasks.$inferSelect;
 export type InsertImageTask = z.infer<typeof insertImageTaskSchema>;
+
+export type Face = typeof faces.$inferSelect;
+export type InsertFace = z.infer<typeof insertFaceSchema>;
 
 export type SexGuessQueueItem = typeof sexGuessQueue.$inferSelect;
 

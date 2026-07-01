@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit } from "lucide-react";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -39,6 +39,10 @@ export default function RecognitionSettingsPage() {
   const [copied, setCopied] = useState(false);
   const [isRevealing, setIsRevealing] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
+
+  const [maxFaces, setMaxFaces] = useState<number>(10);
+  const [minFaceSize, setMinFaceSize] = useState<number>(20);
+  const [sureness, setSureness] = useState<number>(65);
 
   const { data: settings, isLoading } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
@@ -155,6 +159,43 @@ export default function RecognitionSettingsPage() {
     onError: (error: Error) => {
       setResetDialogOpen(false);
       toast({ title: "Reset failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  type FaceConfig = {
+    max_faces: number;
+    min_face_size: number;
+    sureness: number;
+  };
+
+  const { data: config } = useQuery<FaceConfig>({
+    queryKey: ["/api/prm-face/config"],
+    enabled: !!settings?.hasApiKey,
+  });
+
+  useEffect(() => {
+    if (config) {
+      setMaxFaces(config.max_faces);
+      setMinFaceSize(config.min_face_size);
+      setSureness(config.sureness);
+    }
+  }, [config]);
+
+  const saveConfigMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/prm-face/config", {
+        maxFaces,
+        minFaceSize,
+        sureness,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/config"] });
+      toast({ title: "Recognition configuration updated successfully" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update configuration", description: error.message, variant: "destructive" });
     },
   });
 
@@ -350,6 +391,72 @@ export default function RecognitionSettingsPage() {
             )}
           </CardContent>
         </Card>
+        {hasApiKey && (
+          <Card data-testid="card-recognition-params">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Sliders className="h-4 w-4" />
+                Recognition Parameters
+              </CardTitle>
+              <CardDescription>
+                Adjust the parameters used by the facial detection and recognition model.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="max-faces">Max Faces Detected per Image ({maxFaces})</Label>
+                <Input
+                  id="max-faces"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={maxFaces}
+                  onChange={(e) => setMaxFaces(Number(e.target.value))}
+                  data-testid="input-max-faces"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="min-face-size">Min Face Size in Pixels ({minFaceSize}px)</Label>
+                <Input
+                  id="min-face-size"
+                  type="number"
+                  min={5}
+                  max={500}
+                  value={minFaceSize}
+                  onChange={(e) => setMinFaceSize(Number(e.target.value))}
+                  data-testid="input-min-face-size"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="sureness">Face Sureness Requirement ({sureness}%)</Label>
+                <div className="flex items-center gap-4">
+                  <input
+                    id="sureness"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={sureness}
+                    onChange={(e) => setSureness(Number(e.target.value))}
+                    className="flex-1 accent-primary"
+                    data-testid="slider-sureness"
+                  />
+                  <span className="w-12 text-right font-mono text-sm">{sureness}%</span>
+                </div>
+              </div>
+              <Button
+                onClick={() => saveConfigMutation.mutate()}
+                disabled={saveConfigMutation.isPending}
+                data-testid="button-save-config"
+              >
+                {saveConfigMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : null}
+                Save Configuration
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         <Card data-testid="card-facial-intelligence">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">

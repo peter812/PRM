@@ -4,7 +4,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Sparkles, ImageIcon, Loader2 } from "lucide-react";
+import { ImageIcon, Loader2, Sparkles } from "lucide-react";
 
 export default function ExperimentalFeaturesPage() {
   const { toast } = useToast();
@@ -58,15 +58,15 @@ export default function ExperimentalFeaturesPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Sparkles className="h-5 w-5 text-muted-foreground" />
-              Homepage Demos Section
+              Demos Sidebar Menu
             </CardTitle>
             <CardDescription>
-              Show a dedicated cards section on the homepage detailing upcoming features and demos.
+              Show a link to the Demos page in the sidebar menu to explore upcoming features.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex items-center justify-between">
             <Label htmlFor="demos-switch" className="flex-1 cursor-pointer pr-4">
-              Enable Demos Section
+              Enable Demos Sidebar Link
             </Label>
             <Switch
               id="demos-switch"
@@ -77,8 +77,8 @@ export default function ExperimentalFeaturesPage() {
                   value: checked ? "true" : "false",
                 });
                 toast({
-                  title: checked ? "Demos section enabled" : "Demos section disabled",
-                  description: "Changes will reflect on the homepage.",
+                  title: checked ? "Demos sidebar link enabled" : "Demos sidebar link disabled",
+                  description: "Changes will reflect in the sidebar menu.",
                 });
               }}
               data-testid="switch-experimental-demos"

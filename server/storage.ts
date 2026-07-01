@@ -30,6 +30,8 @@ import {
   socialNetworkChanges,
   socialAccountPosts,
   photos,
+  faces,
+  imageQuestions,
   appSettings,
   imageTasks,
   dailyNotes,
@@ -438,7 +440,7 @@ export interface IStorage {
   insertPhoto(photo: InsertPhoto): Promise<Photo>;
   getPhotoById(id: string): Promise<Photo | undefined>;
   getPhotoByLocation(location: string): Promise<Photo | undefined>;
-  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<{ items: Photo[]; total: number }>;
+  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean }): Promise<{ items: Photo[]; total: number }>;
   updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
   updatePhotoMeta(id: string, data: Partial<Pick<Photo, 'fileHash' | 'widthPx' | 'heightPx' | 'metadata' | 'imageDescription' | 'imageDescriptionAt' | 'faceUuids' | 'faceIdAt' | 'processedAt'>>): Promise<void>;
   getPhotoByHash(fileHash: string): Promise<Photo | undefined>;
@@ -453,6 +455,15 @@ export interface IStorage {
     photosDeleted: number;
     filesDeleted: number;
     deletedPhotos?: { id: string; location: string; vectorId: string | null }[];
+  }>;
+  resetImagePipeline(): Promise<{
+    photosDeleted: number;
+    filesDeleted: number;
+    facesDeleted: number;
+    imageTasksDeleted: number;
+    imageQuestionsDeleted: number;
+    peopleCleared: number;
+    postsCleared: number;
   }>;
 
   // Image task operations
@@ -3733,10 +3744,19 @@ export class DatabaseStorage implements IStorage {
     return photo || undefined;
   }
 
-  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number } = {}): Promise<{ items: Photo[]; total: number }> {
-    const { prmLocationPrefix, limit = 100, offset = 0 } = options;
-    const whereCondition = prmLocationPrefix
-      ? sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`
+  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean } = {}): Promise<{ items: Photo[]; total: number }> {
+    const { prmLocationPrefix, limit = 100, offset = 0, excludeSubImages } = options;
+    
+    const conditions = [];
+    if (prmLocationPrefix) {
+      conditions.push(sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`);
+    }
+    if (excludeSubImages) {
+      conditions.push(eq(photos.isSubImage, false));
+    }
+
+    const whereCondition = conditions.length > 0
+      ? and(...conditions)
       : undefined;
 
     const [items, countResult] = await Promise.all([
@@ -4120,6 +4140,86 @@ export class DatabaseStorage implements IStorage {
       photosDeleted: orphans.length,
       filesDeleted,
       deletedPhotos: deletedPhotosList,
+    };
+  }
+
+  async resetImagePipeline(): Promise<{
+    photosDeleted: number;
+    filesDeleted: number;
+    facesDeleted: number;
+    imageTasksDeleted: number;
+    imageQuestionsDeleted: number;
+    peopleCleared: number;
+    postsCleared: number;
+  }> {
+    // Reset the recognition/face pipeline while preserving profile & social
+    // avatars. Profile pictures are registered in `photos` with a prmLocation of
+    // "profile_image:*" or "social_profile_image:*" — those rows (and their S3
+    // objects) are left untouched.
+    const isPipeline = (prmLocation: string | null) =>
+      !!prmLocation &&
+      !prmLocation.startsWith("profile_image") &&
+      !prmLocation.startsWith("social_profile_image");
+
+    // 1. Delete pipeline photo files from storage and their DB rows.
+    //    Deleting a photos row cascades to `faces` (faces.photo_id) and
+    //    `image_questions` (image_questions.photo_id) via FK ON DELETE CASCADE.
+    const allPhotos = await db.select().from(photos);
+    const pipelinePhotos = allPhotos.filter((p) => isPipeline(p.prmLocation));
+
+    let filesDeleted = 0;
+    for (const photo of pipelinePhotos) {
+      try {
+        if (isLocalImageUrl(photo.location)) {
+          await deleteImageLocally(photo.location);
+          filesDeleted++;
+        } else if (photo.location.includes(process.env.S3_BUCKET || "")) {
+          await deleteImageFromS3(photo.location);
+          filesDeleted++;
+        }
+      } catch (err) {
+        console.error(`resetImagePipeline: failed to delete file for photo ${photo.id} at ${photo.location}:`, err);
+      }
+    }
+
+    const pipelineIds = pipelinePhotos.map((p) => p.id);
+    if (pipelineIds.length > 0) {
+      await db.delete(photos).where(inArray(photos.id, pipelineIds));
+    }
+
+    // 2. Delete any remaining faces (e.g. sync uploads with photo_id = NULL that
+    //    the cascade above wouldn't reach), plus all image tasks and questions.
+    //    PRM-face's /api/face/reset-all normally clears the faces already, but we
+    //    do it here too so a local reset is complete even if PRM-face is offline.
+    const facesDeleted = (await db.delete(faces).returning({ id: faces.id })).length;
+    const imageQuestionsDeleted = (await db.delete(imageQuestions).returning({ id: imageQuestions.id })).length;
+    const imageTasksDeleted = (await db.delete(imageTasks).returning({ id: imageTasks.id })).length;
+
+    // 3. Strip face associations from people and social account posts.
+    const peopleCleared = (
+      await db
+        .update(people)
+        .set({ personfaceUuid: null })
+        .where(isNotNull(people.personfaceUuid))
+        .returning({ id: people.id })
+    ).length;
+
+    const postsCleared = (
+      await db
+        .update(socialAccountPosts)
+        .set({ faceIds: null })
+        .where(isNotNull(socialAccountPosts.faceIds))
+        .returning({ id: socialAccountPosts.id })
+    ).length;
+
+    return {
+      photosDeleted: pipelineIds.length,
+      filesDeleted,
+      facesDeleted,
+      imageTasksDeleted,
+      imageQuestionsDeleted,
+      peopleCleared,
+      postsCleared,
     };
   }
 

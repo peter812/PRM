@@ -107,6 +107,11 @@ const menuItems = [
     icon: BookOpen,
   },
   {
+    title: "Unknown Faces",
+    url: "/unknown-faces",
+    icon: HelpCircle,
+  },
+  {
     title: "Games",
     url: "/games",
     icon: Gamepad2,
@@ -163,6 +168,14 @@ export function AppSidebar() {
   });
   const demosEnabled = settings?.experimental_demos_enabled === "true";
 
+  const { data: questions = [] } = useQuery<any[]>({
+    queryKey: ["/api/image-questions/pending"],
+  });
+
+  const { data: gitData } = useQuery<{ branch: string }>({
+    queryKey: ["/api/git/branch"],
+  });
+
   const displayedMenuItems = useMemo(() => {
     if (demosEnabled) return menuItems;
     return menuItems.filter(item => item.title !== "Demos");
@@ -213,7 +226,15 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>PRM 2.0</SidebarGroupLabel>
+          <SidebarGroupLabel className="flex items-center gap-2">
+            <span>PRM 2.0</span>
+            {gitData?.branch && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-primary/10 text-primary px-1.5 py-0.5 text-[10px] font-mono font-semibold tracking-wider uppercase border border-primary/20">
+                <GitBranch className="h-2.5 w-2.5" />
+                {gitData.branch}
+              </span>
+            )}
+          </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {displayedMenuItems.map((item) => {
@@ -278,10 +299,15 @@ export function AppSidebar() {
                     >
                       <Link
                         href={item.url}
-                        data-testid={`link-${item.title.toLowerCase().replace(/\\s+/g, "-")}`}
+                        data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
                       >
                         <item.icon />
                         <span>{item.title}</span>
+                        {item.title === "Unknown Faces" && questions.length > 0 && (
+                          <span className="ml-auto bg-primary text-primary-foreground text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full" data-testid="badge-unknown-faces-count">
+                            {questions.length}
+                          </span>
+                        )}
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

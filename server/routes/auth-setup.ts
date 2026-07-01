@@ -2967,5 +2967,42 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to save setting" });
       }
     });
+
+    app.get("/api/git/branch", async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+        let branch = "unknown";
+        try {
+          const headPath = path.join(process.cwd(), ".git", "HEAD");
+          if (fs.existsSync(headPath)) {
+            const headContent = fs.readFileSync(headPath, "utf-8").trim();
+            if (headContent.startsWith("ref: ")) {
+              branch = headContent.substring("ref: ".length).replace("refs/heads/", "");
+            } else {
+              // Detached head, return short SHA
+              branch = headContent.substring(0, 7);
+            }
+          } else {
+            // Fallback to git command if .git/HEAD isn't directly readable or doesn't exist
+            const { execSync } = await import("child_process");
+            branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
+          }
+        } catch (gitError) {
+          console.error("Error reading git branch:", gitError);
+          try {
+            const { execSync } = await import("child_process");
+            branch = execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
+          } catch (cmdError) {
+            console.error("Error executing git command:", cmdError);
+          }
+        }
+        res.json({ branch });
+      } catch (error) {
+        console.error("Error in /api/git/branch:", error);
+        res.status(500).json({ error: "Failed to get git branch" });
+      }
+    });
   
 }
