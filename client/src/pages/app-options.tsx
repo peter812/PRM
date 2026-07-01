@@ -18,7 +18,7 @@ const APP_OPTIONS = [
     testId: "card-chrome-extension-link",
   },
   {
-    href: "/api-settings",
+    href: "/api/settings",
     icon: Key,
     title: "API Settings",
     description: "Manage API keys and access credentials for external integrations",

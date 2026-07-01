@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
-import { useState, useRef } from "react";
+import { useState, useRef, lazy, Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -25,7 +25,11 @@ import { PersonSocialAccountsChips } from "@/components/person-social-accounts-c
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
-import { FamilyTreeTab } from "@/components/family-tree-tab";
+const FamilyTreeTab = lazy(() =>
+  import("@/components/family-tree-tab").then((module) => ({
+    default: module.FamilyTreeTab,
+  }))
+);
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { getInitials } from "@/lib/utils";
@@ -279,15 +283,7 @@ export default function PersonProfile() {
                   </TooltipTrigger>
                   <TooltipContent>Account info</TooltipContent>
                 </Tooltip>
-                <Button
-                  variant="outline"
-                  onClick={() => setIsEditAdditionalOpen(true)}
-                  data-testid="button-edit-additional-info"
-                  className="flex items-center gap-1"
-                >
-                  <GraduationCap className="h-4 w-4" />
-                  Edit Education & Career
-                </Button>
+
                 <Button
                   variant="outline"
                   onClick={() => setIsEditPersonOpen(true)}
@@ -432,10 +428,12 @@ export default function PersonProfile() {
 
 
           <TabsContent value="tree" className="mt-0 h-full">
-            <FamilyTreeTab
-              personId={person.id}
-              personName={`${person.firstName} ${person.lastName}`.trim()}
-            />
+            <Suspense fallback={<Skeleton className="w-full h-[400px]" />}>
+              <FamilyTreeTab
+                personId={person.id}
+                personName={`${person.firstName} ${person.lastName}`.trim()}
+              />
+            </Suspense>
           </TabsContent>
 
           <TabsContent value="groups" className="mt-0 h-full">
@@ -451,6 +449,17 @@ export default function PersonProfile() {
 
           <TabsContent value="education-career" className="mt-0 h-full p-6 overflow-auto">
             <div className="max-w-3xl space-y-6">
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setIsEditAdditionalOpen(true)}
+                  data-testid="button-edit-additional-info"
+                  className="flex items-center gap-1"
+                >
+                  <Edit className="h-4 w-4" />
+                  Edit Education & Career
+                </Button>
+              </div>
               
               {/* Education Section */}
               <div className="space-y-4">

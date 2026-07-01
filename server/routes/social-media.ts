@@ -3,12 +3,12 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray, desc, or } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -691,6 +691,16 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error removing duplicate social accounts:", error);
         res.status(500).json({ error: "Failed to remove duplicate social accounts" });
+      }
+    });
+
+    app.post("/api/maintenance/remove-duplicate-types", async (req, res) => {
+      try {
+        const result = await storage.removeDuplicateRelationshipAndInteractionTypes();
+        res.json({ success: true, ...result });
+      } catch (error) {
+        console.error("Error removing duplicate types:", error);
+        res.status(500).json({ error: "Failed to remove duplicate types" });
       }
     });
   
@@ -1828,6 +1838,132 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    app.delete("/api/photos/:id", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const { id } = req.params;
+        const [photo] = await db.select().from(photos).where(eq(photos.id, id));
+        if (!photo) {
+          return res.status(404).json({ error: "Photo not found" });
+        }
+
+        // 1. Gather all sub-image IDs
+        const subImageIds: string[] = [];
+        if (photo.faceUuids && Array.isArray(photo.faceUuids)) {
+          for (const face of photo.faceUuids as Array<{ subImagePhotoId?: string }>) {
+            if (face?.subImagePhotoId) {
+              subImageIds.push(face.subImagePhotoId);
+            }
+          }
+        }
+
+        // 2. Gather face UUIDs from facialIds and faceUuids
+        const faceUuids: string[] = [];
+        if (photo.facialIds && Array.isArray(photo.facialIds)) {
+          for (const face of photo.facialIds as Array<{ faceUuid?: string }>) {
+            if (face?.faceUuid) {
+              faceUuids.push(face.faceUuid);
+            }
+          }
+        }
+        if (photo.faceUuids && Array.isArray(photo.faceUuids)) {
+          for (const face of photo.faceUuids as Array<{ faceUuid?: string }>) {
+            if (face?.faceUuid) {
+              faceUuids.push(face.faceUuid);
+            }
+          }
+        }
+
+        // 3. Find all related face records in the database
+        const faceConditions = [eq(faces.photoId, id)];
+        if (subImageIds.length > 0) {
+          faceConditions.push(inArray(faces.photoId, subImageIds));
+        }
+        if (faceUuids.length > 0) {
+          faceConditions.push(inArray(faces.id, faceUuids));
+        }
+        const dbFaces = await db.select().from(faces).where(or(...faceConditions));
+
+        // 4. Extract all PRM-Face generated image UUIDs and face IDs
+        const prmFaceImageUuids = [...new Set(dbFaces.map(f => f.photoId).filter(Boolean))] as string[];
+        const faceIdsToDelete = dbFaces.map(f => f.id);
+
+        // 5. Fetch sub-images and PRM-Face photo records
+        const subImages = subImageIds.length > 0
+          ? await db.select().from(photos).where(inArray(photos.id, subImageIds))
+          : [];
+        const prmFacePhotos = prmFaceImageUuids.length > 0
+          ? await db.select().from(photos).where(inArray(photos.id, prmFaceImageUuids))
+          : [];
+
+        const allPhotosToDelete = [photo, ...subImages, ...prmFacePhotos];
+        const idsToDelete = allPhotosToDelete.map(p => p.id);
+        const locations = allPhotosToDelete.map(p => p.location);
+
+        // 6. Clear imageUrl/location fields in database (people, notes, interactions)
+        if (locations.length > 0) {
+          await db.update(people).set({ imageUrl: null }).where(inArray(people.imageUrl, locations));
+        }
+        await db.update(notes).set({ imageUrl: null }).where(inArray(notes.imageUuid, idsToDelete));
+        await db.update(interactions).set({ imageUrl: null }).where(inArray(interactions.imageUuid, idsToDelete));
+
+        // 7. Delete physical files from local/S3
+        for (const p of allPhotosToDelete) {
+          try {
+            if (isLocalImageUrl(p.location)) {
+              await deleteImageLocally(p.location);
+            } else if (p.location.includes(process.env.S3_BUCKET || "")) {
+              await deleteImageFromS3(p.location);
+            }
+          } catch (err) {
+            console.error(`Failed to delete physical file for photo ${p.id} at ${p.location}:`, err);
+          }
+        }
+
+        // 8. Delete faces from database
+        if (faceIdsToDelete.length > 0) {
+          await db.delete(faces).where(inArray(faces.id, faceIdsToDelete));
+        }
+
+        // 9. Delete photos from database
+        await db.delete(photos).where(inArray(photos.id, idsToDelete));
+
+        // 10. Delete vectors from universal vector DB
+        const vectorIds = allPhotosToDelete.map(p => p.vectorId).filter(Boolean) as string[];
+        if (vectorIds.length > 0) {
+          void deleteEntityVector("image", vectorIds);
+        }
+
+        // 11. Call PRM-Face API delete endpoint (best-effort)
+        const apiUrl = await storage.getAppSetting("prm_face_api_url");
+        const apiKey = await storage.getAppSetting("prm_face_api_key");
+        if (apiUrl && apiKey) {
+          const base = apiUrl.replace(/\/+$/, "");
+          const faceServiceUuids = [...new Set([id, ...prmFaceImageUuids])];
+          for (const faceUuid of faceServiceUuids) {
+            try {
+              const url = new URL(`${base}/api/img/delete`);
+              url.searchParams.set("image_uuid", faceUuid);
+              await fetch(url.toString(), {
+                method: "DELETE",
+                headers: { "x-api-key": apiKey },
+                signal: AbortSignal.timeout(10000),
+              });
+            } catch (err: any) {
+              console.warn(`Failed to delete image ${faceUuid} from PRM-Face service:`, err.message);
+            }
+          }
+        }
+
+        res.json({ success: true, deletedCount: idsToDelete.length, facesDeletedCount: faceIdsToDelete.length });
+      } catch (error) {
+        console.error("Error deleting photo:", error);
+        res.status(500).json({ error: "Failed to delete photo" });
+      }
+    });
+
     app.post("/api/photos/backfill", async (req, res) => {
       if (!req.isAuthenticated() || !req.user) {
         return res.status(401).json({ error: "Not authenticated" });

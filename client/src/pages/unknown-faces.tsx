@@ -76,7 +76,7 @@ export default function UnknownFacesPage() {
   });
 
   // 3. Search people endpoint (autocomplete query when searchQuery.length >= 3)
-  const { data: searchPeopleResults = [], isFetching: isSearchingPeople } = useQuery<Person[]>({
+  const { data: searchPeopleResults = [], isFetching: isSearchingPeople } = useQuery<{ uuid: string; name: string }[]>({
     queryKey: ["/api/people/search", searchQuery],
     queryFn: async () => {
       if (searchQuery.length < 3) return [];
@@ -522,21 +522,21 @@ export default function UnknownFacesPage() {
 
                                 {/* People Results */}
                                 {searchPeopleResults.map((p) => {
-                                  const initials = `${p.firstName[0] || ""}${p.lastName[0] || ""}`;
+                                  const nameParts = (p.name || "").trim().split(/\s+/);
+                                  const initials = nameParts.map(part => part[0] || "").join("").substring(0, 2).toUpperCase();
                                   return (
                                     <button
-                                      key={p.id}
+                                      key={p.uuid}
                                       className="w-full p-2.5 hover:bg-zinc-900 border-b border-zinc-900 text-left flex items-center gap-3 transition-colors group"
-                                      onClick={() => handleConnect({ personId: p.id })}
+                                      onClick={() => handleConnect({ personId: p.uuid })}
                                       disabled={connectMutation.isPending}
                                     >
                                       <Avatar className="h-7 w-7 border border-zinc-800">
-                                        {p.imageUrl && <AvatarImage src={p.imageUrl} />}
                                         <AvatarFallback className="bg-zinc-800 text-[10px] font-bold text-zinc-300">{initials}</AvatarFallback>
                                       </Avatar>
                                       <div className="overflow-hidden flex-1">
                                         <p className="text-xs font-bold text-zinc-200 group-hover:text-white truncate">
-                                          {p.firstName} {p.lastName}
+                                          {p.name}
                                         </p>
                                         <p className="text-[9px] text-zinc-500 font-medium">CRM Contact</p>
                                       </div>

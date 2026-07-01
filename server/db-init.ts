@@ -71,11 +71,15 @@ async function seedRelationshipTypes(): Promise<void> {
       { name: 'Ex-spouse', color: '#6b7280', value: 70, notes: 'Former spouse' },
     ];
     
+    // Check which names already exist to avoid creating duplicates
+    const existing = await pool.query(`SELECT LOWER(name) as name FROM relationship_types`);
+    const existingNames = new Set(existing.rows.map((r: any) => r.name));
+    
     for (const type of defaultTypes) {
+      if (existingNames.has(type.name.toLowerCase())) continue;
       await pool.query(
         `INSERT INTO relationship_types (name, color, value, notes) 
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT DO NOTHING`,
+         VALUES ($1, $2, $3, $4)`,
         [type.name, type.color, type.value, type.notes]
       );
     }
@@ -102,11 +106,15 @@ async function seedInteractionTypes(): Promise<void> {
       { name: 'Other', color: '#8b5cf6', value: 30, description: 'Other type of interaction' },
     ];
     
+    // Check which names already exist to avoid creating duplicates
+    const existing = await pool.query(`SELECT LOWER(name) as name FROM interaction_types`);
+    const existingNames = new Set(existing.rows.map((r: any) => r.name));
+    
     for (const type of defaultTypes) {
+      if (existingNames.has(type.name.toLowerCase())) continue;
       await pool.query(
         `INSERT INTO interaction_types (name, color, value, description) 
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT DO NOTHING`,
+         VALUES ($1, $2, $3, $4)`,
         [type.name, type.color, type.value, type.description]
       );
     }
@@ -951,7 +959,7 @@ export async function initializeDatabase(): Promise<void> {
       await validateAndSyncSchema();
 
       // Always seed defaults so new types (e.g. Ex-spouse) are picked up by existing databases.
-      // All seed functions use ON CONFLICT DO NOTHING, making this idempotent.
+      // Seed functions check for existing names before inserting, making this idempotent.
       await seedRelationshipTypes();
       await seedInteractionTypes();
       await seedSocialAccountTypes();

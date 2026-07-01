@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2 } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -20,36 +20,38 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import UserOptionsPage from "@/pages/user-options";
-import AppOptionsPage from "@/pages/app-options";
-import ExperimentalFeaturesPage from "@/pages/experimental-features";
-import DataTypesPage from "@/pages/data-types";
-import ApiSettingsPage from "@/pages/api-settings";
-import ChromeExtensionSettingsPage from "@/pages/chrome-extension-settings";
-import ApiDocs from "@/pages/api-docs";
-import DeleteOptionsPage from "@/pages/delete-options";
-import ImportExportHome from "@/pages/import-export-home";
-import ImportContactsPage from "@/pages/import-contacts";
-import ImportSocialMediaPage from "@/pages/import-social-media";
-import ImportExportApplicationPage from "@/pages/import-export-application";
-import ImagePassInPage from "@/pages/image-pass-in";
-import InstagramXmlTransferPage from "@/pages/instagram-xml-transfer";
-import TasksSettingsPage from "@/pages/tasks-settings";
-import ImageStorageSettingsPage from "@/pages/image-storage-settings";
-import ImageTablePage from "@/pages/image-table-page";
-import ImageTasksSettingsPage from "@/pages/image-tasks-settings";
-import RecognitionSettingsPage from "@/pages/recognition-settings";
-import RecognitionImagesPage from "@/pages/recognition-images";
-import RecognitionFacesPage from "@/pages/recognition-faces";
-import SocialGraphSettingsPage from "@/pages/social-graph-settings";
-import IntelligenceSettingsPage from "@/pages/intelligence-settings";
-import IntelligenceToolsSettingsPage from "@/pages/intelligence-tools-settings";
-import IntelligenceExternalToolsSettingsPage from "@/pages/intelligence-external-tools-settings";
-import IntelligenceImagesSettingsPage from "@/pages/intelligence-images-settings";
-import IntelligenceFamilyTreeSettingsPage from "@/pages/intelligence-family-tree-settings";
-import VectorSettingsPage from "@/pages/vector-settings";
-import TaskDetailPage from "@/pages/task-detail";
-import NotFound from "@/pages/not-found";
+import { lazy, Suspense } from "react";
+
+const UserOptionsPage = lazy(() => import("@/pages/user-options"));
+const AppOptionsPage = lazy(() => import("@/pages/app-options"));
+const ExperimentalFeaturesPage = lazy(() => import("@/pages/experimental-features"));
+const DataTypesPage = lazy(() => import("@/pages/data-types"));
+const ApiSettingsPage = lazy(() => import("@/pages/api-settings"));
+const ChromeExtensionSettingsPage = lazy(() => import("@/pages/chrome-extension-settings"));
+const ApiDocs = lazy(() => import("@/pages/api-docs"));
+const DeleteOptionsPage = lazy(() => import("@/pages/delete-options"));
+const ImportExportHome = lazy(() => import("@/pages/import-export-home"));
+const ImportContactsPage = lazy(() => import("@/pages/import-contacts"));
+const ImportSocialMediaPage = lazy(() => import("@/pages/import-social-media"));
+const ImportExportApplicationPage = lazy(() => import("@/pages/import-export-application"));
+const ImagePassInPage = lazy(() => import("@/pages/image-pass-in"));
+const InstagramXmlTransferPage = lazy(() => import("@/pages/instagram-xml-transfer"));
+const TasksSettingsPage = lazy(() => import("@/pages/tasks-settings"));
+const ImageStorageSettingsPage = lazy(() => import("@/pages/image-storage-settings"));
+const ImageTablePage = lazy(() => import("@/pages/image-table-page"));
+const ImageTasksSettingsPage = lazy(() => import("@/pages/image-tasks-settings"));
+const RecognitionSettingsPage = lazy(() => import("@/pages/recognition-settings"));
+const RecognitionImagesPage = lazy(() => import("@/pages/recognition-images"));
+const RecognitionFacesPage = lazy(() => import("@/pages/recognition-faces"));
+const SocialGraphSettingsPage = lazy(() => import("@/pages/social-graph-settings"));
+const IntelligenceSettingsPage = lazy(() => import("@/pages/intelligence-settings"));
+const IntelligenceToolsSettingsPage = lazy(() => import("@/pages/intelligence-tools-settings"));
+const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelligence-external-tools-settings"));
+const IntelligenceImagesSettingsPage = lazy(() => import("@/pages/intelligence-images-settings"));
+const IntelligenceFamilyTreeSettingsPage = lazy(() => import("@/pages/intelligence-family-tree-settings"));
+const VectorSettingsPage = lazy(() => import("@/pages/vector-settings"));
+const TaskDetailPage = lazy(() => import("@/pages/task-detail"));
+const NotFound = lazy(() => import("@/pages/not-found"));
 
 interface MenuItem {
   title: string;
@@ -76,7 +78,6 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Social Graph", url: "/settings/social-graph", icon: Network },
       { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
-      { title: "API Settings", url: "/settings/api-settings", icon: Key },
       { title: "Experimental Features", url: "/settings/experimental", icon: Sparkles },
     ],
   },
@@ -139,6 +140,9 @@ const settingsMenuItems: MenuItem[] = [
     title: "API Documentation",
     url: "/settings/api",
     icon: Book,
+    subItems: [
+      { title: "API Settings", url: "/settings/api/settings", icon: Key },
+    ],
   },
   {
     title: "Delete Options",
@@ -157,8 +161,8 @@ export function SettingsSidebar() {
     location.startsWith("/settings/app") ||
     location.startsWith("/settings/social-graph") ||
     location === "/settings/chrome-extension" ||
-    location === "/settings/api-settings" ||
     location === "/settings/experimental";
+  const isApiDocsActive = location.startsWith("/settings/api");
   const isImageStorageActive = location.startsWith("/settings/image-storage") && location !== "/settings/image-storage/tasks";
   const isIntelligenceActive = location.startsWith("/settings/intelligence") || location === "/settings/vector";
   const isTasksActive = location.startsWith("/settings/tasks") || location === "/settings/image-tasks" || location === "/settings/image-storage/tasks";
@@ -171,6 +175,7 @@ export function SettingsSidebar() {
       case "/settings/image-storage": return isImageStorageActive;
       case "/settings/intelligence": return isIntelligenceActive;
       case "/settings/tasks": return isTasksActive;
+      case "/settings/api": return isApiDocsActive;
       default: return isImportExportActive;
     }
   }
@@ -249,41 +254,47 @@ export function SettingsSidebar() {
 export default function SettingsLayout() {
   return (
     <div className="flex-1 overflow-auto h-full">
-      <Switch>
-        <Route path="/" component={() => <Redirect to="/user" />} />
-        <Route path="/user" component={UserOptionsPage} />
-        <Route path="/app" component={AppOptionsPage} />
-        <Route path="/experimental" component={ExperimentalFeaturesPage} />
-        <Route path="/data-types" component={DataTypesPage} />
-        <Route path="/image-tasks" component={ImageTasksSettingsPage} />
-        <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
-        <Route path="/image-storage/table" component={ImageTablePage} />
-        <Route path="/image-storage" component={ImageStorageSettingsPage} />
-        <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
-        <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
-        <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
-        <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
-        <Route path="/intelligence" component={IntelligenceSettingsPage} />
-        <Route path="/vector" component={VectorSettingsPage} />
-        <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />
-        <Route path="/instagram" component={() => <Redirect to="/import-export/instagram-xml" />} />
-        <Route path="/tasks" component={TasksSettingsPage} />
-        <Route path="/task/:id" component={TaskDetailPage} />
-        <Route path="/social-graph" component={SocialGraphSettingsPage} />
-        <Route path="/recognition/images" component={RecognitionImagesPage} />
-        <Route path="/recognition/faces" component={RecognitionFacesPage} />
-        <Route path="/recognition" component={RecognitionSettingsPage} />
-        <Route path="/import-export/contacts" component={ImportContactsPage} />
-        <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
-        <Route path="/import-export/application" component={ImportExportApplicationPage} />
-        <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
-        <Route path="/import-export" component={ImportExportHome} />
-        <Route path="/api-settings" component={ApiSettingsPage} />
-        <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
-        <Route path="/api" component={ApiDocs} />
-        <Route path="/delete" component={DeleteOptionsPage} />
-        <Route component={NotFound} />
-      </Switch>
+      <Suspense fallback={
+        <div className="flex items-center justify-center h-full w-full">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      }>
+        <Switch>
+          <Route path="/" component={() => <Redirect to="/user" />} />
+          <Route path="/user" component={UserOptionsPage} />
+          <Route path="/app" component={AppOptionsPage} />
+          <Route path="/experimental" component={ExperimentalFeaturesPage} />
+          <Route path="/data-types" component={DataTypesPage} />
+          <Route path="/image-tasks" component={ImageTasksSettingsPage} />
+          <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
+          <Route path="/image-storage/table" component={ImageTablePage} />
+          <Route path="/image-storage" component={ImageStorageSettingsPage} />
+          <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
+          <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
+          <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
+          <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
+          <Route path="/intelligence" component={IntelligenceSettingsPage} />
+          <Route path="/vector" component={VectorSettingsPage} />
+          <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />
+          <Route path="/instagram" component={() => <Redirect to="/import-export/instagram-xml" />} />
+          <Route path="/tasks" component={TasksSettingsPage} />
+          <Route path="/task/:id" component={TaskDetailPage} />
+          <Route path="/social-graph" component={SocialGraphSettingsPage} />
+          <Route path="/recognition/images" component={RecognitionImagesPage} />
+          <Route path="/recognition/faces" component={RecognitionFacesPage} />
+          <Route path="/recognition" component={RecognitionSettingsPage} />
+          <Route path="/import-export/contacts" component={ImportContactsPage} />
+          <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
+          <Route path="/import-export/application" component={ImportExportApplicationPage} />
+          <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
+          <Route path="/import-export" component={ImportExportHome} />
+          <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
+          <Route path="/api/settings" component={ApiSettingsPage} />
+          <Route path="/api" component={ApiDocs} />
+          <Route path="/delete" component={DeleteOptionsPage} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
     </div>
   );
 }

@@ -7,7 +7,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ProtectedRoute } from "@/lib/protected-route";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { toast } from "@/hooks/use-toast";
 import { GlobalSearch } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
@@ -22,41 +22,44 @@ import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { Button } from "@/components/ui/button";
-import { Settings, LogOut, Home } from "lucide-react";
-import PeopleList from "@/pages/people-list";
-import PersonProfile from "@/pages/person-profile";
-import MeProfile from "@/pages/me-profile";
-import HomePage from "@/pages/home";
-import GroupsList from "@/pages/groups-list";
-import GroupProfile from "@/pages/group-profile";
-import PotentialGroupsPage from "@/pages/potential-groups";
-import SocialAccountsList from "@/pages/social-accounts-list";
-import SocialAccountProfile from "@/pages/social-account-profile";
-import Graph from "@/pages/graph";
-import SocialGraph3D from "@/pages/social-graph-3d";
-import AuthPage from "@/pages/auth-page";
-import AuthDirectPage from "@/pages/auth-direct";
-import WelcomePage from "@/pages/welcome-page";
-import SettingsLayout, { SettingsSidebar } from "@/pages/settings-layout";
-import EloRanking from "@/pages/elo-ranking";
-import GuessTheSex from "@/pages/guess-the-sex";
-import AccountMatching from "@/pages/account-matching";
-import PrmFaceDemo from "@/pages/prm-face-demo";
-import PrmFaceSaveDemo from "@/pages/prm-face-save-demo";
-import UnknownFaces from "@/pages/unknown-faces";
-import AiDescDemo from "@/pages/ai-desc-demo";
-import AiChatDemo from "@/pages/ai-chat-demo";
-import DemosPage from "@/pages/demos";
-import GamesPage from "@/pages/games";
-import ImageDetailPage from "@/pages/image-detail";
-import ImagesListPage from "@/pages/images-list";
-import DailyNotesList from "@/pages/daily-notes";
-import DailyNoteDetail from "@/pages/daily-note-detail";
-import SuperSearchPage from "@/pages/super-search";
-import FamilyTreePage from "@/pages/family-tree";
-import MessagesListPage from "@/pages/messages-list";
-import MessageConversationPage from "@/pages/message-conversation";
-import NotFound from "@/pages/not-found";
+import { Settings, LogOut, Home, Loader2 } from "lucide-react";
+import { SettingsSidebar } from "@/pages/settings-layout";
+
+const PeopleList = lazy(() => import("@/pages/people-list"));
+const PersonProfile = lazy(() => import("@/pages/person-profile"));
+const MeProfile = lazy(() => import("@/pages/me-profile"));
+const HomePage = lazy(() => import("@/pages/home"));
+const GroupsList = lazy(() => import("@/pages/groups-list"));
+const GroupProfile = lazy(() => import("@/pages/group-profile"));
+const PotentialGroupsPage = lazy(() => import("@/pages/potential-groups"));
+const SocialAccountsList = lazy(() => import("@/pages/social-accounts-list"));
+const SocialAccountProfile = lazy(() => import("@/pages/social-account-profile"));
+const Graph = lazy(() => import("@/pages/graph"));
+const SocialGraph3D = lazy(() => import("@/pages/social-graph-3d"));
+const AuthPage = lazy(() => import("@/pages/auth-page"));
+const AuthDirectPage = lazy(() => import("@/pages/auth-direct"));
+const WelcomePage = lazy(() => import("@/pages/welcome-page"));
+const SettingsLayout = lazy(() => import("@/pages/settings-layout"));
+const EloRanking = lazy(() => import("@/pages/elo-ranking"));
+const GuessTheSex = lazy(() => import("@/pages/guess-the-sex"));
+const AccountMatching = lazy(() => import("@/pages/account-matching"));
+const PrmFaceDemo = lazy(() => import("@/pages/prm-face-demo"));
+const PrmFaceSaveDemo = lazy(() => import("@/pages/prm-face-save-demo"));
+const UnknownFaces = lazy(() => import("@/pages/unknown-faces"));
+const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
+const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
+const DemosPage = lazy(() => import("@/pages/demos"));
+const GamesPage = lazy(() => import("@/pages/games"));
+const ImageDetailPage = lazy(() => import("@/pages/image-detail"));
+const ImagesListPage = lazy(() => import("@/pages/images-list"));
+const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
+const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
+const SuperSearchPage = lazy(() => import("@/pages/super-search"));
+const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
+const MessagesListPage = lazy(() => import("@/pages/messages-list"));
+const MessageConversationPage = lazy(() => import("@/pages/message-conversation"));
+const NotFound = lazy(() => import("@/pages/not-found"));
+
 
 const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
 
@@ -111,46 +114,56 @@ function GraphRedirect() {
   return <Redirect to={`/social-graph-3d?${search.toString()}`} replace />;
 }
 
+function LoadingState() {
+  return (
+    <div className="flex items-center justify-center h-full w-full min-h-[50vh]">
+      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
 function Router() {
   return (
-    <Switch>
-      <Route path="/welcome" component={WelcomePage} />
-      <Route path="/auth" component={AuthPage} />
-      <Route path="/auth-direct" component={AuthDirectPage} />
-      <ProtectedRoute path="/" component={PeopleList} />
-      <ProtectedRoute path="/people" component={PeopleList} />
-      <ProtectedRoute path="/person/:id" component={PersonProfile} />
-      <ProtectedRoute path="/home" component={HomePage} />
-      <ProtectedRoute path="/me" component={MeProfile} />
-      <ProtectedRoute path="/groups" component={GroupsList} />
-      <ProtectedRoute path="/groups/potential" component={PotentialGroupsPage} />
-      <ProtectedRoute path="/group/:id" component={GroupProfile} />
-      <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
-      <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
-      <ProtectedRoute path="/graph" component={Graph} />
-      <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
-      <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
-      <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
-      <ProtectedRoute path="/elo-ranking" component={EloRanking} />
-      <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
-      <ProtectedRoute path="/account-matching" component={AccountMatching} />
-      <ProtectedRoute path="/demos" component={DemosPage} />
-      <ProtectedRoute path="/games" component={GamesPage} />
-      <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
-      <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
-      <ProtectedRoute path="/unknown-faces" component={UnknownFaces} />
-      <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
-      <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
-      <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
-      <ProtectedRoute path="/images" component={ImagesListPage} />
-      <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
-      <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
-      <ProtectedRoute path="/super-search" component={SuperSearchPage} />
-      <ProtectedRoute path="/messages" component={MessagesListPage} />
-      <ProtectedRoute path="/messages/:id" component={MessageConversationPage} />
-      <ProtectedRoute path="/settings" nest component={SettingsLayout} />
-      <Route component={NotFound} />
-    </Switch>
+    <Suspense fallback={<LoadingState />}>
+      <Switch>
+        <Route path="/welcome" component={WelcomePage} />
+        <Route path="/auth" component={AuthPage} />
+        <Route path="/auth-direct" component={AuthDirectPage} />
+        <ProtectedRoute path="/" component={PeopleList} />
+        <ProtectedRoute path="/people" component={PeopleList} />
+        <ProtectedRoute path="/person/:id" component={PersonProfile} />
+        <ProtectedRoute path="/home" component={HomePage} />
+        <ProtectedRoute path="/me" component={MeProfile} />
+        <ProtectedRoute path="/groups" component={GroupsList} />
+        <ProtectedRoute path="/groups/potential" component={PotentialGroupsPage} />
+        <ProtectedRoute path="/group/:id" component={GroupProfile} />
+        <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
+        <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
+        <ProtectedRoute path="/graph" component={Graph} />
+        <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
+        <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
+        <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
+        <ProtectedRoute path="/elo-ranking" component={EloRanking} />
+        <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
+        <ProtectedRoute path="/account-matching" component={AccountMatching} />
+        <ProtectedRoute path="/demos" component={DemosPage} />
+        <ProtectedRoute path="/games" component={GamesPage} />
+        <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
+        <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
+        <ProtectedRoute path="/unknown-faces" component={UnknownFaces} />
+        <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
+        <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
+        <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
+        <ProtectedRoute path="/images" component={ImagesListPage} />
+        <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
+        <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
+        <ProtectedRoute path="/super-search" component={SuperSearchPage} />
+        <ProtectedRoute path="/messages" component={MessagesListPage} />
+        <ProtectedRoute path="/messages/:id" component={MessageConversationPage} />
+        <ProtectedRoute path="/settings" nest component={SettingsLayout} />
+        <Route component={NotFound} />
+      </Switch>
+    </Suspense>
   );
 }
 

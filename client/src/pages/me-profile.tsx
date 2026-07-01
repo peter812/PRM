@@ -1,8 +1,9 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon } from "lucide-react";
-import { useState, useRef } from "react";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, GraduationCap, Briefcase } from "lucide-react";
+import { useState, useRef, lazy, Suspense } from "react";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
@@ -15,12 +16,18 @@ import { PersonDialog } from "@/components/person-dialog";
 import { RelationshipDialog } from "@/components/relationship-dialog";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
+import { AdditionalInfoDialog } from "@/components/additional-info-dialog";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
-import { FamilyTreeTab } from "@/components/family-tree-tab";
 import { getInitials } from "@/lib/utils";
+
+const FamilyTreeTab = lazy(() =>
+  import("@/components/family-tree-tab").then((module) => ({
+    default: module.FamilyTreeTab,
+  }))
+);
 
 export default function MeProfile() {
   const [, navigate] = useLocation();
@@ -29,6 +36,7 @@ export default function MeProfile() {
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
+  const [isEditAdditionalOpen, setIsEditAdditionalOpen] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
@@ -295,6 +303,13 @@ export default function MeProfile() {
             >
               Groups
             </TabsTrigger>
+            <TabsTrigger
+              value="education-career"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-education-career"
+            >
+              Education & Career
+            </TabsTrigger>
             {showPhotosTab && (
               <TabsTrigger
                 value="photos"
@@ -329,10 +344,12 @@ export default function MeProfile() {
 
 
           <TabsContent value="tree" className="mt-0 h-full">
-            <FamilyTreeTab
-              personId={person.id}
-              personName={`${person.firstName} ${person.lastName}`.trim()}
-            />
+            <Suspense fallback={<Skeleton className="w-full h-[400px]" />}>
+              <FamilyTreeTab
+                personId={person.id}
+                personName={`${person.firstName} ${person.lastName}`.trim()}
+              />
+            </Suspense>
           </TabsContent>
 
           <TabsContent value="groups" className="mt-0 h-full">
@@ -340,6 +357,112 @@ export default function MeProfile() {
               personGroups={person.groups || []}
               personId={person.id}
             />
+          </TabsContent>
+
+          <TabsContent value="education-career" className="mt-0 h-full p-6 overflow-auto">
+            <div className="max-w-3xl space-y-6">
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setIsEditAdditionalOpen(true)}
+                  data-testid="button-edit-additional-info"
+                  className="flex items-center gap-1"
+                >
+                  <Edit className="h-4 w-4" />
+                  Edit Education & Career
+                </Button>
+              </div>
+
+              {/* Education Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold flex items-center gap-2 border-b pb-2 text-foreground/80">
+                  <GraduationCap className="h-5 w-5 text-primary" />
+                  Education
+                </h3>
+
+                {/* High School */}
+                {person.schooling?.highSchool && (
+                  <div className="flex flex-col gap-1 pl-7">
+                    <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">High School</span>
+                    <span className="text-sm font-medium" data-testid="highschool-value">{person.schooling.highSchool}</span>
+                  </div>
+                )}
+
+                {/* Colleges */}
+                {person.schooling?.colleges && person.schooling.colleges.length > 0 ? (
+                  <div className="space-y-3 pl-7">
+                    <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-[10px] block">Colleges & Degrees</span>
+                    <div className="grid gap-3">
+                      {person.schooling.colleges.map((col: any, idx: number) => (
+                        <div key={idx} className="border-l-2 border-primary/20 pl-3 py-0.5" data-testid="college-item">
+                          <div className="font-semibold text-sm">{col.name}</div>
+                          <div className="text-sm text-muted-foreground">{col.degree}</div>
+                          {(col.startDate || col.endDate) && (
+                            <div className="text-xs text-muted-foreground/80 mt-0.5">
+                              {col.startDate || "\u2014"} - {col.endDate || "\u2014"}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Additional Schooling */}
+                {person.schooling?.additionalSchooling && person.schooling.additionalSchooling.length > 0 ? (
+                  <div className="space-y-3 pl-7">
+                    <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-[10px] block">Additional Schooling</span>
+                    <div className="grid gap-3">
+                      {person.schooling.additionalSchooling.map((sch: any, idx: number) => (
+                        <div key={idx} className="border-l-2 border-primary/20 pl-3 py-0.5" data-testid="additional-schooling-item">
+                          <div className="font-semibold text-sm">{sch.name}</div>
+                          {sch.course && <div className="text-sm text-muted-foreground">{sch.course}</div>}
+                          {(sch.startDate || sch.endDate) && (
+                            <div className="text-xs text-muted-foreground/80 mt-0.5">
+                              {sch.startDate || "\u2014"} - {sch.endDate || "\u2014"}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Empty State Education */}
+                {!person.schooling?.highSchool && 
+                 (!person.schooling?.colleges || person.schooling.colleges.length === 0) && 
+                 (!person.schooling?.additionalSchooling || person.schooling.additionalSchooling.length === 0) && (
+                  <div className="text-sm text-muted-foreground italic pl-7">No educational details recorded.</div>
+                )}
+              </div>
+
+              {/* Career / Jobs Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold flex items-center gap-2 border-b pb-2 text-foreground/80">
+                  <Briefcase className="h-5 w-5 text-primary" />
+                  Career & Employment
+                </h3>
+
+                {person.jobs && person.jobs.length > 0 ? (
+                  <div className="space-y-4 pl-7">
+                    {person.jobs.map((job: any, idx: number) => (
+                      <div key={idx} className="border-l-2 border-primary/20 pl-3 py-0.5" data-testid="job-item">
+                        <div className="font-semibold text-sm">{job.company}</div>
+                        <div className="text-sm text-muted-foreground">{job.position}</div>
+                        {(job.startDate || job.endDate) && (
+                          <div className="text-xs text-muted-foreground/80 mt-0.5">
+                            {job.startDate || "\u2014"} - {job.endDate || "\u2014"}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground italic pl-7">No employment history recorded.</div>
+                )}
+              </div>
+
+            </div>
           </TabsContent>
 
           {showPhotosTab && (
@@ -370,6 +493,11 @@ export default function MeProfile() {
         onOpenChange={setIsEditPersonOpen}
         person={person}
         onDelete={() => navigate("/people")}
+      />
+      <AdditionalInfoDialog
+        open={isEditAdditionalOpen}
+        onOpenChange={setIsEditAdditionalOpen}
+        person={person}
       />
       <input
         ref={photoFileInputRef}

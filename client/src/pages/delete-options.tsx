@@ -238,6 +238,34 @@ export default function DeleteOptionsPage() {
     removeDuplicatesMutation.mutate();
   };
 
+  const removeDuplicateTypesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/maintenance/remove-duplicate-types", {
+        method: "POST",
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to remove duplicate types");
+      }
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Duplicate types cleaned",
+        description: `Removed ${data.deletedRelationshipTypes} relationship type(s) and ${data.deletedInteractionTypes} interaction type(s).`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/relationship-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/interaction-types"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Cleanup Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="mb-6">
@@ -273,6 +301,33 @@ export default function DeleteOptionsPage() {
                 data-testid="button-remove-duplicate-social-accounts"
               >
                 {removeDuplicatesMutation.isPending ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 text-orange-500" />
+                    Remove Duplicates
+                  </>
+                )}
+              </Button>
+            </div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border bg-card">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm">Remove Duplicate Types</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Merges relationship and interaction types sharing the same name. Keeps the oldest type and reassigns all references.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => removeDuplicateTypesMutation.mutate()}
+                disabled={removeDuplicateTypesMutation.isPending}
+                className="border-orange-500/50 hover:bg-orange-500/10 hover:text-orange-500 shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-remove-duplicate-types"
+              >
+                {removeDuplicateTypesMutation.isPending ? (
                   <>
                     <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
                     Processing...

@@ -642,7 +642,10 @@ export function registerRoutes(app: Express) {
         }
 
         await db.update(photos)
-          .set({ facialIds })
+          .set({
+            facialIds,
+            faceIdAt: new Date(),
+          })
           .where(eq(photos.id, photoId));
 
         let description = "";
