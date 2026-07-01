@@ -191,6 +191,7 @@ export function GlobalSearch() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [preferences, setPreferences] = useState<SearchPreferences>(loadPreferences);
+  const [isSuperSearchActive, setIsSuperSearchActive] = useState(false);
   const [, setLocation] = useLocation();
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -259,6 +260,7 @@ export function GlobalSearch() {
     setLocation(path);
     setSearchQuery("");
     setIsOpen(false);
+    setIsSuperSearchActive(false);
   };
 
   const totalResults =
@@ -555,15 +557,20 @@ export function GlobalSearch() {
         <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
         <Input
           type="search"
-          placeholder="Search..."
-          className={`pl-9 ${isSuperSearchReady ? "pr-20" : "pr-10"}`}
+          placeholder={isSuperSearchActive ? "Super Search..." : "Search..."}
+          className={`pl-9 transition-all duration-300 ${isSuperSearchReady ? "pr-20" : "pr-10"} ${
+            isSuperSearchActive
+              ? "border-red-500 focus-visible:ring-red-500 shadow-[0_0_10px_2px_rgba(239,68,68,0.3)] focus:shadow-[0_0_12px_3px_rgba(239,68,68,0.5)] dark:border-red-500/80 dark:focus-visible:ring-red-500 dark:shadow-[0_0_12px_rgba(239,68,68,0.4)]"
+              : ""
+          }`}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => searchQuery.length > 0 && setIsOpen(true)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && searchQuery.trim()) {
-              if (isSuperSearchReady) {
+              if (isSuperSearchActive && isSuperSearchReady) {
                 setIsOpen(false);
+                setIsSuperSearchActive(false);
                 setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
               }
             }
@@ -577,14 +584,13 @@ export function GlobalSearch() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950"
+                  className={`h-7 w-7 transition-colors ${
+                    isSuperSearchActive
+                      ? "text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/50 bg-red-50 dark:bg-red-950/30"
+                      : "text-blue-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950"
+                  }`}
                   onClick={() => {
-                    if (searchQuery.trim()) {
-                      setIsOpen(false);
-                      setLocation(`/super-search?q=${encodeURIComponent(searchQuery.trim())}`);
-                    } else {
-                      setLocation("/super-search");
-                    }
+                    setIsSuperSearchActive(!isSuperSearchActive);
                   }}
                   data-testid="btn-super-search"
                 >
@@ -592,7 +598,11 @@ export function GlobalSearch() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Super Search — AI-powered semantic search</p>
+                <p>
+                  {isSuperSearchActive
+                    ? "Disable Super Search (AI-powered)"
+                    : "Super Search — AI-powered semantic search"}
+                </p>
               </TooltipContent>
             </Tooltip>
           )}

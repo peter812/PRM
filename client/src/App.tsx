@@ -22,7 +22,7 @@ import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { Button } from "@/components/ui/button";
-import { Settings, LogOut } from "lucide-react";
+import { Settings, LogOut, Home } from "lucide-react";
 import PeopleList from "@/pages/people-list";
 import PersonProfile from "@/pages/person-profile";
 import MeProfile from "@/pages/me-profile";
@@ -37,7 +37,7 @@ import SocialGraph3D from "@/pages/social-graph-3d";
 import AuthPage from "@/pages/auth-page";
 import AuthDirectPage from "@/pages/auth-direct";
 import WelcomePage from "@/pages/welcome-page";
-import SettingsLayout from "@/pages/settings-layout";
+import SettingsLayout, { SettingsSidebar } from "@/pages/settings-layout";
 import EloRanking from "@/pages/elo-ranking";
 import GuessTheSex from "@/pages/guess-the-sex";
 import AccountMatching from "@/pages/account-matching";
@@ -169,6 +169,17 @@ function AppLayout() {
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");
 
+  const [lastNonSettingsPath, setLastNonSettingsPath] = useState(() => {
+    return localStorage.getItem("lastNonSettingsPath") || "/home";
+  });
+
+  useEffect(() => {
+    if (!isSettingsPage && !isAuthPage && !isWelcomePage) {
+      localStorage.setItem("lastNonSettingsPath", location);
+      setLastNonSettingsPath(location);
+    }
+  }, [location, isSettingsPage, isAuthPage, isWelcomePage]);
+
   // Check if setup is needed
   const { data: setupStatus } = useQuery<{ isSetupNeeded: boolean }>({
     queryKey: ["/api/setup/status"],
@@ -185,14 +196,14 @@ function AppLayout() {
     return <Redirect to="/welcome" />;
   }
 
-  if (isAuthPage || isWelcomePage || isSettingsPage) {
+  if (isAuthPage || isWelcomePage) {
     return <Router />;
   }
 
   return (
     <SidebarProvider style={style as React.CSSProperties}>
       <div className="flex h-screen w-full">
-        <AppSidebar />
+        {isSettingsPage ? <SettingsSidebar /> : <AppSidebar />}
         <div className="flex flex-col flex-1 overflow-hidden">
           <header className="flex items-center gap-3 px-3 py-2 border-b">
             <div className="flex items-center gap-2 min-w-0 shrink-0">
@@ -219,15 +230,27 @@ function AppLayout() {
                     onAddPhoto={() => setIsAddPhotoDialogOpen(true)}
                   />
                   <div className="hidden md:flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => navigate("/settings")}
-                      data-testid="header-button-settings"
-                    >
-                      <Settings className="h-4 w-4" />
-                    </Button>
+                    {isSettingsPage ? (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => navigate(lastNonSettingsPath)}
+                        data-testid="header-button-home"
+                      >
+                        <Home className="h-4 w-4" />
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => navigate("/settings")}
+                        data-testid="header-button-settings"
+                      >
+                        <Settings className="h-4 w-4" />
+                      </Button>
+                    )}
                     <ThemeToggle />
                     <Button
                       variant="ghost"

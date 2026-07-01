@@ -39,6 +39,7 @@ import ImageStorageSettingsPage from "@/pages/image-storage-settings";
 import ImageTablePage from "@/pages/image-table-page";
 import ImageTasksSettingsPage from "@/pages/image-tasks-settings";
 import RecognitionSettingsPage from "@/pages/recognition-settings";
+import RecognitionImagesPage from "@/pages/recognition-images";
 import RecognitionFacesPage from "@/pages/recognition-faces";
 import SocialGraphSettingsPage from "@/pages/social-graph-settings";
 import IntelligenceSettingsPage from "@/pages/intelligence-settings";
@@ -60,115 +61,116 @@ interface MenuItem {
 const settingsMenuItems: MenuItem[] = [
   {
     title: "Back to Site",
-    url: "~/people",
+    url: "/people",
     icon: ArrowLeft,
   },
   {
     title: "User Options",
-    url: "/user",
+    url: "/settings/user",
     icon: User,
   },
   {
     title: "App Options",
-    url: "/app",
+    url: "/settings/app",
     icon: Settings,
     subItems: [
-      { title: "Social Graph", url: "/social-graph", icon: Network },
-      { title: "Chrome Extension", url: "/chrome-extension", icon: Chrome },
-      { title: "API Settings", url: "/api-settings", icon: Key },
-      { title: "Experimental Features", url: "/experimental", icon: Sparkles },
+      { title: "Social Graph", url: "/settings/social-graph", icon: Network },
+      { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
+      { title: "API Settings", url: "/settings/api-settings", icon: Key },
+      { title: "Experimental Features", url: "/settings/experimental", icon: Sparkles },
     ],
   },
   {
     title: "Data Types",
-    url: "/data-types",
+    url: "/settings/data-types",
     icon: Layers,
   },
   {
     title: "Image Storage",
-    url: "/image-storage",
+    url: "/settings/image-storage",
     icon: HardDrive,
     subItems: [
-      { title: "Storage", url: "/image-storage", icon: HardDrive },
-      { title: "Image Table", url: "/image-storage/table", icon: Table2 },
+      { title: "Storage", url: "/settings/image-storage", icon: HardDrive },
+      { title: "Image Table", url: "/settings/image-storage/table", icon: Table2 },
     ],
   },
   {
     title: "Intelligence",
-    url: "/intelligence",
+    url: "/settings/intelligence",
     icon: BrainCircuit,
     subItems: [
-      { title: "Tools", url: "/intelligence/tools", icon: Wrench },
-      { title: "External Tools", url: "/intelligence/external-tools", icon: Plug },
-      { title: "Images", url: "/intelligence/images", icon: ImageIcon },
-      { title: "Family Tree", url: "/intelligence/family-tree", icon: Network },
-      { title: "Vector Storage", url: "/vector", icon: Database },
+      { title: "Tools", url: "/settings/intelligence/tools", icon: Wrench },
+      { title: "External Tools", url: "/settings/intelligence/external-tools", icon: Plug },
+      { title: "Images", url: "/settings/intelligence/images", icon: ImageIcon },
+      { title: "Family Tree", url: "/settings/intelligence/family-tree", icon: Network },
+      { title: "Vector Storage", url: "/settings/vector", icon: Database },
     ],
   },
   {
     title: "Tasks",
-    url: "/tasks",
+    url: "/settings/tasks",
     icon: ListTodo,
     subItems: [
-      { title: "Image Tasks", url: "/image-storage/tasks", icon: ImageIcon },
+      { title: "Image Tasks", url: "/settings/image-storage/tasks", icon: ImageIcon },
     ],
   },
   {
     title: "Import & Export",
-    url: "/import-export",
+    url: "/settings/import-export",
     icon: FolderSync,
     subItems: [
-      { title: "Contacts", url: "/import-export/contacts", icon: Users },
-      { title: "Social Media", url: "/import-export/social-media", icon: Share2 },
-      { title: "Application Data", url: "/import-export/application", icon: Database },
-      { title: "Image Pass In", url: "/import-export/image-pass-in", icon: ImageIcon },
-      { title: "Instagram XML Transfer", url: "/import-export/instagram-xml", icon: Camera },
+      { title: "Contacts", url: "/settings/import-export/contacts", icon: Users },
+      { title: "Social Media", url: "/settings/import-export/social-media", icon: Share2 },
+      { title: "Application Data", url: "/settings/import-export/application", icon: Database },
+      { title: "Image Pass In", url: "/settings/import-export/image-pass-in", icon: ImageIcon },
+      { title: "Instagram XML Transfer", url: "/settings/import-export/instagram-xml", icon: Camera },
     ],
   },
   {
     title: "Recognition",
-    url: "/recognition",
+    url: "/settings/recognition",
     icon: Scan,
     subItems: [
-      { title: "Faces", url: "/recognition/faces", icon: ScanFace },
+      { title: "Images", url: "/settings/recognition/images", icon: ImageIcon },
+      { title: "Faces", url: "/settings/recognition/faces", icon: ScanFace },
     ],
   },
   {
     title: "API Documentation",
-    url: "/api",
+    url: "/settings/api",
     icon: Book,
   },
   {
     title: "Delete Options",
-    url: "/delete",
+    url: "/settings/delete",
     icon: Trash2,
   },
 ];
 
-function SettingsSidebar() {
+export function SettingsSidebar() {
   const [location] = useLocation();
 
-  const isDataTypesActive = location.startsWith("/data-types");
-  const isImportExportActive = location.startsWith("/import-export") || location === "/instagram";
-  const isRecognitionActive = location.startsWith("/recognition");
+  const isDataTypesActive = location.startsWith("/settings/data-types");
+  const isImportExportActive = location.startsWith("/settings/import-export") || location === "/settings/instagram";
+  const isRecognitionActive = location.startsWith("/settings/recognition");
   const isAppOptionsActive =
-    location.startsWith("/app") ||
-    location.startsWith("/social-graph") ||
-    location === "/chrome-extension" ||
-    location === "/api-settings" ||
-    location === "/experimental";
-  const isImageStorageActive = location.startsWith("/image-storage") && location !== "/image-storage/tasks";
-  const isIntelligenceActive = location.startsWith("/intelligence") || location === "/vector";
-  const isTasksActive = location.startsWith("/tasks") || location === "/image-tasks" || location === "/image-storage/tasks";
+    location.startsWith("/settings/app") ||
+    location.startsWith("/settings/social-graph") ||
+    location === "/settings/chrome-extension" ||
+    location === "/settings/api-settings" ||
+    location === "/settings/experimental";
+  const isImageStorageActive = location.startsWith("/settings/image-storage") && location !== "/settings/image-storage/tasks";
+  const isIntelligenceActive = location.startsWith("/settings/intelligence") || location === "/settings/vector";
+  const isTasksActive = location.startsWith("/settings/tasks") || location === "/settings/image-tasks" || location === "/settings/image-storage/tasks";
 
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
-      case "/data-types": return isDataTypesActive;
-      case "/recognition": return isRecognitionActive;
-      case "/app": return isAppOptionsActive;
-      case "/image-storage": return isImageStorageActive;
-      case "/intelligence": return isIntelligenceActive;
-      case "/tasks": return isTasksActive;
+      case "/settings/data-types": return isDataTypesActive;
+      case "/settings/recognition": return isRecognitionActive;
+      case "/settings/app": return isAppOptionsActive;
+      case "/settings/image-storage": return isImageStorageActive;
+      case "/settings/intelligence": return isIntelligenceActive;
+      case "/settings/tasks": return isTasksActive;
       default: return isImportExportActive;
     }
   }
@@ -245,57 +247,43 @@ function SettingsSidebar() {
 }
 
 export default function SettingsLayout() {
-  const style = {
-    "--sidebar-width": "16rem",
-    "--sidebar-width-icon": "3rem",
-  };
-
   return (
-    <SidebarProvider style={style as React.CSSProperties}>
-      <div className="flex h-screen w-full">
-        <SettingsSidebar />
-        <div className="flex flex-col flex-1 overflow-hidden">
-          <header className="flex items-center justify-between p-2 border-b">
-            <SidebarTrigger data-testid="button-sidebar-toggle" />
-          </header>
-          <main className="flex-1 overflow-auto">
-            <Switch>
-              <Route path="/" component={() => <Redirect to="/user" />} />
-              <Route path="/user" component={UserOptionsPage} />
-              <Route path="/app" component={AppOptionsPage} />
-              <Route path="/experimental" component={ExperimentalFeaturesPage} />
-              <Route path="/data-types" component={DataTypesPage} />
-              <Route path="/image-tasks" component={ImageTasksSettingsPage} />
-              <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
-              <Route path="/image-storage/table" component={ImageTablePage} />
-              <Route path="/image-storage" component={ImageStorageSettingsPage} />
-              <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
-              <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
-              <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
-              <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
-              <Route path="/intelligence" component={IntelligenceSettingsPage} />
-              <Route path="/vector" component={VectorSettingsPage} />
-              <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />
-              <Route path="/instagram" component={() => <Redirect to="/import-export/instagram-xml" />} />
-              <Route path="/tasks" component={TasksSettingsPage} />
-              <Route path="/task/:id" component={TaskDetailPage} />
-              <Route path="/social-graph" component={SocialGraphSettingsPage} />
-              <Route path="/recognition/faces" component={RecognitionFacesPage} />
-              <Route path="/recognition" component={RecognitionSettingsPage} />
-              <Route path="/import-export/contacts" component={ImportContactsPage} />
-              <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
-              <Route path="/import-export/application" component={ImportExportApplicationPage} />
-              <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
-              <Route path="/import-export" component={ImportExportHome} />
-              <Route path="/api-settings" component={ApiSettingsPage} />
-              <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
-              <Route path="/api" component={ApiDocs} />
-              <Route path="/delete" component={DeleteOptionsPage} />
-              <Route component={NotFound} />
-            </Switch>
-          </main>
-        </div>
-      </div>
-    </SidebarProvider>
+    <div className="flex-1 overflow-auto h-full">
+      <Switch>
+        <Route path="/" component={() => <Redirect to="/user" />} />
+        <Route path="/user" component={UserOptionsPage} />
+        <Route path="/app" component={AppOptionsPage} />
+        <Route path="/experimental" component={ExperimentalFeaturesPage} />
+        <Route path="/data-types" component={DataTypesPage} />
+        <Route path="/image-tasks" component={ImageTasksSettingsPage} />
+        <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
+        <Route path="/image-storage/table" component={ImageTablePage} />
+        <Route path="/image-storage" component={ImageStorageSettingsPage} />
+        <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
+        <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
+        <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
+        <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
+        <Route path="/intelligence" component={IntelligenceSettingsPage} />
+        <Route path="/vector" component={VectorSettingsPage} />
+        <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />
+        <Route path="/instagram" component={() => <Redirect to="/import-export/instagram-xml" />} />
+        <Route path="/tasks" component={TasksSettingsPage} />
+        <Route path="/task/:id" component={TaskDetailPage} />
+        <Route path="/social-graph" component={SocialGraphSettingsPage} />
+        <Route path="/recognition/images" component={RecognitionImagesPage} />
+        <Route path="/recognition/faces" component={RecognitionFacesPage} />
+        <Route path="/recognition" component={RecognitionSettingsPage} />
+        <Route path="/import-export/contacts" component={ImportContactsPage} />
+        <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
+        <Route path="/import-export/application" component={ImportExportApplicationPage} />
+        <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
+        <Route path="/import-export" component={ImportExportHome} />
+        <Route path="/api-settings" component={ApiSettingsPage} />
+        <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
+        <Route path="/api" component={ApiDocs} />
+        <Route path="/delete" component={DeleteOptionsPage} />
+        <Route component={NotFound} />
+      </Switch>
+    </div>
   );
 }
