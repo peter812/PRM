@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -3456,6 +3456,188 @@ Respond with ONLY a JSON array, no other text.`;
         res.json(await response.json());
       } catch (error: any) {
         res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+      }
+    });
+
+    // Disassociate a face from its group (generates a new unique personface_uuid)
+    app.post("/api/prm-face/face/disassociate", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { faceUuid } = req.body;
+      if (!faceUuid) {
+        return res.status(400).json({ error: "faceUuid is required." });
+      }
+
+      try {
+        const [face] = await db.select().from(faces).where(eq(faces.id, faceUuid));
+        if (!face) {
+          return res.status(404).json({ error: "Face not found." });
+        }
+
+        const newGroupUuid = crypto.randomUUID();
+
+        await db.update(faces)
+          .set({ personfaceUuid: newGroupUuid })
+          .where(eq(faces.id, faceUuid));
+
+        if (face.photoId) {
+          const [photo] = await db.select().from(photos).where(eq(photos.id, face.photoId));
+          if (photo && photo.facialIds) {
+            let facialIds = (photo.facialIds as any[]) || [];
+            let updated = false;
+            facialIds = facialIds.map(fid => {
+              if (fid.faceUuid === faceUuid) {
+                updated = true;
+                return {
+                  ...fid,
+                  personId: null,
+                  socialAccountId: null
+                };
+              }
+              return fid;
+            });
+            if (updated) {
+              await db.update(photos)
+                .set({ facialIds })
+                .where(eq(photos.id, face.photoId));
+            }
+          }
+        }
+
+        res.json({ success: true, newGroupUuid });
+      } catch (error: any) {
+        console.error("Error in face/disassociate:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Connect a face group or face to a person or social account
+    app.post("/api/prm-face/face/connect", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { personfaceUuid, faceUuid, personId, socialAccountId } = req.body;
+
+      if (!faceUuid && !personfaceUuid) {
+        return res.status(400).json({ error: "faceUuid or personfaceUuid is required." });
+      }
+
+      try {
+        let targetPersonfaceUuid = personfaceUuid;
+        let resolvedPersonId = personId;
+
+        if (!targetPersonfaceUuid && faceUuid) {
+          const [f] = await db.select().from(faces).where(eq(faces.id, faceUuid));
+          if (f) {
+            targetPersonfaceUuid = f.personfaceUuid;
+            if (!targetPersonfaceUuid) {
+              targetPersonfaceUuid = crypto.randomUUID();
+              await db.update(faces)
+                .set({ personfaceUuid: targetPersonfaceUuid })
+                .where(eq(faces.id, faceUuid));
+            }
+          }
+        }
+
+        if (!targetPersonfaceUuid) {
+          targetPersonfaceUuid = crypto.randomUUID();
+        }
+
+        if (socialAccountId && !resolvedPersonId) {
+          const [sa] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, socialAccountId));
+          if (sa) {
+            if (sa.ownerUuid) {
+              resolvedPersonId = sa.ownerUuid;
+            } else {
+              const nameParts = sa.username.trim().split(/\s+/);
+              const firstName = nameParts[0] || "Social";
+              const lastName = nameParts.slice(1).join(" ") || "User";
+              
+              const [newPerson] = await db.insert(people).values({
+                firstName,
+                lastName,
+                userId: req.user?.id || null,
+              }).returning();
+              
+              resolvedPersonId = newPerson.id;
+              
+              await db.update(socialAccounts)
+                .set({ ownerUuid: resolvedPersonId })
+                .where(eq(socialAccounts.id, socialAccountId));
+            }
+          }
+        }
+
+        if (!resolvedPersonId) {
+          return res.status(400).json({ error: "Could not resolve personId." });
+        }
+
+        await db.update(people)
+          .set({ personfaceUuid: targetPersonfaceUuid })
+          .where(eq(people.id, resolvedPersonId));
+
+        if (faceUuid) {
+          await db.update(faces)
+            .set({ personfaceUuid: targetPersonfaceUuid })
+            .where(eq(faces.id, faceUuid));
+        }
+
+        const groupFaces = await db.select().from(faces).where(eq(faces.personfaceUuid, targetPersonfaceUuid));
+        for (const gf of groupFaces) {
+          if (gf.photoId) {
+            const [photo] = await db.select().from(photos).where(eq(photos.id, gf.photoId));
+            if (photo && photo.facialIds) {
+              let facialIds = (photo.facialIds as any[]) || [];
+              let updated = false;
+              facialIds = facialIds.map(fid => {
+                if (fid.faceUuid === gf.id) {
+                  updated = true;
+                  return {
+                    ...fid,
+                    personId: resolvedPersonId,
+                    socialAccountId: socialAccountId || fid.socialAccountId || null,
+                  };
+                }
+                return fid;
+              });
+              if (updated) {
+                await db.update(photos)
+                  .set({ facialIds })
+                  .where(eq(photos.id, gf.photoId));
+              }
+            }
+          }
+        }
+
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+        if (apiUrl && apiKey) {
+          const [p] = await db.select().from(people).where(eq(people.id, resolvedPersonId));
+          const displayName = p ? `${p.firstName} ${p.lastName}` : "User";
+
+          for (const gf of groupFaces) {
+            try {
+              const params = new URLSearchParams();
+              params.append("face_uuid", gf.id);
+              params.append("person_uuid", resolvedPersonId);
+              params.append("name", displayName);
+
+              await fetch(`${prmBase(apiUrl)}/api/face/assign`, {
+                method: "POST",
+                headers: {
+                  "x-api-key": apiKey,
+                  "Content-Type": "application/x-www-form-urlencoded"
+                },
+                body: params.toString(),
+                signal: AbortSignal.timeout(5000),
+              });
+            } catch (err: any) {
+              console.warn(`[PRM-Face] failed to assign face ${gf.id}:`, err.message);
+            }
+          }
+        }
+
+        res.json({ success: true, personId: resolvedPersonId, personfaceUuid: targetPersonfaceUuid });
+      } catch (error: any) {
+        console.error("Error in face/connect:", error);
+        res.status(500).json({ error: error.message });
       }
     });
 

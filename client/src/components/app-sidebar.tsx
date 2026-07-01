@@ -172,6 +172,10 @@ export function AppSidebar() {
     queryKey: ["/api/image-questions/pending"],
   });
 
+  const { data: gitData } = useQuery<{ branch: string }>({
+    queryKey: ["/api/git/branch"],
+  });
+
   const displayedMenuItems = useMemo(() => {
     if (demosEnabled) return menuItems;
     return menuItems.filter(item => item.title !== "Demos");
@@ -222,7 +226,15 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>PRM 2.0</SidebarGroupLabel>
+          <SidebarGroupLabel className="flex items-center gap-2">
+            <span>PRM 2.0</span>
+            {gitData?.branch && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-primary/10 text-primary px-1.5 py-0.5 text-[10px] font-mono font-semibold tracking-wider uppercase border border-primary/20">
+                <GitBranch className="h-2.5 w-2.5" />
+                {gitData.branch}
+              </span>
+            )}
+          </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {displayedMenuItems.map((item) => {

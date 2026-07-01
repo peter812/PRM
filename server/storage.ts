@@ -432,7 +432,7 @@ export interface IStorage {
   insertPhoto(photo: InsertPhoto): Promise<Photo>;
   getPhotoById(id: string): Promise<Photo | undefined>;
   getPhotoByLocation(location: string): Promise<Photo | undefined>;
-  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<{ items: Photo[]; total: number }>;
+  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean }): Promise<{ items: Photo[]; total: number }>;
   updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
   updatePhotoMeta(id: string, data: Partial<Pick<Photo, 'fileHash' | 'widthPx' | 'heightPx' | 'metadata' | 'imageDescription' | 'imageDescriptionAt' | 'faceUuids' | 'faceIdAt' | 'processedAt'>>): Promise<void>;
   getPhotoByHash(fileHash: string): Promise<Photo | undefined>;
@@ -3684,10 +3684,19 @@ export class DatabaseStorage implements IStorage {
     return photo || undefined;
   }
 
-  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number } = {}): Promise<{ items: Photo[]; total: number }> {
-    const { prmLocationPrefix, limit = 100, offset = 0 } = options;
-    const whereCondition = prmLocationPrefix
-      ? sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`
+  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean } = {}): Promise<{ items: Photo[]; total: number }> {
+    const { prmLocationPrefix, limit = 100, offset = 0, excludeSubImages } = options;
+    
+    const conditions = [];
+    if (prmLocationPrefix) {
+      conditions.push(sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`);
+    }
+    if (excludeSubImages) {
+      conditions.push(eq(photos.isSubImage, false));
+    }
+
+    const whereCondition = conditions.length > 0
+      ? and(...conditions)
       : undefined;
 
     const [items, countResult] = await Promise.all([

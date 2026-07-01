@@ -1786,7 +1786,8 @@ export function registerRoutes(app: Express) {
         const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string) || 100));
         const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
         const prmLocationPrefix = req.query.prmLocation as string | undefined;
-        const result = await storage.listPhotos({ prmLocationPrefix, limit, offset });
+        const excludeSubImages = req.query.excludeSubImages === "true";
+        const result = await storage.listPhotos({ prmLocationPrefix, limit, offset, excludeSubImages });
         res.json(result);
       } catch (error) {
         console.error("Error listing photos:", error);
