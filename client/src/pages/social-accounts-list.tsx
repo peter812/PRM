@@ -175,7 +175,7 @@ export default function SocialAccountsList() {
           <Button onClick={() => setIsAddDialogOpen(true)} size="icon" className="md:hidden shrink-0" data-testid="button-add-account-mobile">
             <Plus className="h-4 w-4" />
           </Button>
-          <div className="hidden md:block flex-1 min-w-[200px] max-w-md">
+          <div className="hidden md:block min-w-[200px] max-w-md">
             <Input
               placeholder="Search accounts..."
               value={searchQuery}
@@ -184,7 +184,7 @@ export default function SocialAccountsList() {
             />
           </div>
           <Select value={selectedTypeId || "all"} onValueChange={handleTypeChange}>
-            <SelectTrigger className="w-[140px] md:w-[180px] shrink-0" data-testid="select-type-filter">
+            <SelectTrigger className="w-[140px] md:w-[180px] shrink-0 md:ml-auto" data-testid="select-type-filter">
               <SelectValue placeholder="All Types" />
             </SelectTrigger>
             <SelectContent>

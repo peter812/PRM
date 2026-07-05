@@ -54,6 +54,8 @@ export function FamilyMemberDialog({
   onSuccess,
 }: FamilyMemberDialogProps) {
   const isEdit = !!connection;
+  const isCoupleId = personId?.startsWith("couple-");
+  const couplePersonIds = isCoupleId ? personId.replace(/^couple-/, "").split(":").filter(Boolean) : [];
   const { toast } = useToast();
   const [mode, setMode] = useState<"link" | "create">("link");
   const [searchTerm, setSearchTerm] = useState("");
@@ -78,7 +80,7 @@ export function FamilyMemberDialog({
 
   const { data: familyData } = useQuery<{ parents: any[]; children: any[] }>({
     queryKey: [`/api/people/${personId}/family`],
-    enabled: open && !!personId,
+    enabled: open && !!personId && !isCoupleId,
   });
 
   useEffect(() => {
@@ -109,7 +111,9 @@ export function FamilyMemberDialog({
         setSelectedPersonId(null);
         
         let defaultConnType: "parent" | "spouse" | "child" | "sibling" = "parent";
-        if (suggestedRole) {
+        if (isCoupleId) {
+          defaultConnType = "child";
+        } else if (suggestedRole) {
           const role = suggestedRole.toLowerCase();
           if (role.includes("spouse") || role.includes("partner") || role.includes("husband") || role.includes("wife")) {
             defaultConnType = "spouse";
@@ -129,14 +133,18 @@ export function FamilyMemberDialog({
         setNewPersonSex("unknown");
       }
     }
-  }, [open, isEdit, connection, suggestedRole]);
+  }, [open, isEdit, connection, suggestedRole, isCoupleId]);
 
   const filteredPeople = searchTerm.trim()
     ? people.filter((p) => {
         const fullName = `${p.firstName} ${p.lastName}`.toLowerCase();
-        return fullName.includes(searchTerm.toLowerCase()) && p.id !== personId;
+        return (
+          fullName.includes(searchTerm.toLowerCase()) &&
+          p.id !== personId &&
+          !couplePersonIds.includes(p.id)
+        );
       })
-    : people.filter((p) => p.id !== personId);
+    : people.filter((p) => p.id !== personId && !couplePersonIds.includes(p.id));
 
   const createPersonMutation = useMutation({
     mutationFn: async (data: { firstName: string; lastName: string; sex: string }) => {
@@ -180,11 +188,21 @@ export function FamilyMemberDialog({
             lineageType,
           });
         } else if (connectionType === "child") {
-          await apiRequest("POST", "/api/family/lineage", {
-            childId: targetPersonId,
-            parentId: personId,
-            lineageType,
-          });
+          if (isCoupleId) {
+            for (const pId of couplePersonIds) {
+              await apiRequest("POST", "/api/family/lineage", {
+                childId: targetPersonId,
+                parentId: pId,
+                lineageType,
+              });
+            }
+          } else {
+            await apiRequest("POST", "/api/family/lineage", {
+              childId: targetPersonId,
+              parentId: personId,
+              lineageType,
+            });
+          }
         } else if (connectionType === "sibling") {
           // Link targetPersonId to existing parents of personId
           if (familyData?.parents && familyData.parents.length > 0) {
@@ -237,8 +255,15 @@ export function FamilyMemberDialog({
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
-      queryClient.invalidateQueries({ queryKey: [`/api/people/${personId}/family`] });
+      if (isCoupleId) {
+        for (const pId of couplePersonIds) {
+          queryClient.invalidateQueries({ queryKey: ["/api/people", pId] });
+          queryClient.invalidateQueries({ queryKey: [`/api/people/${pId}/family`] });
+        }
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
+        queryClient.invalidateQueries({ queryKey: [`/api/people/${personId}/family`] });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/family-tree"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       toast({
@@ -270,7 +295,7 @@ export function FamilyMemberDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Edit Family Connection" : "Add Family Member"}</DialogTitle>
+          <DialogTitle>{isEdit ? "Edit Family Connection" : isCoupleId ? "Add Child to Couple" : "Add Family Member"}</DialogTitle>
           {!isEdit && personName && (
             <p className="text-sm text-muted-foreground">
               Add a family member connection for <span className="font-medium">{personName}</span>
@@ -280,23 +305,25 @@ export function FamilyMemberDialog({
 
         {!isEdit && (
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Connection Type</Label>
-              <Select
-                value={connectionType}
-                onValueChange={(val) => setConnectionType(val as any)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="parent">Parent</SelectItem>
-                  <SelectItem value="spouse">Spouse / Partner</SelectItem>
-                  <SelectItem value="child">Child</SelectItem>
-                  <SelectItem value="sibling">Sibling</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {!isCoupleId && (
+              <div className="space-y-2">
+                <Label>Connection Type</Label>
+                <Select
+                  value={connectionType}
+                  onValueChange={(val) => setConnectionType(val as any)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="parent">Parent</SelectItem>
+                    <SelectItem value="spouse">Spouse / Partner</SelectItem>
+                    <SelectItem value="child">Child</SelectItem>
+                    <SelectItem value="sibling">Sibling</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             <RadioGroup
               value={mode}

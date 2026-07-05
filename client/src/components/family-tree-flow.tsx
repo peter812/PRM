@@ -1019,7 +1019,7 @@ interface FamilyTreeFlowInnerProps {
   onPersonDoubleClick?: (personId: string) => void;
   onPersonContextMenu?: (personId: string, x: number, y: number) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
-  onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
+  onConnectPersons?: (sourcePersonId: string, targetPersonId: string, defaultType?: string) => void;
   /** Fired when the user drags from a couple group's bottom handle to a real person node.
    *  The dev page uses this to add the target as a child of both spouses in the group. */
   onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
@@ -1104,7 +1104,40 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
     }, [data.rootPersonId]);
 
     const onNodesChange = useCallback(
-      (changes: NodeChange[]) => setNodes((nds) => applyNodeChanges(changes, nds)),
+      (changes: NodeChange[]) => {
+        setNodes((nds) => {
+          const updatedChanges = changes.map((change) => {
+            if (change.type === "position" && change.position) {
+              const node = nds.find((n) => n.id === change.id);
+              if (node && node.parentId) {
+                const parentNode = nds.find((n) => n.id === node.parentId);
+                if (parentNode) {
+                  const dx = change.position.x - node.position.x;
+                  const dy = change.position.y - node.position.y;
+                  return {
+                    ...change,
+                    id: node.parentId,
+                    position: {
+                      x: parentNode.position.x + dx,
+                      y: parentNode.position.y + dy,
+                    },
+                    ...(change.positionAbsolute
+                      ? {
+                          positionAbsolute: {
+                            x: parentNode.position.x + dx,
+                            y: parentNode.position.y + dy,
+                          },
+                        }
+                      : {}),
+                  };
+                }
+              }
+            }
+            return change;
+          });
+          return applyNodeChanges(updatedChanges, nds);
+        });
+      },
       [],
     );
 
@@ -1155,7 +1188,7 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
       (_event: MouseEvent | TouchEvent, connectionState: { isValid: boolean | null }) => {
         if (!onDragEndNoTarget || !connectingNodeId.current) return;
         // If connection was not successfully completed (i.e. didn't land on a valid target)
-        if (!connectionState.isValid && isRealPersonId(connectingNodeId.current)) {
+        if (!connectionState.isValid && (isRealPersonId(connectingNodeId.current) || isCoupleGroupId(connectingNodeId.current))) {
           onDragEndNoTarget(connectingNodeId.current, connectingHandleId.current);
         }
         connectingNodeId.current = null;
@@ -1185,7 +1218,22 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         if (!onConnectPersons) return;
         // Only allow drawing person-to-person relationships between real people.
         if (!isRealPersonId(connection.source) || !isRealPersonId(connection.target)) return;
-        onConnectPersons(connection.source, connection.target);
+
+        let src = connection.source;
+        let tgt = connection.target;
+        let defaultType: string | undefined = undefined;
+
+        if (connection.sourceHandle === "top-source" && connection.targetHandle === "bottom-target") {
+          // Dragged top of child to bottom of parent -> parent-to-child A -> C
+          src = connection.target;
+          tgt = connection.source;
+          defaultType = "parent";
+        } else if (connection.sourceHandle === "bottom" && connection.targetHandle === "top") {
+          // Dragged bottom of parent to top of child -> parent-to-child A -> C
+          defaultType = "parent";
+        }
+
+        onConnectPersons(src, tgt, defaultType);
       },
       [onConnectPersons, onConnectGroupChild],
     );
@@ -1228,7 +1276,7 @@ interface FamilyTreeFlowProps {
   onPersonDoubleClick?: (personId: string) => void;
   onPersonContextMenu?: (personId: string, x: number, y: number) => void;
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void;
-  onConnectPersons?: (sourcePersonId: string, targetPersonId: string) => void;
+  onConnectPersons?: (sourcePersonId: string, targetPersonId: string, defaultType?: string) => void;
   onConnectGroupChild?: (groupId: string, targetPersonId: string) => void;
   onDragEndNoTarget?: (sourcePersonId: string, handleId: string | null) => void;
   onDeleteEdge?: (edgeId: string) => void;

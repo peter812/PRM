@@ -514,6 +514,8 @@ export default function AiChatDemoPage() {
       old ? { ...old, messages: trimmed } : old
     );
 
+    setEditingPrompt(null);
+
     setIsStreaming(true);
     setStreamingContent("");
     setStreamingToolCalls([]);
@@ -521,7 +523,6 @@ export default function AiChatDemoPage() {
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       await runStream(activeChatId, `/api/ai-chats/${activeChatId}/regenerate/stream`, payload);
-      setEditingPrompt(null);
     } catch (err: any) {
       // Revert the optimistic trim on error so the user doesn't lose their history.
       if (currentChat) queryClient.setQueryData(["/api/ai-chats", activeChatId], currentChat);
@@ -824,14 +825,25 @@ export default function AiChatDemoPage() {
                         <MarkdownMessage content={m.content} />
                         {m.links && m.links.length > 0 && (
                           <div className="mt-3 pt-2 border-t border-muted-foreground/10 flex flex-wrap gap-2" data-testid={`message-links-${i}`}>
-                            {m.links.map((link, linkIdx) => (
-                              <Link key={linkIdx} to={link.url}>
-                                <a className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs font-medium transition-colors border shadow-sm cursor-pointer">
+                            {m.links.map((link, linkIdx) => {
+                              const isExternal = /^(https?:)?\/\//i.test(link.url);
+                              const className = "inline-flex items-center gap-1 px-2.5 py-1 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs font-medium transition-colors border shadow-sm cursor-pointer";
+                              const content = (
+                                <>
                                   <Link2 className="h-3 w-3 text-indigo-500" />
                                   {link.title}
+                                </>
+                              );
+                              return isExternal ? (
+                                <a key={linkIdx} href={link.url} target="_blank" rel="noopener noreferrer" className={className}>
+                                  {content}
                                 </a>
-                              </Link>
-                            ))}
+                              ) : (
+                                <Link key={linkIdx} to={link.url}>
+                                  <a className={className}>{content}</a>
+                                </Link>
+                              );
+                            })}
                           </div>
                         )}
                       </>

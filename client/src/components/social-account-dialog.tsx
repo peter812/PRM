@@ -50,6 +50,7 @@ interface SocialAccountDialogProps {
   onOpenChange: (open: boolean) => void;
   account?: SocialAccountWithCurrentProfile;
   onAccountCreated?: (account: SocialAccount) => void;
+  groupId?: string | null;
 }
 
 export function SocialAccountDialog({
@@ -57,6 +58,7 @@ export function SocialAccountDialog({
   onOpenChange,
   account,
   onAccountCreated,
+  groupId,
 }: SocialAccountDialogProps) {
   const isEdit = !!account;
   const { toast } = useToast();
@@ -76,6 +78,7 @@ export function SocialAccountDialog({
       nickname: "",
       accountUrl: "",
       ownerUuid: null,
+      groupId: groupId || null,
       imageUrl: null,
       following: [],
       followers: [],
@@ -95,6 +98,7 @@ export function SocialAccountDialog({
           nickname: account.currentProfile?.nickname || "",
           accountUrl: account.currentProfile?.accountUrl || "",
           ownerUuid: account.ownerUuid || null,
+          groupId: (account as any).groupId || null,
           imageUrl: account.currentProfile?.imageUrl || null,
           typeId: account.typeId || null,
           following: [],
@@ -109,6 +113,7 @@ export function SocialAccountDialog({
           nickname: "",
           accountUrl: "",
           ownerUuid: null,
+          groupId: groupId || null,
           imageUrl: null,
           following: [],
           followers: [],
@@ -163,6 +168,7 @@ export function SocialAccountDialog({
           accountUrl: data.accountUrl,
           imageUrl: imageUrl || null,
           typeId: selectedTypeId && selectedTypeId !== "none" ? selectedTypeId : null,
+          groupId: (data as any).groupId || null,
         });
       } else {
         const res = await apiRequest("POST", "/api/social-accounts", {

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { useMutation } from "@tanstack/react-query";
 import { AddNoteDialog } from "@/components/add-note-dialog";
 import { InteractionDialog } from "@/components/interaction-dialog";
 import { PersonDialog } from "@/components/person-dialog";
+import { AdditionalInfoDialog } from "@/components/additional-info-dialog";
 import { RelationshipDialog } from "@/components/relationship-dialog";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
@@ -27,7 +28,6 @@ import { PersonPhotosTab } from "@/components/person-photos-tab";
 import { FamilyTreeTab } from "@/components/family-tree-tab";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { FamilyTab } from "@/components/family-tab";
 import { getInitials } from "@/lib/utils";
 import { MessagesTab } from "@/components/messages-tab";
 
@@ -38,6 +38,7 @@ export default function PersonProfile() {
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
+  const [isEditAdditionalOpen, setIsEditAdditionalOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
   const [isAddSocialAccountOpen, setIsAddSocialAccountOpen] = useState(false);
   const [isAccountInfoOpen, setIsAccountInfoOpen] = useState(false);
@@ -200,6 +201,11 @@ export default function PersonProfile() {
               <div>
                 <h1 className="text-3xl font-semibold mb-1" data-testid="text-person-name">
                   {person.firstName} {person.lastName}
+                  {person.maidenName && (
+                    <span className="text-muted-foreground font-normal text-xl ml-2">
+                      (née {person.maidenName})
+                    </span>
+                  )}
                 </h1>
                 {(person.company || person.title) && (
                   <div className="flex items-center gap-1 text-lg text-muted-foreground">
@@ -273,6 +279,15 @@ export default function PersonProfile() {
                   </TooltipTrigger>
                   <TooltipContent>Account info</TooltipContent>
                 </Tooltip>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsEditAdditionalOpen(true)}
+                  data-testid="button-edit-additional-info"
+                  className="flex items-center gap-1"
+                >
+                  <GraduationCap className="h-4 w-4" />
+                  Edit Education & Career
+                </Button>
                 <Button
                   variant="outline"
                   onClick={() => setIsEditPersonOpen(true)}
@@ -355,13 +370,6 @@ export default function PersonProfile() {
               Relationships
             </TabsTrigger>
             <TabsTrigger
-              value="family"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-family"
-            >
-              Family
-            </TabsTrigger>
-            <TabsTrigger
               value="tree"
               className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
               data-testid="tab-tree"
@@ -381,6 +389,13 @@ export default function PersonProfile() {
               data-testid="tab-messages"
             >
               Messages
+            </TabsTrigger>
+            <TabsTrigger
+              value="education-career"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-education-career"
+            >
+              Education & Career
             </TabsTrigger>
             {showPhotosTab && (
               <TabsTrigger
@@ -414,12 +429,7 @@ export default function PersonProfile() {
             />
           </TabsContent>
 
-          <TabsContent value="family" className="mt-0 h-full">
-            <FamilyTab
-              personId={person.id}
-              personName={`${person.firstName} ${person.lastName}`.trim()}
-            />
-          </TabsContent>
+
 
           <TabsContent value="tree" className="mt-0 h-full">
             <FamilyTreeTab
@@ -437,6 +447,101 @@ export default function PersonProfile() {
 
           <TabsContent value="messages" className="mt-0 h-full p-6 overflow-auto">
             <MessagesTab personId={person.id} />
+          </TabsContent>
+
+          <TabsContent value="education-career" className="mt-0 h-full p-6 overflow-auto">
+            <div className="max-w-3xl space-y-6">
+              
+              {/* Education Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold flex items-center gap-2 border-b pb-2 text-foreground/80">
+                  <GraduationCap className="h-5 w-5 text-primary" />
+                  Education
+                </h3>
+                
+                {/* High School */}
+                {person.schooling?.highSchool && (
+                  <div className="flex flex-col gap-1 pl-7">
+                    <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">High School</span>
+                    <span className="text-sm font-medium" data-testid="highschool-value">{person.schooling.highSchool}</span>
+                  </div>
+                )}
+
+                {/* Colleges */}
+                {person.schooling?.colleges && person.schooling.colleges.length > 0 ? (
+                  <div className="space-y-3 pl-7">
+                    <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-[10px] block">Colleges & Degrees</span>
+                    <div className="grid gap-3">
+                      {person.schooling.colleges.map((col: any, idx: number) => (
+                        <div key={idx} className="border-l-2 border-primary/20 pl-3 py-0.5" data-testid="college-item">
+                          <div className="font-semibold text-sm">{col.name}</div>
+                          <div className="text-sm text-muted-foreground">{col.degree}</div>
+                          {(col.startDate || col.endDate) && (
+                            <div className="text-xs text-muted-foreground/80 mt-0.5">
+                              {col.startDate || "—"} - {col.endDate || "—"}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Additional Schooling */}
+                {person.schooling?.additionalSchooling && person.schooling.additionalSchooling.length > 0 ? (
+                  <div className="space-y-3 pl-7">
+                    <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-[10px] block">Additional Schooling</span>
+                    <div className="grid gap-3">
+                      {person.schooling.additionalSchooling.map((sch: any, idx: number) => (
+                        <div key={idx} className="border-l-2 border-primary/20 pl-3 py-0.5" data-testid="additional-schooling-item">
+                          <div className="font-semibold text-sm">{sch.name}</div>
+                          {sch.course && <div className="text-sm text-muted-foreground">{sch.course}</div>}
+                          {(sch.startDate || sch.endDate) && (
+                            <div className="text-xs text-muted-foreground/80 mt-0.5">
+                              {sch.startDate || "—"} - {sch.endDate || "—"}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Empty State Education */}
+                {!person.schooling?.highSchool && 
+                 (!person.schooling?.colleges || person.schooling.colleges.length === 0) && 
+                 (!person.schooling?.additionalSchooling || person.schooling.additionalSchooling.length === 0) && (
+                  <div className="text-sm text-muted-foreground italic pl-7">No educational details recorded.</div>
+                )}
+              </div>
+
+              {/* Career / Jobs Section */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold flex items-center gap-2 border-b pb-2 text-foreground/80">
+                  <Briefcase className="h-5 w-5 text-primary" />
+                  Career & Employment
+                </h3>
+
+                {person.jobs && person.jobs.length > 0 ? (
+                  <div className="space-y-4 pl-7">
+                    {person.jobs.map((job: any, idx: number) => (
+                      <div key={idx} className="border-l-2 border-primary/20 pl-3 py-0.5" data-testid="job-item">
+                        <div className="font-semibold text-sm">{job.company}</div>
+                        <div className="text-sm text-muted-foreground">{job.position}</div>
+                        {(job.startDate || job.endDate) && (
+                          <div className="text-xs text-muted-foreground/80 mt-0.5">
+                            {job.startDate || "—"} - {job.endDate || "—"}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground italic pl-7">No employment history recorded.</div>
+                )}
+              </div>
+
+            </div>
           </TabsContent>
 
           {showPhotosTab && (
@@ -468,6 +573,11 @@ export default function PersonProfile() {
         onOpenChange={setIsEditPersonOpen}
         person={person}
         onDelete={() => navigate("/people")}
+      />
+      <AdditionalInfoDialog
+        open={isEditAdditionalOpen}
+        onOpenChange={setIsEditAdditionalOpen}
+        person={person}
       />
       <SocialAccountDialog
         open={isAddSocialAccountOpen}
