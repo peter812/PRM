@@ -69,19 +69,7 @@ let isUserCreationAllowed = false;
 
 
 
-// Bridge old settings functions to centralized storage layer
-async function getOllamaSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-async function setOllamaSetting(key: string, value: string): Promise<void> {
-  await storage.setAppSetting(key, value);
-}
-async function getPrmFaceSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-async function setPrmFaceSetting(key: string, value: string): Promise<void> {
-  await storage.setAppSetting(key, value);
-}
+
 
 
 async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
@@ -873,15 +861,15 @@ export function registerRoutes(app: Express) {
         });
         const body = bodySchema.parse(req.body);
   
-        const ollamaEnabled = (await getOllamaSetting("ollama_enabled")) === "true";
+        const ollamaEnabled = (await storage.getAppSetting("ollama_enabled")) === "true";
         if (!ollamaEnabled) return res.status(400).json({ error: "AI is disabled in settings" });
   
         const ctx = await buildOllamaChatContext();
         if (!ctx) return res.status(400).json({ error: "Ollama API URL is not configured" });
   
-        const familyTreeModel = ((await getOllamaSetting("ollama_family_tree_model")) ?? "").trim();
-        const textModel = ((await getOllamaSetting("ollama_text_model")) ?? "").trim();
-        const fallbackModel = ((await getOllamaSetting("ollama_model")) ?? "").trim();
+        const familyTreeModel = ((await storage.getAppSetting("ollama_family_tree_model")) ?? "").trim();
+        const textModel = ((await storage.getAppSetting("ollama_text_model")) ?? "").trim();
+        const fallbackModel = ((await storage.getAppSetting("ollama_model")) ?? "").trim();
         const model = familyTreeModel || textModel || fallbackModel;
         if (!model) return res.status(400).json({ error: "No AI model configured. Set one at Settings → Intelligence → Family Tree." });
   

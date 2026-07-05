@@ -83,19 +83,7 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
 
 
 
-// Bridge old settings functions to centralized storage layer
-async function getOllamaSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-async function setOllamaSetting(key: string, value: string): Promise<void> {
-  await storage.setAppSetting(key, value);
-}
-async function getPrmFaceSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-async function setPrmFaceSetting(key: string, value: string): Promise<void> {
-  await storage.setAppSetting(key, value);
-}
+
 
 
 export function registerRoutes(app: Express) {
@@ -164,7 +152,7 @@ export function registerRoutes(app: Express) {
         const capturedPrmLocation = prmLocation;
         ;(async () => {
           try {
-            const autoDescribe = (await getOllamaSetting("ollama_auto_describe_images")) === "true";
+            const autoDescribe = (await storage.getAppSetting("ollama_auto_describe_images")) === "true";
             if (!autoDescribe) return;
             // Skip profile images
             if (
@@ -172,21 +160,21 @@ export function registerRoutes(app: Express) {
               capturedPrmLocation.startsWith("social_profile_image")
             ) return;
             if (!capturedPhotoId || !capturedBuffer) return;
-            const ollamaEnabled = (await getOllamaSetting("ollama_enabled")) === "true";
+            const ollamaEnabled = (await storage.getAppSetting("ollama_enabled")) === "true";
             if (!ollamaEnabled) return;
-            const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
+            const apiUrl = (await storage.getAppSetting("ollama_api_url")) ?? "";
             if (!apiUrl.trim()) return;
-            const model = (await getOllamaSetting("ollama_model")) ?? "";
+            const model = (await storage.getAppSetting("ollama_model")) ?? "";
             if (!model.trim()) return;
             const base = apiUrl.replace(/\/+$/, "");
-            const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
+            const authRequired = (await storage.getAppSetting("ollama_auth_required")) === "true";
             const headers: Record<string, string> = { "Content-Type": "application/json" };
             if (authRequired) {
-              const uname = (await getOllamaSetting("ollama_username")) ?? "";
-              const pwd = (await getOllamaSetting("ollama_password")) ?? "";
+              const uname = (await storage.getAppSetting("ollama_username")) ?? "";
+              const pwd = (await storage.getAppSetting("ollama_password")) ?? "";
               headers["Authorization"] = "Basic " + Buffer.from(`${uname}:${pwd}`).toString("base64");
             }
-            const savedPrompt = (await getOllamaSetting("ollama_prompt")) ?? "";
+            const savedPrompt = (await storage.getAppSetting("ollama_prompt")) ?? "";
             const prompt = savedPrompt || "Return 2 sentences explaining what is happening in this image.";
             const imageBase64 = capturedBuffer.toString("base64");
             const controller = new AbortController();

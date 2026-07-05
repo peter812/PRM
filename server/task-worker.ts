@@ -34,6 +34,7 @@ import {
   groups,
   relationships,
 } from "@shared/schema";
+import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
 
 // ── Image dimension helper ────────────────────────────────────────────────────
 
@@ -393,51 +394,6 @@ async function processRefreshFollowerCount(payload: {
   return JSON.stringify({ socialAccountId, followerCount, followingCount });
 }
 
-// ── XML helpers (shared by export and import tasks) ─────────────────────────
-
-function escapeXml(str: any): string {
-  if (str === null || str === undefined) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function arrayToXml(arr: any[], itemName: string): string {
-  if (!arr || arr.length === 0) return "";
-  return arr.map(item => `<${itemName}>${escapeXml(item)}</${itemName}>`).join("");
-}
-
-function parseXmlTag(tagName: string, text: string): string {
-  const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, "s");
-  const match = text.match(regex);
-  return match ? match[1].trim() : "";
-}
-
-function parseXmlArray(containerTag: string, itemTag: string, text: string): string[] {
-  const containerContent = parseXmlTag(containerTag, text);
-  if (!containerContent) return [];
-  const itemRegex = new RegExp(`<${itemTag}>(.*?)</${itemTag}>`, "gs");
-  const matches = containerContent.matchAll(itemRegex);
-  return Array.from(matches).map(m => m[1].trim());
-}
-
-function parseAllTags(tagName: string, text: string): string[] {
-  const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, "gs");
-  const matches = text.matchAll(regex);
-  return Array.from(matches).map(m => m[1].trim());
-}
-
-function unescapeXml(str: string): string {
-  return str
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
-}
 
 // ── Export XML task ──────────────────────────────────────────────────────────
 

@@ -54,6 +54,7 @@ import {
 } from "../vector";
 import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "../image-pass-in-utils";
+import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "../xml-utils";
 
 const scryptAsync = promisify(scrypt);
 
@@ -68,19 +69,7 @@ let isUserCreationAllowed = false;
 
 
 
-// Bridge old settings functions to centralized storage layer
-async function getOllamaSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-async function setOllamaSetting(key: string, value: string): Promise<void> {
-  await storage.setAppSetting(key, value);
-}
-async function getPrmFaceSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-async function setPrmFaceSetting(key: string, value: string): Promise<void> {
-  await storage.setAppSetting(key, value);
-}
+
 
 
 export function registerRoutes(app: Express) {
@@ -177,21 +166,7 @@ export function registerRoutes(app: Express) {
   
         const allSocialAccountTypes = await storage.getAllSocialAccountTypes();
   
-        const escapeXml = (str: any): string => {
-          if (str === null || str === undefined) return "";
-          return String(str)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&apos;");
-        };
-  
-        const arrayToXml = (arr: any[], itemName: string): string => {
-          if (!arr || arr.length === 0) return "";
-          return arr.map(item => `<${itemName}>${escapeXml(item)}</${itemName}>`).join("");
-        };
-  
+
         let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
         xml += '<social_accounts_export>\n';
   
@@ -329,37 +304,7 @@ export function registerRoutes(app: Express) {
   
         const xmlText = req.file.buffer.toString("utf-8");
   
-        const parseXmlTag = (tagName: string, text: string): string => {
-          const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, "s");
-          const match = text.match(regex);
-          return match ? match[1] : "";
-        };
-  
-        const parseAllTags = (tagName: string, text: string): string[] => {
-          const regex = new RegExp(`<${tagName}>(.*?)</${tagName}>`, "gs");
-          const matches: string[] = [];
-          let match;
-          while ((match = regex.exec(text)) !== null) {
-            matches.push(match[1]);
-          }
-          return matches;
-        };
-  
-        const parseXmlArray = (parentTag: string, childTag: string, text: string): string[] => {
-          const parentContent = parseXmlTag(parentTag, text);
-          if (!parentContent) return [];
-          return parseAllTags(childTag, parentContent);
-        };
-  
-        const unescapeXml = (str: string): string => {
-          return str
-            .replace(/&apos;/g, "'")
-            .replace(/&quot;/g, '"')
-            .replace(/&gt;/g, ">")
-            .replace(/&lt;/g, "<")
-            .replace(/&amp;/g, "&");
-        };
-  
+
         const importedCounts = { socialAccountTypes: 0, socialAccounts: 0, profileVersions: 0, networkChanges: 0 };
         const skippedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
         const failedCounts = { socialAccountTypes: 0, socialAccounts: 0 };
