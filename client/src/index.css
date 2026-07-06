@@ -396,3 +396,352 @@
     inset: -1px;
   }
 }
+
+/* ==========================================
+   FRUTIGER AERO RETRO MODE THEME DEFINITION
+   ========================================== */
+.aero {
+  --button-outline: rgba(255, 255, 255, 0.4);
+  --badge-outline: rgba(255, 255, 255, 0.25);
+  --elevate-1: rgba(255, 255, 255, 0.2);
+  --elevate-2: rgba(255, 255, 255, 0.35);
+
+  --background: 195 50% 98%;
+  --foreground: 210 40% 15%;
+  --border: 195 60% 82%;
+  
+  --card: 200 40% 98% / 0.55;
+  --card-foreground: 210 40% 15%;
+  --card-border: 195 60% 85% / 0.7;
+
+  --sidebar: 200 50% 96% / 0.65;
+  --sidebar-foreground: 210 40% 15%;
+  --sidebar-border: 195 50% 80% / 0.6;
+  
+  --sidebar-primary: 205 100% 45%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 195 40% 90% / 0.5;
+  --sidebar-accent-foreground: 210 40% 15%;
+
+  --popover: 200 45% 99% / 0.85;
+  --popover-foreground: 210 40% 15%;
+  --popover-border: 195 50% 80% / 0.7;
+
+  --primary: 205 100% 45%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 142 60% 45%;
+  --secondary-foreground: 0 0% 100%;
+
+  --accent: 142 60% 45%;
+  --accent-foreground: 0 0% 100%;
+
+  --muted: 195 20% 90%;
+  --muted-foreground: 210 15% 45%;
+
+  --input: 195 40% 85%;
+  --ring: 205 100% 50%;
+  --radius: 1rem;
+
+  --font-sans: 'Segoe UI', 'Calibri', 'Tahoma', system-ui, -apple-system, sans-serif;
+}
+
+/* Force humanist sans-serif font stack for main text elements (excluding code/mono) */
+.aero,
+.aero body,
+.aero button,
+.aero input,
+.aero select,
+.aero textarea,
+.aero h1,
+.aero h2,
+.aero h3,
+.aero h4,
+.aero h5,
+.aero h6,
+.aero p,
+.aero span,
+.aero a,
+.aero label,
+.aero td,
+.aero th,
+.aero div:not(.font-mono):not(.code) {
+  font-family: 'Segoe UI', 'Calibri', 'Segoe UI Web (West European)', 'Segoe', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif !important;
+}
+
+
+/* Wallpaper background */
+.aero body {
+  background-image: url('/frutiger-aero-bg.png') !important;
+  background-attachment: fixed !important;
+  background-size: cover !important;
+  background-position: center !important;
+  position: relative;
+}
+
+/* Glassmorphism panels & sidebars */
+.aero header {
+  background: rgba(255, 255, 255, 0.45) !important;
+  backdrop-filter: blur(16px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.5) !important;
+}
+
+.aero .sidebar, 
+.aero [class*="bg-sidebar"] {
+  background: rgba(255, 255, 255, 0.45) !important;
+  backdrop-filter: blur(20px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(140%) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.5) !important;
+}
+
+.aero .card,
+.aero [class*="bg-card"],
+.aero [class*="border-card"] {
+  background: rgba(255, 255, 255, 0.5) !important;
+  backdrop-filter: blur(16px) saturate(140%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(140%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  border-radius: 1rem !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 4px 15px rgba(0, 0, 0, 0.05) !important;
+}
+
+.aero [role="dialog"],
+.aero [class*="bg-popover"] {
+  background: rgba(255, 255, 255, 0.7) !important;
+  backdrop-filter: blur(24px) saturate(145%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(145%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.75) !important;
+  border-radius: 1.25rem !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 40px rgba(0, 50, 100, 0.15) !important;
+}
+
+/* Primary Button Glass/Glossy Styling */
+.aero button.bg-primary,
+.aero [class*="bg-primary"] {
+  background: linear-gradient(
+    to bottom,
+    hsl(205, 100%, 60%) 0%,
+    hsl(205, 100%, 48%) 50%,
+    hsl(205, 100%, 42%) 50%,
+    hsl(205, 100%, 36%) 100%
+  ) !important;
+  color: white !important;
+  border: 1px solid hsl(205, 100%, 28%) !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 2px 4px rgba(0, 0, 0, 0.15) !important;
+  border-radius: 9999px !important;
+  position: relative;
+  overflow: hidden;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+  transition: all 0.2s ease;
+}
+
+.aero button.bg-primary:hover,
+.aero [class*="bg-primary"]:hover {
+  background: linear-gradient(
+    to bottom,
+    hsl(205, 100%, 65%) 0%,
+    hsl(205, 100%, 53%) 50%,
+    hsl(205, 100%, 47%) 50%,
+    hsl(205, 100%, 42%) 100%
+  ) !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 3px 6px rgba(0, 0, 0, 0.2) !important;
+}
+
+.aero button.bg-primary:active,
+.aero [class*="bg-primary"]:active {
+  background: linear-gradient(
+    to bottom,
+    hsl(205, 100%, 36%) 0%,
+    hsl(205, 100%, 40%) 100%
+  ) !important;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Specular highlight gloss sheen layer */
+.aero button.bg-primary::after,
+.aero [class*="bg-primary"]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.45) 0%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  pointer-events: none;
+}
+
+/* Secondary Button / Badge / Accent Glossy Green Styling */
+.aero .bg-emerald-500,
+.aero .bg-green-500,
+.aero button.bg-secondary,
+.aero [class*="bg-accent"] {
+  background: linear-gradient(
+    to bottom,
+    hsl(142, 70%, 60%) 0%,
+    hsl(142, 70%, 48%) 50%,
+    hsl(142, 70%, 43%) 50%,
+    hsl(142, 70%, 35%) 100%
+  ) !important;
+  color: white !important;
+  border: 1px solid hsl(142, 70%, 28%) !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.2),
+    0 2px 4px rgba(0, 0, 0, 0.15) !important;
+  border-radius: 9999px !important;
+  position: relative;
+  overflow: hidden;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+}
+
+.aero .bg-emerald-500::after,
+.aero .bg-green-500::after,
+.aero button.bg-secondary::after,
+.aero [class*="bg-accent"]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.45) 0%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  pointer-events: none;
+}
+
+/* Ghost / Outline / Minimal Buttons (Glass Aesthetic) */
+.aero button.variant-ghost,
+.aero button.variant-outline,
+.aero button:not(.bg-primary):not(.bg-secondary):not(.bg-destructive) {
+  background: rgba(255, 255, 255, 0.35) !important;
+  backdrop-filter: blur(4px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
+  color: hsl(205, 100%, 30%) !important;
+  border-radius: 9999px !important;
+  box-shadow: 
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 1px 2px rgba(0, 0, 0, 0.05) !important;
+  transition: all 0.2s ease !important;
+}
+
+.aero button.variant-ghost:hover,
+.aero button.variant-outline:hover,
+.aero button:not(.bg-primary):not(.bg-secondary):not(.bg-destructive):hover {
+  background: rgba(255, 255, 255, 0.55) !important;
+  border-color: rgba(255, 255, 255, 0.7) !important;
+  color: hsl(205, 100%, 25%) !important;
+}
+
+/* Inputs & Form Fields */
+.aero input,
+.aero textarea,
+.aero select {
+  background: rgba(255, 255, 255, 0.65) !important;
+  border: 1px solid rgba(205, 100, 45, 0.25) !important;
+  border-radius: 9999px !important;
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+  box-shadow: 
+    inset 0 1px 3px rgba(0, 0, 0, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+  transition: all 0.2s ease !important;
+}
+
+.aero input:focus,
+.aero textarea:focus,
+.aero select:focus {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: hsl(205, 100%, 50%) !important;
+  box-shadow: 
+    0 0 0 3px rgba(30, 144, 255, 0.25),
+    inset 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+}
+
+.aero textarea {
+  border-radius: 0.75rem !important;
+}
+
+/* Typography glowing / drop shadow effects */
+.aero h1,
+.aero h2,
+.aero h3 {
+  font-family: 'Segoe UI', 'Segoe UI Semibold', 'Calibri', sans-serif !important;
+  font-weight: 600 !important;
+  color: hsl(207, 100%, 30%) !important;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
+}
+
+/* Webkit Scrollbars in Aero mode */
+.aero ::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.aero ::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    to bottom,
+    hsl(205, 100%, 65%),
+    hsl(205, 100%, 45%)
+  ) !important;
+  border-radius: 9999px !important;
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+}
+
+/* Aero bubbles background animations */
+.aero-bubble {
+  background: radial-gradient(
+    circle at 30% 30%,
+    rgba(255, 255, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0.1) 40%,
+    rgba(30, 144, 255, 0.05) 60%,
+    rgba(30, 144, 255, 0.2) 80%,
+    rgba(255, 255, 255, 0.6) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 
+    inset 0 1px 2px rgba(255, 255, 255, 0.5),
+    0 2px 10px rgba(0, 0, 0, 0.05);
+  animation: floatUp 15s infinite linear, sway 4s ease-in-out infinite alternate;
+}
+
+@keyframes floatUp {
+  0% {
+    transform: translateY(0) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.6;
+  }
+  90% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(-110vh) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+@keyframes sway {
+  0% {
+    margin-left: 0px;
+  }
+  100% {
+    margin-left: 50px;
+  }
+}

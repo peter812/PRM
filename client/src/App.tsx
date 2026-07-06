@@ -20,6 +20,7 @@ import { AddNoteDialog } from "@/components/add-note-dialog";
 import { UniversalAddButton } from "@/components/universal-add-button";
 import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { BubblesBackground } from "@/components/bubbles-background";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { Button } from "@/components/ui/button";
 import { Settings, LogOut, Home } from "lucide-react";
@@ -202,6 +203,7 @@ function AppLayout() {
 
   return (
     <SidebarProvider style={style as React.CSSProperties}>
+      <BubblesBackground />
       <div className="flex h-screen w-full">
         {isSettingsPage ? <SettingsSidebar /> : <AppSidebar />}
         <div className="flex flex-col flex-1 overflow-hidden">

@@ -418,15 +418,36 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
   }
 
   if (isError) {
+    const errMessage = (error as Error).message || "";
+    if (errMessage.includes("Failed to contact PRM-Face") || errMessage.includes("fetch failed")) {
+      return (
+        <div className="flex flex-col items-center justify-center py-24 gap-3 text-muted-foreground" data-testid="empty-person-photos">
+          <ImageIcon className="h-10 w-10 text-muted-foreground/60" />
+          <p className="text-sm font-medium">photos not found in DB</p>
+          <button
+            onClick={() => {
+              const input = document.querySelector('input[data-testid="input-add-photo"]') as HTMLInputElement;
+              if (input) input.click();
+            }}
+            className="text-xs text-primary underline hover:text-primary/80 cursor-pointer"
+            data-testid="click-to-add-photo"
+          >
+            (click here to add)
+          </button>
+        </div>
+      );
+    }
+
     return (
       <div className="px-6 py-8">
         <div className="flex items-start gap-3 rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm" data-testid="error-person-photos">
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-destructive" />
-          <span className="text-destructive">{(error as Error).message}</span>
+          <span className="text-destructive">{errMessage}</span>
         </div>
       </div>
     );
   }
+
 
   if (images.length === 0) {
     return (

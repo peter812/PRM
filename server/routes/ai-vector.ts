@@ -8,7 +8,7 @@ import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } 
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray, lt } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray, lt, desc } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -1190,6 +1190,48 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
       }
     });
+
+    // ── Get photos containing a person by UUID (queries local PRM DB only) ─────────────────
+    app.get("/api/image-contains-person-uuid/:personUuid?", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+
+      const personUuid = req.params.personUuid || (req.query.uuid as string) || (req.query.personUuid as string) || (req.query.person_uuid as string);
+      if (!personUuid) {
+        return res.status(400).json({ error: "Person UUID is required." });
+      }
+
+      try {
+        const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string || req.query.page_size as string) || 100));
+        const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+
+        // Query the local PRM database for photos containing the given personUuid in their facialIds array
+        const matchingPhotos = await db
+          .select()
+          .from(photos)
+          .where(sql`${photos.facialIds} @> ${JSON.stringify([{ personId: personUuid }])}::jsonb`)
+          .orderBy(desc(photos.uploadedAt))
+          .limit(limit)
+          .offset(offset);
+
+        const countResult = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(photos)
+          .where(sql`${photos.facialIds} @> ${JSON.stringify([{ personId: personUuid }])}::jsonb`);
+
+        const total = countResult[0]?.count ?? 0;
+
+        res.json({
+          total,
+          limit,
+          offset,
+          photos: matchingPhotos,
+        });
+      } catch (error: any) {
+        console.error("Error querying photos for person uuid:", error);
+        res.status(500).json({ error: `Failed to query photos: ${error.message}` });
+      }
+    });
+
   
     // ── Ollama AI Description ─────────────────────────────────────────────────
   

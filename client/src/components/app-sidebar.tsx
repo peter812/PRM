@@ -22,6 +22,7 @@ import {
   HelpCircle,
   Gamepad2,
   ChevronRight,
+  Leaf,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState, useMemo } from "react";
@@ -161,7 +162,7 @@ const menuItems = [
 export function AppSidebar() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
-  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
+  const [theme, setTheme] = useState<"light" | "dark" | "system" | "aero">("system");
 
   const { data: settings } = useQuery<Record<string, string>>({
     queryKey: ["/api/settings"],
@@ -178,13 +179,15 @@ export function AppSidebar() {
   }, [demosEnabled]);
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | null;
+    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | "aero" | null;
     const initialTheme = savedTheme || "system";
     setTheme(initialTheme);
     const effective = initialTheme === "system"
       ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
       : initialTheme;
     document.documentElement.classList.toggle("dark", effective === "dark");
+    document.documentElement.classList.toggle("aero", effective === "aero");
+    window.dispatchEvent(new Event("theme-change"));
   }, []);
 
   // Listen for system theme changes when in system mode
@@ -194,13 +197,15 @@ export function AppSidebar() {
     const handler = () => {
       const effective = mql.matches ? "dark" : "light";
       document.documentElement.classList.toggle("dark", effective === "dark");
+      document.documentElement.classList.toggle("aero", false);
+      window.dispatchEvent(new Event("theme-change"));
     };
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
   }, [theme]);
 
   const handleThemeToggle = () => {
-    const order: Array<"light" | "dark" | "system"> = ["light", "dark", "system"];
+    const order: Array<"light" | "dark" | "aero" | "system"> = ["light", "dark", "aero", "system"];
     const next = order[(order.indexOf(theme) + 1) % order.length];
     setTheme(next);
     localStorage.setItem("theme", next);
@@ -208,6 +213,8 @@ export function AppSidebar() {
       ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
       : next;
     document.documentElement.classList.toggle("dark", effective === "dark");
+    document.documentElement.classList.toggle("aero", effective === "aero");
+    window.dispatchEvent(new Event("theme-change"));
   };
 
   const handleSettingsClick = () => {
@@ -324,11 +331,35 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton
               onClick={handleThemeToggle}
-              tooltip={theme === "system" ? "System theme" : theme === "light" ? "Dark mode" : "Light mode"}
+              tooltip={
+                theme === "system"
+                  ? "System theme"
+                  : theme === "light"
+                  ? "Dark mode"
+                  : theme === "dark"
+                  ? "Frutiger Aero mode"
+                  : "Light mode"
+              }
               data-testid="sidebar-button-theme"
             >
-              {theme === "system" ? <Monitor /> : theme === "light" ? <Moon /> : <Sun />}
-              <span>{theme === "system" ? "System theme" : theme === "light" ? "Dark mode" : "Light mode"}</span>
+              {theme === "system" ? (
+                <Monitor />
+              ) : theme === "light" ? (
+                <Moon />
+              ) : theme === "dark" ? (
+                <Leaf className="text-emerald-500" />
+              ) : (
+                <Sun />
+              )}
+              <span>
+                {theme === "system"
+                  ? "System theme"
+                  : theme === "light"
+                  ? "Dark mode"
+                  : theme === "dark"
+                  ? "Aero mode"
+                  : "Light mode"}
+              </span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           {user && (
