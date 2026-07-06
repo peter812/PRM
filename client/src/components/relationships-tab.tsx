@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, lazy, Suspense } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Trash2, Users2, Edit, MoreHorizontal } from "lucide-react";
 import { Link } from "wouter";
@@ -7,7 +7,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { RelationshipDialog } from "@/components/relationship-dialog";
-import { MiniPersonGraph } from "@/components/mini-person-graph";
+
+const MiniPersonGraph = lazy(() =>
+  import("@/components/mini-person-graph").then((module) => ({
+    default: module.MiniPersonGraph,
+  }))
+);
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -254,11 +259,13 @@ export function RelationshipsTab({
           data-testid="relationships-mini-graph-panel"
         >
           <div className="h-[420px] lg:sticky lg:top-4">
-            <MiniPersonGraph
-              personId={personId}
-              personName={personName ?? "This person"}
-              data={data}
-            />
+            <Suspense fallback={<Skeleton className="w-full h-full min-h-[320px] rounded-md" />}>
+              <MiniPersonGraph
+                personId={personId}
+                personName={personName ?? "This person"}
+                data={data}
+              />
+            </Suspense>
           </div>
         </aside>
       </div>

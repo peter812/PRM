@@ -1,6 +1,6 @@
 {
-  "id": "209081f1-fdce-4f37-a3cd-86f4977e82c0",
-  "prevId": "4a650d33-0e79-4e13-bc94-1d56a2f7f6a3",
+  "id": "1d363bf3-162e-42cb-a6d9-b315d5388778",
+  "prevId": "209081f1-fdce-4f37-a3cd-86f4977e82c0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -839,6 +839,83 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.faces": {
+      "name": "faces",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "photo_id": {
+          "name": "photo_id",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "s3_url": {
+          "name": "s3_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embedding": {
+          "name": "embedding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "personface_uuid": {
+          "name": "personface_uuid",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detection_confidence": {
+          "name": "detection_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coordinates": {
+          "name": "coordinates",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "faces_photo_id_photos_id_fk": {
+          "name": "faces_photo_id_photos_id_fk",
+          "tableFrom": "faces",
+          "tableTo": "photos",
+          "columnsFrom": [
+            "photo_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.group_notes": {
       "name": "group_notes",
       "schema": "",
@@ -982,6 +1059,109 @@
           "tableTo": "social_accounts",
           "columnsFrom": [
             "center_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.image_questions": {
+      "name": "image_questions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "photo_id": {
+          "name": "photo_id",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "face_uuid": {
+          "name": "face_uuid",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sub_image_url": {
+          "name": "sub_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "coordinates": {
+          "name": "coordinates",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "resolved_as": {
+          "name": "resolved_as",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolved_person_id": {
+          "name": "resolved_person_id",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "image_questions_photo_id_photos_id_fk": {
+          "name": "image_questions_photo_id_photos_id_fk",
+          "tableFrom": "image_questions",
+          "tableTo": "photos",
+          "columnsFrom": [
+            "photo_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "image_questions_resolved_person_id_people_id_fk": {
+          "name": "image_questions_resolved_person_id_people_id_fk",
+          "tableFrom": "image_questions",
+          "tableTo": "people",
+          "columnsFrom": [
+            "resolved_person_id"
           ],
           "columnsTo": [
             "id"
@@ -1893,6 +2073,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "personface_uuid": {
+          "name": "personface_uuid",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
         "maiden_name": {
           "name": "maiden_name",
           "type": "text",
@@ -1996,6 +2182,13 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "facial_ids": {
+          "name": "facial_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'[]'::jsonb"
         },
         "prm_location": {
           "name": "prm_location",

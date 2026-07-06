@@ -29,6 +29,7 @@ import type {
   Person,
   PersonWithRelations,
   SocialAccountWithCurrentProfile,
+  Photo,
 } from "@shared/schema";
 
 type CardId =
@@ -37,8 +38,7 @@ type CardId =
   | "recent-people"
   | "recent-social"
   | "recent-photos"
-  | "recent-events"
-  | "demos";
+  | "recent-events";
 
 const DEFAULT_ORDER: CardId[] = [
   "things-to-do",
@@ -47,7 +47,6 @@ const DEFAULT_ORDER: CardId[] = [
   "recent-social",
   "recent-photos",
   "recent-events",
-  "demos",
 ];
 
 const LAYOUT_STORAGE_KEY = "home_card_order_v1";
@@ -326,22 +325,13 @@ function RecentSocialContent() {
   );
 }
 
-interface PrmFaceImage {
-  uuid: string;
-  thumbnail_url?: string;
-  image_url?: string;
-  url?: string;
-  created_at?: string;
-}
-
 function RecentPhotosContent() {
   const { data, isLoading, isError } = useQuery<{
-    images?: PrmFaceImage[];
-    items?: PrmFaceImage[];
+    items?: Photo[];
   }>({
-    queryKey: ["/api/prm-face/img/list", { page: 1, page_size: 6 }],
+    queryKey: ["/api/photos", { limit: 6, excludeSubImages: true }],
     queryFn: async () => {
-      const res = await fetch("/api/prm-face/img/list?page=1&page_size=6");
+      const res = await fetch("/api/photos?limit=6&excludeSubImages=true");
       if (!res.ok) throw new Error("Photos unavailable");
       return res.json();
     },
@@ -360,11 +350,11 @@ function RecentPhotosContent() {
   if (isError) {
     return (
       <div className="text-sm text-muted-foreground">
-        Photos unavailable. Configure PRM-Face in settings to enable.
+        Photos unavailable. Please refresh.
       </div>
     );
   }
-  const images = data?.images || data?.items || [];
+  const images = data?.items || [];
   if (images.length === 0) {
     return (
       <div className="text-sm text-muted-foreground">No photos yet.</div>
@@ -373,13 +363,13 @@ function RecentPhotosContent() {
   return (
     <div className="grid grid-cols-3 gap-2">
       {images.slice(0, 6).map((img) => {
-        const src = img.thumbnail_url || img.image_url || img.url;
+        const src = img.location;
         return (
           <Link
-            key={img.uuid}
-            href={imageDetailHref(img.uuid, "/home")}
+            key={img.id}
+            href={imageDetailHref(img.id, "/home")}
             className="relative aspect-square overflow-hidden rounded-md bg-muted hover-elevate"
-            data-testid={`home-recent-photo-${img.uuid}`}
+            data-testid={`home-recent-photo-${img.id}`}
           >
             {src ? (
               <img
@@ -496,55 +486,11 @@ function QuickChatContent() {
   );
 }
 
-function DemosContent() {
-  return (
-    <div className="flex flex-col gap-2">
-      <Button
-        asChild
-        variant="outline"
-        className="justify-start"
-        data-testid="home-demo-link-face"
-      >
-        <Link href="/prm-face-demo">
-          <Scan className="mr-2 h-4 w-4" />
-          PRM Face Demo
-        </Link>
-      </Button>
-      <Button
-        asChild
-        variant="outline"
-        className="justify-start"
-        data-testid="home-demo-link-face-save"
-      >
-        <Link href="/prm-face-save-demo">
-          <Scan className="mr-2 h-4 w-4" />
-          PRM Face Save Demo
-        </Link>
-      </Button>
-      <Button
-        asChild
-        variant="outline"
-        className="justify-start"
-        data-testid="home-demo-link-ai-desc"
-      >
-        <Link href="/ai-desc-demo">
-          <Sparkles className="mr-2 h-4 w-4" />
-          AI Description Demo
-        </Link>
-      </Button>
-    </div>
-  );
-}
 
 const CARD_DEFINITIONS: Record<
   CardId,
   { title: string; icon: React.ReactNode; render: () => React.ReactNode }
 > = {
-  "demos": {
-    title: "Demos",
-    icon: <Sparkles className="h-4 w-4" />,
-    render: () => <DemosContent />,
-  },
   "things-to-do": {
     title: "Things to do",
     icon: <ListTodo className="h-4 w-4" />,
@@ -606,32 +552,10 @@ export default function HomePage() {
     saveOrder(order);
   }, [order]);
 
-  const { data: settings } = useQuery<Record<string, string>>({
-    queryKey: ["/api/settings"],
-  });
-  const demosEnabled = settings?.experimental_demos_enabled === "true";
-
-  useEffect(() => {
-    if (demosEnabled && !order.includes("demos")) {
-      setOrder(prev => [...prev, "demos"]);
-    }
-  }, [demosEnabled, order]);
-
-  const displayedOrder = useMemo<CardId[]>(() => {
-    if (demosEnabled) {
-      if (!order.includes("demos")) {
-        return [...order, "demos"];
-      }
-      return order;
-    } else {
-      return order.filter((id): id is CardId => id !== "demos");
-    }
-  }, [order, demosEnabled]);
-
   const cols = useColumnCount();
   const columns = useMemo(
-    () => distributeIntoColumns(displayedOrder, cols),
-    [displayedOrder, cols],
+    () => distributeIntoColumns(order, cols),
+    [order, cols],
   );
 
   const handleDragStart = (id: CardId) => {

@@ -293,6 +293,7 @@ export interface IStorage {
   createInteractionType(interactionType: InsertInteractionType): Promise<InteractionType>;
   updateInteractionType(id: string, interactionType: Partial<InsertInteractionType>): Promise<InteractionType | undefined>;
   deleteInteractionType(id: string): Promise<void>;
+  removeDuplicateRelationshipAndInteractionTypes(): Promise<{ deletedRelationshipTypes: number; deletedInteractionTypes: number }>;
 
   // User operations
   getUser(id: number): Promise<User | undefined>;
@@ -440,7 +441,7 @@ export interface IStorage {
   insertPhoto(photo: InsertPhoto): Promise<Photo>;
   getPhotoById(id: string): Promise<Photo | undefined>;
   getPhotoByLocation(location: string): Promise<Photo | undefined>;
-  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number }): Promise<{ items: Photo[]; total: number }>;
+  listPhotos(options?: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean }): Promise<{ items: Photo[]; total: number }>;
   updatePhotoLocation(oldLocation: string, newLocation: string): Promise<void>;
   updatePhotoMeta(id: string, data: Partial<Pick<Photo, 'fileHash' | 'widthPx' | 'heightPx' | 'metadata' | 'imageDescription' | 'imageDescriptionAt' | 'faceUuids' | 'faceIdAt' | 'processedAt'>>): Promise<void>;
   getPhotoByHash(fileHash: string): Promise<Photo | undefined>;
@@ -1741,6 +1742,48 @@ export class DatabaseStorage implements IStorage {
   async deleteInteractionType(id: string): Promise<void> {
     await db.delete(interactionTypes).where(eq(interactionTypes.id, id));
     interactionTypesCache.invalidate('all');
+  }
+
+  async removeDuplicateRelationshipAndInteractionTypes(): Promise<{ deletedRelationshipTypes: number; deletedInteractionTypes: number }> {
+    // Shared helper: group types by lowercase name, keep oldest, reassign refs, delete dupes
+    async function dedup<T extends { id: string; name: string; createdAt: Date | null }>(
+      allTypes: T[],
+      typeTable: any,
+      refTable: any,
+      refColumn: any,
+    ): Promise<number> {
+      const groups = new Map<string, T[]>();
+      for (const t of allTypes) {
+        const key = t.name.trim().toLowerCase();
+        (groups.get(key) ?? (groups.set(key, []), groups.get(key)!)).push(t);
+      }
+      let deleted = 0;
+      for (const group of groups.values()) {
+        if (group.length <= 1) continue;
+        group.sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
+        const keptId = group[0].id;
+        const dupeIds = group.slice(1).map(t => t.id);
+        // Reassign all references to the kept type
+        await db.update(refTable).set({ typeId: keptId }).where(inArray(refColumn, dupeIds));
+        // Delete duplicate types
+        await db.delete(typeTable).where(inArray(typeTable.id, dupeIds));
+        deleted += dupeIds.length;
+      }
+      return deleted;
+    }
+
+    const [allRelTypes, allIntTypes] = await Promise.all([
+      db.select().from(relationshipTypes),
+      db.select().from(interactionTypes),
+    ]);
+
+    const deletedRelationshipTypes = await dedup(allRelTypes, relationshipTypes, relationships, relationships.typeId);
+    const deletedInteractionTypes = await dedup(allIntTypes, interactionTypes, interactions, interactions.typeId);
+
+    if (deletedRelationshipTypes > 0) relationshipTypesCache.invalidate('all');
+    if (deletedInteractionTypes > 0) interactionTypesCache.invalidate('all');
+
+    return { deletedRelationshipTypes, deletedInteractionTypes };
   }
 
   // User operations
@@ -3744,10 +3787,19 @@ export class DatabaseStorage implements IStorage {
     return photo || undefined;
   }
 
-  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number } = {}): Promise<{ items: Photo[]; total: number }> {
-    const { prmLocationPrefix, limit = 100, offset = 0 } = options;
-    const whereCondition = prmLocationPrefix
-      ? sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`
+  async listPhotos(options: { prmLocationPrefix?: string; limit?: number; offset?: number; excludeSubImages?: boolean } = {}): Promise<{ items: Photo[]; total: number }> {
+    const { prmLocationPrefix, limit = 100, offset = 0, excludeSubImages } = options;
+    
+    const conditions = [];
+    if (prmLocationPrefix) {
+      conditions.push(sql`${photos.prmLocation} LIKE ${prmLocationPrefix + '%'}`);
+    }
+    if (excludeSubImages) {
+      conditions.push(eq(photos.isSubImage, false));
+    }
+
+    const whereCondition = conditions.length > 0
+      ? and(...conditions)
       : undefined;
 
     const [items, countResult] = await Promise.all([

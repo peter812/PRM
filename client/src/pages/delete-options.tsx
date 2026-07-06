@@ -21,8 +21,6 @@ export default function DeleteOptionsPage() {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [confirmSliderValue, setConfirmSliderValue] = useState([0]);
   const [includeExamples, setIncludeExamples] = useState(false);
-  const [confirmImagesSwitch1, setConfirmImagesSwitch1] = useState(false);
-  const [confirmImagesSwitch2, setConfirmImagesSwitch2] = useState(false);
 
   const [isDeleteSocialsDialogOpen, setIsDeleteSocialsDialogOpen] = useState(false);
   const [confirmDeleteSocials, setConfirmDeleteSocials] = useState(false);
@@ -30,11 +28,12 @@ export default function DeleteOptionsPage() {
   const [isDeleteFamilyDialogOpen, setIsDeleteFamilyDialogOpen] = useState(false);
   const [confirmDeleteFamily, setConfirmDeleteFamily] = useState(false);
 
+  const [isResetImagesDialogOpen, setIsResetImagesDialogOpen] = useState(false);
+  const [confirmResetImages, setConfirmResetImages] = useState(false);
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
-
-  const allImageSwitchesOn = confirmImagesSwitch1 && confirmImagesSwitch2;
 
   const resetDatabaseMutation = useMutation({
     mutationFn: async ({ includeExamples }: { includeExamples: boolean }) => {
@@ -162,6 +161,50 @@ export default function DeleteOptionsPage() {
     }
   };
 
+  const resetImagesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/prm-face/reset-images", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to reset images and faces");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      const local = data.local ?? {};
+      let description = `Deleted ${local.photosDeleted ?? 0} images, ${local.facesDeleted ?? 0} faces, and cleared face links from ${local.peopleCleared ?? 0} people.`;
+      if (data.faceService?.attempted && !data.faceService?.ok) {
+        description += ` Note: PRM-Face reset did not complete (${data.faceService.error ?? "unknown error"}).`;
+      }
+      toast({
+        title: "Images & Faces Reset",
+        description,
+      });
+
+      setIsResetImagesDialogOpen(false);
+      setConfirmResetImages(false);
+
+      queryClient.invalidateQueries();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Reset Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleResetImages = () => {
+    if (confirmResetImages) {
+      resetImagesMutation.mutate();
+    }
+  };
+
   const removeDuplicatesMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch("/api/social-accounts/remove-duplicates", {
@@ -195,49 +238,33 @@ export default function DeleteOptionsPage() {
     removeDuplicatesMutation.mutate();
   };
 
-  const resetImagesMutation = useMutation({
+  const removeDuplicateTypesMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/prm-face/reset-images", {
+      const response = await fetch("/api/maintenance/remove-duplicate-types", {
         method: "POST",
       });
-
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error || "Failed to reset images and faces");
+        throw new Error(error.error || "Failed to remove duplicate types");
       }
-
       return response.json();
     },
     onSuccess: (data) => {
-      const local = data.local ?? {};
-      let description = `Deleted ${local.photosDeleted ?? 0} images, ${local.facesDeleted ?? 0} faces, and cleared face links from ${local.peopleCleared ?? 0} people.`;
-      if (data.faceService?.attempted && !data.faceService?.ok) {
-        description += ` Note: PRM-Face reset did not complete (${data.faceService.error ?? "unknown error"}).`;
-      }
       toast({
-        title: "Images & Faces Reset",
-        description,
+        title: "Duplicate types cleaned",
+        description: `Removed ${data.deletedRelationshipTypes} relationship type(s) and ${data.deletedInteractionTypes} interaction type(s).`,
       });
-
-      setConfirmImagesSwitch1(false);
-      setConfirmImagesSwitch2(false);
-
-      queryClient.invalidateQueries();
+      queryClient.invalidateQueries({ queryKey: ["/api/relationship-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/interaction-types"] });
     },
     onError: (error: Error) => {
       toast({
-        title: "Reset Failed",
+        title: "Cleanup Failed",
         description: error.message,
         variant: "destructive",
       });
     },
   });
-
-  const handleResetImages = () => {
-    if (allImageSwitchesOn) {
-      resetImagesMutation.mutate();
-    }
-  };
 
   return (
     <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
@@ -274,6 +301,33 @@ export default function DeleteOptionsPage() {
                 data-testid="button-remove-duplicate-social-accounts"
               >
                 {removeDuplicatesMutation.isPending ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 text-orange-500" />
+                    Remove Duplicates
+                  </>
+                )}
+              </Button>
+            </div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border bg-card">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm">Remove Duplicate Types</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Merges relationship and interaction types sharing the same name. Keeps the oldest type and reassigns all references.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => removeDuplicateTypesMutation.mutate()}
+                disabled={removeDuplicateTypesMutation.isPending}
+                className="border-orange-500/50 hover:bg-orange-500/10 hover:text-orange-500 shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-remove-duplicate-types"
+              >
+                {removeDuplicateTypesMutation.isPending ? (
                   <>
                     <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
                     Processing...
@@ -356,6 +410,25 @@ export default function DeleteOptionsPage() {
               >
                 <AlertCircle className="h-4 w-4" />
                 Reset Database...
+              </Button>
+            </div>
+
+            {/* Row 4: Reset Images & Faces */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Reset Images &amp; Faces (PRM-Face)</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Deletes all recognition images and detected faces from PRM-Face and S3, and clears face links. Profile pictures and avatars are preserved.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsResetImagesDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-reset-images-trigger"
+              >
+                <ScanFace className="h-4 w-4" />
+                Reset Images &amp; Faces...
               </Button>
             </div>
 
@@ -480,6 +553,68 @@ export default function DeleteOptionsPage() {
               data-testid="button-delete-all-family-relationships"
             >
               {deleteAllFamilyRelationshipsMutation.isPending ? "Deleting..." : "Delete Family Relationships"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Reset Images & Faces */}
+      <Dialog open={isResetImagesDialogOpen} onOpenChange={(open) => {
+        setIsResetImagesDialogOpen(open);
+        if (!open) setConfirmResetImages(false);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <ScanFace className="h-5 w-5" />
+              Confirm Images &amp; Faces Reset
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete all recognition images and detected faces from PRM-Face and S3 storage.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>Every detected face and its cropped image are deleted from PRM-Face and S3 storage</li>
+                <li>All recognition-pipeline images (post, interaction, and note photos) are removed from S3 and the database</li>
+                <li>Face links are stripped from all people and social account posts</li>
+                <li>Profile pictures and social avatars are preserved</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-reset-images" className="text-sm font-medium pr-4 leading-normal">
+                I understand that this action is irreversible and wish to proceed
+              </Label>
+              <Switch
+                id="confirm-reset-images"
+                checked={confirmResetImages}
+                onCheckedChange={setConfirmResetImages}
+                data-testid="switch-confirm-reset-images"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsResetImagesDialogOpen(false);
+                setConfirmResetImages(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleResetImages}
+              disabled={!confirmResetImages || resetImagesMutation.isPending}
+              data-testid="button-reset-images"
+            >
+              {resetImagesMutation.isPending ? "Resetting..." : "Reset Images & Faces"}
             </Button>
           </DialogFooter>
         </DialogContent>
