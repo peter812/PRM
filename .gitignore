@@ -7,3 +7,7 @@ vite.config.ts.*
 .env
 /exports/*.xml
 /uploads/*
+/graphify-out/*
+/graphify-out/
+.agents/rules/graphify.md
+.agents/workflows/graphify.md

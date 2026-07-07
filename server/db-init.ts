@@ -394,6 +394,7 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_synced_at: "TIMESTAMP",
         maiden_name: "TEXT",
         jobs: "JSONB DEFAULT '[]'::jsonb",
+        personface_uuid: "VARCHAR",
       },
       schooling: {
         high_school: "TEXT",
@@ -404,6 +405,7 @@ async function validateAndSyncSchema(): Promise<void> {
         og_metadata: "JSONB",
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
+        facial_ids: "JSONB DEFAULT '[]'::jsonb",
       },
       notes: {
         image_uuid: "VARCHAR",
@@ -762,6 +764,46 @@ async function validateAndSyncSchema(): Promise<void> {
         )
       `);
       log("conversation_participants table created successfully");
+    }
+
+    // Ensure faces table exists
+    const facesExists = await tableExists("faces");
+    if (!facesExists) {
+      log("Creating faces table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS faces (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          photo_id VARCHAR REFERENCES photos(id) ON DELETE CASCADE,
+          s3_url TEXT NOT NULL,
+          embedding JSONB NOT NULL,
+          personface_uuid VARCHAR,
+          detection_confidence TEXT,
+          coordinates JSONB,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      log("faces table created successfully");
+    }
+
+    // Ensure image_questions table exists
+    const imageQuestionsExists = await tableExists("image_questions");
+    if (!imageQuestionsExists) {
+      log("Creating image_questions table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS image_questions (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          photo_id VARCHAR NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+          face_uuid VARCHAR NOT NULL,
+          sub_image_url TEXT NOT NULL,
+          coordinates JSONB NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          resolved_as TEXT,
+          resolved_person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          resolved_at TIMESTAMP
+        )
+      `);
+      log("image_questions table created successfully");
     }
 
     log("Schema validation completed");
