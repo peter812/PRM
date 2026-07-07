@@ -9,6 +9,7 @@ import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyC
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
+import { computeFamilyLabels } from "../family-relations-helper";
 import {
   insertPersonSchema,
   insertSchoolingSchema,
@@ -282,10 +283,12 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    const publicInsertPersonSchema = insertPersonSchema.omit({ userId: true });
+
     app.post("/api/people", async (req, res) => {
       try {
         const { schooling: schoolingData, ...personBody } = req.body;
-        const validatedData = insertPersonSchema.parse(personBody);
+        const validatedData = publicInsertPersonSchema.parse(personBody);
         
         // Check for duplicate names
         const allPeople = await storage.getAllPeople();
@@ -329,7 +332,7 @@ export function registerRoutes(app: Express) {
       try {
         const id = req.params.id;
         const { schooling: schoolingData, ...personBody } = req.body;
-        const validatedData = insertPersonSchema.partial().parse(personBody);
+        const validatedData = publicInsertPersonSchema.partial().parse(personBody);
         const person = await storage.updatePerson(id, validatedData);
   
         if (!person) {
@@ -726,13 +729,54 @@ export function registerRoutes(app: Express) {
         }
   
         const groups = Array.from(groupsMap.values())
-          .filter((g) => g.relationships.length > 0)
-          .sort((a, b) => {
-            if (b.type.value !== a.type.value) {
-              return b.type.value - a.type.value;
+          .filter((g) => g.relationships.length > 0);
+
+        // Dynamically fetch and label family relationships (up to 2 steps)
+        try {
+          const familyTree = await storage.getFamilyTree(personId, 2);
+          const familyLabels = computeFamilyLabels(personId, familyTree);
+          
+          if (familyLabels.size > 0) {
+            const familyRelationships = [];
+            for (const [id, label] of familyLabels.entries()) {
+              const fp = familyTree.people.find(p => p.id === id);
+              if (!fp) continue;
+              familyRelationships.push({
+                id: `family_${id}`,
+                notes: label,
+                relationshipLabel: label,
+                toPerson: {
+                  id: fp.id,
+                  firstName: fp.firstName,
+                  lastName: fp.lastName ?? "",
+                  imageUrl: fp.avatarUrl,
+                  company: null,
+                  title: null,
+                },
+              });
             }
-            return a.type.name.localeCompare(b.type.name);
-          });
+            if (familyRelationships.length > 0) {
+              groups.push({
+                type: {
+                  id: "family",
+                  name: "Family",
+                  color: "#ef4444",
+                  value: 90,
+                },
+                relationships: familyRelationships,
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Error computing dynamic family relationships for grouped response:", err);
+        }
+
+        groups.sort((a, b) => {
+          if (b.type.value !== a.type.value) {
+            return b.type.value - a.type.value;
+          }
+          return a.type.name.localeCompare(b.type.name);
+        });
   
         // Sort chips within each group alphabetically for stable display.
         for (const group of groups) {

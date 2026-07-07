@@ -122,7 +122,10 @@ import {
   type Partnership,
   type InsertPartnership,
   deriveLineageRole,
+  type CollegeExperience,
+  type AdditionalSchoolingExperience,
 } from "@shared/schema";
+import { computeFamilyLabels } from "./family-relations-helper";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull } from "drizzle-orm";
 import session from "express-session";
@@ -529,40 +532,60 @@ export class DatabaseStorage implements IStorage {
     relationships: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }>;
     groups: Array<{ id: string; name: string; color: string; members: string[] }>;
   }> {
-    // Fetch minimal people data
-    const peopleData = await db
-      .select({
-        id: people.id,
-        firstName: people.firstName,
-        lastName: people.lastName,
-        company: people.company,
-        imageUrl: people.imageUrl,
-        socialAccountUuids: people.socialAccountUuids,
-      })
-      .from(people);
+    // Fetch minimal people data, relationships, lineages, partnerships, and groups in parallel
+    const [peopleData, relationshipsData, groupsData, lineageData, partnershipData] = await Promise.all([
+      db
+        .select({
+          id: people.id,
+          firstName: people.firstName,
+          lastName: people.lastName,
+          company: people.company,
+          imageUrl: people.imageUrl,
+          socialAccountUuids: people.socialAccountUuids,
+        })
+        .from(people),
+      db
+        .select({
+          id: relationships.id,
+          fromPersonId: relationships.fromPersonId,
+          toPersonId: relationships.toPersonId,
+          typeColor: relationshipTypes.color,
+        })
+        .from(relationships)
+        .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id)),
+      db
+        .select({
+          id: groups.id,
+          name: groups.name,
+          color: groups.color,
+          members: groups.members,
+        })
+        .from(groups),
+      db.select().from(lineage),
+      db.select().from(partnerships),
+    ]);
 
-    // Fetch all relationships with type colors in a single query
-    const relationshipsData = await db
-      .select({
-        id: relationships.id,
-        fromPersonId: relationships.fromPersonId,
-        toPersonId: relationships.toPersonId,
-        typeColor: relationshipTypes.color,
-      })
-      .from(relationships)
-      .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id));
+    const familyEdges: Array<{ id: string; fromPersonId: string; toPersonId: string; typeColor: string | null }> = [];
 
-    // Fetch minimal groups data
-    const groupsData = await db
-      .select({
-        id: groups.id,
-        name: groups.name,
-        color: groups.color,
-        members: groups.members,
-        centerAccountId: groups.centerAccountId,
-        crowdMembers: groups.crowdMembers,
-      })
-      .from(groups);
+    // Map lineages as child -> parent edges in red
+    for (const lin of lineageData) {
+      familyEdges.push({
+        id: `family_lin_${lin.id}`,
+        fromPersonId: lin.childId,
+        toPersonId: lin.parentId,
+        typeColor: "#ef4444",
+      });
+    }
+
+    // Map partnerships as person1 -> person2 edges in red
+    for (const part of partnershipData) {
+      familyEdges.push({
+        id: `family_part_${part.id}`,
+        fromPersonId: part.person1Id,
+        toPersonId: part.person2Id,
+        typeColor: "#ef4444",
+      });
+    }
 
     return {
       people: peopleData.map(p => ({
@@ -573,19 +596,20 @@ export class DatabaseStorage implements IStorage {
         imageUrl: p.imageUrl,
         socialAccountUuids: p.socialAccountUuids || [],
       })),
-      relationships: relationshipsData.map(rel => ({
-        id: rel.id,
-        fromPersonId: rel.fromPersonId,
-        toPersonId: rel.toPersonId,
-        typeColor: rel.typeColor || null,
-      })),
+      relationships: [
+        ...relationshipsData.map(rel => ({
+          id: rel.id,
+          fromPersonId: rel.fromPersonId,
+          toPersonId: rel.toPersonId,
+          typeColor: rel.typeColor || null,
+        })),
+        ...familyEdges,
+      ],
       groups: groupsData.map(g => ({
         id: g.id,
         name: g.name,
         color: g.color,
         members: g.members || [],
-        centerAccountId: g.centerAccountId || null,
-        crowdMembers: g.crowdMembers || [],
       })),
     };
   }
@@ -763,11 +787,31 @@ export class DatabaseStorage implements IStorage {
     mePersonId?: string,
     sortBy?: string
   ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>> {
+    // Fetch ME user's family tree labels to calculate dynamic family relation badges
+    let familyLabels = new Map<string, string>();
+    let familyIds: string[] = [];
+    if (mePersonId) {
+      try {
+        const familyTree = await this.getFamilyTree(mePersonId, 2);
+        familyLabels = computeFamilyLabels(mePersonId, familyTree);
+        familyIds = Array.from(familyLabels.keys());
+      } catch (err) {
+        console.error("Error fetching family tree in getPeoplePaginated:", err);
+      }
+    }
+
+    const maxValueExpr = familyIds.length > 0
+      ? sql<number | null>`COALESCE(
+          CASE WHEN ${inArray(people.id, familyIds)} THEN 90 END,
+          MAX(${relationshipTypes.value})
+        )`
+      : sql<number | null>`MAX(${relationshipTypes.value})`;
+
     // Get all people (excluding ME user) with their highest-value relationship WITH THE ME USER
     const result = await db
       .select({
         person: people,
-        maxValue: sql<number | null>`MAX(${relationshipTypes.value})`.as('max_value'),
+        maxValue: maxValueExpr.as('max_value'),
         typeName: sql<string | null>`MAX(CASE WHEN ${relationshipTypes.value} = (
           SELECT MAX(rt2.value) 
           FROM ${relationshipTypes} rt2 
@@ -789,7 +833,7 @@ export class DatabaseStorage implements IStorage {
         groupCount: sql<number>`(
           SELECT COUNT(*)::int 
           FROM ${groups} 
-          WHERE ${people.id} = ANY(${groups.members})
+          WHERE ${people.id} = ANY(members)
         )`.as('group_count'),
       })
       .from(people)
@@ -816,20 +860,35 @@ export class DatabaseStorage implements IStorage {
           : sortBy === 'added'
           ? [sql`${people.createdAt} DESC`, people.firstName, people.lastName]
           : sortBy === 'starred'
-          ? [sql`${people.isStarred} DESC NULLS LAST`, sql`MAX(${relationshipTypes.value}) DESC NULLS LAST`, people.firstName, people.lastName]
-          : [sql`MAX(${relationshipTypes.value}) DESC NULLS LAST`, people.firstName, people.lastName]
+          ? [sql`${people.isStarred} DESC NULLS LAST`, sql`${maxValueExpr} DESC NULLS LAST`, people.firstName, people.lastName]
+          : [sql`${maxValueExpr} DESC NULLS LAST`, people.firstName, people.lastName]
         )
       )
       .limit(limit)
       .offset(offset);
 
-    return result.map(row => ({
-      ...row.person,
-      maxRelationshipValue: row.maxValue,
-      relationshipTypeName: row.typeName,
-      relationshipTypeColor: row.typeColor,
-      groupCount: row.groupCount,
-    }));
+    return result.map(row => {
+      let typeName = row.typeName;
+      let typeColor = row.typeColor;
+      let maxValue = row.maxValue;
+
+      if (mePersonId && familyLabels.has(row.person.id)) {
+        const familyLabel = familyLabels.get(row.person.id)!;
+        if (!maxValue || maxValue <= 90) {
+          typeName = familyLabel;
+          typeColor = "#ef4444";
+          maxValue = 90;
+        }
+      }
+
+      return {
+        ...row.person,
+        maxRelationshipValue: maxValue,
+        relationshipTypeName: typeName,
+        relationshipTypeColor: typeColor,
+        groupCount: row.groupCount,
+      };
+    });
   }
 
   async getPersonById(id: string): Promise<PersonWithRelations | undefined> {

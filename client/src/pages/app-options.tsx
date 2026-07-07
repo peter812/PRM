@@ -1,6 +1,6 @@
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Network, Chrome, Key, ChevronRight } from "lucide-react";
+import { Network, Chrome, Key, Search, ChevronRight } from "lucide-react";
 
 const APP_OPTIONS = [
   {
@@ -23,6 +23,13 @@ const APP_OPTIONS = [
     title: "API Settings",
     description: "Manage API keys and access credentials for external integrations",
     testId: "card-api-settings-link",
+  },
+  {
+    href: "/search",
+    icon: Search,
+    title: "Search Options",
+    description: "Customize the order and visibility of global search results",
+    testId: "card-search-options-link",
   },
 ];
 

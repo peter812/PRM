@@ -355,10 +355,10 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
   const [deletedUuids, setDeletedUuids] = useState<Set<string>>(new Set());
 
   const { data, isLoading, isError, error } = useQuery<PersonPhotosResponse>({
-    queryKey: ["/api/prm-face/person-photos", personId, page],
+    queryKey: ["/api/image/query-person", personId, page],
     queryFn: async () => {
       const res = await fetch(
-        `/api/prm-face/person-photos/${encodeURIComponent(personId)}?page=${page}&page_size=${PAGE_SIZE}`,
+        `/api/image/query-person?personUuid=${encodeURIComponent(personId)}&page=${page}&page_size=${PAGE_SIZE}`,
         { credentials: "include" }
       );
       const text = await res.text();
@@ -372,7 +372,7 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
 
   const handleDeleted = useCallback((uuid: string) => {
     setDeletedUuids((prev) => new Set([...prev, uuid]));
-    queryClient.invalidateQueries({ queryKey: ["/api/prm-face/person-photos", personId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/image/query-person", personId] });
   }, [personId]);
 
   const images = (data?.images ?? []).filter(img => !deletedUuids.has(img.image_uuid));

@@ -190,40 +190,47 @@ export function RelationshipsTab({
                               title={fullName}
                             >
                               {fullName || "Unnamed"}
+                              {rel.relationshipLabel && (
+                                <span className="ml-1 text-xs opacity-75 font-normal">
+                                  ({rel.relationshipLabel})
+                                </span>
+                              )}
                             </Link>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <button
-                                  type="button"
-                                  className="px-1.5 py-1 opacity-70 hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
-                                  aria-label={`Actions for relationship with ${fullName}`}
-                                  data-testid={`chip-actions-${rel.id}`}
-                                >
-                                  <MoreHorizontal className="h-3.5 w-3.5" />
-                                </button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem
-                                  disabled={!fullRel}
-                                  onClick={() => {
-                                    if (fullRel) setEditingRelationship(fullRel);
-                                  }}
-                                  data-testid={`chip-edit-${rel.id}`}
-                                >
-                                  <Edit className="h-4 w-4 mr-2" />
-                                  Edit
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  disabled={deleteMutation.isPending}
-                                  onClick={() => deleteMutation.mutate(rel.id)}
-                                  className="text-destructive focus:text-destructive"
-                                  data-testid={`chip-delete-${rel.id}`}
-                                >
-                                  <Trash2 className="h-4 w-4 mr-2" />
-                                  Delete
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                            {group.type.id !== "family" && (
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    type="button"
+                                    className="px-1.5 py-1 opacity-70 hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1"
+                                    aria-label={`Actions for relationship with ${fullName}`}
+                                    data-testid={`chip-actions-${rel.id}`}
+                                  >
+                                    <MoreHorizontal className="h-3.5 w-3.5" />
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem
+                                    disabled={!fullRel}
+                                    onClick={() => {
+                                      if (fullRel) setEditingRelationship(fullRel);
+                                    }}
+                                    data-testid={`chip-edit-${rel.id}`}
+                                  >
+                                    <Edit className="h-4 w-4 mr-2" />
+                                    Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    disabled={deleteMutation.isPending}
+                                    onClick={() => deleteMutation.mutate(rel.id)}
+                                    className="text-destructive focus:text-destructive"
+                                    data-testid={`chip-delete-${rel.id}`}
+                                  >
+                                    <Trash2 className="h-4 w-4 mr-2" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            )}
                           </div>
                         );
                       })}

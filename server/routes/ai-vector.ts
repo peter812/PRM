@@ -8,7 +8,7 @@ import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } 
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray, lt, desc } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray, lt, desc, or } from "drizzle-orm";
 import {
   insertPersonSchema,
   insertNoteSchema,
@@ -1120,117 +1120,115 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // ── Person photos (gated by facial intelligence flag) ─────────────────────
+    // ── Query photos containing a person (by face IDs and person UUID) ──────────
   
-    app.get("/api/prm-face/person-photos/:personUuid", async (req, res) => {
+    app.get("/api/image/query-person", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
   
-      const enabled = await getPrmFaceSetting("facial_intelligence_enabled");
-      if (enabled !== "true") return res.status(403).json({ error: "Facial intelligence features are disabled." });
-  
-      const { personUuid } = req.params;
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
-      const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      const personUuid = (req.query.personUuid as string) || (req.query.person_uuid as string);
+      if (!personUuid) {
+        return res.status(400).json({ error: "personUuid is required" });
+      }
   
       const page = parseInt((req.query.page as string) ?? "1", 10);
       const pageSize = parseInt((req.query.page_size as string) ?? "24", 10);
   
       try {
-        const response = await fetch(
-          `${prmBase(apiUrl)}/api/face/list?page=${page}&page_size=${pageSize}&person_uuid=${encodeURIComponent(personUuid)}`,
-          { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15000) }
-        );
-        if (!response.ok) {
-          if (response.status === 401 || response.status === 404 || response.status === 405) {
-            return res.status(401).json({ error: "API_KEY_INVALID" });
-          }
-          const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+        // 1. Retrieve the local person record
+        const [person] = await db.select().from(people).where(eq(people.id, personUuid));
+        if (!person) {
+          return res.status(404).json({ error: "Person not found." });
         }
   
-        const data = await response.json() as {
-          total?: number; page?: number; page_size?: number; total_pages?: number; faces?: any[];
-        };
-        const faces: any[] = data.faces ?? [];
-  
-        // Collect only images that contain at least one face belonging to the requested person
-        const matchingImageUuids = new Set<string>(
-          faces
-            .filter(f => f.image_uuid && f.person_uuid === personUuid)
-            .map(f => f.image_uuid)
-        );
-  
-        // Group ALL faces on those images (so face_count is accurate), but skip images
-        // that have no face linked to the requested person
-        const imageMap = new Map<string, { image_uuid: string; faceUuids: string[] }>();
-        for (const face of faces) {
-          if (!face.image_uuid || !matchingImageUuids.has(face.image_uuid)) continue;
-          if (!imageMap.has(face.image_uuid)) {
-            imageMap.set(face.image_uuid, { image_uuid: face.image_uuid, faceUuids: [] });
-          }
-          if (face.face_uuid) imageMap.get(face.image_uuid)!.faceUuids.push(face.face_uuid);
+        // 2. Gather face IDs associated with this person locally
+        const personfaceUuids = [person.id];
+        if (person.personfaceUuid) {
+          personfaceUuids.push(person.personfaceUuid);
         }
   
-        const base = prmBase(apiUrl);
-        const images = [...imageMap.values()].map(img => ({
-          image_uuid: img.image_uuid,
-          image_url: `${base}/img/${img.image_uuid}.jpg`,
-          thumb_url: `${base}/img-sml/${img.image_uuid}.webp`,
-          face_count: img.faceUuids.length,
-        }));
+        const personFaces = await db.select()
+          .from(faces)
+          .where(inArray(faces.personfaceUuid, personfaceUuids));
+        const localFaceIds = personFaces.map(f => f.id);
   
-        res.json({
-          total: data.total ?? faces.length,
-          page: data.page ?? page,
-          page_size: data.page_size ?? pageSize,
-          total_pages: data.total_pages ?? 1,
-          images,
-          api_url: base,
+        // 3. Gather face IDs from the external PRM-Face API if enabled
+        let apiFaceIds: string[] = [];
+        const enabled = await getPrmFaceSetting("facial_intelligence_enabled");
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+  
+        if (enabled === "true" && apiUrl && apiKey) {
+          try {
+            const response = await fetch(
+              `${prmBase(apiUrl)}/api/face/list?page=${page}&page_size=${pageSize}&person_uuid=${encodeURIComponent(personUuid)}`,
+              { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15000) }
+            );
+            if (response.ok) {
+              const data = await response.json() as { faces?: any[] };
+              const facesList = data.faces ?? [];
+              apiFaceIds = facesList
+                .filter(f => f.face_uuid && f.person_uuid === personUuid)
+                .map(f => f.face_uuid);
+            }
+          } catch (err: any) {
+            console.warn("[PRM-Face] failed to fetch faces from external API:", err.message);
+          }
+        }
+  
+        // 4. Combine and deduplicate face IDs
+        const allFaceIds = [...new Set([...localFaceIds, ...apiFaceIds])];
+  
+        // 5. Build conditions to query the photos table
+        const conditions = [];
+        for (const fid of allFaceIds) {
+          conditions.push(sql`${photos.faceUuids} @> ${JSON.stringify([{ faceUuid: fid }])}::jsonb`);
+          conditions.push(sql`${photos.facialIds} @> ${JSON.stringify([{ faceUuid: fid }])}::jsonb`);
+        }
+        // Always include direct mapping to personUuid as a fallback/additional check
+        conditions.push(sql`${photos.facialIds} @> ${JSON.stringify([{ personId: personUuid }])}::jsonb`);
+  
+        // 6. Query the photos table with pagination
+        let total = 0;
+        let pagedPhotos: any[] = [];
+        if (conditions.length > 0) {
+          const whereClause = or(...conditions);
+  
+          const countResult = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(photos)
+            .where(whereClause);
+          total = countResult[0]?.count ?? 0;
+  
+          pagedPhotos = await db
+            .select()
+            .from(photos)
+            .where(whereClause)
+            .orderBy(desc(photos.uploadedAt))
+            .limit(pageSize)
+            .offset((page - 1) * pageSize);
+        }
+  
+        // 7. Format the photos to match the expected frontend structure
+        const images = pagedPhotos.map(photo => {
+          const faceCount = Array.isArray(photo.faceUuids) ? photo.faceUuids.length : 0;
+          return {
+            image_uuid: photo.id,
+            image_url: photo.location,
+            thumb_url: photo.location,
+            face_count: faceCount,
+          };
         });
-      } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
-      }
-    });
-
-    // ── Get photos containing a person by UUID (queries local PRM DB only) ─────────────────
-    app.get("/api/image-contains-person-uuid/:personUuid?", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-
-      const personUuid = req.params.personUuid || (req.query.uuid as string) || (req.query.personUuid as string) || (req.query.person_uuid as string);
-      if (!personUuid) {
-        return res.status(400).json({ error: "Person UUID is required." });
-      }
-
-      try {
-        const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string || req.query.page_size as string) || 100));
-        const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
-
-        // Query the local PRM database for photos containing the given personUuid in their facialIds array
-        const matchingPhotos = await db
-          .select()
-          .from(photos)
-          .where(sql`${photos.facialIds} @> ${JSON.stringify([{ personId: personUuid }])}::jsonb`)
-          .orderBy(desc(photos.uploadedAt))
-          .limit(limit)
-          .offset(offset);
-
-        const countResult = await db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(photos)
-          .where(sql`${photos.facialIds} @> ${JSON.stringify([{ personId: personUuid }])}::jsonb`);
-
-        const total = countResult[0]?.count ?? 0;
-
+  
         res.json({
           total,
-          limit,
-          offset,
-          photos: matchingPhotos,
+          page,
+          page_size: pageSize,
+          total_pages: Math.ceil(total / pageSize) || 1,
+          images,
+          api_url: apiUrl ? prmBase(apiUrl) : "",
         });
       } catch (error: any) {
-        console.error("Error querying photos for person uuid:", error);
+        console.error("Error querying photos for person:", error);
         res.status(500).json({ error: `Failed to query photos: ${error.message}` });
       }
     });

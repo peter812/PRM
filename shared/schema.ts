@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, AnyPgColumn, index } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -333,7 +333,10 @@ export const photos = pgTable("photos", {
   heightPx: integer("height_px"), // Image height in pixels
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
-});
+}, (table) => ({
+  faceUuidsGinIdx: index("photos_face_uuids_gin_idx").using("gin", table.faceUuids),
+  facialIdsGinIdx: index("photos_facial_ids_gin_idx").using("gin", table.facialIds),
+}));
 
 // Daily notes tables
 export const dailyNotes = pgTable("daily_notes", {
@@ -1218,6 +1221,7 @@ export type RelationshipsGroupedResponse = {
     relationships: Array<{
       id: string;
       notes: string | null;
+      relationshipLabel?: string | null;
       toPerson: {
         id: string;
         firstName: string;

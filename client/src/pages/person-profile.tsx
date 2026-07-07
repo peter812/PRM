@@ -95,7 +95,7 @@ export default function PersonProfile() {
     },
     onSuccess: () => {
       toast({ title: "Photo uploaded", description: "Photo added to facial recognition database." });
-      if (id) queryClient.invalidateQueries({ queryKey: ["/api/prm-face/person-photos", id] });
+      if (id) queryClient.invalidateQueries({ queryKey: ["/api/image/query-person", id] });
     },
     onError: (error: Error) => {
       toast({ title: "Upload failed", description: error.message, variant: "destructive" });

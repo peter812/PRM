@@ -110,7 +110,7 @@ export default function ImageDetailPage() {
       });
       queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
       queryClient.invalidateQueries({ queryKey: ["/api/prm-face/img/list"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/person-photos"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/image/query-person"] });
       setLocation(back.href);
     } catch (err: any) {
       toast({

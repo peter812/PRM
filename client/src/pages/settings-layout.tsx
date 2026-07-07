@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2 } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -24,6 +24,7 @@ import { lazy, Suspense } from "react";
 
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
+const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
 const ExperimentalFeaturesPage = lazy(() => import("@/pages/experimental-features"));
 const DataTypesPage = lazy(() => import("@/pages/data-types"));
 const ApiSettingsPage = lazy(() => import("@/pages/api-settings"));
@@ -78,6 +79,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Social Graph", url: "/settings/social-graph", icon: Network },
       { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
+      { title: "Search Options", url: "/settings/search", icon: Search },
       { title: "Experimental Features", url: "/settings/experimental", icon: Sparkles },
     ],
   },
@@ -160,8 +162,9 @@ export function SettingsSidebar() {
   const isAppOptionsActive =
     location.startsWith("/settings/app") ||
     location.startsWith("/settings/social-graph") ||
-    location === "/settings/chrome-extension" ||
-    location === "/settings/experimental";
+    location.startsWith("/settings/chrome-extension") ||
+    location.startsWith("/settings/experimental") ||
+    location.startsWith("/settings/search");
   const isApiDocsActive = location.startsWith("/settings/api");
   const isImageStorageActive = location.startsWith("/settings/image-storage") && location !== "/settings/image-storage/tasks";
   const isIntelligenceActive = location.startsWith("/settings/intelligence") || location === "/settings/vector";
@@ -263,6 +266,7 @@ export default function SettingsLayout() {
           <Route path="/" component={() => <Redirect to="/user" />} />
           <Route path="/user" component={UserOptionsPage} />
           <Route path="/app" component={AppOptionsPage} />
+          <Route path="/search" component={SearchSettingsPage} />
           <Route path="/experimental" component={ExperimentalFeaturesPage} />
           <Route path="/data-types" component={DataTypesPage} />
           <Route path="/image-tasks" component={ImageTasksSettingsPage} />

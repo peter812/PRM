@@ -1,191 +1,22 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { Search as SearchIcon, Users, Users2, MoreVertical, GripVertical, FileText, Calendar, AtSign, ChevronUp, ChevronDown, BookOpen, MessageSquare, Sparkles } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Search as SearchIcon, Sparkles, Calendar, FileText, AtSign, BookOpen, MessageSquare } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLocation } from "wouter";
 import { getInitials } from "@/lib/utils";
 import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, DailyNote, AiChat, MegaSearchResult, UuidLookupResult } from "@shared/schema";
-
-type SearchCategory = 'people' | 'groups' | 'interactions' | 'notes' | 'socialProfiles' | 'dailyNotes' | 'chats';
-
-interface SearchPreferences {
-  order: SearchCategory[];
-  enabled: Record<SearchCategory, boolean>;
-}
-
-const DEFAULT_PREFERENCES: SearchPreferences = {
-  order: ['people', 'groups', 'interactions', 'notes', 'socialProfiles', 'dailyNotes', 'chats'],
-  enabled: {
-    people: true,
-    groups: true,
-    interactions: true,
-    notes: true,
-    socialProfiles: true,
-    dailyNotes: true,
-    chats: true,
-  },
-};
-
-const CATEGORY_LABELS: Record<SearchCategory, string> = {
-  people: 'People',
-  groups: 'Groups',
-  interactions: 'Interactions',
-  notes: 'Notes',
-  socialProfiles: 'Social Profiles',
-  dailyNotes: 'Daily Notes',
-  chats: 'Chats',
-};
-
-const CATEGORY_ICONS: Record<SearchCategory, typeof Users> = {
-  people: Users,
-  groups: Users2,
-  interactions: Calendar,
-  notes: FileText,
-  socialProfiles: AtSign,
-  dailyNotes: BookOpen,
-  chats: MessageSquare,
-};
-
-function loadPreferences(): SearchPreferences {
-  try {
-    const stored = localStorage.getItem('searchPreferences');
-    if (stored) {
-      const parsed = JSON.parse(stored) as SearchPreferences;
-      // Only keep categories that are still valid; strip anything obsolete.
-      const validCategories = new Set(DEFAULT_PREFERENCES.order);
-      const mergedOrder = [...parsed.order].filter(c => validCategories.has(c as SearchCategory)) as SearchCategory[];
-      const mergedEnabled = { ...DEFAULT_PREFERENCES.enabled, ...parsed.enabled };
-
-      // Add any new categories missing from stored order.
-      DEFAULT_PREFERENCES.order.forEach(category => {
-        if (!mergedOrder.includes(category)) {
-          mergedOrder.push(category);
-        }
-      });
-
-      return { order: mergedOrder, enabled: mergedEnabled };
-    }
-  } catch (e) {
-    console.error('Failed to load search preferences:', e);
-  }
-  return DEFAULT_PREFERENCES;
-}
-
-function savePreferences(prefs: SearchPreferences): void {
-  try {
-    localStorage.setItem('searchPreferences', JSON.stringify(prefs));
-  } catch (e) {
-    console.error('Failed to save search preferences:', e);
-  }
-}
-
-function DraggableList({
-  items,
-  enabled,
-  onReorder,
-  onToggle
-}: {
-  items: SearchCategory[];
-  enabled: Record<SearchCategory, boolean>;
-  onReorder: (items: SearchCategory[]) => void;
-  onToggle: (category: SearchCategory, checked: boolean) => void;
-}) {
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    setDraggedIndex(index);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    if (draggedIndex !== null && draggedIndex !== index) {
-      setDragOverIndex(index);
-    }
-  };
-
-  const handleDragEnd = () => {
-    if (draggedIndex !== null && dragOverIndex !== null && draggedIndex !== dragOverIndex) {
-      const newItems = [...items];
-      const [removed] = newItems.splice(draggedIndex, 1);
-      newItems.splice(dragOverIndex, 0, removed);
-      onReorder(newItems);
-    }
-    setDraggedIndex(null);
-    setDragOverIndex(null);
-  };
-
-  const moveItem = (index: number, direction: 'up' | 'down') => {
-    const newIndex = direction === 'up' ? index - 1 : index + 1;
-    if (newIndex < 0 || newIndex >= items.length) return;
-    const newItems = [...items];
-    [newItems[index], newItems[newIndex]] = [newItems[newIndex], newItems[index]];
-    onReorder(newItems);
-  };
-
-  return (
-    <div className="space-y-2">
-      {items.map((category, index) => {
-        const Icon = CATEGORY_ICONS[category];
-        const isDragging = draggedIndex === index;
-        const isDragOver = dragOverIndex === index;
-
-        if (!Icon) return null;
-        return (
-          <div
-            key={category}
-            draggable
-            onDragStart={(e) => handleDragStart(e, index)}
-            onDragOver={(e) => handleDragOver(e, index)}
-            onDragEnd={handleDragEnd}
-            className={`flex items-center gap-3 p-3 rounded-md border cursor-move transition-colors ${isDragging ? 'opacity-50 bg-muted' : ''
-              } ${isDragOver ? 'border-primary bg-accent' : 'border-border'}`}
-            data-testid={`search-category-${category}`}
-          >
-            <div className="flex flex-col gap-0.5">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-5 w-5"
-                onClick={() => moveItem(index, 'up')}
-                disabled={index === 0}
-                data-testid={`move-up-${category}`}
-              >
-                <ChevronUp className="h-3 w-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-5 w-5"
-                onClick={() => moveItem(index, 'down')}
-                disabled={index === items.length - 1}
-                data-testid={`move-down-${category}`}
-              >
-                <ChevronDown className="h-3 w-3" />
-              </Button>
-            </div>
-            <GripVertical className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-            <Checkbox
-              checked={enabled[category]}
-              onCheckedChange={(checked) => onToggle(category, checked as boolean)}
-              data-testid={`checkbox-${category}`}
-            />
-            <Icon className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium flex-1">{CATEGORY_LABELS[category]}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+import {
+  type SearchCategory,
+  type SearchPreferences,
+  loadPreferences,
+  CATEGORY_LABELS,
+  CATEGORY_ICONS,
+} from "@/lib/search-preferences";
 
 export function GlobalSearch() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -606,7 +437,6 @@ export function GlobalSearch() {
               </TooltipContent>
             </Tooltip>
           )}
-          <SearchSettingsButton />
         </div>
       </div>
 
@@ -659,65 +489,5 @@ export function GlobalSearch() {
         </Card>
       )}
     </div>
-  );
-}
-
-export function SearchSettingsButton() {
-  const [isOpen, setIsOpen] = useState(false);
-  const [preferences, setPreferences] = useState<SearchPreferences>(loadPreferences);
-
-  const handleReorder = useCallback((newOrder: SearchCategory[]) => {
-    const newPrefs = { ...preferences, order: newOrder };
-    setPreferences(newPrefs);
-    savePreferences(newPrefs);
-    window.dispatchEvent(new Event('searchPreferencesChanged'));
-  }, [preferences]);
-
-  const handleToggle = useCallback((category: SearchCategory, checked: boolean) => {
-    const newPrefs = {
-      ...preferences,
-      enabled: { ...preferences.enabled, [category]: checked },
-    };
-    setPreferences(newPrefs);
-    savePreferences(newPrefs);
-    window.dispatchEvent(new Event('searchPreferencesChanged'));
-  }, [preferences]);
-
-  return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
-      <DialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          data-testid="button-search-settings"
-          title="Search Settings"
-        >
-          <MoreVertical className="h-4 w-4" />
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Search Settings</DialogTitle>
-          <DialogDescription>
-            Customize the order and visibility of search results.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 py-4">
-          <div>
-            <h4 className="text-sm font-medium mb-3">Search Order</h4>
-            <p className="text-sm text-muted-foreground mb-4">
-              Drag items to reorder how results appear. Uncheck to exclude from search.
-            </p>
-            <DraggableList
-              items={preferences.order}
-              enabled={preferences.enabled}
-              onReorder={handleReorder}
-              onToggle={handleToggle}
-            />
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
