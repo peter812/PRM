@@ -42,6 +42,7 @@ export interface FamilyTreePerson {
   lastName: string;
   avatarUrl: string | null;
   depth: number;
+  sex?: string;
 }
 
 export interface FamilyTreeRelationship {

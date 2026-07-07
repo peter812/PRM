@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { computeExtendedRelationships } from "@/lib/family-tree-relations";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -16,7 +17,6 @@ import {
   Sparkles,
   Eye,
   EyeOff,
-  Info,
   X,
   Trash2,
   Crosshair,
@@ -131,6 +131,7 @@ export function FamilyTreeExplorer({
   const canvasRef = useRef<FamilyTreeCanvasHandle>(null);
 
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(initialPersonId);
+  const [resolvedTitles, setResolvedTitles] = useState<Record<string, string>>({});
   const [depth, setDepth] = useState(initialDepth);
   const [viewMode, setViewMode] = useState<FamilyTreeViewMode>(initialView);
   const [showPersonSelector, setShowPersonSelector] = useState(false);
@@ -202,6 +203,31 @@ export function FamilyTreeExplorer({
   const { data: allPeople } = useQuery<PersonBasic[]>({
     queryKey: ["/api/people"],
   });
+
+  useEffect(() => {
+    if (!treeData || !selectedPersonId) {
+      setResolvedTitles({});
+      return;
+    }
+
+    let active = true;
+    const calculateTitles = async () => {
+      // 50ms delay so the graph completes its initial layout/render
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (!active) return;
+
+      const titles = computeExtendedRelationships(treeData, selectedPersonId);
+      if (active) {
+        setResolvedTitles(titles);
+      }
+    };
+
+    calculateTitles();
+
+    return () => {
+      active = false;
+    };
+  }, [treeData, selectedPersonId]);
 
   const selectedPerson = allPeople?.find((p) => p.id === selectedPersonId);
   const selectedPersonName = personName(selectedPerson);
@@ -714,17 +740,6 @@ export function FamilyTreeExplorer({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Dev banner (standalone page only) */}
-      {!embedded && (
-        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-1 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
-          <Info className="h-3 w-3" />
-          <span className="font-medium">Development Version</span>
-          <span className="hidden sm:inline">
-            — This page uses React Flow for interactive graph visualization.
-          </span>
-        </div>
-      )}
-
       {/* Controls bar */}
       <div className="border-b px-4 py-2 flex items-center gap-3 flex-wrap">
         <Button
@@ -908,6 +923,7 @@ export function FamilyTreeExplorer({
             onDivorce={handleDivorce}
             viewMode={viewMode}
             showAddOptions={showAddOptions}
+            resolvedTitles={resolvedTitles}
           />
         )}
 

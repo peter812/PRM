@@ -183,6 +183,7 @@ export interface FamilyTreePersonEntry {
   lastName: string;
   avatarUrl: string | null;
   depth: number;
+  sex: string;
 }
 
 export interface FamilyTreeResult {
@@ -1328,6 +1329,7 @@ export class DatabaseStorage implements IStorage {
       lastName: p.lastName ?? "",
       avatarUrl: p.imageUrl ?? null,
       depth: visitedPeople.get(p.id) ?? 0,
+      sex: p.sex,
     }));
 
     const treeRelationships: Array<{ id: string; fromPersonId: string; toPersonId: string; familyRelationshipType: string }> = [];

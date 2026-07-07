@@ -303,6 +303,7 @@ function buildFlowElements(
   onAddMember?: (relatedPersonId: string, suggestedRole: string) => void,
   onDeleteEdge?: (edgeId: string) => void,
   onDivorce?: (partnershipId: string) => void,
+  resolvedTitles?: Record<string, string>,
 ): { nodes: Node[]; edges: Edge[] } {
   const { rootPersonId, people, relationships } = data;
   const missingLinks = showAddOptions ? data.missingLinks : [];
@@ -718,23 +719,26 @@ function buildFlowElements(
   // 2. Create person nodes (with parentId for coupled people)
   for (const person of people) {
     const pos = nodePositions.get(person.id) ?? { x: 0, y: 0 };
-    const relToRoot = relationships.find(
-      (r) =>
-        (r.fromPersonId === person.id && r.toPersonId === rootPersonId) ||
-        (r.toPersonId === person.id && r.fromPersonId === rootPersonId),
-    );
-    let roleLabel = "";
-    if (relToRoot) {
-      if (relToRoot.fromPersonId === person.id) {
-        roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
-      } else {
-        const category = getRelationshipCategory(relToRoot.familyRelationshipType);
-        if (category === "parent") {
-          roleLabel = "Child";
-        } else if (category === "child") {
-          roleLabel = formatRelationshipLabel(getInverseParentRole(relToRoot.familyRelationshipType));
-        } else {
+    let roleLabel = resolvedTitles?.[person.id];
+    if (roleLabel === undefined) {
+      const relToRoot = relationships.find(
+        (r) =>
+          (r.fromPersonId === person.id && r.toPersonId === rootPersonId) ||
+          (r.toPersonId === person.id && r.fromPersonId === rootPersonId),
+      );
+      roleLabel = "";
+      if (relToRoot) {
+        if (relToRoot.fromPersonId === person.id) {
           roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
+        } else {
+          const category = getRelationshipCategory(relToRoot.familyRelationshipType);
+          if (category === "parent") {
+            roleLabel = "Child";
+          } else if (category === "child") {
+            roleLabel = formatRelationshipLabel(getInverseParentRole(relToRoot.familyRelationshipType));
+          } else {
+            roleLabel = formatRelationshipLabel(relToRoot.familyRelationshipType);
+          }
         }
       }
     }
@@ -1029,6 +1033,7 @@ interface FamilyTreeFlowInnerProps {
   /** Fired when the user clicks the delete button on an edge. */
   onDeleteEdge?: (edgeId: string) => void;
   onDivorce?: (partnershipId: string) => void;
+  resolvedTitles?: Record<string, string>;
 }
 
 /** Returns true when a node id refers to a real person (not a couple group or virtual placeholder). */
@@ -1056,6 +1061,7 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
       onDragEndNoTarget,
       onDeleteEdge,
       onDivorce,
+      resolvedTitles,
     },
     ref,
   ) {
@@ -1082,11 +1088,12 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         currentPositions,
         onAddMember,
         onDeleteEdge,
-        onDivorce
+        onDivorce,
+        resolvedTitles
       );
       setNodes(newNodes);
       setEdges(newEdges);
-    }, [data, viewMode, showAddOptions]);
+    }, [data, viewMode, showAddOptions, resolvedTitles]);
 
     // Reset layout (clear manual drags) when root person changes
     useEffect(() => {
@@ -1097,7 +1104,8 @@ const FamilyTreeFlowInner = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowInn
         {},
         onAddMember,
         onDeleteEdge,
-        onDivorce
+        onDivorce,
+        resolvedTitles
       );
       setNodes(newNodes);
       setEdges(newEdges);
@@ -1284,6 +1292,7 @@ interface FamilyTreeFlowProps {
   className?: string;
   viewMode?: FamilyTreeViewMode;
   showAddOptions?: boolean;
+  resolvedTitles?: Record<string, string>;
 }
 
 export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowProps>(
@@ -1302,6 +1311,7 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
       className,
       viewMode = "name",
       showAddOptions = true,
+      resolvedTitles,
     },
     ref,
   ) {
@@ -1324,6 +1334,7 @@ export const FamilyTreeFlow = forwardRef<FamilyTreeCanvasHandle, FamilyTreeFlowP
             onDragEndNoTarget={onDragEndNoTarget}
             onDeleteEdge={onDeleteEdge}
             onDivorce={onDivorce}
+            resolvedTitles={resolvedTitles}
           />
         </ReactFlowProvider>
       </div>
