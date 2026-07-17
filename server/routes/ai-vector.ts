@@ -373,6 +373,9 @@ export function registerRoutes(app: Express) {
         })
         .where(eq(photos.id, photoId));
 
+      // The photo now has an AI description, so it's eligible for vector storage.
+      if (description.trim()) syncEntityInBackground("image", photoId);
+
       return description;
     }
 
@@ -660,6 +663,119 @@ export function registerRoutes(app: Express) {
         res.json({ success: true, description });
       } catch (error: any) {
         console.error("Error saving photo assignments:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/photos/:id/run-face-recog", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { id } = req.params;
+      const { background } = req.body;
+
+      try {
+        const [photo] = await db.select().from(photos).where(eq(photos.id, id));
+        if (!photo) return res.status(404).json({ error: "Photo not found." });
+
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+        if (!apiUrl || !apiKey) {
+          return res.status(400).json({ error: "PRM-Face service is not configured." });
+        }
+
+        // 1. Fetch the image file into a buffer
+        let buffer: Buffer;
+        let mimeType = "image/jpeg";
+        
+        if (isLocalImageUrl(photo.location)) {
+          const fileName = photo.location.split("/api/images/").pop();
+          if (!fileName) {
+            return res.status(400).json({ error: "Invalid local image path" });
+          }
+          const filePath = getLocalImagePath(fileName);
+          if (!filePath) {
+            return res.status(404).json({ error: "Local photo file not found" });
+          }
+          buffer = fs.readFileSync(filePath);
+          // Simple extension-based mime type detection
+          const ext = path.extname(filePath).toLowerCase();
+          if (ext === ".png") mimeType = "image/png";
+          else if (ext === ".webp") mimeType = "image/webp";
+        } else {
+          // S3 or external URL
+          const imgRes = await fetch(photo.location);
+          if (!imgRes.ok) {
+            return res.status(500).json({ error: `Failed to download image from S3: ${imgRes.statusText}` });
+          }
+          const arrayBuffer = await imgRes.arrayBuffer();
+          buffer = Buffer.from(arrayBuffer);
+          mimeType = imgRes.headers.get("content-type") || "image/jpeg";
+        }
+
+        // 2. Send image to PRM-Face microservice img/add
+        const formData = new FormData();
+        const blob = new Blob([buffer], { type: mimeType });
+        const originalName = path.basename(photo.location) || "image.jpg";
+        formData.append("image", blob, originalName);
+        formData.append("max_faces", "100");
+
+        let prmResponse;
+        try {
+          prmResponse = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
+            method: "POST",
+            headers: { "X-API-Key": apiKey },
+            body: formData,
+            signal: AbortSignal.timeout(30000),
+          });
+        } catch (fetchErr: any) {
+          console.error("Failed to contact PRM-Face microservice:", fetchErr.message);
+          return res.status(503).json({
+            error: `Could not reach the PRM-Face server. Please check that the microservice at ${apiUrl} is online and running.`
+          });
+        }
+
+        if (!prmResponse.ok) {
+          const errBody = await prmResponse.text();
+          return res.status(prmResponse.status).json({ error: `PRM-Face error: ${errBody}` });
+        }
+
+        const data = await prmResponse.json() as any;
+        const detectedFaces = data.results ?? data.faces ?? [];
+
+        // 3. Handle background vs foreground
+        if (background) {
+          const facialIds = detectedFaces.map((f: any) => ({
+            faceUuid: f.face_uuid || f.faceUuid,
+            coordinates: f.box || f.coordinates || null,
+            personId: f.person_uuid || f.personId || null,
+            socialAccountId: null,
+          }));
+
+          await db.update(photos)
+            .set({
+              facialIds,
+              faceIdAt: new Date(),
+            })
+            .where(eq(photos.id, id));
+
+          return res.json({
+            success: true,
+            background: true,
+            facesDetected: detectedFaces.length,
+          });
+        }
+
+        // Foreground: return detection results in the shape expected by client
+        res.json({
+          imageUrl: photo.location,
+          photoId: photo.id,
+          faceDetection: {
+            faces_detected: data.faces_detected ?? detectedFaces.length,
+            results: detectedFaces,
+          },
+        });
+
+      } catch (error: any) {
+        console.error("Error in run-face-recog endpoint:", error);
         res.status(500).json({ error: error.message });
       }
     });
@@ -2028,7 +2144,25 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: error.message });
       }
     });
-  
+
+    // Delete all chats for the current user
+    app.delete("/api/ai-chats", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const existing = await db.query.aiChats.findMany({
+          where: (t, { eq }) => eq(t.userId, req.user!.id),
+          columns: { id: true, vectorId: true },
+        });
+        await db.delete(aiChats).where(eq(aiChats.userId, req.user!.id));
+        for (const row of existing) {
+          if (row.vectorId) void deleteEntityVector("ai_chat", row.vectorId);
+        }
+        res.json({ success: true, deleted: existing.length });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     // Send a message in a chat and get the assistant reply (persists the conversation)
     app.post("/api/ai-chats/:id/message", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });

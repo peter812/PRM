@@ -175,6 +175,21 @@ export function composeTextForEntity(type: UniversalEntityType, data: Record<str
   }
 }
 
+/**
+ * Whether an entity currently has content worth vectorizing.
+ *
+ * Images are special: a photo is only eligible once it has an AI-generated
+ * description (`imageDescription`). Photos are inserted into the DB before that
+ * description exists, and several call sites fire `syncEntityInBackground("image", …)`
+ * at insert time, so this guard keeps description-less photos out of vector storage.
+ */
+export function isVectorizable(type: UniversalEntityType, data: Record<string, any>): boolean {
+  if (type === "image") {
+    return typeof data.imageDescription === "string" && data.imageDescription.trim().length > 0;
+  }
+  return composeTextForEntity(type, data).trim().length > 0;
+}
+
 // ── Get title for display ────────────────────────────────────────────────────
 
 function getTitleForEntity(type: UniversalEntityType, data: Record<string, any>): string {
@@ -215,6 +230,10 @@ export async function upsertEntityVector(
   const cfg = await loadUniversalVectorConfig();
   if (!cfg.universalEnabled) throw new Error("Universal vector storage is disabled.");
   if (!cfg.qdrantUrl) throw new Error("Qdrant URL is not configured.");
+
+  if (type === "image" && !isVectorizable(type, data)) {
+    throw new Error(`Skipping image ${entityId}: no AI description yet.`);
+  }
 
   const text = composeTextForEntity(type, data);
   if (!text) throw new Error(`No text to embed for ${type} ${entityId}`);
@@ -345,6 +364,10 @@ export function syncEntityInBackground(type: UniversalEntityType, entityId: stri
       const data = await loadEntityData(type, entityId);
       if (!data) return;
 
+      // Skip cleanly (no warning) when there's nothing to vectorize yet — e.g. a
+      // photo that hasn't been given an AI description. It'll sync once eligible.
+      if (!isVectorizable(type, data)) return;
+
       await upsertEntityVector(type, entityId, data, data.vectorId);
     } catch (err: any) {
       console.warn("[vector-universal] background sync for " + type + "/" + entityId + " failed:", err?.message ?? err);
@@ -466,10 +489,16 @@ export async function bulkSyncAll(
   const entityIds: { type: UniversalEntityType; ids: string[] }[] = [];
 
   for (const { type, table } of entitySources) {
+    // Images are only eligible once they have an AI description; excluding the
+    // rest here avoids re-scanning description-less photos on every bulk sync.
+    const where =
+      type === "image"
+        ? sql`vector_synced_at IS NULL AND image_description IS NOT NULL AND btrim(image_description) <> ''`
+        : sql`vector_synced_at IS NULL`;
     const rows = await db
       .select({ id: table.id })
       .from(table)
-      .where(sql`vector_synced_at IS NULL`);
+      .where(where);
     entityIds.push({ type, ids: rows.map((r: any) => r.id) });
     totalCount += rows.length;
   }

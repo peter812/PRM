@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
+import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 import { AddNoteDialog } from "@/components/add-note-dialog";
@@ -333,11 +334,13 @@ export default function PersonProfile() {
                 <div className="flex items-center gap-2 text-sm">
                   <Phone className="h-4 w-4 text-muted-foreground" />
                   <a
-                    href={`tel:${person.phone}`}
+                    href={getTruePeopleSearchUrl(person.phone)}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="hover:underline"
                     data-testid="link-phone"
                   >
-                    {person.phone}
+                    {formatPhoneNumberForDisplay(person.phone)}
                   </a>
                 </div>
               )}

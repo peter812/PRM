@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AlertCircle, Trash2, Users, Network, ScanFace } from "lucide-react";
+import { AlertCircle, Trash2, Users, Network, ScanFace, MessageSquare } from "lucide-react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -30,6 +30,9 @@ export default function DeleteOptionsPage() {
 
   const [isResetImagesDialogOpen, setIsResetImagesDialogOpen] = useState(false);
   const [confirmResetImages, setConfirmResetImages] = useState(false);
+
+  const [isDeleteChatsDialogOpen, setIsDeleteChatsDialogOpen] = useState(false);
+  const [confirmDeleteChats, setConfirmDeleteChats] = useState(false);
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -205,6 +208,45 @@ export default function DeleteOptionsPage() {
     }
   };
 
+  const deleteAllChatsMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/ai-chats", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to delete chats");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Chats Deleted",
+        description: `Successfully deleted ${data.deleted} chats.`,
+      });
+
+      setIsDeleteChatsDialogOpen(false);
+      setConfirmDeleteChats(false);
+
+      queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Delete Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDeleteAllChats = () => {
+    if (confirmDeleteChats) {
+      deleteAllChatsMutation.mutate();
+    }
+  };
+
   const removeDuplicatesMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch("/api/social-accounts/remove-duplicates", {
@@ -260,6 +302,35 @@ export default function DeleteOptionsPage() {
     onError: (error: Error) => {
       toast({
         title: "Cleanup Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const correctPhoneSchemaMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/maintenance/correct-phone-schema", {
+        method: "POST",
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to correct phone number schema");
+      }
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Phone numbers corrected",
+        description: `Successfully corrected ${data.corrected} phone number(s).`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Correction Failed",
         description: error.message,
         variant: "destructive",
       });
@@ -336,6 +407,33 @@ export default function DeleteOptionsPage() {
                   <>
                     <Trash2 className="h-4 w-4 text-orange-500" />
                     Remove Duplicates
+                  </>
+                )}
+              </Button>
+            </div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border bg-card">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm">Correct Phone Number Schema</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Corrects all phone numbers in the database to standard format (1 followed by digits with no spaces).
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => correctPhoneSchemaMutation.mutate()}
+                disabled={correctPhoneSchemaMutation.isPending}
+                className="border-orange-500/50 hover:bg-orange-500/10 hover:text-orange-500 shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-correct-phone-number-schema"
+              >
+                {correctPhoneSchemaMutation.isPending ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Users className="h-4 w-4 text-orange-500" />
+                    Correct Schema
                   </>
                 )}
               </Button>
@@ -429,6 +527,25 @@ export default function DeleteOptionsPage() {
               >
                 <ScanFace className="h-4 w-4" />
                 Reset Images &amp; Faces...
+              </Button>
+            </div>
+
+            {/* Row 5: Delete All Chats */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Delete All Chats</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Permanently deletes all AI chat conversations and their message history. Other data is unaffected.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsDeleteChatsDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-delete-all-chats-trigger"
+              >
+                <MessageSquare className="h-4 w-4" />
+                Delete All Chats...
               </Button>
             </div>
 
@@ -615,6 +732,67 @@ export default function DeleteOptionsPage() {
               data-testid="button-reset-images"
             >
               {resetImagesMutation.isPending ? "Resetting..." : "Reset Images & Faces"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Delete All Chats */}
+      <Dialog open={isDeleteChatsDialogOpen} onOpenChange={(open) => {
+        setIsDeleteChatsDialogOpen(open);
+        if (!open) setConfirmDeleteChats(false);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Delete All Chats
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete all AI chat conversations from the database.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>All AI chats and their full message history will be permanently deleted</li>
+                <li>Saved system messages and titles will be lost</li>
+                <li>Other data (people, groups, interactions) is unaffected</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-delete-chats" className="text-sm font-medium pr-4 leading-normal">
+                I understand that this action is irreversible and wish to proceed
+              </Label>
+              <Switch
+                id="confirm-delete-chats"
+                checked={confirmDeleteChats}
+                onCheckedChange={setConfirmDeleteChats}
+                data-testid="switch-confirm-delete-chats"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsDeleteChatsDialogOpen(false);
+                setConfirmDeleteChats(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteAllChats}
+              disabled={!confirmDeleteChats || deleteAllChatsMutation.isPending}
+              data-testid="button-delete-all-chats"
+            >
+              {deleteAllChatsMutation.isPending ? "Deleting..." : "Delete All Chats"}
             </Button>
           </DialogFooter>
         </DialogContent>

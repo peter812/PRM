@@ -124,6 +124,7 @@ import {
   deriveLineageRole,
   type CollegeExperience,
   type AdditionalSchoolingExperience,
+  cleanPhoneNumberForStorage,
 } from "@shared/schema";
 import { computeFamilyLabels } from "./family-relations-helper";
 import { db, pool } from "./db";
@@ -132,6 +133,7 @@ import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { deleteImageLocally, isLocalImageUrl } from "./local-storage";
 import { deleteImageFromS3 } from "./s3";
+import { syncEntityInBackground } from "./vector-universal";
 
 const PostgresSessionStore = connectPg(session);
 
@@ -298,6 +300,7 @@ export interface IStorage {
   updateInteractionType(id: string, interactionType: Partial<InsertInteractionType>): Promise<InteractionType | undefined>;
   deleteInteractionType(id: string): Promise<void>;
   removeDuplicateRelationshipAndInteractionTypes(): Promise<{ deletedRelationshipTypes: number; deletedInteractionTypes: number }>;
+  correctPhoneNumberSchema(): Promise<{ corrected: number }>;
 
   // User operations
   getUser(id: number): Promise<User | undefined>;
@@ -714,7 +717,7 @@ export class DatabaseStorage implements IStorage {
           END`
         );
     }
-    return await db.select().from(people).where(sql`${people.userId} IS NULL`);
+    return await db.select().from(people);
   }
 
   async getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>> {
@@ -966,7 +969,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createPerson(insertPerson: InsertPerson): Promise<Person> {
-    const [person] = await db.insert(people).values(insertPerson).returning();
+    const data = { ...insertPerson };
+    if (data.phone !== undefined) {
+      data.phone = cleanPhoneNumberForStorage(data.phone);
+    }
+    const [person] = await db.insert(people).values(data).returning();
     return person;
   }
 
@@ -974,9 +981,13 @@ export class DatabaseStorage implements IStorage {
     id: string,
     personData: Partial<InsertPerson>
   ): Promise<Person | undefined> {
+    const data = { ...personData };
+    if (data.phone !== undefined) {
+      data.phone = cleanPhoneNumberForStorage(data.phone);
+    }
     const [person] = await db
       .update(people)
-      .set(personData)
+      .set(data)
       .where(eq(people.id, id))
       .returning();
     return person || undefined;
@@ -1847,6 +1858,25 @@ export class DatabaseStorage implements IStorage {
     return { deletedRelationshipTypes, deletedInteractionTypes };
   }
 
+  async correctPhoneNumberSchema(): Promise<{ corrected: number }> {
+    const allPeople = await db.select().from(people);
+    let corrected = 0;
+    for (const p of allPeople) {
+      if (p.phone) {
+        const cleaned = cleanPhoneNumberForStorage(p.phone);
+        if (cleaned !== p.phone) {
+          await db
+            .update(people)
+            .set({ phone: cleaned })
+            .where(eq(people.id, p.id));
+          corrected++;
+          void syncEntityInBackground("person", p.id);
+        }
+      }
+    }
+    return { corrected };
+  }
+
   // User operations
   async getUser(id: number): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
@@ -1878,9 +1908,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateUserPerson(userId: number, personData: Partial<InsertPerson>): Promise<void> {
+    const data = { ...personData };
+    if (data.phone !== undefined) {
+      data.phone = cleanPhoneNumberForStorage(data.phone);
+    }
     await db
       .update(people)
-      .set(personData)
+      .set(data)
       .where(eq(people.userId, userId));
   }
 
@@ -3371,7 +3405,11 @@ export class DatabaseStorage implements IStorage {
 
   // Import helper methods (with ID specification)
   async createPersonWithId(person: InsertPerson & { id: string }): Promise<Person> {
-    const [newPerson] = await db.insert(people).values(person).returning();
+    const data = { ...person };
+    if (data.phone !== undefined) {
+      data.phone = cleanPhoneNumberForStorage(data.phone);
+    }
+    const [newPerson] = await db.insert(people).values(data).returning();
     return newPerson;
   }
 

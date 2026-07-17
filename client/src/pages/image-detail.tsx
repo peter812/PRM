@@ -1,12 +1,13 @@
 import { useState, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRoute, useLocation } from "wouter";
-import { Loader2, ChevronLeft, ImageOff, CheckCircle2, XCircle, ExternalLink, Trash2 } from "lucide-react";
+import { Loader2, ChevronLeft, ImageOff, CheckCircle2, XCircle, ExternalLink, Trash2, Scan, Clock } from "lucide-react";
 import { format } from "date-fns";
 import type { Photo, Person, SocialAccountWithCurrentProfile } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { imageDetailHref } from "@/lib/image-link";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,19 +18,30 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 
 function formatDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
   return format(new Date(d), "MMM d, yyyy HH:mm:ss");
 }
 
-function StatusChip({ label, value, testId }: { label: string; value: boolean; testId?: string }) {
+function StatusChip({ label, value, onClick, testId }: { label: string; value: boolean; onClick?: () => void; testId?: string }) {
   const Icon = value ? CheckCircle2 : XCircle;
   return (
     <span
+      onClick={onClick}
       className={
         "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-white " +
-        (value ? "bg-green-600" : "bg-red-600")
+        (value ? "bg-green-600" : "bg-red-600") +
+        (onClick ? " cursor-pointer hover:opacity-90 active:scale-95 transition-all" : "")
       }
       data-testid={testId}
     >
@@ -93,6 +105,51 @@ export default function ImageDetailPage() {
   const [, setLocation] = useLocation();
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+
+  const [showConfirmRecog, setShowConfirmRecog] = useState(false);
+  const [showForegroundRecog, setShowForegroundRecog] = useState(false);
+  const [isRunningBackground, setIsRunningBackground] = useState(false);
+
+  const handleRunBackground = async () => {
+    setIsRunningBackground(true);
+    setShowConfirmRecog(false);
+    try {
+      const res = await fetch(`/api/photos/${id}/run-face-recog`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ background: true }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(body.error || `Server returned ${res.status}`);
+      }
+      const data = await res.json();
+      
+      queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
+
+      toast({
+        title: "Facial Recog Complete",
+        description: `Successfully detected ${data.facesDetected} face(s) in the background.`,
+        action: (
+          <ToastAction altText="View Results" onClick={() => {
+            queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
+            setLocation(`/image/${id}`);
+          }}>
+            View Results
+          </ToastAction>
+        ),
+      });
+    } catch (err: any) {
+      toast({
+        title: "Facial Recog Failed",
+        description: err.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsRunningBackground(false);
+    }
+  };
 
   const handleDelete = async () => {
     setIsDeleting(true);
@@ -305,7 +362,7 @@ export default function ImageDetailPage() {
       {/* Status chips */}
       <div className="flex flex-wrap gap-2 mb-4" data-testid="group-status-chips">
         <StatusChip label="AI desc" value={hasAiDescription} testId="chip-ai-status" />
-        <StatusChip label="Face recog" value={hasFaceRecog} testId="chip-face-recog" />
+        <StatusChip label="Face recog" value={hasFaceRecog} onClick={() => setShowConfirmRecog(true)} testId="chip-face-recog" />
         <StatusChip label="Sub image" value={!!photo.isSubImage} testId="chip-sub-image" />
       </div>
 
@@ -329,9 +386,21 @@ export default function ImageDetailPage() {
 
       {/* Facial Recog section */}
       <div className="mb-6" data-testid="section-facial-recog">
-        <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">
-          Facial Recog
-        </h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            Facial Recog
+          </h2>
+          {!hasFaceRecog && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowConfirmRecog(true)}
+              data-testid="btn-run-recognition"
+            >
+              Run Recognition
+            </Button>
+          )}
+        </div>
         <div className="border rounded-md px-3 py-2.5 text-sm">
           {!hasFaceRecog ? (
             <span className="text-muted-foreground">Facial recognition not run on this image.</span>
@@ -476,6 +545,82 @@ export default function ImageDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Confirmation Dialog for Face Recognition */}
+      <Dialog open={showConfirmRecog} onOpenChange={setShowConfirmRecog}>
+        <DialogContent className="max-w-md w-full">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-semibold flex items-center gap-2 animate-fade-in">
+              <Scan className="h-5 w-5 text-primary" />
+              {hasFaceRecog ? "Re-run Facial Recognition?" : "Run Facial Recognition?"}
+            </DialogTitle>
+            <DialogDescription className="mt-2 text-sm text-muted-foreground">
+              {hasFaceRecog 
+                ? "This image already has facial recognition results. Do you want to re-run detection? Old Assignments will be replaced."
+                : "Confirm you want to run facial recognition on this image."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3 py-4">
+            <button
+              onClick={() => {
+                setShowConfirmRecog(false);
+                setShowForegroundRecog(true);
+              }}
+              className="flex items-start gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 text-left transition-all hover:border-primary/50 group"
+            >
+              <div className="p-2 rounded-md bg-primary/10 text-primary group-hover:bg-primary/20 transition-all shrink-0">
+                <Scan className="h-5 w-5 animate-pulse" />
+              </div>
+              <div>
+                <div className="font-semibold text-sm">Interactive Mode (Foreground)</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Run detection and identify people immediately in a pop-up dialog.
+                </div>
+              </div>
+            </button>
+
+            <button
+              onClick={handleRunBackground}
+              disabled={isRunningBackground}
+              className="flex items-start gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 text-left transition-all hover:border-primary/50 group"
+            >
+              <div className="p-2 rounded-md bg-green-500/10 text-green-600 group-hover:bg-green-500/20 transition-all shrink-0">
+                <Clock className="h-5 w-5" />
+              </div>
+              <div className="flex-1">
+                <div className="font-semibold text-sm flex items-center gap-1.5 justify-between">
+                  <span>Background Mode</span>
+                  {isRunningBackground && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Run detection silently. You'll get a notification when finished.
+                </div>
+              </div>
+            </button>
+          </div>
+          <DialogFooter className="sm:justify-start">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setShowConfirmRecog(false)}
+            >
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Foreground Interactive Face Recog Dialog */}
+      {photo && (
+        <PhotoUploadDialog
+          open={showForegroundRecog}
+          onClose={() => {
+            setShowForegroundRecog(false);
+            queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
+          }}
+          existingPhoto={{ id, imageUrl: photo.location }}
+        />
+      )}
     </div>
   );
 }

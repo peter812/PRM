@@ -169,7 +169,7 @@ function BoardCard({
         isDropTarget && "ring-2 ring-primary",
       )}
     >
-      <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+      <CardHeader className="p-4 flex-row items-center justify-between gap-2 space-y-0">
         <CardTitle className="flex items-center gap-2 text-base">
           {icon}
           <span>{title}</span>
@@ -184,7 +184,7 @@ function BoardCard({
           </div>
         )}
       </CardHeader>
-      <CardContent>{children}</CardContent>
+      <CardContent className="p-4 pt-0">{children}</CardContent>
     </Card>
   );
 }
@@ -404,34 +404,34 @@ function ThingsToDoContent() {
       <Button
         asChild
         variant="outline"
-        className="justify-start"
+        className="justify-start whitespace-normal h-auto py-2 text-left"
         data-testid="home-action-link-accounts"
       >
         <Link href="/account-matching">
           <Link2 className="mr-2 h-4 w-4" />
-          Link people and social accounts
+          Link social accounts
         </Link>
       </Button>
       <Button
         asChild
         variant="outline"
-        className="justify-start"
+        className="justify-start whitespace-normal h-auto py-2 text-left"
         data-testid="home-action-daily-note"
       >
         <Link href="/daily-notes">
           <BookOpen className="mr-2 h-4 w-4" />
-          Add to your daily note
+          Add daily note
         </Link>
       </Button>
       <Button
         asChild
         variant="outline"
-        className="justify-start"
+        className="justify-start whitespace-normal h-auto py-2 text-left"
         data-testid="home-action-add-person"
       >
         <Link href="/people">
           <Plus className="mr-2 h-4 w-4" />
-          Add a new person
+          Add a person
         </Link>
       </Button>
     </div>

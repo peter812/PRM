@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare, HelpCircle } from "lucide-react";
+import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare, HelpCircle, Network } from "lucide-react";
 
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -26,6 +26,7 @@ type OllamaSettings = {
   eventsModel: string;
   eventsPrompt: string;
   sexGuessModel?: string;
+  familyTreeModel?: string;
 };
 
 type TestResult = {
@@ -50,6 +51,7 @@ export default function IntelligenceSettingsPage() {
   const [selectedEventsModel, setSelectedEventsModel] = useState("");
   const [eventsPrompt, setEventsPrompt] = useState(DEFAULT_EVENTS_PROMPT);
   const [selectedSexGuessModel, setSelectedSexGuessModel] = useState("");
+  const [selectedFamilyTreeModel, setSelectedFamilyTreeModel] = useState("");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data: settings, isLoading } = useQuery<OllamaSettings>({
@@ -72,6 +74,7 @@ export default function IntelligenceSettingsPage() {
     setSelectedEventsModel(settings.eventsModel ?? "");
     setEventsPrompt(settings.eventsPrompt || DEFAULT_EVENTS_PROMPT);
     setSelectedSexGuessModel(settings.sexGuessModel ?? "");
+    setSelectedFamilyTreeModel(settings.familyTreeModel ?? "");
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -119,6 +122,10 @@ export default function IntelligenceSettingsPage() {
 
   const handleSaveSexGuessModel = () => {
     saveMutation.mutate({ sexGuessModel: selectedSexGuessModel });
+  };
+
+  const handleSaveFamilyTreeModel = () => {
+    saveMutation.mutate({ familyTreeModel: selectedFamilyTreeModel });
   };
 
   const handleSaveEventsPrompt = () => {
@@ -550,6 +557,83 @@ export default function IntelligenceSettingsPage() {
                 {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card data-testid="card-family-tree-model">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Network className="h-4 w-4" />
+              Family Tree Model
+            </CardTitle>
+            <CardDescription>
+              {urlConfigured
+                ? "Choose which AI model powers the \"Generate connections\" feature on the family tree page. Pick a model that supports tool calling. If unset, the general text model is used as a fallback."
+                : "Configure and save an API URL above to load available models."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1 space-y-2">
+                <Label htmlFor="family-tree-model-select">Model</Label>
+                <Select
+                  value={selectedFamilyTreeModel}
+                  onValueChange={setSelectedFamilyTreeModel}
+                  disabled={!urlConfigured || isLoadingModels}
+                >
+                  <SelectTrigger id="family-tree-model-select" data-testid="select-family-tree-model">
+                    <SelectValue placeholder={
+                      !urlConfigured ? "No API URL configured" :
+                      isLoadingModels ? "Loading models…" :
+                      models.length === 0 ? "No models found" :
+                      "Select a model"
+                    } />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {models.map((m) => (
+                      <SelectItem key={m.name} value={m.name} data-testid={`option-family-tree-model-${m.name}`}>
+                        <span className="font-mono text-sm">{m.name}</span>
+                        {m.parameterSize && (
+                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
+                        )}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => refetchModels()}
+                disabled={!urlConfigured || isLoadingModels}
+                title="Refresh model list"
+                data-testid="button-refresh-family-tree-models"
+              >
+                {isLoadingModels ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                onClick={handleSaveFamilyTreeModel}
+                disabled={!selectedFamilyTreeModel || saveMutation.isPending}
+                data-testid="button-save-family-tree-model"
+              >
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+              </Button>
+            </div>
+
+            {settings?.familyTreeModel && (
+              <p className="text-xs text-muted-foreground" data-testid="text-saved-family-tree-model">
+                Currently saved: <span className="font-mono">{settings.familyTreeModel}</span>
+              </p>
+            )}
+            {!settings?.familyTreeModel && settings?.textModel && (
+              <p className="text-xs text-muted-foreground">
+                Falls back to the text model (<span className="font-mono">{settings.textModel}</span>) when not set.
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>

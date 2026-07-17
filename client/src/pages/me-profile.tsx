@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
+import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
 import { queryClient } from "@/lib/queryClient";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
@@ -237,11 +238,13 @@ export default function MeProfile() {
                 <div className="flex items-center gap-2 text-sm">
                   <Phone className="h-4 w-4 text-muted-foreground" />
                   <a
-                    href={`tel:${person.phone}`}
+                    href={getTruePeopleSearchUrl(person.phone)}
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="hover:underline"
                     data-testid="link-phone"
                   >
-                    {person.phone}
+                    {formatPhoneNumberForDisplay(person.phone)}
                   </a>
                 </div>
               )}

@@ -6,6 +6,7 @@ import { registerRoutes as registerSocialMedia } from "./routes/social-media";
 import { registerRoutes as registerAiVector } from "./routes/ai-vector";
 import { registerRoutes as registerFamily } from "./routes/family";
 import { registerRoutes as registerMessages } from "./routes/messages";
+import { registerRoutes as registerOsint } from "./routes/osint";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Register sub-route modules.
@@ -18,6 +19,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerAiVector(app);
   registerFamily(app);
   registerMessages(app);
+  registerOsint(app);
 
   const httpServer = createServer(app);
   return httpServer;

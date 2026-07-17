@@ -70,6 +70,8 @@ import {
   FAMILY_RELATIONSHIP_LABELS,
   FAMILY_RELATIONSHIP_CATEGORIES,
   FAMILY_RELATIONSHIP_INVERSES,
+  formatPhoneNumberForDisplay,
+  getTruePeopleSearchUrl,
 } from "@shared/schema";
 import { Mail, Phone, Briefcase } from "lucide-react";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
@@ -1291,11 +1293,13 @@ function PersonInfoPanel({
                     <div className="flex items-center gap-2 text-sm">
                       <Phone className="h-4 w-4 text-muted-foreground" />
                       <a
-                        href={`tel:${fullPerson.phone}`}
+                        href={getTruePeopleSearchUrl(fullPerson.phone)}
+                        target="_blank"
+                        rel="noopener noreferrer"
                         className="hover:underline text-xs"
                         data-testid="link-phone"
                       >
-                        {fullPerson.phone}
+                        {formatPhoneNumberForDisplay(fullPerson.phone)}
                       </a>
                     </div>
                   )}

@@ -25,6 +25,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { Person } from "@shared/schema";
+import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
 import { PersonDialog } from "@/components/person-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
@@ -398,10 +399,17 @@ export default function PeopleList() {
                           </td>
                           <td className="py-2 px-3 text-muted-foreground">
                             {person.phone && (
-                              <span className="flex items-center gap-1" data-testid={`text-phone-${person.id}`}>
+                              <a
+                                href={getTruePeopleSearchUrl(person.phone)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 hover:underline text-muted-foreground"
+                                onClick={(e) => e.stopPropagation()}
+                                data-testid={`text-phone-${person.id}`}
+                              >
                                 <Phone className="h-3 w-3" />
-                                {person.phone}
-                              </span>
+                                {formatPhoneNumberForDisplay(person.phone)}
+                              </a>
                             )}
                           </td>
                           <td className="py-2 px-3 text-muted-foreground">

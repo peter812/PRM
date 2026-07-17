@@ -648,6 +648,16 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to remove duplicate types" });
       }
     });
+
+    app.post("/api/maintenance/correct-phone-schema", async (req, res) => {
+      try {
+        const result = await storage.correctPhoneNumberSchema();
+        res.json({ success: true, ...result });
+      } catch (error) {
+        console.error("Error correcting phone schema:", error);
+        res.status(500).json({ error: "Failed to correct phone number schema" });
+      }
+    });
   
     app.delete("/api/social-accounts/:id", async (req, res) => {
       try {
