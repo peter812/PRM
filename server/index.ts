@@ -67,6 +67,27 @@ app.use((req, res, next) => {
   next();
 });
 
+function getJsonPreview(obj: any): string {
+  if (obj === null || obj === undefined) return "null";
+  if (typeof obj !== "object") return String(obj);
+  if (Array.isArray(obj)) {
+    return `[Array(${obj.length})]`;
+  }
+  const keys = Object.keys(obj);
+  if (keys.length > 3) {
+    return `{ ${keys.slice(0, 3).map(k => `"${k}":...`).join(", ")}, ... (${keys.length} keys) }`;
+  }
+  try {
+    const str = JSON.stringify(obj);
+    if (str.length > 60) {
+      return `{ ${keys.map(k => `"${k}":...`).join(", ")} }`;
+    }
+    return str;
+  } catch (e) {
+    return "{Object}";
+  }
+}
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -83,7 +104,7 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        logLine += ` :: ${getJsonPreview(capturedJsonResponse)}`;
       }
 
       if (logLine.length > 80) {

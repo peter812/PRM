@@ -1,0 +1,63 @@
+{
+  "participants": [
+    {
+      "name": "Anna Erickson"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1780719419515,
+      "content": "You sent an attachment.",
+      "share": {
+        "link": "https://www.instagram.com/reel/DZMntIfRfW3/?id=3912676801583117751_66069511164",
+        "share_text": "Tonight, @thv took a turn in the audience as he watched @gracieabrams and @dojacat perform at #VogueWorld: Hollywood. No stranger to a fashion show either, the @bts.bighitofficial star dressed in a look that could have easily appeared on the runway.",
+        "original_content_owner": "qlunu"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1780214815583,
+      "content": "You sent an attachment.",
+      "share": {
+        "link": "https://www.instagram.com/reel/DVCJfY_ESk3/?id=3837671572023355703_1501230703",
+        "share_text": "Who remembers ts?\u00f0\u009f\u00a5\u00b9\u00f0\u009f\u00a5\u0080 #ksi #thickofit #reels #viral #meme @ksi",
+        "original_content_owner": "sanilovesmusic"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Anna Erickson",
+      "timestamp_ms": 1779925541001,
+      "content": "Why did you post our Easter family photo in here?",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Anna Erickson",
+      "timestamp_ms": 1779925467217,
+      "content": "Bruh",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1779925457995,
+      "content": "Get off of insta",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Anna Erickson",
+  "is_still_participant": true,
+  "thread_path": "inbox/annaerickson_2588816444900727",
+  "magic_words": [
+    
+  ]
+}

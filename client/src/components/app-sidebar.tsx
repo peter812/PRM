@@ -15,7 +15,6 @@ import {
   Scan,
   Sparkles,
   MessagesSquare,
-  MessageSquare,
   BookOpen,
   Home,
   Image,
@@ -61,11 +60,6 @@ const menuItems = [
     title: "AI Chat",
     url: "/ai-chat-demo",
     icon: MessagesSquare,
-  },
-  {
-    title: "Messages",
-    url: "/messages",
-    icon: MessageSquare,
   },
   {
     title: "Me",

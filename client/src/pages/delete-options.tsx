@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +34,10 @@ export default function DeleteOptionsPage() {
 
   const [isDeleteChatsDialogOpen, setIsDeleteChatsDialogOpen] = useState(false);
   const [confirmDeleteChats, setConfirmDeleteChats] = useState(false);
+
+  const [isDeleteMessagesDialogOpen, setIsDeleteMessagesDialogOpen] = useState(false);
+  const [confirmDeleteMessages, setConfirmDeleteMessages] = useState(false);
+  const [deleteMessagesChannel, setDeleteMessagesChannel] = useState("all");
 
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -244,6 +249,58 @@ export default function DeleteOptionsPage() {
   const handleDeleteAllChats = () => {
     if (confirmDeleteChats) {
       deleteAllChatsMutation.mutate();
+    }
+  };
+
+  const CHANNEL_OPTIONS = [
+    { value: "all", label: "All message types" },
+    { value: "instagram", label: "Instagram" },
+    { value: "phone", label: "Phone (SMS)" },
+    { value: "email", label: "Email" },
+    { value: "discord", label: "Discord" },
+    { value: "x", label: "X (Twitter)" },
+    { value: "facebook", label: "Facebook" },
+    { value: "generic", label: "Generic" },
+  ];
+
+  const deleteMessagesMutation = useMutation({
+    mutationFn: async (channel: string) => {
+      const qs = channel !== "all" ? `?channelType=${encodeURIComponent(channel)}` : "";
+      const response = await fetch(`/api/conversations/delete-all${qs}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to delete messages");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Messages Deleted",
+        description: `Deleted ${data.conversations} conversation(s) and ${data.messages} message(s).`,
+      });
+
+      setIsDeleteMessagesDialogOpen(false);
+      setConfirmDeleteMessages(false);
+      setDeleteMessagesChannel("all");
+
+      queryClient.invalidateQueries({ queryKey: ["/api/conversations/paginated"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Delete Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDeleteMessages = () => {
+    if (confirmDeleteMessages) {
+      deleteMessagesMutation.mutate(deleteMessagesChannel);
     }
   };
 
@@ -549,6 +606,25 @@ export default function DeleteOptionsPage() {
               </Button>
             </div>
 
+            {/* Row 6: Delete Messages */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Delete Messages</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Permanently deletes message conversations and their history — all of them, or only a chosen type (Instagram, SMS, email, etc.).
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsDeleteMessagesDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-delete-messages-trigger"
+              >
+                <MessageSquare className="h-4 w-4" />
+                Delete Messages...
+              </Button>
+            </div>
+
           </CardContent>
         </Card>
       </div>
@@ -793,6 +869,94 @@ export default function DeleteOptionsPage() {
               data-testid="button-delete-all-chats"
             >
               {deleteAllChatsMutation.isPending ? "Deleting..." : "Delete All Chats"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Delete Messages */}
+      <Dialog open={isDeleteMessagesDialogOpen} onOpenChange={(open) => {
+        setIsDeleteMessagesDialogOpen(open);
+        if (!open) {
+          setConfirmDeleteMessages(false);
+          setDeleteMessagesChannel("all");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Delete Messages
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete message conversations and their full history.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="delete-messages-channel" className="text-sm font-medium">
+                Message type
+              </Label>
+              <Select value={deleteMessagesChannel} onValueChange={setDeleteMessagesChannel}>
+                <SelectTrigger id="delete-messages-channel" data-testid="select-delete-messages-channel">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CHANNEL_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {deleteMessagesChannel === "all"
+                  ? "Every conversation across all channels will be deleted."
+                  : `Only ${CHANNEL_OPTIONS.find((o) => o.value === deleteMessagesChannel)?.label} conversations will be deleted.`}
+              </p>
+            </div>
+
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>Selected conversations, their messages, and attachments metadata are permanently deleted</li>
+                <li>Imported media files are not removed from storage</li>
+                <li>People, social accounts, and other data are unaffected</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-delete-messages" className="text-sm font-medium pr-4 leading-normal">
+                I understand that this action is irreversible and wish to proceed
+              </Label>
+              <Switch
+                id="confirm-delete-messages"
+                checked={confirmDeleteMessages}
+                onCheckedChange={setConfirmDeleteMessages}
+                data-testid="switch-confirm-delete-messages"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsDeleteMessagesDialogOpen(false);
+                setConfirmDeleteMessages(false);
+                setDeleteMessagesChannel("all");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteMessages}
+              disabled={!confirmDeleteMessages || deleteMessagesMutation.isPending}
+              data-testid="button-delete-messages"
+            >
+              {deleteMessagesMutation.isPending ? "Deleting..." : "Delete Messages"}
             </Button>
           </DialogFooter>
         </DialogContent>

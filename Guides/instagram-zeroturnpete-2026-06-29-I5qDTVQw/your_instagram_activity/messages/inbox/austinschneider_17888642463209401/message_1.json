@@ -1,0 +1,58 @@
+{
+  "participants": [
+    {
+      "name": "Austin Schneider"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Austin Schneider",
+      "timestamp_ms": 1740811099981,
+      "content": "What type of agency do you run?",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Austin Schneider",
+      "timestamp_ms": 1740811099923,
+      "content": "An automated chat with 2 questions has started. ",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Austin Schneider",
+      "timestamp_ms": 1740811099854,
+      "content": "Hi Peter. Please answer a few quick questions and I'll send over the details!",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Austin Schneider",
+      "timestamp_ms": 1740811099266,
+      "content": "Austin sent an attachment.",
+      "share": {
+        "link": "https://www.instagram.com/p/DGoSknYgnA7/?id=3578191584971354171_66334985400",
+        "share_text": "This only works for Agencies over 10k per month.\nDM me \u00e2\u0080\u009cSCALE\u00e2\u0080\u009d to learn more \u00f0\u009f\u0093\u00b2",
+        "original_content_owner": "theaustinschneider"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Austin Schneider",
+      "timestamp_ms": 1740811098109,
+      "content": "You opened this conversation through an ad. When you reply, theaustinschneider will see your public info and which ad you clicked on. See Privacy Policy.(https://www.agencyu.co/privacy-policy)",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Austin Schneider",
+  "is_still_participant": true,
+  "thread_path": "inbox/austinschneider_17888642463209401",
+  "magic_words": [
+    
+  ]
+}

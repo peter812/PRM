@@ -1,0 +1,25 @@
+{
+  "participants": [
+    {
+      "name": "Alyssa Woiak"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1711469213283,
+      "content": "Wtf",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Alyssa Woiak",
+  "is_still_participant": true,
+  "thread_path": "inbox/alyssawoiak_1375298160538270",
+  "magic_words": [
+    
+  ]
+}

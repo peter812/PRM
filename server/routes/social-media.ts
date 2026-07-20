@@ -33,12 +33,13 @@ import {
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { hashPassword, requireAuth } from "../auth";
+import { hashPassword, requireAuth, authenticateExtensionToken } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import Papa from "papaparse";
 import { sendApiError, ErrorCodes } from "../middleware/error-handler";
 import { sseManager } from "../middleware/sse";
@@ -55,10 +56,17 @@ import {
 import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "../image-pass-in-utils";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "../xml-utils";
+import { parseExportZipName } from "../instagram-dm-import";
 
-const scryptAsync = promisify(scrypt);
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+// Instagram DM export zips can contain video and far exceed what we want in
+// memory — stream them to the OS temp dir instead (task worker deletes the file)
+const importDmZipUpload = multer({
+  storage: multer.diskStorage({ destination: os.tmpdir() }),
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 },
+});
 
 // Flag to track if user creation is allowed (only after database reset)
 let isUserCreationAllowed = false;
@@ -190,8 +198,17 @@ export function registerRoutes(app: Express) {
           }
         }
   
-        const allNetworkStates = await storage.getAllNetworkStates();
-        const networkStateMap = new Map(allNetworkStates.map(s => [s.socialAccountId, s]));
+        const allFollows = await storage.getAllFollows();
+        const followersMap = new Map<string, string[]>();
+        const followingMap = new Map<string, string[]>();
+        for (const edge of allFollows) {
+          const followers = followersMap.get(edge.followedId);
+          if (followers) followers.push(edge.followerId);
+          else followersMap.set(edge.followedId, [edge.followerId]);
+          const following = followingMap.get(edge.followerId);
+          if (following) following.push(edge.followedId);
+          else followingMap.set(edge.followerId, [edge.followedId]);
+        }
   
         xml += '  <social_account_types>\n';
         for (const type of allSocialAccountTypes) {
@@ -208,7 +225,8 @@ export function registerRoutes(app: Express) {
   
         xml += '  <social_accounts>\n';
         for (const account of accounts) {
-          const accountState = account.latestState || networkStateMap.get(account.id);
+          const accountFollowers = followersMap.get(account.id) || [];
+          const accountFollowing = followingMap.get(account.id) || [];
           xml += '    <social_account>\n';
           xml += `      <id>${escapeXml(account.id)}</id>\n`;
           xml += `      <username>${escapeXml(account.username)}</username>\n`;
@@ -218,8 +236,8 @@ export function registerRoutes(app: Express) {
           xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
           xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
           xml += `      <notes></notes>\n`;
-          xml += `      <following>${arrayToXml(accountState?.following || [], "account_id")}</following>\n`;
-          xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
+          xml += `      <following>${arrayToXml(accountFollowing, "account_id")}</following>\n`;
+          xml += `      <followers>${arrayToXml(accountFollowers, "account_id")}</followers>\n`;
           xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
           xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
           xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
@@ -249,16 +267,17 @@ export function registerRoutes(app: Express) {
   
           xml += '  <social_network_snapshots>\n';
           for (const account of accounts) {
-            const state = await storage.getNetworkState(account.id);
-            if (state) {
+            const snapFollowers = followersMap.get(account.id) || [];
+            const snapFollowing = followingMap.get(account.id) || [];
+            if (snapFollowers.length > 0 || snapFollowing.length > 0) {
               xml += '    <social_network_snapshot>\n';
-              xml += `      <id>${escapeXml(state.id)}</id>\n`;
-              xml += `      <social_account_id>${escapeXml(state.socialAccountId)}</social_account_id>\n`;
-              xml += `      <follower_count>${escapeXml(state.followerCount)}</follower_count>\n`;
-              xml += `      <following_count>${escapeXml(state.followingCount)}</following_count>\n`;
-              xml += `      <followers>${arrayToXml(state.followers || [], "account_id")}</followers>\n`;
-              xml += `      <following>${arrayToXml(state.following || [], "account_id")}</following>\n`;
-              xml += `      <captured_at>${escapeXml(state.updatedAt)}</captured_at>\n`;
+              xml += `      <id>${escapeXml(account.id)}</id>\n`;
+              xml += `      <social_account_id>${escapeXml(account.id)}</social_account_id>\n`;
+              xml += `      <follower_count>${escapeXml(snapFollowers.length)}</follower_count>\n`;
+              xml += `      <following_count>${escapeXml(snapFollowing.length)}</following_count>\n`;
+              xml += `      <followers>${arrayToXml(snapFollowers, "account_id")}</followers>\n`;
+              xml += `      <following>${arrayToXml(snapFollowing, "account_id")}</following>\n`;
+              xml += `      <captured_at>${escapeXml(new Date())}</captured_at>\n`;
               xml += '    </social_network_snapshot>\n';
             }
           }
@@ -338,6 +357,20 @@ export function registerRoutes(app: Express) {
           }
         }
   
+        // Follow edges referenced in the file, keyed by the file's account ids.
+        // Resolved through socialAccountIdMap and inserted after all accounts exist.
+        const pendingFollowEdges: { followerId: string; followedId: string }[] = [];
+        const collectFollowEdges = (accountId: string, followers: string[], following: string[]) => {
+          for (const f of followers) {
+            const followerId = unescapeXml(f);
+            if (followerId) pendingFollowEdges.push({ followerId, followedId: accountId });
+          }
+          for (const g of following) {
+            const followedId = unescapeXml(g);
+            if (followedId) pendingFollowEdges.push({ followerId: accountId, followedId });
+          }
+        };
+
         const socialAccountBlocks = parseAllTags("social_account", xmlText);
         for (const block of socialAccountBlocks) {
           try {
@@ -364,6 +397,7 @@ export function registerRoutes(app: Express) {
               skippedCounts.socialAccounts++;
               socialAccountIdMap.set(id, existing.id);
               importedAccountIds.add(id);
+              collectFollowEdges(id, followers, following);
               continue;
             }
   
@@ -386,16 +420,8 @@ export function registerRoutes(app: Express) {
               }
             }
   
-            if ((followers && followers.length > 0) || (following && following.length > 0)) {
-              await storage.upsertNetworkState({
-                socialAccountId: id,
-                followerCount: followers.length,
-                followingCount: following.length,
-                followers: followers.map((f: string) => unescapeXml(f)),
-                following: following.map((f: string) => unescapeXml(f)),
-              });
-            }
-  
+            collectFollowEdges(id, followers, following);
+
             importedCounts.socialAccounts++;
             importedAccountIds.add(id);
           } catch (error) {
@@ -437,25 +463,27 @@ export function registerRoutes(app: Express) {
         for (const block of snapshotBlocks) {
           try {
             const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-            const followerCount = parseInt(parseXmlTag("follower_count", block)) || 0;
-            const followingCount = parseInt(parseXmlTag("following_count", block)) || 0;
             const snFollowers = parseXmlArray("followers", "account_id", block);
             const snFollowing = parseXmlArray("following", "account_id", block);
-  
+
             if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
-  
-            const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
-            await storage.upsertNetworkState({
-              socialAccountId: mappedAccountId,
-              followerCount,
-              followingCount,
-              followers: snFollowers,
-              following: snFollowing,
-            });
+
+            collectFollowEdges(socialAccountId, snFollowers, snFollowing);
           } catch (error) {
             console.error("Error importing network snapshot:", error);
           }
         }
+
+        // Insert the collected follow edges now that every referenced account exists.
+        // Ids are remapped for accounts that matched an existing account; edges
+        // pointing at accounts not present in the database are skipped.
+        const validAccountIds = new Set(allSocialAccounts.map(a => a.id));
+        const resolveId = (fileId: string) => socialAccountIdMap.get(fileId) || fileId;
+        await storage.addFollows(
+          pendingFollowEdges
+            .map(e => ({ followerId: resolveId(e.followerId), followedId: resolveId(e.followedId), source: "xml-import" }))
+            .filter(e => validAccountIds.has(e.followerId) && validAccountIds.has(e.followedId))
+        );
   
         const networkChangeBlocks = parseAllTags("social_network_change", xmlText);
         for (const block of networkChangeBlocks) {
@@ -486,7 +514,7 @@ export function registerRoutes(app: Express) {
         }
 
         await runAutomaticImagePassIn();
-  
+
         res.json({
           imported: importedCounts,
           skipped: skippedCounts,
@@ -678,16 +706,16 @@ export function registerRoutes(app: Express) {
         const { id } = req.params;
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
-        const state = await storage.getNetworkState(id);
-  
-        if (!state || !state.followers || state.followers.length === 0) {
+        const followerIds = await storage.getFollowerIds(id);
+
+        if (followerIds.length === 0) {
           return res.json({ items: [], total: 0, page, limit });
         }
-  
-        const total = state.followers.length;
+
+        const total = followerIds.length;
         const start = (page - 1) * limit;
-        const pageIds = state.followers.slice(start, start + limit);
-  
+        const pageIds = followerIds.slice(start, start + limit);
+
         const followerAccounts = [];
         for (const followerId of pageIds) {
           const account = await storage.getSocialAccountById(followerId);
@@ -695,7 +723,7 @@ export function registerRoutes(app: Express) {
             followerAccounts.push(account);
           }
         }
-  
+
         res.json({ items: followerAccounts, total, page, limit });
       } catch (error) {
         console.error("Error fetching followers:", error);
@@ -708,16 +736,16 @@ export function registerRoutes(app: Express) {
         const { id } = req.params;
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
-        const state = await storage.getNetworkState(id);
-  
-        if (!state || !state.following || state.following.length === 0) {
+        const followingIds = await storage.getFollowingIds(id);
+
+        if (followingIds.length === 0) {
           return res.json({ items: [], total: 0, page, limit });
         }
-  
-        const total = state.following.length;
+
+        const total = followingIds.length;
         const start = (page - 1) * limit;
-        const pageIds = state.following.slice(start, start + limit);
-  
+        const pageIds = followingIds.slice(start, start + limit);
+
         const followingAccounts = [];
         for (const followingId of pageIds) {
           const account = await storage.getSocialAccountById(followingId);
@@ -725,7 +753,7 @@ export function registerRoutes(app: Express) {
             followingAccounts.push(account);
           }
         }
-  
+
         res.json({ items: followingAccounts, total, page, limit });
       } catch (error) {
         console.error("Error fetching following:", error);
@@ -733,6 +761,21 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    // Full follower/following id lists (for membership checks and linking dialogs)
+    app.get("/api/social-accounts/:id/follow-ids", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const [followerIds, followingIds] = await Promise.all([
+          storage.getFollowerIds(id),
+          storage.getFollowingIds(id),
+        ]);
+        res.json({ followerIds, followingIds });
+      } catch (error) {
+        console.error("Error fetching follow ids:", error);
+        res.status(500).json({ error: "Failed to fetch follow ids" });
+      }
+    });
+
     // Profile versions and network snapshots endpoints
     app.get("/api/social-accounts/:id/profile-versions", async (req, res) => {
       try {
@@ -776,9 +819,8 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Social account not found" });
         }
   
-        const oldState = await storage.getNetworkState(id);
-        const oldFollowers = new Set(oldState?.followers || []);
-        const oldFollowing = new Set(oldState?.following || []);
+        const oldFollowers = new Set(await storage.getFollowerIds(id));
+        const oldFollowing = new Set(await storage.getFollowingIds(id));
         const newFollowers = new Set<string>(req.body.followers || []);
         const newFollowing = new Set<string>(req.body.following || []);
   
@@ -809,14 +851,24 @@ export function registerRoutes(app: Express) {
         if (changes.length > 0) {
           await storage.recordNetworkChanges(changes);
         }
-  
-        const state = await storage.upsertNetworkState({
-          socialAccountId: id,
-          followerCount: newFollowers.size,
-          followingCount: newFollowing.size,
-          followers: Array.from(newFollowers),
-          following: Array.from(newFollowing),
-        });
+
+        const edgesToAdd: { followerId: string; followedId: string; source: string }[] = [];
+        for (const f of Array.from(newFollowers)) {
+          if (!oldFollowers.has(f)) edgesToAdd.push({ followerId: f, followedId: id, source: "manual" });
+        }
+        for (const g of Array.from(newFollowing)) {
+          if (!oldFollowing.has(g)) edgesToAdd.push({ followerId: id, followedId: g, source: "manual" });
+        }
+        await storage.addFollows(edgesToAdd);
+
+        for (const f of Array.from(oldFollowers)) {
+          if (!newFollowers.has(f)) await storage.removeFollow(f, id);
+        }
+        for (const g of Array.from(oldFollowing)) {
+          if (!newFollowing.has(g)) await storage.removeFollow(id, g);
+        }
+
+        const state = await storage.getNetworkState(id);
         res.status(201).json(state);
       } catch (error) {
         console.error("Error updating network state:", error);
@@ -1445,6 +1497,58 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to create import task" });
       }
     });
+
+    // POST /api/tasks/import-instagram-backup — imports a full Meta account
+    // backup zip (instagram-<username>-<date>-<id>.zip with every DM thread
+    // under messages/inbox/). The root account whose profile this is invoked
+    // from owns every conversation. Uses disk storage: full exports with video
+    // can be many GB.
+    app.post(
+      "/api/tasks/import-instagram-backup",
+      importDmZipUpload.single("zip"),
+      async (req, res) => {
+        try {
+          if (!req.isAuthenticated() || !req.user) {
+            return res.status(401).json({ error: "Not authenticated" });
+          }
+          if (!req.file) {
+            return res.status(400).json({ error: "No zip file provided" });
+          }
+          const rootSocialAccountId = req.body.rootSocialAccountId as string | undefined;
+          if (!rootSocialAccountId) {
+            return res.status(400).json({ error: "rootSocialAccountId is required" });
+          }
+          const account = await storage.getSocialAccountById(rootSocialAccountId);
+          if (!account) {
+            return res.status(404).json({ error: "Root social account not found" });
+          }
+
+          // Root username: prefer the zip filename, fall back to the account's
+          const parsedName = parseExportZipName(req.file.originalname);
+          const rootUsername = parsedName?.username || account.username;
+
+          const task = await storage.createTask({
+            type: "import_instagram_backup",
+            status: "pending",
+            payload: JSON.stringify({
+              userId: req.user.id,
+              zipPath: req.file.path,
+              rootSocialAccountId,
+              rootUsername,
+              options: {
+                skipNoise: req.body.skipNoise !== "false",
+                importMedia: req.body.importMedia !== "false",
+              },
+            }),
+          });
+          triggerTaskWorker();
+          res.json(task);
+        } catch (error) {
+          console.error("Error creating import_instagram_backup task:", error);
+          res.status(500).json({ error: "Failed to create import task" });
+        }
+      }
+    );
 
     // POST /api/tasks/multi-image-download — creates a background multi_image_download task
     app.post("/api/tasks/multi-image-download", async (req, res) => {
@@ -2366,39 +2470,18 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "One or both social accounts not found" });
         }
 
-        // Update target account's followers
-        const targetState = await storage.getNetworkState(id);
-        const targetFollowers = new Set(targetState?.followers || []);
-        targetFollowers.add(followerId);
+        const added = await storage.addFollows([{ followerId, followedId: id, source: "manual" }]);
 
-        // Update follower account's following
-        const followerState = await storage.getNetworkState(followerId);
-        const followerFollowing = new Set(followerState?.following || []);
-        followerFollowing.add(id);
+        if (added > 0) {
+          const batchId = crypto.randomUUID();
+          const changes = [
+            { socialAccountId: id, changeType: 'follow', direction: 'follower', targetAccountId: followerId, batchId },
+            { socialAccountId: followerId, changeType: 'follow', direction: 'following', targetAccountId: id, batchId }
+          ];
+          await storage.recordNetworkChanges(changes);
+        }
 
-        const batchId = crypto.randomUUID();
-        const changes = [
-          { socialAccountId: id, changeType: 'follow', direction: 'follower', targetAccountId: followerId, batchId },
-          { socialAccountId: followerId, changeType: 'follow', direction: 'following', targetAccountId: id, batchId }
-        ];
-        await storage.recordNetworkChanges(changes);
-
-        const updatedTargetState = await storage.upsertNetworkState({
-          socialAccountId: id,
-          followerCount: targetFollowers.size,
-          followingCount: targetState?.followingCount || 0,
-          followers: Array.from(targetFollowers),
-          following: targetState?.following || [],
-        });
-
-        await storage.upsertNetworkState({
-          socialAccountId: followerId,
-          followerCount: followerState?.followerCount || 0,
-          followingCount: followerFollowing.size,
-          followers: followerState?.followers || [],
-          following: Array.from(followerFollowing),
-        });
-
+        const updatedTargetState = await storage.getNetworkState(id);
         res.json({ success: true, networkState: updatedTargetState });
       } catch (error) {
         console.error("Error adding follower:", error);
@@ -2416,16 +2499,10 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "One or both social accounts not found" });
         }
 
-        const targetState = await storage.getNetworkState(id);
-        const targetFollowers = new Set(targetState?.followers || []);
-        if (!targetFollowers.has(fId)) {
+        const removed = await storage.removeFollow(fId, id);
+        if (!removed) {
           return res.status(400).json({ error: "Follower relationship does not exist" });
         }
-        targetFollowers.delete(fId);
-
-        const followerState = await storage.getNetworkState(fId);
-        const followerFollowing = new Set(followerState?.following || []);
-        followerFollowing.delete(id);
 
         const batchId = crypto.randomUUID();
         const changes = [
@@ -2434,22 +2511,7 @@ export function registerRoutes(app: Express) {
         ];
         await storage.recordNetworkChanges(changes);
 
-        const updatedTargetState = await storage.upsertNetworkState({
-          socialAccountId: id,
-          followerCount: targetFollowers.size,
-          followingCount: targetState?.followingCount || 0,
-          followers: Array.from(targetFollowers),
-          following: targetState?.following || [],
-        });
-
-        await storage.upsertNetworkState({
-          socialAccountId: fId,
-          followerCount: followerState?.followerCount || 0,
-          followingCount: followerFollowing.size,
-          followers: followerState?.followers || [],
-          following: Array.from(followerFollowing),
-        });
-
+        const updatedTargetState = await storage.getNetworkState(id);
         res.json({ success: true, networkState: updatedTargetState });
       } catch (error) {
         console.error("Error removing follower:", error);
@@ -2472,37 +2534,18 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "One or both social accounts not found" });
         }
 
-        const targetState = await storage.getNetworkState(id);
-        const targetFollowing = new Set(targetState?.following || []);
-        targetFollowing.add(followingId);
+        const added = await storage.addFollows([{ followerId: id, followedId: followingId, source: "manual" }]);
 
-        const followingState = await storage.getNetworkState(followingId);
-        const followingFollowers = new Set(followingState?.followers || []);
-        followingFollowers.add(id);
+        if (added > 0) {
+          const batchId = crypto.randomUUID();
+          const changes = [
+            { socialAccountId: id, changeType: 'follow', direction: 'following', targetAccountId: followingId, batchId },
+            { socialAccountId: followingId, changeType: 'follow', direction: 'follower', targetAccountId: id, batchId }
+          ];
+          await storage.recordNetworkChanges(changes);
+        }
 
-        const batchId = crypto.randomUUID();
-        const changes = [
-          { socialAccountId: id, changeType: 'follow', direction: 'following', targetAccountId: followingId, batchId },
-          { socialAccountId: followingId, changeType: 'follow', direction: 'follower', targetAccountId: id, batchId }
-        ];
-        await storage.recordNetworkChanges(changes);
-
-        const updatedTargetState = await storage.upsertNetworkState({
-          socialAccountId: id,
-          followerCount: targetState?.followerCount || 0,
-          followingCount: targetFollowing.size,
-          followers: targetState?.followers || [],
-          following: Array.from(targetFollowing),
-        });
-
-        await storage.upsertNetworkState({
-          socialAccountId: followingId,
-          followerCount: followingFollowers.size,
-          followingCount: followingState?.followingCount || 0,
-          followers: Array.from(followingFollowers),
-          following: followingState?.following || [],
-        });
-
+        const updatedTargetState = await storage.getNetworkState(id);
         res.json({ success: true, networkState: updatedTargetState });
       } catch (error) {
         console.error("Error adding following:", error);
@@ -2520,16 +2563,10 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "One or both social accounts not found" });
         }
 
-        const targetState = await storage.getNetworkState(id);
-        const targetFollowing = new Set(targetState?.following || []);
-        if (!targetFollowing.has(fId)) {
+        const removed = await storage.removeFollow(id, fId);
+        if (!removed) {
           return res.status(400).json({ error: "Following relationship does not exist" });
         }
-        targetFollowing.delete(fId);
-
-        const followingState = await storage.getNetworkState(fId);
-        const followingFollowers = new Set(followingState?.followers || []);
-        followingFollowers.delete(id);
 
         const batchId = crypto.randomUUID();
         const changes = [
@@ -2538,22 +2575,7 @@ export function registerRoutes(app: Express) {
         ];
         await storage.recordNetworkChanges(changes);
 
-        const updatedTargetState = await storage.upsertNetworkState({
-          socialAccountId: id,
-          followerCount: targetState?.followerCount || 0,
-          followingCount: targetFollowing.size,
-          followers: targetState?.followers || [],
-          following: Array.from(targetFollowing),
-        });
-
-        await storage.upsertNetworkState({
-          socialAccountId: fId,
-          followerCount: followingFollowers.size,
-          followingCount: followingState?.followingCount || 0,
-          followers: Array.from(followingFollowers),
-          following: followingState?.following || [],
-        });
-
+        const updatedTargetState = await storage.getNetworkState(id);
         res.json({ success: true, networkState: updatedTargetState });
       } catch (error) {
         console.error("Error removing following:", error);
@@ -2760,24 +2782,4 @@ function generateDeterministicUuid(input: string): string {
   ].join("-");
 }
 
-async function authenticateExtensionToken(token: string): Promise<ExtensionSession | null> {
-  if (!token) return null;
-  try {
-    const allSessions = await storage.getAllExtensionSessionsAllUsers();
-    for (const session of allSessions) {
-      try {
-        const [hashed, salt] = session.sessionToken.split(".");
-        const hashedBuf = Buffer.from(hashed, "hex");
-        const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
-        if (timingSafeEqual(hashedBuf, suppliedBuf)) {
-          return session;
-        }
-      } catch {
-        continue;
-      }
-    }
-  } catch (error) {
-    console.error("Error authenticating extension token:", error);
-  }
-  return null;
-}
+

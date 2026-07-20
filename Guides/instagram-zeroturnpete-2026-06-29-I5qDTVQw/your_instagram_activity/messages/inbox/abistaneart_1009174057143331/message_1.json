@@ -1,0 +1,78 @@
+{
+  "participants": [
+    {
+      "name": "Abi Staneart"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Abi Staneart",
+      "timestamp_ms": 1715751174261,
+      "content": "\u00f0\u009f\u00a4\u00a3",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1715750639497,
+      "content": "We can cancel the breakfast and buy this instead",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abi Staneart",
+      "timestamp_ms": 1715737071178,
+      "content": "senior prank?",
+      "share": {
+        "link": "https://www.instagram.com/stories/zeroturnpete/3367991195153686206"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1670381983222,
+      "content": "You sent an attachment.",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1669011186598,
+      "content": "You shared a story.",
+      "share": {
+        "link": "https://www.instagram.com/stories/zeroturnpete/2976203163262826066",
+        "original_content_owner": "zeroturnpete"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1668751975588,
+      "content": "for the winter formal",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1668751966229,
+      "content": "https://com.svtstudent.com/signup_user_complete/?id=httt4ubgbf86pmna9qfah9y79r",
+      "share": {
+        "link": "https://com.svtstudent.com/signup_user_complete/?id=httt4ubgbf86pmna9qfah9y79r",
+        "share_text": "https://com.svtstudent.com/signup_user_complete/?id=httt4ubgbf86pmna9qfah9y79r"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Abi Staneart",
+  "is_still_participant": true,
+  "thread_path": "inbox/abistaneart_1009174057143331",
+  "magic_words": [
+    
+  ]
+}

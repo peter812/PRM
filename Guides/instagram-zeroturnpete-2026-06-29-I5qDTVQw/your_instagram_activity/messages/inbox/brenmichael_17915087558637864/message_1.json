@@ -1,0 +1,39 @@
+{
+  "participants": [
+    {
+      "name": "bren michael"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1671069088807,
+      "content": "Agreed",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "bren michael",
+      "timestamp_ms": 1668240179509,
+      "content": "It was good man thanks!",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1668234854120,
+      "content": "How was opening?",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "bren michael",
+  "is_still_participant": true,
+  "thread_path": "inbox/brenmichael_17915087558637864",
+  "magic_words": [
+    
+  ]
+}

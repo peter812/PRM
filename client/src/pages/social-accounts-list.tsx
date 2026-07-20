@@ -126,6 +126,25 @@ export default function SocialAccountsList() {
 
   const meAccountIds = mePerson?.socialAccountUuids || [];
 
+  // Union of all accounts my own accounts follow — used for the "Follows you"
+  // badge (an account "follows you" when one of your accounts appears in its
+  // followers, i.e. when it appears in your accounts' following lists).
+  const { data: meFollowingIds } = useQuery<string[]>({
+    queryKey: ["/api/social-accounts", "me-following", ...meAccountIds],
+    queryFn: async () => {
+      const results = await Promise.all(
+        meAccountIds.map(async (meId) => {
+          const res = await fetch(`/api/social-accounts/${meId}/follow-ids`);
+          if (!res.ok) return { followingIds: [] as string[] };
+          return res.json() as Promise<{ followingIds: string[] }>;
+        })
+      );
+      return results.flatMap((r) => r.followingIds || []);
+    },
+    enabled: meAccountIds.length > 0,
+  });
+  const meFollowingSet = new Set(meFollowingIds || []);
+
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       return await apiRequest("DELETE", `/api/social-accounts/${id}`);
@@ -391,9 +410,7 @@ export default function SocialAccountsList() {
                   </thead>
                   <tbody>
                     {accounts.map((account) => {
-                      const isFollowingYou = meAccountIds.some((meId) =>
-                        account.latestState?.followers?.includes(meId)
-                      );
+                      const isFollowingYou = meFollowingSet.has(account.id);
                       const accountType = account.typeId 
                         ? socialAccountTypes?.find(t => t.id === account.typeId) 
                         : null;
@@ -495,9 +512,7 @@ export default function SocialAccountsList() {
             {viewMode === "snug" && (
               <div className="flex flex-col gap-1">
                 {accounts.map((account) => {
-                  const isFollowingYou = meAccountIds.some((meId) =>
-                    account.latestState?.followers?.includes(meId)
-                  );
+                  const isFollowingYou = meFollowingSet.has(account.id);
                   const accountType = account.typeId 
                     ? socialAccountTypes?.find(t => t.id === account.typeId) 
                     : null;
@@ -642,9 +657,7 @@ export default function SocialAccountsList() {
             {viewMode === "expanded" && (
               <div className="flex flex-col gap-3">
                 {accounts.map((account) => {
-                  const isFollowingYou = meAccountIds.some((meId) =>
-                    account.latestState?.followers?.includes(meId)
-                  );
+                  const isFollowingYou = meFollowingSet.has(account.id);
                   const accountType = account.typeId 
                     ? socialAccountTypes?.find(t => t.id === account.typeId) 
                     : null;

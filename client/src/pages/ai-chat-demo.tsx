@@ -40,6 +40,7 @@ import {
   Loader2,
   Plus,
   Send,
+  Sparkles,
   Settings,
   Trash2,
   MessagesSquare,
@@ -204,6 +205,7 @@ type ChatSummary = {
   title: string;
   systemMessage: string;
   model?: string;
+  agentMode?: boolean;
   messageCount: number;
   createdAt: string;
   updatedAt: string;
@@ -214,6 +216,7 @@ type ChatDetail = {
   title: string;
   systemMessage: string;
   model?: string;
+  agentMode?: boolean;
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
@@ -238,6 +241,48 @@ function attachmentTypeFor(file: File): string {
   if (lower.endsWith(".csv")) return "text/csv";
   if (lower.endsWith(".md")) return "text/markdown";
   return "text/plain";
+}
+
+function MessageLinks({ links, messageIndex }: { links: { url: string; title: string }[]; messageIndex: number }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const LIMIT = 6;
+  const hasMore = links.length > LIMIT;
+  const displayedLinks = isExpanded ? links : links.slice(0, LIMIT);
+
+  return (
+    <div className="mt-3 pt-2 border-t border-muted-foreground/10 flex flex-wrap gap-2" data-testid={`message-links-${messageIndex}`}>
+      {displayedLinks.map((link, linkIdx) => {
+        const isExternal = /^(https?:)?\/\//i.test(link.url);
+        const className = "inline-flex items-center gap-1 px-2.5 py-1 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs font-medium transition-colors border shadow-sm cursor-pointer max-w-full sm:max-w-[200px] md:max-w-[250px] overflow-hidden shrink-0";
+        const content = (
+          <>
+            <Link2 className="h-3 w-3 text-indigo-500 shrink-0" />
+            <span className="truncate min-w-0" title={link.title || link.url}>
+              {link.title || link.url}
+            </span>
+          </>
+        );
+        return isExternal ? (
+          <a key={linkIdx} href={link.url} target="_blank" rel="noopener noreferrer" className={className} title={link.title || link.url}>
+            {content}
+          </a>
+        ) : (
+          <Link key={linkIdx} to={link.url}>
+            <a className={className} title={link.title || link.url}>{content}</a>
+          </Link>
+        );
+      })}
+      {hasMore && (
+        <button
+          type="button"
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-secondary/50 hover:bg-secondary/70 hover:scale-105 active:scale-95 text-secondary-foreground text-xs font-semibold transition-all border shadow-sm cursor-pointer shrink-0"
+        >
+          {isExpanded ? "Show less" : `+${links.length - LIMIT} more`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export default function AiChatDemoPage() {
@@ -555,6 +600,24 @@ export default function AiChatDemoPage() {
     },
   });
 
+  const toggleAgentModeMutation = useMutation({
+    mutationFn: async (agentMode: boolean) => {
+      if (!activeChatId) return null;
+      const res = await apiRequest("PATCH", `/api/ai-chats/${activeChatId}`, { agentMode });
+      return res.json() as Promise<ChatDetail>;
+    },
+    onSuccess: (chat) => {
+      if (chat) {
+        queryClient.setQueryData(["/api/ai-chats", chat.id], chat);
+        queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
+      }
+      toast({ title: chat?.agentMode ? "Agent Mode enabled" : "Agent Mode disabled" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update Agent Mode", description: error.message, variant: "destructive" });
+    },
+  });
+
   const branchMutation = useMutation({
     mutationFn: async (model: string) => {
       if (!activeChatId) throw new Error("No active chat");
@@ -748,6 +811,11 @@ export default function AiChatDemoPage() {
                 {activeChat.model}
               </span>
             ) : null}
+            {activeChat?.agentMode ? (
+              <span className="ml-2 rounded-md bg-violet-100 dark:bg-violet-950/60 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300 border border-violet-200/50 dark:border-violet-900/50" data-testid="text-active-agent-mode">
+                Agent Mode
+              </span>
+            ) : null}
           </h1>
           <div className="flex items-center gap-1">
             <Button
@@ -824,27 +892,7 @@ export default function AiChatDemoPage() {
                         )}
                         <MarkdownMessage content={m.content} />
                         {m.links && m.links.length > 0 && (
-                          <div className="mt-3 pt-2 border-t border-muted-foreground/10 flex flex-wrap gap-2" data-testid={`message-links-${i}`}>
-                            {m.links.map((link, linkIdx) => {
-                              const isExternal = /^(https?:)?\/\//i.test(link.url);
-                              const className = "inline-flex items-center gap-1 px-2.5 py-1 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs font-medium transition-colors border shadow-sm cursor-pointer";
-                              const content = (
-                                <>
-                                  <Link2 className="h-3 w-3 text-indigo-500" />
-                                  {link.title}
-                                </>
-                              );
-                              return isExternal ? (
-                                <a key={linkIdx} href={link.url} target="_blank" rel="noopener noreferrer" className={className}>
-                                  {content}
-                                </a>
-                              ) : (
-                                <Link key={linkIdx} to={link.url}>
-                                  <a className={className}>{content}</a>
-                                </Link>
-                              );
-                            })}
-                          </div>
+                          <MessageLinks links={m.links} messageIndex={i} />
                         )}
                       </>
                     ) : (
@@ -962,6 +1010,32 @@ export default function AiChatDemoPage() {
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
+              <Button
+                type="button"
+                variant={activeChat?.agentMode ? "default" : "ghost"}
+                size="icon"
+                onClick={() => {
+                  if (!activeChatId) {
+                    toast({ title: "No active chat", description: "Create or open a chat to enable Agent mode." });
+                    return;
+                  }
+                  toggleAgentModeMutation.mutate(!activeChat?.agentMode);
+                }}
+                className={cn(
+                  "transition-all duration-300 relative overflow-hidden shrink-0",
+                  activeChat?.agentMode
+                    ? "bg-gradient-to-r from-violet-600 to-indigo-650 hover:from-violet-755 hover:to-indigo-755 text-white shadow-md shadow-violet-500/20 scale-105 active:scale-95"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted scale-100 active:scale-95"
+                )}
+                title={activeChat?.agentMode ? "Agent Mode: ON (Proactive, reasons step-by-step)" : "Agent Mode: OFF (Standard chat)"}
+                disabled={isSending}
+                data-testid="button-toggle-agent-mode"
+              >
+                <Sparkles className={cn("h-4 w-4", activeChat?.agentMode && "animate-pulse")} />
+                {activeChat?.agentMode && (
+                  <span className="absolute inset-0 bg-white/10 opacity-0 hover:opacity-100 transition-opacity" />
+                )}
+              </Button>
               <Textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -971,7 +1045,7 @@ export default function AiChatDemoPage() {
                     handleSend();
                   }
                 }}
-                placeholder="Type a message…  (Enter to send, Shift+Enter for newline)"
+                placeholder={activeChat?.agentMode ? "Ask the agent to solve a complex task… (Agent Mode Active)" : "Type a message…  (Enter to send, Shift+Enter for newline)"}
                 rows={1}
                 className="min-h-[2.5rem] max-h-40 resize-none"
                 data-testid="input-chat-message"

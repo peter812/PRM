@@ -219,6 +219,11 @@ export default function DailyNotesList() {
                           {note.date === today && (
                             <Badge className="text-xs py-0">Today</Badge>
                           )}
+                          {note.status === "unfinished" && (
+                            <Badge variant="outline" className="text-xs py-0" data-testid={`badge-unfinished-${note.id}`}>
+                              Unfinished
+                            </Badge>
+                          )}
                         </div>
 
                         {/* Title */}

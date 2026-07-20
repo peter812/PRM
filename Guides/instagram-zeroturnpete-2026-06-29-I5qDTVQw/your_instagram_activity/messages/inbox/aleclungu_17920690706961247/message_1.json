@@ -1,0 +1,111 @@
+{
+  "participants": [
+    {
+      "name": "Alec Lungu"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Alec Lungu",
+      "timestamp_ms": 1767083471396,
+      "content": "I joined the discord also",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Alec Lungu",
+      "timestamp_ms": 1767083467203,
+      "content": "Oh sweet",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1767081548058,
+      "content": "Yep",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Alec Lungu",
+      "timestamp_ms": 1767080819949,
+      "content": "Could I play on my ps5?",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Alec Lungu",
+      "timestamp_ms": 1767080815125,
+      "content": "Liked a message",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1767080787650,
+      "content": "https://peterio.xyz/two-weeks/",
+      "reactions": [
+        {
+          "reaction": "\u00e2\u009d\u00a4",
+          "actor": "Alec Lungu"
+        }
+      ],
+      "share": {
+        "link": "https://peterio.xyz/two-weeks/",
+        "share_text": "https://peterio.xyz/two-weeks/"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1767080752205,
+      "content": "Both!",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Alec Lungu",
+      "timestamp_ms": 1767079659231,
+      "content": "Assuming it\u00e2\u0080\u0099s Java?",
+      "share": {
+        "link": "https://www.instagram.com/stories/zeroturnpete/3798861158158315916"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Alec Lungu",
+      "timestamp_ms": 1727746059896,
+      "content": "I was a chrich with him yesterday",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1727745911293,
+      "content": "YEP",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Alec Lungu",
+      "timestamp_ms": 1727669020711,
+      "content": "BEN",
+      "share": {
+        "link": "https://www.instagram.com/stories/zeroturnpete/3468234642748664267"
+      },
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Alec Lungu",
+  "is_still_participant": true,
+  "thread_path": "inbox/aleclungu_17920690706961247",
+  "magic_words": [
+    
+  ]
+}

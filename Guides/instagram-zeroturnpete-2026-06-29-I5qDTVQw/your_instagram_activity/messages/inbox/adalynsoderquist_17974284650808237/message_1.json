@@ -1,0 +1,44 @@
+{
+  "participants": [
+    {
+      "name": "Adalyn Soderquist"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Adalyn Soderquist",
+      "timestamp_ms": 1737530608251,
+      "content": "\u00f0\u009f\u0092\u0080",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1737529241381,
+      "photos": [
+        {
+          "uri": "your_instagram_activity/messages/inbox/adalynsoderquist_17974284650808237/photos/926184399709803.jpg",
+          "creation_timestamp": 1737529240
+        }
+      ],
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1737529223739,
+      "content": "\u00f0\u009f\u0092\u0080",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Adalyn Soderquist",
+  "is_still_participant": true,
+  "thread_path": "inbox/adalynsoderquist_17974284650808237",
+  "magic_words": [
+    
+  ]
+}

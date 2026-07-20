@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, AnyPgColumn, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, AnyPgColumn, index, primaryKey } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -24,6 +24,18 @@ export interface AdditionalSchoolingExperience {
   course?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+}
+
+// TruePeopleSearch (TPS) scraped-record shapes for JSONB columns on true_person_search
+export interface TpsAddress {
+  address: string;
+  propertyUrl?: string | null;
+}
+
+export interface TpsRelation {
+  name: string;
+  age?: string | null;
+  tpsId?: string | null; // their /find/person/{id} slug, when linked on the page
 }
 
 // Users table for authentication
@@ -92,8 +104,21 @@ export const people = pgTable("people", {
   personfaceUuid: varchar("personface_uuid"), // links this person to a face group (faces.personface_uuid); written by PRM's face-resolution code
   maidenName: text("maiden_name"),
   jobs: jsonb("jobs").$type<JobExperience[]>().default(sql`'[]'::jsonb`),
+  tpsId: text("tps_id"), // TruePeopleSearch person id (/find/person/{id} slug) this contact was created from, if any
+  birthday: text("birthday"),
+  address: text("address"),
+  additionalEmails: jsonb("additional_emails").$type<string[]>().default(sql`'[]'::jsonb`),
+  additionalPhones: jsonb("additional_phones").$type<string[]>().default(sql`'[]'::jsonb`),
+  deniedRecommendations: jsonb("denied_recommendations").$type<string[]>().default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("people_user_id_idx").on(t.userId),
+  index("people_last_name_idx").on(t.lastName),
+  index("people_elo_score_idx").on(t.eloScore),
+  index("people_created_at_idx").on(t.createdAt),
+  index("people_is_starred_idx").on(t.isStarred),
+  index("people_personface_uuid_idx").on(t.personfaceUuid),
+]);
 
 // Notes table
 export const notes = pgTable("notes", {
@@ -105,7 +130,10 @@ export const notes = pgTable("notes", {
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("notes_person_id_idx").on(t.personId),
+  index("notes_image_uuid_idx").on(t.imageUuid),
+]);
 
 // Interaction types table
 export const interactionTypes = pgTable("interaction_types", {
@@ -131,7 +159,11 @@ export const interactions = pgTable("interactions", {
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("interactions_type_id_idx").on(t.typeId),
+  index("interactions_image_uuid_idx").on(t.imageUuid),
+  index("interactions_people_ids_gin_idx").using("gin", t.peopleIds),
+]);
 
 // Relationship types table
 export const relationshipTypes = pgTable("relationship_types", {
@@ -152,7 +184,11 @@ export const relationships = pgTable("relationships", {
   notes: text("notes"),
   familyRelationshipType: varchar("family_relationship_type", { length: 50 }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("relationships_from_person_id_idx").on(t.fromPersonId),
+  index("relationships_to_person_id_idx").on(t.toPersonId),
+  index("relationships_type_id_idx").on(t.typeId),
+]);
 
 // Lineage table
 export const lineage = pgTable("lineage", {
@@ -161,9 +197,11 @@ export const lineage = pgTable("lineage", {
   parentId: varchar("parent_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   lineageType: text("lineage_type").notNull().default("biological"), // 'biological' | 'adoptive' | 'step'
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => ({
-  unq: unique().on(t.childId, t.parentId),
-}));
+}, (t) => [
+  unique().on(t.childId, t.parentId),
+  index("lineage_child_id_idx").on(t.childId),
+  index("lineage_parent_id_idx").on(t.parentId),
+]);
 
 // Partnerships table
 export const partnerships = pgTable("partnerships", {
@@ -172,9 +210,11 @@ export const partnerships = pgTable("partnerships", {
   person2Id: varchar("person2_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   status: text("status").notNull().default("partner"), // 'married' | 'partner' | 'divorced' | 'ex_partner'
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => ({
-  unq: unique().on(t.person1Id, t.person2Id),
-}));
+}, (t) => [
+  unique().on(t.person1Id, t.person2Id),
+  index("partnerships_person1_id_idx").on(t.person1Id),
+  index("partnerships_person2_id_idx").on(t.person2Id),
+]);
 
 // Schooling table
 export const schooling = pgTable("schooling", {
@@ -184,7 +224,9 @@ export const schooling = pgTable("schooling", {
   colleges: jsonb("colleges").$type<CollegeExperience[]>().default(sql`'[]'::jsonb`), // array of { name: string, degree: string, startDate?: string, endDate?: string }
   additionalSchooling: jsonb("additional_schooling").$type<AdditionalSchoolingExperience[]>().default(sql`'[]'::jsonb`), // array of { name: string, course?: string, startDate?: string, endDate?: string }
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("schooling_person_id_idx").on(t.personId),
+]);
 
 // Groups table
 export const groups = pgTable("groups", {
@@ -200,7 +242,11 @@ export const groups = pgTable("groups", {
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("groups_center_account_id_idx").on(t.centerAccountId),
+  index("groups_members_gin_idx").using("gin", t.members),
+  index("groups_crowd_members_gin_idx").using("gin", t.crowdMembers),
+]);
 
 // Group notes table
 export const groupNotes = pgTable("group_notes", {
@@ -208,7 +254,9 @@ export const groupNotes = pgTable("group_notes", {
   groupId: varchar("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
   content: text("content").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("group_notes_group_id_idx").on(t.groupId),
+]);
 
 // Social account types table
 export const socialAccountTypes = pgTable("social_account_types", {
@@ -233,7 +281,12 @@ export const socialAccounts = pgTable("social_accounts", {
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("social_accounts_username_idx").on(t.username),
+  index("social_accounts_owner_uuid_idx").on(t.ownerUuid),
+  index("social_accounts_group_id_idx").on(t.groupId),
+  index("social_accounts_type_id_idx").on(t.typeId),
+]);
 
 // Social profile versions table (Visual Identity History)
 export const socialProfileVersions = pgTable("social_profile_versions", {
@@ -246,18 +299,21 @@ export const socialProfileVersions = pgTable("social_profile_versions", {
   externalImageUrl: text("external_image_url"),
   detectedAt: timestamp("detected_at").notNull().defaultNow(),
   isCurrent: boolean("is_current").notNull().default(true),
-});
+}, (t) => [
+  index("social_profile_versions_social_account_id_idx").on(t.socialAccountId),
+  index("social_profile_versions_is_current_idx").on(t.isCurrent),
+]);
 
-// Social network state table (Current snapshot - one row per account)
-export const socialNetworkState = pgTable("social_network_state", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  socialAccountId: varchar("social_account_id").notNull().unique().references(() => socialAccounts.id, { onDelete: "cascade" }),
-  followerCount: integer("follower_count").notNull().default(0),
-  followingCount: integer("following_count").notNull().default(0),
-  followers: text("followers").array().default(sql`ARRAY[]::text[]`),
-  following: text("following").array().default(sql`ARRAY[]::text[]`),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+export const socialFollows = pgTable("social_follows", {
+  followerId: varchar("follower_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  followedId: varchar("followed_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  detectedAt: timestamp("detected_at").notNull().defaultNow(),
+  source: text("source"), // 'manual', 'csv-import', 'xml-import', 'migration', etc.
+}, (t) => [
+  primaryKey({ columns: [t.followerId, t.followedId] }),
+  index("social_follows_followed_id_idx").on(t.followedId),
+  index("social_follows_follower_id_idx").on(t.followerId),
+]);
 
 // Social network changes table (Git-like change log)
 export const socialNetworkChanges = pgTable("social_network_changes", {
@@ -268,7 +324,9 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
   targetAccountId: text("target_account_id").notNull(), // the account that followed/unfollowed
   detectedAt: timestamp("detected_at").notNull().defaultNow(),
   batchId: varchar("batch_id"), // groups changes detected at the same time
-});
+}, (t) => [
+  index("social_network_changes_social_account_id_idx").on(t.socialAccountId),
+]);
 
 // Social account posts table
 export const socialAccountPosts = pgTable("social_account_posts", {
@@ -286,7 +344,10 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   postedAt: timestamp("posted_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("social_account_posts_social_account_id_idx").on(t.socialAccountId),
+  index("social_account_posts_posted_at_idx").on(t.postedAt),
+]);
 
 // Extension sessions table - holds authenticated Chrome extension sessions
 export const extensionSessions = pgTable("extension_sessions", {
@@ -296,7 +357,9 @@ export const extensionSessions = pgTable("extension_sessions", {
   name: text("name").notNull().default("Chrome Extension"), // Display name for the session
   lastAccessedAt: timestamp("last_accessed_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("extension_sessions_user_id_idx").on(t.userId),
+]);
 
 // Extension auth codes table - temporary 4-digit codes for pairing
 export const extensionAuthCodes = pgTable("extension_auth_codes", {
@@ -305,7 +368,9 @@ export const extensionAuthCodes = pgTable("extension_auth_codes", {
   code: text("code").notNull(), // 4-digit code
   expiresAt: timestamp("expires_at").notNull(), // Code expires after 60 seconds
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("extension_auth_codes_user_id_idx").on(t.userId),
+]);
 
 // App settings table - key-value store for application configuration
 export const appSettings = pgTable("app_settings", {
@@ -344,11 +409,14 @@ export const dailyNotes = pgTable("daily_notes", {
   date: text("date").notNull(), // YYYY-MM-DD format
   userTitle: text("user_title").notNull().default(""),
   body: text("body").notNull().default(""),
+  status: text("status").notNull().default("finished"), // 'finished' | 'unfinished' — autosaved drafts are 'unfinished' until the user clicks Save
   vectorId: text("vector_id"), // Qdrant point ID (set on first vectorization, reused on edit)
   vectorSyncedAt: timestamp("vector_synced_at"), // Timestamp of last successful vector sync; null = needs sync
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at"), // Timestamp of last edit; null = never edited
-});
+}, (t) => [
+  index("daily_notes_date_idx").on(t.date),
+]);
 
 export const dailyNoteEvents = pgTable("daily_note_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -356,14 +424,19 @@ export const dailyNoteEvents = pgTable("daily_note_events", {
   text: text("text").notNull(),
   position: integer("position").notNull().default(0),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("daily_note_events_daily_note_id_idx").on(t.dailyNoteId),
+]);
 
 export const dailyNoteInvolvedParties = pgTable("daily_note_involved_parties", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   dailyNoteId: varchar("daily_note_id").notNull().references(() => dailyNotes.id, { onDelete: "cascade" }),
   partyType: text("party_type").notNull(), // 'person' | 'social_account' | 'group'
   refId: varchar("ref_id").notNull(),
-});
+}, (t) => [
+  index("daily_note_involved_parties_daily_note_id_idx").on(t.dailyNoteId),
+  index("daily_note_involved_parties_ref_id_idx").on(t.refId),
+]);
 
 // Audit log for daily notes - tracks creation and edit timestamps
 export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
@@ -372,7 +445,9 @@ export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
   action: text("action").notNull(), // 'created' | 'edited'
   timestamp: timestamp("timestamp").notNull().defaultNow(),
   pinUsed: boolean("pin_used").notNull().default(false), // whether PIN authorization was required for this edit
-});
+}, (t) => [
+  index("daily_note_audit_logs_daily_note_id_idx").on(t.dailyNoteId),
+]);
 
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
@@ -403,7 +478,10 @@ export const imageTasks = pgTable("image_tasks", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
-});
+}, (t) => [
+  index("image_tasks_parent_task_id_idx").on(t.parentTaskId),
+  index("image_tasks_photo_id_idx").on(t.photoId),
+]);
 
 // Image questions table - tracks unrecognized face assignments needed from the user
 export const imageQuestions = pgTable("image_questions", {
@@ -417,7 +495,10 @@ export const imageQuestions = pgTable("image_questions", {
   resolvedPersonId: varchar("resolved_person_id").references(() => people.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   resolvedAt: timestamp("resolved_at"),
-});
+}, (t) => [
+  index("image_questions_photo_id_idx").on(t.photoId),
+  index("image_questions_resolved_person_id_idx").on(t.resolvedPersonId),
+]);
 
 // Faces table - owned by PRM-face. One row per detected/cropped face: holds the
 // embedding used for similarity search, the S3 URL of the crop, and an optional
@@ -431,7 +512,10 @@ export const faces = pgTable("faces", {
   detectionConfidence: text("detection_confidence"),
   coordinates: jsonb("coordinates"), // { x, y, w, h } bbox in the source image
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("faces_photo_id_idx").on(t.photoId),
+  index("faces_personface_uuid_idx").on(t.personfaceUuid),
+]);
 
 // AI chats table - stores historical AI chat conversations so they can be recalled and continued
 export const aiChats = pgTable("ai_chats", {
@@ -443,9 +527,12 @@ export const aiChats = pgTable("ai_chats", {
   messages: jsonb("messages").notNull().default(sql`'[]'::jsonb`), // Array of { role: 'user' | 'assistant', content: string, attachments?: AiChatAttachment[] }
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
+  agentMode: boolean("agent_mode").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("ai_chats_user_id_idx").on(t.userId),
+]);
 
 // App knowledge table - stores chunked app documentation for internal AI tool usage
 export const appKnowledge = pgTable("app_knowledge", {
@@ -457,6 +544,32 @@ export const appKnowledge = pgTable("app_knowledge", {
 });
 
 
+// TruePeopleSearch scraped records - full person data extracted from
+// truepeoplesearch.com person pages via the Chrome extension. One row per
+// extracted TPS person, keyed by the unique tps_id (/find/person/{id} slug).
+export const truePersonSearch = pgTable("true_person_search", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tpsId: text("tps_id").notNull(), // /find/person/{id} slug — idempotency key
+  personId: varchar("person_id").references(() => people.id, { onDelete: "set null" }), // the Found PRM contact this was extracted for
+  importDate: timestamp("import_date").notNull().defaultNow(),
+  fullName: text("full_name"),
+  akas: jsonb("akas").$type<string[]>().default(sql`'[]'::jsonb`), // "also seen as"
+  birthday: text("birthday"),
+  currentAddress: text("current_address"),
+  currentAddressPropertyDetails: text("current_address_property_details"),
+  currentAddressPropertyUrl: text("current_address_property_url"),
+  addresses: jsonb("addresses").$type<TpsAddress[]>().default(sql`'[]'::jsonb`), // additional/previous addresses
+  phoneNumbers: jsonb("phone_numbers").$type<string[]>().default(sql`'[]'::jsonb`),
+  emails: jsonb("emails").$type<string[]>().default(sql`'[]'::jsonb`),
+  relatives: jsonb("relatives").$type<TpsRelation[]>().default(sql`'[]'::jsonb`),
+  associates: jsonb("associates").$type<TpsRelation[]>().default(sql`'[]'::jsonb`),
+  backgroundProfile: text("background_profile"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("true_person_search_person_id_idx").on(t.personId),
+]);
+
 // Sex guess queue - LLM-generated guesses for people with unknown sex
 export const sexGuessQueue = pgTable("sex_guess_queue", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -466,7 +579,9 @@ export const sexGuessQueue = pgTable("sex_guess_queue", {
   dateAdded: timestamp("date_added").notNull().defaultNow(),
   answered: integer("answered").notNull().default(0), // 0 = pending, 1 = answered
   snoozedUntil: timestamp("snooze_until"), // null = not snoozed, otherwise hide until this time
-});
+}, (t) => [
+  index("sex_guess_queue_person_id_idx").on(t.personId),
+]);
 
 // Relations
 export const usersRelations = relations(users, ({ one }) => ({
@@ -565,7 +680,8 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one, many })
     references: [groups.id],
   }),
   profileVersions: many(socialProfileVersions),
-  networkState: many(socialNetworkState),
+  followerEdges: many(socialFollows, { relationName: "followed" }),
+  followingEdges: many(socialFollows, { relationName: "follower" }),
   networkChanges: many(socialNetworkChanges),
   posts: many(socialAccountPosts),
   conversations: many(conversations),
@@ -581,10 +697,16 @@ export const socialProfileVersionsRelations = relations(socialProfileVersions, (
   }),
 }));
 
-export const socialNetworkStateRelations = relations(socialNetworkState, ({ one }) => ({
-  socialAccount: one(socialAccounts, {
-    fields: [socialNetworkState.socialAccountId],
+export const socialFollowsRelations = relations(socialFollows, ({ one }) => ({
+  follower: one(socialAccounts, {
+    fields: [socialFollows.followerId],
     references: [socialAccounts.id],
+    relationName: "follower",
+  }),
+  followed: one(socialAccounts, {
+    fields: [socialFollows.followedId],
+    references: [socialAccounts.id],
+    relationName: "followed",
   }),
 }));
 
@@ -658,6 +780,11 @@ export const insertPersonSchema = createInsertSchema(people)
   })
   .extend({
     jobs: z.array(jobExperienceZodSchema).optional(),
+    birthday: z.string().optional().nullable(),
+    address: z.string().optional().nullable(),
+    additionalEmails: z.array(z.string()).optional(),
+    additionalPhones: z.array(z.string()).optional(),
+    deniedRecommendations: z.array(z.string()).optional(),
   });
 
 export const insertSchoolingSchema = createInsertSchema(schooling)
@@ -968,9 +1095,8 @@ export const insertSocialProfileVersionSchema = createInsertSchema(socialProfile
   detectedAt: true,
 });
 
-export const insertSocialNetworkStateSchema = createInsertSchema(socialNetworkState).omit({
-  id: true,
-  updatedAt: true,
+export const insertSocialFollowSchema = createInsertSchema(socialFollows).omit({
+  detectedAt: true,
 });
 
 export const insertSocialNetworkChangeSchema = createInsertSchema(socialNetworkChanges).omit({
@@ -1048,6 +1174,13 @@ export const insertExtensionAuthCodeSchema = createInsertSchema(extensionAuthCod
   createdAt: true,
 });
 
+export const insertTruePersonSearchSchema = createInsertSchema(truePersonSearch).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  importDate: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -1101,8 +1234,17 @@ export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSche
 export type SocialProfileVersion = typeof socialProfileVersions.$inferSelect;
 export type InsertSocialProfileVersion = z.infer<typeof insertSocialProfileVersionSchema>;
 
-export type SocialNetworkState = typeof socialNetworkState.$inferSelect;
-export type InsertSocialNetworkState = z.infer<typeof insertSocialNetworkStateSchema>;
+export type SocialFollow = typeof socialFollows.$inferSelect;
+export type InsertSocialFollow = z.infer<typeof insertSocialFollowSchema>;
+
+export type SocialNetworkState = {
+  socialAccountId: string;
+  followerCount: number;
+  followingCount: number;
+  updatedAt: Date | null;
+  followers?: string[];
+  following?: string[];
+};
 
 export type SocialNetworkChange = typeof socialNetworkChanges.$inferSelect;
 export type InsertSocialNetworkChange = z.infer<typeof insertSocialNetworkChangeSchema>;
@@ -1178,6 +1320,9 @@ export type InsertExtensionSession = z.infer<typeof insertExtensionSessionSchema
 
 export type ExtensionAuthCode = typeof extensionAuthCodes.$inferSelect;
 export type InsertExtensionAuthCode = z.infer<typeof insertExtensionAuthCodeSchema>;
+
+export type TruePersonSearch = typeof truePersonSearch.$inferSelect;
+export type InsertTruePersonSearch = z.infer<typeof insertTruePersonSearchSchema>;
 
 export type DailyNote = typeof dailyNotes.$inferSelect;
 export type InsertDailyNote = z.infer<typeof insertDailyNoteSchema>;
@@ -1393,6 +1538,8 @@ export const messages = pgTable("messages", {
   externalId: text("external_id"),                 // Platform-specific ID
   sentAt: timestamp("sent_at"),                    // Custom date sent (e.g., historical messages)
   metadata: jsonb("metadata"),                     // Extensible
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -1430,6 +1577,32 @@ export const insertConversationSchema = createInsertSchema(conversations).omit({
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });
 export const insertMessageRecipientSchema = createInsertSchema(messageRecipients).omit({ id: true });
 export const insertConversationParticipantSchema = createInsertSchema(conversationParticipants).omit({ id: true });
+
+// Typed shapes for the messages.attachments / messages.metadata jsonb columns.
+// Written by the Instagram DM import (server/task-worker.ts) and read by the
+// message rendering components.
+export interface MessageAttachment {
+  type: "video" | "audio" | "file";
+  /** Serving URL (/api/media/... or S3). Absent when unavailable. */
+  url?: string;
+  /** Original path/URL inside the source export */
+  originalUri?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  /** Unix seconds from the source platform */
+  creationTimestamp?: number;
+  /** True when the source no longer has the file (e.g. expired CDN link) */
+  unavailable?: boolean;
+  reason?: "expired-cdn-url" | "file-missing";
+}
+
+export interface MessageMetadata {
+  reactions?: { actor: string; emoji: string }[];
+  share?: { link?: string; text?: string };
+  callDurationSec?: number;
+  /** Raw sender display name from an import, for senders without a PRM entity */
+  senderName?: string;
+}
 
 // Types
 export type Conversation = typeof conversations.$inferSelect;

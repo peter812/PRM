@@ -32,8 +32,8 @@ import {
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
-import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { hashPassword, requireAuth } from "../auth";
+import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl, getLocalMediaPath } from "../local-storage";
+import { hashPassword, requireAuth, authenticateExtensionToken } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { syncEntityInBackground } from "../vector-universal";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -78,6 +78,10 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/v1/posts/import",
   "/v1/posts/check",
   "/posts/instagram/check",
+  "/v1/tps/match",
+  "/v1/tps/person-status",
+  "/v1/tps/add",
+  "/v1/tps/extract",
 ]);
 
 
@@ -102,7 +106,22 @@ export function registerRoutes(app: Express) {
       if (!filePath) {
         return res.status(404).json({ error: "Image not found" });
       }
-  
+
+      res.sendFile(filePath);
+    });
+
+    // Serve local media (video/audio) — res.sendFile handles HTTP Range
+    // requests, which <video>/<audio> need for seeking
+    app.get("/api/media/:filename", (req, res) => {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+
+      const filePath = getLocalMediaPath(req.params.filename);
+      if (!filePath) {
+        return res.status(404).json({ error: "Media not found" });
+      }
+
       res.sendFile(filePath);
     });
   
@@ -649,7 +668,7 @@ export function registerRoutes(app: Express) {
           allSocialAccounts,
           allSocialAccountTypes,
           allProfileVersions,
-          allNetworkStates,
+          allFollows,
           mePersonResult,
           allLineages,
           allPartnerships,
@@ -674,7 +693,7 @@ export function registerRoutes(app: Express) {
           storage.getAllSocialAccounts(),
           storage.getAllSocialAccountTypes(),
           storage.getAllProfileVersions(),
-          storage.getAllNetworkStates(),
+          storage.getAllFollows(),
           db.select().from(people).where(isNotNull(people.userId)).limit(1),
           db.select().from(lineage),
           db.select().from(partnerships),
@@ -871,13 +890,21 @@ export function registerRoutes(app: Express) {
         }
         xml += '  </group_notes>\n';
 
-        const networkStateMap = new Map(allNetworkStates.map(s => [s.socialAccountId, s]));
+        const followersMap = new Map<string, string[]>();
+        const followingMap = new Map<string, string[]>();
+        for (const edge of allFollows) {
+          const followers = followersMap.get(edge.followedId);
+          if (followers) followers.push(edge.followerId);
+          else followersMap.set(edge.followedId, [edge.followerId]);
+          const following = followingMap.get(edge.followerId);
+          if (following) following.push(edge.followedId);
+          else followingMap.set(edge.followerId, [edge.followedId]);
+        }
 
         xml += '  <social_accounts>\n';
         for (const account of allSocialAccounts) {
           const ownerUuid = account.ownerUuid === mePersonId ? ZERO_UUID : account.ownerUuid;
-          const accountState = networkStateMap.get(account.id);
-          
+
           xml += '    <social_account>\n';
           xml += `      <id>${escapeXml(account.id)}</id>\n`;
           xml += `      <username>${escapeXml(account.username)}</username>\n`;
@@ -887,8 +914,8 @@ export function registerRoutes(app: Express) {
           xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
           xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
           xml += `      <notes></notes>\n`;
-          xml += `      <following>${arrayToXml(accountState?.following || [], "account_id")}</following>\n`;
-          xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
+          xml += `      <following>${arrayToXml(followingMap.get(account.id) || [], "account_id")}</following>\n`;
+          xml += `      <followers>${arrayToXml(followersMap.get(account.id) || [], "account_id")}</followers>\n`;
           xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
           xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
           xml += `      <last_scraped_at>${escapeXml(account.lastScrapedAt)}</last_scraped_at>\n`;
@@ -1102,17 +1129,20 @@ export function registerRoutes(app: Express) {
           }
           xml += '  </social_profile_versions>\n';
 
-          // Export social network states (current snapshots)
+          // Export social network snapshots (derived from follow edges)
           xml += '  <social_network_snapshots>\n';
-          for (const state of allNetworkStates) {
+          for (const account of allSocialAccounts) {
+            const snapFollowers = followersMap.get(account.id) || [];
+            const snapFollowing = followingMap.get(account.id) || [];
+            if (snapFollowers.length === 0 && snapFollowing.length === 0) continue;
             xml += '    <social_network_snapshot>\n';
-            xml += `      <id>${escapeXml(state.id)}</id>\n`;
-            xml += `      <social_account_id>${escapeXml(state.socialAccountId)}</social_account_id>\n`;
-            xml += `      <follower_count>${escapeXml(state.followerCount)}</follower_count>\n`;
-            xml += `      <following_count>${escapeXml(state.followingCount)}</following_count>\n`;
-            xml += `      <followers>${arrayToXml(state.followers || [], "account_id")}</followers>\n`;
-            xml += `      <following>${arrayToXml(state.following || [], "account_id")}</following>\n`;
-            xml += `      <captured_at>${escapeXml(state.updatedAt)}</captured_at>\n`;
+            xml += `      <id>${escapeXml(account.id)}</id>\n`;
+            xml += `      <social_account_id>${escapeXml(account.id)}</social_account_id>\n`;
+            xml += `      <follower_count>${escapeXml(snapFollowers.length)}</follower_count>\n`;
+            xml += `      <following_count>${escapeXml(snapFollowing.length)}</following_count>\n`;
+            xml += `      <followers>${arrayToXml(snapFollowers, "account_id")}</followers>\n`;
+            xml += `      <following>${arrayToXml(snapFollowing, "account_id")}</following>\n`;
+            xml += `      <captured_at>${escapeXml(new Date())}</captured_at>\n`;
             xml += '    </social_network_snapshot>\n';
           }
           xml += '  </social_network_snapshots>\n';
@@ -1602,6 +1632,17 @@ export function registerRoutes(app: Express) {
         }
   
         // Parse and import social accounts
+        // Follow edges referenced in the file; inserted after all accounts exist.
+        const pendingFollowEdges: { followerId: string; followedId: string }[] = [];
+        const collectFollowEdges = (accountId: string, followerIds: string[], followingIds: string[]) => {
+          for (const f of followerIds) {
+            if (f) pendingFollowEdges.push({ followerId: f, followedId: accountId });
+          }
+          for (const g of followingIds) {
+            if (g) pendingFollowEdges.push({ followerId: accountId, followedId: g });
+          }
+        };
+
         const socialAccountBlocks = parseAllTags("social_account", xmlText);
         for (const block of socialAccountBlocks) {
           const id = unescapeXml(parseXmlTag("id", block));
@@ -1621,9 +1662,10 @@ export function registerRoutes(app: Express) {
   
           if (existingSocialAccountUuids.has(id)) {
             skippedCounts.socialAccounts++;
+            collectFollowEdges(id, followers, following);
             continue;
           }
-  
+
           const processedOwnerUuid = replaceZeroUUID(ownerUuid);
   
           try {
@@ -1653,16 +1695,8 @@ export function registerRoutes(app: Express) {
               }
             }
   
-            if ((followers && followers.length > 0) || (following && following.length > 0)) {
-              await storage.upsertNetworkState({
-                socialAccountId: id,
-                followerCount: followers.length,
-                followingCount: following.length,
-                followers: followers,
-                following: following,
-              });
-            }
-  
+            collectFollowEdges(id, followers, following);
+
             importedCounts.socialAccounts++;
             existingSocialAccountUuids.add(id);
           } catch (error) {
@@ -1704,20 +1738,12 @@ export function registerRoutes(app: Express) {
         for (const block of snapshotBlocks) {
           try {
             const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-            const followerCount = parseInt(parseXmlTag("follower_count", block)) || 0;
-            const followingCount = parseInt(parseXmlTag("following_count", block)) || 0;
             const snFollowers = parseXmlArray("followers", "account_id", block);
             const snFollowing = parseXmlArray("following", "account_id", block);
-  
+
             if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
-  
-            await storage.upsertNetworkState({
-              socialAccountId,
-              followerCount,
-              followingCount,
-              followers: snFollowers,
-              following: snFollowing,
-            });
+
+            collectFollowEdges(socialAccountId, snFollowers, snFollowing);
           } catch (error) {
             console.error(`Error importing network snapshot:`, error);
           }
@@ -1750,7 +1776,15 @@ export function registerRoutes(app: Express) {
             console.error("Error importing network change:", error);
           }
         }
-  
+
+        // Insert the collected follow edges now that every referenced account
+        // exists; edges pointing at accounts not in the database are skipped.
+        await storage.addFollows(
+          pendingFollowEdges
+            .filter(e => existingSocialAccountUuids.has(e.followerId) && existingSocialAccountUuids.has(e.followedId))
+            .map(e => ({ ...e, source: "xml-import" }))
+        );
+
         // Parse and import social account posts
         const postBlocks = parseAllTags("social_account_post", xmlText);
         const existingPostIds = new Set((await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts)).map(p => p.id));
@@ -2539,7 +2573,7 @@ export function registerRoutes(app: Express) {
   
         // Generate a session token for the extension
         const rawToken = crypto.randomBytes(32).toString("hex");
-        const hashedToken = await hashPassword(rawToken);
+        const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
   
         // Create the extension session
         const session = await storage.createExtensionSession({
@@ -2612,23 +2646,7 @@ export function registerRoutes(app: Express) {
           return res.status(401).json({ error: "Extension token required" });
         }
   
-        // Find the session by comparing the token hash against all sessions
-        const allSessions = await storage.getAllExtensionSessionsAllUsers();
-        let matchedSession: ExtensionSession | null = null;
-  
-        for (const session of allSessions) {
-          try {
-            const [hashed, salt] = session.sessionToken.split(".");
-            const hashedBuf = Buffer.from(hashed, "hex");
-            const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
-            if (timingSafeEqual(hashedBuf, suppliedBuf)) {
-              matchedSession = session;
-              break;
-            }
-          } catch {
-            continue;
-          }
-        }
+        const matchedSession = await authenticateExtensionToken(token);
   
         if (!matchedSession) {
           return res.status(401).json({ error: "Invalid extension token" });

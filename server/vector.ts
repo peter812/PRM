@@ -136,7 +136,7 @@ export type VectorSearchHit = {
   payload: Record<string, unknown>;
 };
 
-export function composeDailyNoteText(note: DailyNoteWithDetails): string {
+function composeDailyNoteText(note: DailyNoteWithDetails): string {
   const parts: string[] = [];
   if (note.userTitle) parts.push(note.userTitle);
   if (note.body) parts.push(note.body);

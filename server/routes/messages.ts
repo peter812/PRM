@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { storage } from "../storage";
 import { z } from "zod";
+import { syncEntityInBackground } from "../vector-universal";
 
 export function registerRoutes(app: any) {
   const router = Router();
@@ -164,6 +165,20 @@ export function registerRoutes(app: any) {
     }
   });
 
+  // DELETE /api/conversations/delete-all?channelType=instagram
+  // Deletes all conversations (and their messages) — optionally scoped to one
+  // channel type. Registered before "/conversations/:id" so the literal path wins.
+  router.delete("/conversations/delete-all", async (req, res) => {
+    try {
+      const channelType = (req.query.channelType as string | undefined)?.trim() || undefined;
+      const result = await storage.deleteAllConversations(channelType);
+      res.json(result);
+    } catch (error) {
+      console.error("Error deleting conversations:", error);
+      res.status(500).json({ error: "Failed to delete messages" });
+    }
+  });
+
   // DELETE /api/conversations/:id
   router.delete("/conversations/:id", async (req, res) => {
     try {
@@ -230,6 +245,9 @@ export function registerRoutes(app: any) {
         },
         parsed.recipients || []
       );
+
+      // Trigger universal vector sync in background
+      void syncEntityInBackground("message", message.id);
 
       res.status(201).json(message);
     } catch (error) {

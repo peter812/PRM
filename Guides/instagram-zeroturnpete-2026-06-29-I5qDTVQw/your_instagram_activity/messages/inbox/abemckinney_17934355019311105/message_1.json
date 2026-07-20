@@ -1,0 +1,129 @@
+{
+  "participants": [
+    {
+      "name": "Abe Mckinney"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1699672028961,
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1696536264242,
+      "content": "And I can get you a discount on tickets!! So let me know if you wanna see it!",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1696536251851,
+      "content": "We open tomorrow and I\u00e2\u0080\u0099d love for you to come see it!",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1696536244318,
+      "content": "It\u00e2\u0080\u0099s good like good good haha",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1696536237748,
+      "content": "Hey! I\u00e2\u0080\u0099m in a show rn called Tommy with aspire and I think you\u00e2\u0080\u0099d love it!!",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1668236729842,
+      "content": "With Presley as our music director",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1668236722026,
+      "content": "Yeah, it\u00e2\u0080\u0099s great!",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1668236710725,
+      "content": "Do you guys have a live band?",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1668236672972,
+      "content": "Yeah, same lol",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1668236534038,
+      "content": "It was rough",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1668236519081,
+      "content": "It was good",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1668235140907,
+      "content": "How was your show?",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1668235136100,
+      "content": "Not the best, but it was good\u00f0\u009f\u0098\u0082",
+      "reactions": [
+        {
+          "reaction": "\u00f0\u009f\u0091\u008d",
+          "actor": "Peter Erickson",
+          "timestamp": 1668236514
+        }
+      ],
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Abe Mckinney",
+      "timestamp_ms": 1668235126649,
+      "content": "It was pretty good",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Peter Erickson",
+      "timestamp_ms": 1668234736684,
+      "content": "How was opening",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Abe Mckinney",
+  "is_still_participant": true,
+  "thread_path": "inbox/abemckinney_17934355019311105",
+  "magic_words": [
+    
+  ]
+}

@@ -82,7 +82,7 @@ export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
   blobForceMultiplier: 2,
 };
 
-export const SOCIAL_GRAPH_STORAGE_KEY = 'socialGraphDefaults';
+const SOCIAL_GRAPH_STORAGE_KEY = 'socialGraphDefaults';
 
 export const EXTRAS_STEPS = [5, 10, 20, 50, 100];
 export const MERGE_MULTIPLIER_STEPS = [0, 0.15, 0.3, 0.5, 0.75, 1];
@@ -115,7 +115,7 @@ export function saveSocialGraphDefaults(defaults: SocialGraphDefaults): void {
  * saved defaults should be applied to graph state on load. Any URL params
  * (e.g. `?view=person&selected=...`) take precedence over saved defaults.
  */
-export function hasNoGraphUrlParams(): boolean {
+function hasNoGraphUrlParams(): boolean {
   if (typeof window === 'undefined') return true;
   return window.location.search === '' || window.location.search === '?';
 }

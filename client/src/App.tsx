@@ -58,8 +58,6 @@ const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
 const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
 const SuperSearchPage = lazy(() => import("@/pages/super-search"));
 const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
-const MessagesListPage = lazy(() => import("@/pages/messages-list"));
-const MessageConversationPage = lazy(() => import("@/pages/message-conversation"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 
@@ -161,8 +159,6 @@ function Router() {
         <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
         <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
         <ProtectedRoute path="/super-search" component={SuperSearchPage} />
-        <ProtectedRoute path="/messages" component={MessagesListPage} />
-        <ProtectedRoute path="/messages/:id" component={MessageConversationPage} />
         <ProtectedRoute path="/settings" nest component={SettingsLayout} />
         <Route component={NotFound} />
       </Switch>

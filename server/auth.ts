@@ -2,10 +2,10 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { Express } from "express";
 import session from "express-session";
-import { scrypt, randomBytes, timingSafeEqual } from "crypto";
+import crypto, { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
-import { User as SelectUser } from "@shared/schema";
+import { User as SelectUser, ExtensionSession } from "@shared/schema";
 
 declare global {
   namespace Express {
@@ -96,4 +96,40 @@ export function requireAuth(
 ) {
   if (req.isAuthenticated()) return next();
   return res.status(401).json({ error: "Not authenticated" });
+}
+
+/** Authenticate a Chrome extension token with SHA-256 (O(1)) and legacy scrypt fallback/migration. */
+export async function authenticateExtensionToken(token: string): Promise<ExtensionSession | null> {
+  if (!token) return null;
+  try {
+    const suppliedHash = crypto.createHash("sha256").update(token).digest("hex");
+    const session = await storage.getExtensionSessionByToken(suppliedHash);
+
+    if (session) {
+      return session;
+    }
+
+    // Fallback and migration for legacy scrypt tokens
+    const allSessions = await storage.getAllExtensionSessionsAllUsers();
+    for (const s of allSessions) {
+      if (s.sessionToken.includes(".")) {
+        try {
+          const [hashed, salt] = s.sessionToken.split(".");
+          const hashedBuf = Buffer.from(hashed, "hex");
+          const suppliedBuf = (await scryptAsync(token, salt, 64)) as Buffer;
+          if (timingSafeEqual(hashedBuf, suppliedBuf)) {
+            // Migrate to SHA-256
+            await storage.updateExtensionSessionToken(s.id, suppliedHash);
+            s.sessionToken = suppliedHash; // Update local reference
+            return s;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error authenticating extension token:", error);
+  }
+  return null;
 }

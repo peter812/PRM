@@ -1,6 +1,6 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { isValidHexColor } from "@/lib/utils";
@@ -115,6 +116,17 @@ export default function SocialAccountProfile() {
     getNextPageParam: (lastPage) => {
       const loaded = (lastPage.page - 1) * lastPage.limit + lastPage.items.length;
       return loaded < lastPage.total ? lastPage.page + 1 : undefined;
+    },
+    enabled: !!uuid,
+  });
+
+  // Full follower/following id lists for membership checks and the link dialog
+  const { data: followIds } = useQuery<{ followerIds: string[]; followingIds: string[] }>({
+    queryKey: ["/api/social-accounts", uuid, "follow-ids"],
+    queryFn: async () => {
+      const res = await fetch(`/api/social-accounts/${uuid}/follow-ids`);
+      if (!res.ok) throw new Error("Failed to fetch follow ids");
+      return res.json();
     },
     enabled: !!uuid,
   });
@@ -349,7 +361,7 @@ export default function SocialAccountProfile() {
   }
 
   const isFollowingYou = mePerson?.socialAccountUuids?.some((meId) =>
-    account.latestState?.followers?.includes(meId)
+    followIds?.followerIds?.includes(meId)
   );
 
   const accountType = account.typeId 
@@ -423,201 +435,149 @@ export default function SocialAccountProfile() {
   };
 
   return (
-    <div className="flex flex-col h-full overflow-auto">
-      {/* Top Section */}
-      <div className="border-b px-6 py-6">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => navigate("/social-accounts")}
-          className="mb-6"
-          data-testid="button-back"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </Button>
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Compact Top-Bar Header */}
+      <div className="border-b px-4 py-2 flex items-center justify-between shrink-0 bg-card/40 backdrop-blur-md z-10">
+        <div className="flex items-center gap-3 min-w-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => navigate("/social-accounts")}
+            className="h-8 w-8 rounded-full shrink-0"
+            data-testid="button-back"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
 
-        <div className="flex items-start gap-6">
-          <Avatar className="w-24 h-24">
+          <Avatar className="w-9 h-9 shrink-0">
             {account.currentProfile?.imageUrl && (
               <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
             )}
-            <AvatarFallback className="text-2xl">
+            <AvatarFallback className="text-xs">
               {getInitials(account.username)}
             </AvatarFallback>
           </Avatar>
 
-          <div className="flex-1">
-            <div className="flex items-start justify-between gap-3 mb-2">
-              <div className="flex items-start gap-3 flex-wrap">
-                <h1 className="text-3xl font-bold" data-testid="text-account-username">
-                  {account.username}
-                </h1>
-                {accountType && (
-                  <Link href={`/social-accounts?type=${accountType.id}`}>
-                    <Badge 
-                      variant="outline" 
-                      className="cursor-pointer"
-                      style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                      data-testid="badge-account-type"
-                    >
-                      {accountType.name}
-                    </Badge>
-                  </Link>
-                )}
-                {isFollowingYou && (
-                  <Badge variant="secondary" data-testid="badge-follows-you">
-                    Follows you
-                  </Badge>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() => setIsInfoDialogOpen(true)}
-                      data-testid="button-account-info"
-                      aria-label="Social account info"
-                    >
-                      <Info className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Social account info</TooltipContent>
-                </Tooltip>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => window.open(account.currentProfile?.accountUrl ?? undefined, "_blank")}
-                  data-testid="button-goto-profile"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                </Button>
-                {accountType?.name?.toLowerCase() === "instagram" && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => setIsImportDialogOpen(true)}
-                    data-testid="button-import-instagram"
+          <div className="min-w-0">
+            <h1 className="text-sm font-bold truncate leading-none flex items-center gap-1.5" data-testid="text-account-username">
+              {account.username}
+              {accountType && (
+                <Link href={`/social-accounts?type=${accountType.id}`}>
+                  <Badge 
+                    variant="outline" 
+                    className="cursor-pointer text-[10px] px-1 py-0 h-4 leading-none"
+                    style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                    data-testid="badge-account-type"
                   >
-                    <Upload className="h-4 w-4" />
-                  </Button>
-                )}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)}
-                      data-testid="button-open-in-graph"
-                      aria-label="Open in graph"
-                    >
-                      <GraphTriangleIcon className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Open in graph</TooltipContent>
-                </Tooltip>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => setIsEditDialogOpen(true)}
-                  data-testid="button-edit-account"
-                >
-                  <Edit2 className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => deleteMutation.mutate()}
-                  disabled={deleteMutation.isPending}
-                  data-testid="button-delete-account"
-                  className="text-destructive hover:text-destructive"
-                >
-                  {deleteMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-            </div>
-
+                    {accountType.name}
+                  </Badge>
+                </Link>
+              )}
+              {isFollowingYou && (
+                <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 leading-none" data-testid="badge-follows-you">
+                  Follows you
+                </Badge>
+              )}
+            </h1>
             {account.currentProfile?.nickname && (
-              <p className="text-lg text-muted-foreground mb-1" data-testid="text-account-nickname">
+              <p className="text-xs text-muted-foreground truncate leading-none mt-1" data-testid="text-account-nickname">
                 {account.currentProfile?.nickname}
               </p>
             )}
+          </div>
+        </div>
 
-            <div className="flex flex-col gap-1 text-sm text-muted-foreground mb-4">
-              {account.internalAccountCreationDate && (
-                <div data-testid="text-account-created-date">
-                  Imported on: {(() => {
-                    const date = new Date(account.internalAccountCreationDate);
-                    const now = new Date();
-                    const diffMs = now.getTime() - date.getTime();
-                    const diffHrs = diffMs / (1000 * 60 * 60);
-                    const isWithin24Hrs = diffHrs < 24;
-                    const isMoreThanYear = now.getFullYear() - date.getFullYear() >= 1;
-
-                    if (isWithin24Hrs) {
-                      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
-                    } else if (isMoreThanYear) {
-                      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-                    } else {
-                      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-                    }
-                  })()} ({account.internalAccountCreationType})
-                </div>
+        {/* Consolidated Actions Dropdown Menu */}
+        <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1" data-testid="button-actions-menu">
+                Actions
+                <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onClick={() => setIsEditDialogOpen(true)} data-testid="button-edit-account">
+                <Edit2 className="h-4 w-4 mr-2" />
+                Edit Account
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setIsInfoDialogOpen(true)} data-testid="button-account-info">
+                <Info className="h-4 w-4 mr-2" />
+                Account Info
+              </DropdownMenuItem>
+              {account.currentProfile?.accountUrl && (
+                <DropdownMenuItem onClick={() => window.open(account.currentProfile?.accountUrl ?? undefined, "_blank")} data-testid="button-goto-profile">
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  View Original Profile
+                </DropdownMenuItem>
               )}
-              {account.latestImportFollowers && (
-                <div data-testid="text-account-latest-followers">
-                  Latest followers import: {(() => {
-                    const date = new Date(account.latestImportFollowers);
-                    const now = new Date();
-                    const diffMs = now.getTime() - date.getTime();
-                    const diffHrs = diffMs / (1000 * 60 * 60);
-                    const isWithin24Hrs = diffHrs < 24;
-                    const isMoreThanYear = now.getFullYear() - date.getFullYear() >= 1;
-
-                    if (isWithin24Hrs) {
-                      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
-                    } else if (isMoreThanYear) {
-                      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-                    } else {
-                      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-                    }
-                  })()}
-                </div>
+              <DropdownMenuItem onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)} data-testid="button-open-in-graph">
+                <GraphTriangleIcon className="h-4 w-4 mr-2" />
+                Open in Graph
+              </DropdownMenuItem>
+              {accountType?.name?.toLowerCase() === "instagram" && (
+                <DropdownMenuItem onClick={() => setIsImportDialogOpen(true)} data-testid="button-import-instagram">
+                  <Upload className="h-4 w-4 mr-2" />
+                  Import Instagram CSV
+                </DropdownMenuItem>
               )}
-              {account.latestImportFollowing && (
-                <div data-testid="text-account-latest-following">
-                  Latest following import: {(() => {
-                    const date = new Date(account.latestImportFollowing);
-                    const now = new Date();
-                    const diffMs = now.getTime() - date.getTime();
-                    const diffHrs = diffMs / (1000 * 60 * 60);
-                    const isWithin24Hrs = diffHrs < 24;
-                    const isMoreThanYear = now.getFullYear() - date.getFullYear() >= 1;
+              <DropdownMenuSeparator />
+              <DropdownMenuItem 
+                onClick={() => deleteMutation.mutate()} 
+                disabled={deleteMutation.isPending} 
+                className="text-destructive hover:text-destructive focus:bg-destructive/10"
+                data-testid="button-delete-account"
+              >
+                {deleteMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4 mr-2" />
+                )}
+                Delete Account
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
 
-                    if (isWithin24Hrs) {
-                      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
-                    } else if (isMoreThanYear) {
-                      return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-                    } else {
-                      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-                    }
-                  })()}
-                </div>
-              )}
-            </div>
+      {/* Main Content Area with Left Sidebar Tabs */}
+      <Tabs defaultValue="follow" className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        {/* Left Side Navigation Menu */}
+        <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-y-auto">
+          <div className="p-3">
+            <TabsList className="flex flex-col items-stretch justify-start h-auto bg-transparent p-0 gap-1" data-testid="tabs-social-account">
+              <TabsTrigger
+                value="follow"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-follow"
+              >
+                Follow
+              </TabsTrigger>
+              <TabsTrigger
+                value="posts"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-posts"
+              >
+                Posts
+              </TabsTrigger>
+              <TabsTrigger
+                value="messages"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-messages"
+              >
+                Messages
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
+          {/* Sidebar Bottom Details Panel */}
+          <div className="p-4 border-t bg-muted/15 space-y-3 text-xs">
             {account.ownerUuid ? (
-              <div className="text-sm">
-                <span className="text-muted-foreground">Linked to: </span>
+              <div className="space-y-1">
+                <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Linked Owner</span>
                 {owner ? (
                   <Link href={`/person/${owner.id}`}>
-                    <a className="text-primary hover:underline font-medium" data-testid="link-owner">
+                    <a className="text-primary hover:underline font-medium block" data-testid="link-owner">
                       {owner.firstName} {owner.lastName}
                     </a>
                   </Link>
@@ -626,51 +586,47 @@ export default function SocialAccountProfile() {
                 )}
               </div>
             ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsCreatePersonOpen(true)}
-                data-testid="button-create-person"
-              >
-                <UserPlus className="h-4 w-4" />
-                Create Person
-              </Button>
+              <div className="space-y-1">
+                <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Owner</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-left justify-start"
+                  onClick={() => setIsCreatePersonOpen(true)}
+                  data-testid="button-create-person"
+                >
+                  <UserPlus className="h-3.5 w-3.5 mr-1" />
+                  Create Person
+                </Button>
+              </div>
             )}
+
+            <div className="space-y-1 text-muted-foreground">
+              <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Import Status</span>
+              {account.internalAccountCreationDate && (
+                <div data-testid="text-account-created-date">
+                  Imported: {formatDateTime(account.internalAccountCreationDate)} ({account.internalAccountCreationType})
+                </div>
+              )}
+              {account.latestImportFollowers && (
+                <div data-testid="text-account-latest-followers">
+                  Followers: {formatDateTime(account.latestImportFollowers)}
+                </div>
+              )}
+              {account.latestImportFollowing && (
+                <div data-testid="text-account-latest-following">
+                  Following: {formatDateTime(account.latestImportFollowing)}
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Tabs Section */}
-      <div className="flex-1 overflow-auto">
-        <Tabs defaultValue="follow" className="w-full">
-          <div className="border-b px-6">
-            <TabsList className="h-12 bg-transparent p-0 flex-nowrap touch-scroll" data-testid="tabs-social-account">
-              <TabsTrigger
-                value="follow"
-                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-                data-testid="tab-follow"
-              >
-                Follow
-              </TabsTrigger>
-              <TabsTrigger
-                value="posts"
-                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-                data-testid="tab-posts"
-              >
-                Posts
-              </TabsTrigger>
-              <TabsTrigger
-                value="messages"
-                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-                data-testid="tab-messages"
-              >
-                Messages
-              </TabsTrigger>
-            </TabsList>
-          </div>
+        {/* Selected Tab Content Pane */}
+        <div className="flex-1 flex flex-col min-h-0 bg-background overflow-hidden">
 
           {/* Follow Tab */}
-          <TabsContent value="follow" className="mt-0">
+          <TabsContent value="follow" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <div className="px-6 py-6 space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Followers Column */}
@@ -874,7 +830,7 @@ export default function SocialAccountProfile() {
           </TabsContent>
 
           {/* Posts Tab */}
-          <TabsContent value="posts" className="mt-0">
+          <TabsContent value="posts" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <div className="px-6 py-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-lg font-semibold">Posts ({posts?.length || 0})</h2>
@@ -967,13 +923,12 @@ export default function SocialAccountProfile() {
           </TabsContent>
 
           {/* Messages Tab */}
-          <TabsContent value="messages" className="mt-0">
-            <div className="px-6 py-6">
-              <MessagesTab socialAccountId={account.id} />
-            </div>
+          {/* Messages Tab */}
+          <TabsContent value="messages" className="mt-0 flex-1 min-h-0">
+            <MessagesTab socialAccountId={account.id} />
           </TabsContent>
-        </Tabs>
-      </div>
+        </div>
+      </Tabs>
 
       <SocialAccountDialog
         open={isEditDialogOpen}
@@ -985,7 +940,7 @@ export default function SocialAccountProfile() {
         open={isLinkFollowingOpen}
         onOpenChange={setIsLinkFollowingOpen}
         accountUuid={uuid!}
-        linkedAccountIds={account.latestState?.following || []}
+        linkedAccountIds={followIds?.followingIds || []}
       />
 
       <Dialog open={isImportDialogOpen} onOpenChange={(open) => {

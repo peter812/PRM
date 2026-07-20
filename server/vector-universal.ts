@@ -12,6 +12,7 @@ import {
   socialAccounts,
   dailyNotes,
   aiChats,
+  messages,
   type AiChatMessage,
 } from "@shared/schema";
 import { embedText, loadVectorConfig, getVectorSetting, setVectorSetting, type VectorConfig } from "./vector";
@@ -26,7 +27,8 @@ export type UniversalEntityType =
   | "interaction"
   | "social_account"
   | "daily_note"
-  | "ai_chat";
+  | "ai_chat"
+  | "message";
 
 export type UniversalSearchResult = {
   type: UniversalEntityType;
@@ -88,7 +90,7 @@ async function ensureCollection(client: QdrantClient, name: string, vectorSize: 
 
 // ── Text composition per entity type ─────────────────────────────────────────
 
-export function composeTextForEntity(type: UniversalEntityType, data: Record<string, any>): string {
+function composeTextForEntity(type: UniversalEntityType, data: Record<string, any>): string {
   const truncate = (s: string, maxLen = 2000) => s.slice(0, maxLen);
 
   switch (type) {
@@ -170,6 +172,14 @@ export function composeTextForEntity(type: UniversalEntityType, data: Record<str
       return truncate(parts.join("\n\n").trim());
     }
 
+    case "message": {
+      const parts: string[] = [];
+      if (data.senderName) parts.push(`Sender: ${data.senderName}`);
+      if (data.sentAt) parts.push(`Date: ${new Date(data.sentAt).toISOString()}`);
+      if (data.content) parts.push(`Content: ${data.content}`);
+      return truncate(parts.join("\n").trim());
+    }
+
     default:
       return "";
   }
@@ -183,7 +193,7 @@ export function composeTextForEntity(type: UniversalEntityType, data: Record<str
  * description exists, and several call sites fire `syncEntityInBackground("image", …)`
  * at insert time, so this guard keeps description-less photos out of vector storage.
  */
-export function isVectorizable(type: UniversalEntityType, data: Record<string, any>): boolean {
+function isVectorizable(type: UniversalEntityType, data: Record<string, any>): boolean {
   if (type === "image") {
     return typeof data.imageDescription === "string" && data.imageDescription.trim().length > 0;
   }
@@ -210,6 +220,8 @@ function getTitleForEntity(type: UniversalEntityType, data: Record<string, any>)
       return data.userTitle || data.date || "Daily Note";
     case "ai_chat":
       return data.title || "Chat";
+    case "message":
+      return `Message from ${data.senderName || "Unknown"}`;
     default:
       return "Unknown";
   }
@@ -221,7 +233,7 @@ function getTitleForEntity(type: UniversalEntityType, data: Record<string, any>)
  * Embeds and upserts an entity vector into the universal Qdrant collection.
  * Returns the point ID used.
  */
-export async function upsertEntityVector(
+async function upsertEntityVector(
   type: UniversalEntityType,
   entityId: string,
   data: Record<string, any>,
@@ -279,6 +291,7 @@ export async function upsertEntityVector(
     social_account: socialAccounts,
     daily_note: dailyNotes,
     ai_chat: aiChats,
+    message: messages,
   };
 
   const table = tableMap[type];
@@ -454,6 +467,23 @@ async function loadEntityData(type: UniversalEntityType, entityId: string): Prom
       const [row] = await db.select().from(aiChats).where(eq(aiChats.id, entityId));
       return row || null;
     }
+    case "message": {
+      const [row] = await db.select().from(messages).where(eq(messages.id, entityId));
+      if (!row) return null;
+      let senderName = "Unknown";
+      if (row.senderPersonId) {
+        const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
+          .from(people).where(eq(people.id, row.senderPersonId));
+        if (p) senderName = `${p.firstName} ${p.lastName}`;
+      } else if (row.senderSocialAccountId) {
+        const [sa] = await db.select({ username: socialAccounts.username })
+          .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
+        if (sa) senderName = sa.username;
+      } else if (row.metadata && typeof row.metadata === "object") {
+        senderName = (row.metadata as any).senderName || "Unknown";
+      }
+      return { ...row, senderName };
+    }
     default:
       return null;
   }
@@ -482,6 +512,7 @@ export async function bulkSyncAll(
     { type: "social_account", table: socialAccounts },
     { type: "daily_note", table: dailyNotes },
     { type: "ai_chat", table: aiChats },
+    { type: "message", table: messages },
   ];
 
   // Count total entities that need syncing

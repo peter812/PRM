@@ -1,0 +1,37 @@
+{
+  "participants": [
+    {
+      "name": "Alicia Brooks"
+    },
+    {
+      "name": "Peter Erickson"
+    }
+  ],
+  "messages": [
+    {
+      "sender_name": "Alicia Brooks",
+      "timestamp_ms": 1758609607737,
+      "content": "Are you guys still playing uno?",
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    },
+    {
+      "sender_name": "Alicia Brooks",
+      "timestamp_ms": 1668632035673,
+      "photos": [
+        {
+          "uri": "your_instagram_activity/messages/inbox/aliciabrooks_1106792764053654/photos/375702121392145.jpg",
+          "creation_timestamp": 1668631045
+        }
+      ],
+      "is_geoblocked_for_viewer": false,
+      "is_unsent_image_by_messenger_kid_parent": false
+    }
+  ],
+  "title": "Alicia Brooks",
+  "is_still_participant": true,
+  "thread_path": "inbox/aliciabrooks_1106792764053654",
+  "magic_words": [
+    
+  ]
+}

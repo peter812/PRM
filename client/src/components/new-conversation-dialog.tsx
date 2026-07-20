@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useLocation } from "wouter";
 import { Check, ChevronsUpDown, X, Phone, Mail, Instagram, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -52,7 +51,6 @@ export function NewConversationDialog({
   initialPersonId,
   initialSocialAccountId,
 }: NewConversationDialogProps) {
-  const [, navigate] = useLocation();
   const { toast } = useToast();
 
   const [title, setTitle] = useState("");
@@ -100,7 +98,6 @@ export function NewConversationDialog({
         description: "Your new conversation log has been created successfully.",
       });
       onOpenChange(false);
-      navigate(`/messages/${data.id}`);
     },
     onError: (error: any) => {
       toast({
