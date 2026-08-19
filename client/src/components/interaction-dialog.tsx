@@ -166,6 +166,7 @@ export function InteractionDialog({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/interactions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       selectedPeopleIds.forEach((id) => {
         queryClient.invalidateQueries({ queryKey: ["/api/people", id] });
       });

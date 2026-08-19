@@ -63,6 +63,9 @@ function getTaskLabel(type: string): string {
   }
 }
 
+const EMPTY_TASKS: Task[] = [];
+const EMPTY_IMAGE_TASKS: ImageTask[] = [];
+
 export function TaskTrackerModal() {
   const { toast } = useToast();
   const [minimized, setMinimized] = useState(false);
@@ -78,7 +81,7 @@ export function TaskTrackerModal() {
   const hasTasks = totalTasksCount > 0;
 
   // Query general background tasks
-  const { data: tasks = [] } = useQuery<Task[]>({
+  const { data: tasks = EMPTY_TASKS } = useQuery<Task[]>({
     queryKey: ["/api/tasks"],
     refetchInterval: (query) => {
       const data = query.state.data as Task[] | undefined;
@@ -102,62 +105,65 @@ export function TaskTrackerModal() {
     },
   });
 
-  const imageTasks = imageTasksData?.items ?? [];
+  const imageTasks = imageTasksData?.items ?? EMPTY_IMAGE_TASKS;
 
   // Merge backend queries into local display state
   useEffect(() => {
+    let hasNewActiveTask = false;
+    const timeoutsToSchedule: string[] = [];
+
     setTrackedTasks((prev) => {
+      let changed = false;
       const next = { ...prev };
-      let hasNewTask = false;
 
       const processTask = (t: any, isImageTask: boolean) => {
         if (dismissedTaskIds.has(t.id)) return;
 
         const isTerminal =
           t.status === "completed" || t.status === "failed" || t.status === "cancelled";
-        const isAlreadyTracked = !!next[t.id];
+        const prevTask = prev[t.id];
 
         // Track if active, or if it was tracked before and just finished
-        if (!isTerminal || isAlreadyTracked) {
-          if (!isAlreadyTracked && (t.status === "pending" || t.status === "in_progress")) {
-            hasNewTask = true;
+        if (!isTerminal || prevTask) {
+          if (!prevTask && (t.status === "pending" || t.status === "in_progress")) {
+            hasNewActiveTask = true;
           }
 
-          const oldStatus = next[t.id]?.status;
-          next[t.id] = {
-            id: t.id,
-            type: t.type,
-            isImageTask,
-            status: t.status,
-            title:
-              t.title ||
-              (isImageTask
-                ? t.type === "download_img_instagram"
-                  ? "Instagram Image"
-                  : "Image Task"
-                : null),
-            progress: t.progress,
-            progressMessage: t.progressMessage || null,
-          };
+          const title =
+            t.title ||
+            (isImageTask
+              ? t.type === "download_img_instagram"
+                ? "Instagram Image"
+                : "Image Task"
+              : null);
+          const progressMessage = t.progressMessage || null;
 
-          // If a task transitioned to a terminal success/cancelled state, auto-dismiss after 8s
           if (
-            oldStatus &&
-            oldStatus !== t.status &&
-            (t.status === "completed" || t.status === "cancelled")
+            !prevTask ||
+            prevTask.status !== t.status ||
+            prevTask.progress !== t.progress ||
+            prevTask.progressMessage !== progressMessage ||
+            prevTask.title !== title
           ) {
-            setTimeout(() => {
-              setTrackedTasks((curr) => {
-                const copy = { ...curr };
-                delete copy[t.id];
-                return copy;
-              });
-              setDismissedTaskIds((curr) => {
-                const copy = new Set(curr);
-                copy.add(t.id);
-                return copy;
-              });
-            }, 8000);
+            changed = true;
+            next[t.id] = {
+              id: t.id,
+              type: t.type,
+              isImageTask,
+              status: t.status,
+              title,
+              progress: t.progress,
+              progressMessage,
+            };
+
+            // If a task transitioned to a terminal success/cancelled state, auto-dismiss after 8s
+            if (
+              prevTask &&
+              prevTask.status !== t.status &&
+              (t.status === "completed" || t.status === "cancelled")
+            ) {
+              timeoutsToSchedule.push(t.id);
+            }
           }
         }
       };
@@ -172,12 +178,37 @@ export function TaskTrackerModal() {
         processTask(t, true);
       }
 
-      if (hasNewTask) {
-        setMinimized(false);
-      }
-
-      return next;
+      return changed ? next : prev;
     });
+
+    if (hasNewActiveTask) {
+      setMinimized(false);
+    }
+
+    if (timeoutsToSchedule.length > 0) {
+      const timer = setTimeout(() => {
+        setTrackedTasks((curr) => {
+          let modified = false;
+          const copy = { ...curr };
+          for (const id of timeoutsToSchedule) {
+            if (copy[id]) {
+              delete copy[id];
+              modified = true;
+            }
+          }
+          return modified ? copy : curr;
+        });
+        setDismissedTaskIds((curr) => {
+          const copy = new Set(curr);
+          for (const id of timeoutsToSchedule) {
+            copy.add(id);
+          }
+          return copy;
+        });
+      }, 8000);
+
+      return () => clearTimeout(timer);
+    }
   }, [tasks, imageTasks, dismissedTaskIds]);
 
   // Mutation to cancel a running task
@@ -194,11 +225,14 @@ export function TaskTrackerModal() {
 
       // Instantly show cancelled state locally
       setTrackedTasks((curr) => {
-        const copy = { ...curr };
-        if (copy[variables.id]) {
-          copy[variables.id].status = "cancelled";
-        }
-        return copy;
+        if (!curr[variables.id]) return curr;
+        return {
+          ...curr,
+          [variables.id]: {
+            ...curr[variables.id],
+            status: "cancelled",
+          },
+        };
       });
     },
     onError: (err: Error) => {
@@ -208,11 +242,13 @@ export function TaskTrackerModal() {
 
   const handleDismiss = (id: string) => {
     setTrackedTasks((curr) => {
+      if (!curr[id]) return curr;
       const copy = { ...curr };
       delete copy[id];
       return copy;
     });
     setDismissedTaskIds((curr) => {
+      if (curr.has(id)) return curr;
       const copy = new Set(curr);
       copy.add(id);
       return copy;
@@ -223,6 +259,8 @@ export function TaskTrackerModal() {
     const terminalIds = Object.values(trackedTasks)
       .filter((t) => t.status === "completed" || t.status === "cancelled" || t.status === "failed")
       .map((t) => t.id);
+
+    if (terminalIds.length === 0) return;
 
     setTrackedTasks((curr) => {
       const copy = { ...curr };

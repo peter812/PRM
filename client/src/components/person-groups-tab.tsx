@@ -22,9 +22,10 @@ import { Link } from "wouter";
 interface PersonGroupsTabProps {
   personId: string;
   personGroups: Group[];
+  onUpdate?: () => void;
 }
 
-export function PersonGroupsTab({ personId, personGroups }: PersonGroupsTabProps) {
+export function PersonGroupsTab({ personId, personGroups, onUpdate }: PersonGroupsTabProps) {
   const { toast } = useToast();
   const [isAddToGroupOpen, setIsAddToGroupOpen] = useState(false);
 
@@ -48,6 +49,8 @@ export function PersonGroupsTab({ personId, personGroups }: PersonGroupsTabProps
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
+      onUpdate?.();
       toast({
         title: "Success",
         description: "Removed from group successfully",
@@ -79,6 +82,8 @@ export function PersonGroupsTab({ personId, personGroups }: PersonGroupsTabProps
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
+      onUpdate?.();
       toast({
         title: "Success",
         description: "Added to groups successfully",

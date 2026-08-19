@@ -356,6 +356,11 @@ export default function MeProfile() {
             <PersonGroupsTab
               personGroups={person.groups || []}
               personId={person.id}
+              onUpdate={() => {
+                queryClient.invalidateQueries({
+                  queryKey: ["/api/me"],
+                });
+              }}
             />
           </TabsContent>
 

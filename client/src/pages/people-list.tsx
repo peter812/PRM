@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Plus, X, Star, Trophy, ArrowUpDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { Plus, X, Star, Trophy, ArrowUpDown, ArrowUp, ArrowDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink } from "lucide-react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -60,6 +60,8 @@ export default function PeopleList() {
   const [personToDelete, setPersonToDelete] = useState<PersonWithRelationship | null>(null);
   const [starredStates, setStarredStates] = useState<Record<string, number>>({});
   const [sortBy, setSortBy] = useState<SortOption>("relationship");
+  const [tableSortColumn, setTableSortColumn] = useState<string | null>(null);
+  const [tableSortDirection, setTableSortDirection] = useState<"asc" | "desc">("asc");
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem("people-list-view-mode");
     return (saved as ViewMode) || "snug";
@@ -156,6 +158,60 @@ export default function PeopleList() {
     setStarredStates((prev) => ({ ...prev, [person.id]: newStarred }));
     starMutation.mutate({ personId: person.id, isStarred: currentStarred });
   };
+
+  const handleHeaderSort = (column: string) => {
+    if (tableSortColumn === column) {
+      setTableSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setTableSortColumn(column);
+      setTableSortDirection(column === "starred" || column === "social" ? "desc" : "asc");
+    }
+  };
+
+  const sortedPeople = useMemo(() => {
+    if (!tableSortColumn) return people;
+    return [...people].sort((a, b) => {
+      let cmp = 0;
+      if (tableSortColumn === "name") {
+        const nameA = `${a.firstName || ""} ${a.lastName || ""}`.trim();
+        const nameB = `${b.firstName || ""} ${b.lastName || ""}`.trim();
+        cmp = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: "base" });
+      } else if (tableSortColumn === "relationship") {
+        const relA = a.relationshipTypeName || "";
+        const relB = b.relationshipTypeName || "";
+        if (!relA && relB) return 1;
+        if (relA && !relB) return -1;
+        cmp = relA.localeCompare(relB, undefined, { numeric: true, sensitivity: "base" });
+      } else if (tableSortColumn === "tags") {
+        const tagsA = (a.tags || []).join(", ");
+        const tagsB = (b.tags || []).join(", ");
+        if (!tagsA && tagsB) return 1;
+        if (tagsA && !tagsB) return -1;
+        cmp = tagsA.localeCompare(tagsB, undefined, { numeric: true, sensitivity: "base" });
+      } else if (tableSortColumn === "starred") {
+        const starA = starredStates[a.id] ?? (a.isStarred || 0);
+        const starB = starredStates[b.id] ?? (b.isStarred || 0);
+        cmp = starA - starB;
+      } else if (tableSortColumn === "phone") {
+        const phoneA = a.phone || "";
+        const phoneB = b.phone || "";
+        if (!phoneA && phoneB) return 1;
+        if (phoneA && !phoneB) return -1;
+        cmp = phoneA.localeCompare(phoneB, undefined, { numeric: true, sensitivity: "base" });
+      } else if (tableSortColumn === "email") {
+        const emailA = a.email || "";
+        const emailB = b.email || "";
+        if (!emailA && emailB) return 1;
+        if (emailA && !emailB) return -1;
+        cmp = emailA.localeCompare(emailB, undefined, { numeric: true, sensitivity: "base" });
+      } else if (tableSortColumn === "social") {
+        const countA = a.socialAccountUuids?.length || 0;
+        const countB = b.socialAccountUuids?.length || 0;
+        cmp = countA - countB;
+      }
+      return tableSortDirection === "asc" ? cmp : -cmp;
+    });
+  }, [people, tableSortColumn, tableSortDirection, starredStates]);
 
   const showEloBadge = sortBy === "elo_high" || sortBy === "elo_low";
 
@@ -331,18 +387,144 @@ export default function PeopleList() {
                 <table className="w-full text-sm" data-testid="table-people-details">
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
-                      <th className="py-2 px-3 font-medium">Name</th>
-                      <th className="py-2 px-3 font-medium">Relationship</th>
-                      <th className="py-2 px-3 font-medium">Tags</th>
-                      <th className="py-2 px-3 font-medium w-10"></th>
-                      <th className="py-2 px-3 font-medium">Phone</th>
-                      <th className="py-2 px-3 font-medium">Email</th>
-                      <th className="py-2 px-3 font-medium">Social</th>
+                      <th
+                        className="py-2 px-3 font-medium cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                        onClick={() => handleHeaderSort("name")}
+                        data-testid="th-sort-name"
+                        title="Sort by Name"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Name</span>
+                          {tableSortColumn === "name" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        className="py-2 px-3 font-medium cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                        onClick={() => handleHeaderSort("relationship")}
+                        data-testid="th-sort-relationship"
+                        title="Sort by Relationship"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Relationship</span>
+                          {tableSortColumn === "relationship" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        className="py-2 px-3 font-medium cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                        onClick={() => handleHeaderSort("tags")}
+                        data-testid="th-sort-tags"
+                        title="Sort by Tags"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Tags</span>
+                          {tableSortColumn === "tags" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        className="py-2 px-3 font-medium w-12 cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                        onClick={() => handleHeaderSort("starred")}
+                        data-testid="th-sort-starred"
+                        title="Sort by Starred"
+                      >
+                        <div className="flex items-center gap-1">
+                          <Star className="h-3.5 w-3.5 text-yellow-500 fill-current shrink-0" />
+                          {tableSortColumn === "starred" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        className="py-2 px-3 font-medium cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                        onClick={() => handleHeaderSort("phone")}
+                        data-testid="th-sort-phone"
+                        title="Sort by Phone"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Phone</span>
+                          {tableSortColumn === "phone" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        className="py-2 px-3 font-medium cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                        onClick={() => handleHeaderSort("email")}
+                        data-testid="th-sort-email"
+                        title="Sort by Email"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Email</span>
+                          {tableSortColumn === "email" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
+                      <th
+                        className="py-2 px-3 font-medium cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                        onClick={() => handleHeaderSort("social")}
+                        data-testid="th-sort-social"
+                        title="Sort by Social accounts count"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Social</span>
+                          {tableSortColumn === "social" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+                      </th>
                       <th className="py-2 px-3 font-medium w-10"></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {people.map((person) => {
+                    {sortedPeople.map((person) => {
                       const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
                       const starredVal = starredStates[person.id] ?? (person.isStarred || 0);
                       return (

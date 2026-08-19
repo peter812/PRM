@@ -132,6 +132,7 @@ export function PersonDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       if (isEdit && person) {
         queryClient.invalidateQueries({ queryKey: ["/api/people", String(person.id)] });
+        queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       }
       toast({
         title: "Success",

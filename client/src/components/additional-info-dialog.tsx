@@ -123,6 +123,7 @@ export function AdditionalInfoDialog({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", person.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       toast({
         title: "Success",
         description: "Additional info updated successfully",
