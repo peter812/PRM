@@ -6,6 +6,8 @@ vite.config.ts.*
 *.tar.gz
 .env
 /exports/*.xml
+/backups/*
+!/backups/.gitkeep
 /uploads/*
 /graphify-out/*
 /graphify-out/

@@ -20,6 +20,7 @@ import {
   relationshipTypes,
   users,
   groups,
+  subGroups,
   groupNotes,
   apiKeys,
   ssoConfig,
@@ -71,6 +72,8 @@ import {
   type InsertUser,
   type Group,
   type InsertGroup,
+  type SubGroup,
+  type InsertSubGroup,
   type GroupNote,
   type InsertGroupNote,
   type GroupWithNotes,
@@ -352,6 +355,15 @@ export interface IStorage {
   createGroup(group: InsertGroup): Promise<Group>;
   updateGroup(id: string, group: Partial<InsertGroup>): Promise<Group | undefined>;
   deleteGroup(id: string): Promise<void>;
+
+  // Sub group operations
+  getAllSubGroups(): Promise<SubGroup[]>;
+  getSubGroupsByGroupId(groupId: string): Promise<SubGroup[]>;
+  getSubGroupById(id: string): Promise<(SubGroup & { parentGroup?: Group; memberDetails?: Person[] }) | undefined>;
+  createSubGroup(subGroup: InsertSubGroup): Promise<SubGroup>;
+  updateSubGroup(id: string, subGroup: Partial<InsertSubGroup>): Promise<SubGroup | undefined>;
+  deleteSubGroup(id: string): Promise<void>;
+  getSubGroupsByPersonId(personId: string): Promise<SubGroup[]>;
 
   // Group note operations
   createGroupNote(note: InsertGroupNote): Promise<GroupNote>;
@@ -919,10 +931,11 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Run all independent queries in parallel
-    const [personNotes, personInteractions, personGroups, relationshipsFrom, relationshipsTo, personSchooling] = await Promise.all([
+    const [personNotes, personInteractions, personGroups, personSubGroups, relationshipsFrom, relationshipsTo, personSchooling] = await Promise.all([
       db.select().from(notes).where(eq(notes.personId, id)),
       db.select().from(interactions).where(sql`${id} = ANY(${interactions.peopleIds})`),
       db.select().from(groups).where(arrayContains(groups.members, [id])),
+      db.select().from(subGroups).where(arrayContains(subGroups.members, [id])),
       db
         .select({
           id: relationships.id,
@@ -975,6 +988,7 @@ export class DatabaseStorage implements IStorage {
       notes: personNotes,
       interactions: personInteractions,
       groups: personGroups,
+      subGroups: personSubGroups,
       relationships: allRelationships,
       schooling: personSchooling[0] || null,
     };
@@ -2284,12 +2298,13 @@ export class DatabaseStorage implements IStorage {
     if (!group) return undefined;
 
     // Run all independent queries in parallel
-    const [groupNotesList, memberDetails, groupInteractions] = await Promise.all([
+    const [groupNotesList, memberDetails, groupInteractions, groupSubGroups] = await Promise.all([
       db.select().from(groupNotes).where(eq(groupNotes.groupId, id)),
       group.members && group.members.length > 0
         ? db.select().from(people).where(inArray(people.id, group.members))
         : Promise.resolve([]),
       db.select().from(interactions).where(arrayContains(interactions.groupIds, [id])),
+      db.select().from(subGroups).where(eq(subGroups.groupId, id)),
     ]);
 
     return {
@@ -2297,6 +2312,7 @@ export class DatabaseStorage implements IStorage {
       notes: groupNotesList,
       memberDetails,
       interactions: groupInteractions,
+      subGroups: groupSubGroups,
     };
   }
 
@@ -2321,8 +2337,60 @@ export class DatabaseStorage implements IStorage {
     // Remove group from all interactions
     await this.removeGroupFromInteractions(id);
     
-    // Delete group (cascade will handle group notes)
+    // Delete group (cascade will handle group notes and sub groups)
     await db.delete(groups).where(eq(groups.id, id));
+  }
+
+  // Sub group operations
+  async getAllSubGroups(): Promise<SubGroup[]> {
+    return await db.select().from(subGroups);
+  }
+
+  async getSubGroupsByGroupId(groupId: string): Promise<SubGroup[]> {
+    return await db.select().from(subGroups).where(eq(subGroups.groupId, groupId));
+  }
+
+  async getSubGroupById(id: string): Promise<(SubGroup & { parentGroup?: Group; memberDetails?: Person[] }) | undefined> {
+    const [subGroup] = await db.select().from(subGroups).where(eq(subGroups.id, id));
+    if (!subGroup) return undefined;
+
+    const [parentGroup, memberDetails] = await Promise.all([
+      db.select().from(groups).where(eq(groups.id, subGroup.groupId)).then(([g]) => g || undefined),
+      subGroup.members && subGroup.members.length > 0
+        ? db.select().from(people).where(inArray(people.id, subGroup.members))
+        : Promise.resolve([]),
+    ]);
+
+    return {
+      ...subGroup,
+      parentGroup,
+      memberDetails,
+    };
+  }
+
+  async createSubGroup(insertSubGroup: InsertSubGroup): Promise<SubGroup> {
+    const [subGroup] = await db.insert(subGroups).values(insertSubGroup).returning();
+    return subGroup;
+  }
+
+  async updateSubGroup(
+    id: string,
+    subGroupData: Partial<InsertSubGroup>
+  ): Promise<SubGroup | undefined> {
+    const [subGroup] = await db
+      .update(subGroups)
+      .set(subGroupData)
+      .where(eq(subGroups.id, id))
+      .returning();
+    return subGroup || undefined;
+  }
+
+  async deleteSubGroup(id: string): Promise<void> {
+    await db.delete(subGroups).where(eq(subGroups.id, id));
+  }
+
+  async getSubGroupsByPersonId(personId: string): Promise<SubGroup[]> {
+    return await db.select().from(subGroups).where(arrayContains(subGroups.members, [personId]));
   }
 
   // Group note operations
@@ -3826,7 +3894,22 @@ export class DatabaseStorage implements IStorage {
 
   // Task operations
   async createTask(insertTask: InsertTask): Promise<Task> {
-    const [task] = await db.insert(tasks).values(insertTask).returning();
+    const taskData: any = { ...insertTask };
+    if (!taskData.userId) {
+      try {
+        const payloadObj = JSON.parse(taskData.payload || "{}");
+        if (payloadObj.userId) {
+          taskData.userId = payloadObj.userId;
+        }
+      } catch {}
+    }
+    if (!taskData.userId) {
+      const allUsers = await this.getAllUsers();
+      if (allUsers.length > 0) {
+        taskData.userId = allUsers[0].id;
+      }
+    }
+    const [task] = await db.insert(tasks).values(taskData).returning();
     return task;
   }
 

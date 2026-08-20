@@ -8,6 +8,7 @@ import { registerRoutes as registerFamily } from "./routes/family";
 import { registerRoutes as registerMessages } from "./routes/messages";
 import { registerRoutes as registerOsint } from "./routes/osint";
 import { registerRoutes as registerTps } from "./routes/tps";
+import { registerRoutes as registerBackups } from "./routes/backups";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Register sub-route modules.
@@ -26,6 +27,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerFamily(app);
   registerMessages(app);
   registerOsint(app);
+  registerBackups(app);
 
   const httpServer = createServer(app);
   return httpServer;

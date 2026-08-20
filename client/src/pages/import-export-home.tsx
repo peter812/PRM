@@ -1,8 +1,14 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, Share2, Database, ChevronRight, ImageIcon, Camera } from "lucide-react";
+import { Users, Share2, Database, ChevronRight, ImageIcon, Camera, Archive } from "lucide-react";
 
 const importExportSections = [
+  {
+    title: "Backups",
+    description: "View past backups, create new backups, restore from backups, upload backup files, and rename or delete backups.",
+    icon: Archive,
+    url: "/import-export/backups",
+  },
   {
     title: "Contacts",
     description: "Import people from a Google Contacts CSV export. Names, emails, phone numbers, and tags are automatically parsed and added to your contact list.",
@@ -14,12 +20,6 @@ const importExportSections = [
     description: "Import follower and following data from social media platforms like Instagram. Connect imported accounts to your existing social profiles.",
     icon: Share2,
     url: "/import-export/social-media",
-  },
-  {
-    title: "Application Data",
-    description: "Export all your CRM data to an XML backup file, or restore from a previous backup. Includes people, relationships, groups, interactions, notes, social accounts, and more.",
-    icon: Database,
-    url: "/import-export/application",
   },
   {
     title: "Instagram XML Transfer",

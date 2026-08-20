@@ -1627,8 +1627,8 @@ export function registerRoutes(app: Express) {
         const date = new Date().toISOString().split("T")[0];
         res.setHeader("Content-Type", "application/xml");
         res.setHeader("Content-Disposition", `attachment; filename="crm-export-${date}.xml"`);
-        // New path: task.result is a relative file path like "exports/crm-export-<id>.xml"
-        if (task.result.startsWith("exports/")) {
+        // New path: task.result is a relative file path like "backups/crm-backup-<id>.xml" or "exports/crm-export-<id>.xml"
+        if (task.result.startsWith("exports/") || task.result.startsWith("backups/")) {
           const absPath = path.join(process.cwd(), task.result);
           if (fs.existsSync(absPath)) {
             return fs.createReadStream(absPath).pipe(res);

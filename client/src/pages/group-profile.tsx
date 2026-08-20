@@ -1,15 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { ArrowLeft, Edit, Network } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { Group, Person, Interaction } from "@shared/schema";
+import type { Group, Person, Interaction, SubGroup } from "@shared/schema";
 import { GroupDialog } from "@/components/group-dialog";
 import { MembersTab } from "@/components/members-tab";
+import { SubGroupsTab } from "@/components/subgroups-tab";
 import { InteractionsTab } from "@/components/interactions-tab";
 import { InteractionDialog } from "@/components/interaction-dialog";
 import { CrowdTab } from "@/components/crowd-tab";
@@ -19,17 +20,29 @@ import { getInitials } from "@/lib/utils";
 type GroupWithMembers = Group & {
   memberDetails: Person[];
   interactions?: Interaction[];
+  subGroups?: SubGroup[];
 };
 
 export default function GroupProfile() {
-  const { id } = useParams<{ id: string }>();
-  const [, navigate] = useLocation();
+  const params = useParams<{ id?: string; groupId?: string; subGroupId?: string }>();
+  const groupId = params.id || params.groupId;
+  const subGroupId = params.subGroupId;
+  const [location, navigate] = useLocation();
+
+  const [activeTab, setActiveTab] = useState(() => (subGroupId ? "subgroups" : "members"));
+
+  useEffect(() => {
+    if (subGroupId) {
+      setActiveTab("subgroups");
+    }
+  }, [subGroupId]);
+
   const [isEditGroupOpen, setIsEditGroupOpen] = useState(false);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
 
   const { data: group, isLoading, isError, error } = useQuery<GroupWithMembers>({
-    queryKey: ["/api/groups", id],
-    enabled: !!id,
+    queryKey: ["/api/groups", groupId],
+    enabled: !!groupId,
   });
 
   if (isLoading) {
@@ -160,7 +173,16 @@ export default function GroupProfile() {
         </div>
       </div>
 
-      <Tabs defaultValue="members" className="flex-1 flex flex-col overflow-hidden">
+      <Tabs
+        value={activeTab}
+        onValueChange={(tab) => {
+          setActiveTab(tab);
+          if (tab !== "subgroups" && subGroupId) {
+            navigate(`/group/${groupId}`);
+          }
+        }}
+        className="flex-1 flex flex-col overflow-hidden"
+      >
         <div className="border-b px-6">
           <TabsList className="h-12 bg-transparent p-0">
             <TabsTrigger
@@ -169,6 +191,18 @@ export default function GroupProfile() {
               data-testid="tab-members"
             >
               Members
+            </TabsTrigger>
+            <TabsTrigger
+              value="subgroups"
+              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+              data-testid="tab-subgroups"
+            >
+              Sub Groups
+              {group.subGroups && group.subGroups.length > 0 && (
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  ({group.subGroups.length})
+                </span>
+              )}
             </TabsTrigger>
             <TabsTrigger
               value="interactions"
@@ -196,7 +230,22 @@ export default function GroupProfile() {
 
         <div className="flex-1 overflow-auto">
           <TabsContent value="members" className="mt-0 h-full">
-            <MembersTab members={group.memberDetails || []} groupId={group.id} />
+            <MembersTab
+              members={group.memberDetails || []}
+              groupId={group.id}
+              subGroups={group.subGroups || []}
+            />
+          </TabsContent>
+          <TabsContent value="subgroups" className="mt-0 h-full">
+            <SubGroupsTab
+              groupId={group.id}
+              subGroups={group.subGroups || []}
+              parentGroupMembers={group.memberDetails || []}
+              selectedSubGroupId={subGroupId || null}
+              onSelectSubGroup={(sgId) => {
+                navigate(sgId ? `/group/${group.id}/subgroup/${sgId}` : `/group/${group.id}`);
+              }}
+            />
           </TabsContent>
           <TabsContent value="interactions" className="mt-0 h-full">
             <InteractionsTab

@@ -258,6 +258,19 @@ export const groupNotes = pgTable("group_notes", {
   index("group_notes_group_id_idx").on(t.groupId),
 ]);
 
+// Sub groups table
+export const subGroups = pgTable("sub_groups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  groupId: varchar("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  color: text("color").notNull(), // hex color code
+  members: text("members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("sub_groups_group_id_idx").on(t.groupId),
+  index("sub_groups_members_gin_idx").using("gin", t.members),
+]);
+
 // Social account types table
 export const socialAccountTypes = pgTable("social_account_types", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -452,6 +465,7 @@ export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   type: text("type").notNull(), // e.g. 'get_img'
   status: text("status").notNull().default("pending"), // 'pending', 'in_progress', 'completed', 'failed'
   title: text("title"), // Name/username of the entity targeted by the task
@@ -462,7 +476,9 @@ export const tasks = pgTable("tasks", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
-});
+}, (t) => [
+  index("tasks_user_id_idx").on(t.userId),
+]);
 
 // Image tasks table - specialized operations performed on images
 export const imageTasks = pgTable("image_tasks", {
@@ -657,11 +673,19 @@ export const interactionsRelations = relations(interactions, ({ one }) => ({
 export const groupsRelations = relations(groups, ({ many }) => ({
   notes: many(groupNotes),
   socialAccounts: many(socialAccounts),
+  subGroups: many(subGroups),
 }));
 
 export const groupNotesRelations = relations(groupNotes, ({ one }) => ({
   group: one(groups, {
     fields: [groupNotes.groupId],
+    references: [groups.id],
+  }),
+}));
+
+export const subGroupsRelations = relations(subGroups, ({ one }) => ({
+  group: one(groups, {
+    fields: [subGroups.groupId],
     references: [groups.id],
   }),
 }));
@@ -1054,6 +1078,11 @@ export const insertGroupSchema = createInsertSchema(groups).omit({
   createdAt: true,
 });
 
+export const insertSubGroupSchema = createInsertSchema(subGroups).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertGroupNoteSchema = createInsertSchema(groupNotes).omit({
   id: true,
   createdAt: true,
@@ -1123,6 +1152,8 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   createdAt: true,
   startedAt: true,
   completedAt: true,
+}).extend({
+  userId: z.number().optional(),
 });
 
 export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
@@ -1215,6 +1246,32 @@ export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 
 export type Group = typeof groups.$inferSelect;
 export type InsertGroup = z.infer<typeof insertGroupSchema>;
+
+export type SubGroup = typeof subGroups.$inferSelect;
+export type InsertSubGroup = z.infer<typeof insertSubGroupSchema>;
+
+export const SUBGROUP_COLORS = [
+  "#6366f1", // Indigo
+  "#10b981", // Emerald
+  "#f59e0b", // Amber
+  "#f43f5e", // Rose
+  "#8b5cf6", // Violet
+  "#06b6d4", // Cyan
+  "#ec4899", // Pink
+  "#3b82f6", // Blue
+  "#14b8a6", // Teal
+  "#f97316", // Orange
+  "#84cc16", // Lime
+  "#a855f7", // Purple
+  "#0284c7", // Sky
+  "#e11d48", // Crimson
+  "#eab308", // Yellow
+  "#d946ef", // Fuchsia
+] as const;
+
+export function getRandomSubGroupColor(): string {
+  return SUBGROUP_COLORS[Math.floor(Math.random() * SUBGROUP_COLORS.length)];
+}
 
 export type GroupNote = typeof groupNotes.$inferSelect;
 export type InsertGroupNote = z.infer<typeof insertGroupNoteSchema>;
@@ -1383,6 +1440,7 @@ export type PersonWithRelations = Person & {
   notes: Note[];
   interactions: Interaction[];
   groups: Group[];
+  subGroups?: SubGroup[];
   relationships: RelationshipWithPerson[];
   schooling?: Schooling | null;
 };

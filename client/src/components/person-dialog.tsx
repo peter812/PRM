@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertPersonSchema, type Person, formatPhoneNumberForDisplay } from "@shared/schema";
+import { insertPersonSchema, type Person, type SubGroup, formatPhoneNumberForDisplay } from "@shared/schema";
 import { z } from "zod";
 import { ImageUpload } from "./image-upload";
 
@@ -50,8 +50,10 @@ interface PersonDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   person?: Person;
-  onPersonCreated?: (person: Person) => void;
+  onPersonCreated?: (person: Person, selectedSubGroupIds?: string[]) => void;
   onDelete?: () => void;
+  subGroups?: SubGroup[];
+  groupName?: string;
 }
 
 export function PersonDialog({
@@ -60,12 +62,15 @@ export function PersonDialog({
   person,
   onPersonCreated,
   onDelete,
+  subGroups,
+  groupName,
 }: PersonDialogProps) {
   const isEdit = !!person;
   const { toast } = useToast();
   const [tagInput, setTagInput] = useState("");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [selectedSubGroupIds, setSelectedSubGroupIds] = useState<string[]>([]);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(isEdit ? updatePersonSchema : insertPersonSchema),
@@ -115,6 +120,7 @@ export function PersonDialog({
         });
       }
       setTagInput("");
+      setSelectedSubGroupIds([]);
     }
   }, [open, person, form]);
 
@@ -140,7 +146,7 @@ export function PersonDialog({
       });
       form.reset();
       onOpenChange(false);
-      if (!isEdit && onPersonCreated) onPersonCreated(data);
+      if (!isEdit && onPersonCreated) onPersonCreated(data, selectedSubGroupIds);
     },
     onError: () => {
       toast({
@@ -417,6 +423,38 @@ export function PersonDialog({
                 </div>
               )}
             </div>
+
+            {!isEdit && subGroups && subGroups.length > 0 && (
+              <div className="space-y-2 pt-2 border-t">
+                <FormLabel>Subgroups in {groupName || "Group"} (Optional)</FormLabel>
+                <div className="flex flex-wrap gap-2">
+                  {subGroups.map((sg) => {
+                    const isSelected = selectedSubGroupIds.includes(sg.id);
+                    return (
+                      <Badge
+                        key={sg.id}
+                        variant={isSelected ? "default" : "outline"}
+                        className="cursor-pointer select-none py-1 px-2.5 text-xs flex items-center gap-1.5 transition-all"
+                        onClick={() => {
+                          setSelectedSubGroupIds((prev) =>
+                            prev.includes(sg.id)
+                              ? prev.filter((id) => id !== sg.id)
+                              : [...prev, sg.id]
+                          );
+                        }}
+                        data-testid={`badge-subgroup-option-${sg.id}`}
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: sg.color }}
+                        />
+                        <span>{sg.name}</span>
+                      </Badge>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className={`flex gap-2 pt-4 ${isEdit ? "justify-between border-t" : "justify-end"}`}>
               {isEdit && (

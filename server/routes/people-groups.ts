@@ -19,7 +19,9 @@ import {
   insertRelationshipSchema,
   insertRelationshipTypeSchema,
   insertGroupSchema,
+  insertSubGroupSchema,
   insertGroupNoteSchema,
+  getRandomSubGroupColor,
   insertUserSchema,
   insertApiKeySchema,
   insertSocialAccountSchema,
@@ -1101,6 +1103,100 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error deleting group:", error);
         res.status(500).json({ error: "Failed to delete group" });
+      }
+    });
+
+    // Sub groups endpoints
+    app.get("/api/subgroups", async (req, res) => {
+      try {
+        const subGroupsList = await storage.getAllSubGroups();
+        res.json(subGroupsList);
+      } catch (error) {
+        console.error("Error fetching all sub groups:", error);
+        res.status(500).json({ error: "Failed to fetch sub groups" });
+      }
+    });
+
+    app.get("/api/groups/:id/subgroups", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const subGroupsList = await storage.getSubGroupsByGroupId(id);
+        res.json(subGroupsList);
+      } catch (error) {
+        console.error("Error fetching sub groups:", error);
+        res.status(500).json({ error: "Failed to fetch sub groups" });
+      }
+    });
+
+    app.post("/api/groups/:id/subgroups", async (req, res) => {
+      try {
+        const groupId = req.params.id;
+        const parentGroup = await storage.getGroupById(groupId);
+        if (!parentGroup) {
+          return res.status(404).json({ error: "Group not found" });
+        }
+        const data = {
+          ...req.body,
+          groupId,
+          color: req.body.color || getRandomSubGroupColor(),
+        };
+        const validatedData = insertSubGroupSchema.parse(data);
+        const subGroup = await storage.createSubGroup(validatedData);
+        res.status(201).json(subGroup);
+      } catch (error) {
+        console.error("Error creating sub group:", error);
+        res.status(400).json({ error: "Failed to create sub group" });
+      }
+    });
+
+    app.get("/api/subgroups/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const subGroup = await storage.getSubGroupById(id);
+        if (!subGroup) {
+          return res.status(404).json({ error: "Sub group not found" });
+        }
+        res.json(subGroup);
+      } catch (error) {
+        console.error("Error fetching sub group:", error);
+        res.status(500).json({ error: "Failed to fetch sub group" });
+      }
+    });
+
+    app.patch("/api/subgroups/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const validatedData = insertSubGroupSchema.partial().parse(req.body);
+        const subGroup = await storage.updateSubGroup(id, validatedData);
+        if (!subGroup) {
+          return res.status(404).json({ error: "Sub group not found" });
+        }
+        res.json(subGroup);
+      } catch (error) {
+        console.error("Error updating sub group:", error);
+        res.status(400).json({ error: "Failed to update sub group" });
+      }
+    });
+
+    app.delete("/api/subgroups/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        await storage.deleteSubGroup(id);
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error deleting sub group:", error);
+        res.status(500).json({ error: "Failed to delete sub group" });
+      }
+    });
+
+    app.get("/api/people/:id/subgroups", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const subGroupsList = await storage.getSubGroupsByPersonId(id);
+        res.json(subGroupsList);
+      } catch (error) {
+        console.error("Error fetching person sub groups:", error);
+        res.status(500).json({ error: "Failed to fetch person sub groups" });
       }
     });
   

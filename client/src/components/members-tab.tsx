@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, X, LayoutList, LayoutGrid, Search, ChevronDown, UserPlus, Users, Star, Phone, Mail, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { Plus, X, LayoutList, LayoutGrid, Search, ChevronDown, UserPlus, Users, Star, Phone, Mail, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown, Filter, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -23,18 +23,19 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
-import type { Person } from "@shared/schema";
+import type { Person, SubGroup } from "@shared/schema";
 import { Link } from "wouter";
 import { PersonDialog } from "@/components/person-dialog";
 
 interface MembersTabProps {
   members: Person[];
   groupId: string;
+  subGroups?: SubGroup[];
 }
 
 type ViewMode = "list" | "details";
 
-export function MembersTab({ members, groupId }: MembersTabProps) {
+export function MembersTab({ members, groupId, subGroups = [] }: MembersTabProps) {
   const { toast } = useToast();
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [isCreatePersonOpen, setIsCreatePersonOpen] = useState(false);
@@ -43,10 +44,22 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
   const [starredStates, setStarredStates] = useState<Record<string, number>>({});
   const [tableSortColumn, setTableSortColumn] = useState<string | null>(null);
   const [tableSortDirection, setTableSortDirection] = useState<"asc" | "desc">("asc");
+  const [selectedSubGroupFilter, setSelectedSubGroupFilter] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem("group-members-view-mode");
     return (saved as ViewMode) || "list";
   });
+
+  const memberSubGroupsMap = useMemo(() => {
+    const map: Record<string, SubGroup[]> = {};
+    for (const sg of subGroups) {
+      for (const mId of sg.members || []) {
+        if (!map[mId]) map[mId] = [];
+        map[mId].push(sg);
+      }
+    }
+    return map;
+  }, [subGroups]);
 
   const { data: allPeople = [] } = useQuery<Person[]>({
     queryKey: ["/api/people"],
@@ -114,9 +127,21 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
     }
   };
 
+  const filteredMembers = useMemo(() => {
+    if (!selectedSubGroupFilter) return members;
+    if (selectedSubGroupFilter === "none") {
+      return members.filter(
+        (m) => !memberSubGroupsMap[m.id] || memberSubGroupsMap[m.id].length === 0
+      );
+    }
+    return members.filter((m) =>
+      memberSubGroupsMap[m.id]?.some((sg) => sg.id === selectedSubGroupFilter)
+    );
+  }, [members, selectedSubGroupFilter, memberSubGroupsMap]);
+
   const sortedMembers = useMemo(() => {
-    if (!tableSortColumn) return members;
-    return [...members].sort((a, b) => {
+    if (!tableSortColumn) return filteredMembers;
+    return [...filteredMembers].sort((a, b) => {
       let cmp = 0;
       if (tableSortColumn === "name") {
         const nameA = `${a.firstName || ""} ${a.lastName || ""}`.trim();
@@ -134,6 +159,12 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
         if (!tagsA && tagsB) return 1;
         if (tagsA && !tagsB) return -1;
         cmp = tagsA.localeCompare(tagsB, undefined, { numeric: true, sensitivity: "base" });
+      } else if (tableSortColumn === "subgroups") {
+        const sgA = (memberSubGroupsMap[a.id] || []).map((s) => s.name).join(", ");
+        const sgB = (memberSubGroupsMap[b.id] || []).map((s) => s.name).join(", ");
+        if (!sgA && sgB) return 1;
+        if (sgA && !sgB) return -1;
+        cmp = sgA.localeCompare(sgB, undefined, { numeric: true, sensitivity: "base" });
       } else if (tableSortColumn === "starred") {
         const starA = starredStates[a.id] ?? (a.isStarred || 0);
         const starB = starredStates[b.id] ?? (b.isStarred || 0);
@@ -157,18 +188,41 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
       }
       return tableSortDirection === "asc" ? cmp : -cmp;
     });
-  }, [members, tableSortColumn, tableSortDirection, starredStates]);
+  }, [filteredMembers, tableSortColumn, tableSortDirection, starredStates, memberSubGroupsMap]);
 
   const addMembersMutation = useMutation({
-    mutationFn: async (newMemberIds: string[]) => {
+    mutationFn: async ({
+      memberIds: newMemberIds,
+      subGroupIds = [],
+    }: {
+      memberIds: string[];
+      subGroupIds?: string[];
+    }) => {
       const updatedMembers = Array.from(new Set([...memberIds, ...newMemberIds]));
-      return await apiRequest("PATCH", `/api/groups/${groupId}`, {
+      await apiRequest("PATCH", `/api/groups/${groupId}`, {
         members: updatedMembers,
       });
+
+      if (subGroupIds.length > 0) {
+        await Promise.all(
+          subGroupIds.map(async (sgId) => {
+            const sg = subGroups.find((s) => s.id === sgId);
+            if (!sg) return;
+            const updatedSgMembers = Array.from(
+              new Set([...(sg.members || []), ...newMemberIds])
+            );
+            return apiRequest("PATCH", `/api/subgroups/${sgId}`, {
+              members: updatedSgMembers,
+            });
+          })
+        );
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId, "subgroups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/subgroups"] });
       toast({
         title: "Success",
         description: "Members added to group",
@@ -244,6 +298,78 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
             </DropdownMenuContent>
           </DropdownMenu>
 
+          {subGroups.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant={selectedSubGroupFilter ? "secondary" : "outline"}
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs font-normal"
+                  data-testid="button-filter-subgroups"
+                >
+                  <Filter className="h-3.5 w-3.5" />
+                  <span>
+                    {selectedSubGroupFilter === "none"
+                      ? "No Sub Group"
+                      : selectedSubGroupFilter
+                      ? subGroups.find((s) => s.id === selectedSubGroupFilter)?.name || "Sub Group"
+                      : "Sub Group"}
+                  </span>
+                  {selectedSubGroupFilter && (
+                    <span
+                      className="w-2 h-2 rounded-full ml-0.5 shrink-0"
+                      style={{
+                        backgroundColor:
+                          selectedSubGroupFilter === "none"
+                            ? "#888"
+                            : subGroups.find((s) => s.id === selectedSubGroupFilter)?.color || "#888",
+                      }}
+                    />
+                  )}
+                  <ChevronDown className="h-3 w-3 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem
+                  onClick={() => setSelectedSubGroupFilter(null)}
+                  className="flex items-center justify-between cursor-pointer"
+                  data-testid="filter-option-all-subgroups"
+                >
+                  <span>All Sub Groups</span>
+                  {!selectedSubGroupFilter && <Check className="h-4 w-4" />}
+                </DropdownMenuItem>
+                {subGroups.map((sg) => (
+                  <DropdownMenuItem
+                    key={sg.id}
+                    onClick={() => setSelectedSubGroupFilter(sg.id)}
+                    className="flex items-center justify-between cursor-pointer"
+                    data-testid={`filter-option-subgroup-${sg.id}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: sg.color }}
+                      />
+                      <span className="truncate">{sg.name}</span>
+                      <span className="text-xs text-muted-foreground">
+                        ({sg.members?.length || 0})
+                      </span>
+                    </div>
+                    {selectedSubGroupFilter === sg.id && <Check className="h-4 w-4 shrink-0" />}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuItem
+                  onClick={() => setSelectedSubGroupFilter("none")}
+                  className="flex items-center justify-between cursor-pointer text-muted-foreground"
+                  data-testid="filter-option-no-subgroup"
+                >
+                  <span>No Sub Group</span>
+                  {selectedSubGroupFilter === "none" && <Check className="h-4 w-4" />}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
           <div className="flex items-center border rounded-md p-1">
             <Button
               variant={viewMode === "list" ? "default" : "ghost"}
@@ -274,18 +400,81 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
           </div>
         </div>
 
+        {selectedSubGroupFilter && (
+          <div className="flex items-center gap-2 mb-4 text-xs text-muted-foreground">
+            <span>Filtered by:</span>
+            <Badge
+              variant="secondary"
+              className="flex items-center gap-1.5 py-0.5 px-2 font-normal"
+            >
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{
+                  backgroundColor:
+                    selectedSubGroupFilter === "none"
+                      ? "#888"
+                      : subGroups.find((s) => s.id === selectedSubGroupFilter)?.color || "#888",
+                }}
+              />
+              <span className="font-medium text-foreground">
+                {selectedSubGroupFilter === "none"
+                  ? "No Sub Group"
+                  : subGroups.find((s) => s.id === selectedSubGroupFilter)?.name}
+              </span>
+              <span className="text-[10px] text-muted-foreground">
+                ({sortedMembers.length} member{sortedMembers.length !== 1 ? "s" : ""})
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedSubGroupFilter(null)}
+                className="ml-1 hover:text-foreground inline-flex items-center"
+                data-testid="button-clear-subgroup-filter"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs text-muted-foreground hover:text-foreground px-1.5"
+              onClick={() => setSelectedSubGroupFilter(null)}
+            >
+              Clear
+            </Button>
+          </div>
+        )}
+
         {members.length > 0 ? (
-          viewMode === "list" ? (
+          sortedMembers.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-14 text-center border rounded-lg border-dashed">
+              <Filter className="h-8 w-8 text-muted-foreground mb-3" />
+              <h3 className="text-base font-medium mb-1">No members in this sub group filter</h3>
+              <p className="text-sm text-muted-foreground mb-4 max-w-sm">
+                No group members match the selected sub group filter.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSelectedSubGroupFilter(null)}
+                data-testid="button-clear-filter-empty"
+              >
+                Clear Filter
+              </Button>
+            </div>
+          ) : viewMode === "list" ? (
             <div className="space-y-3">
-              {members.map((member) => (
+              {sortedMembers.map((member) => (
                 <Card
                   key={member.id}
                   className="p-4 hover-elevate transition-all"
                   data-testid={`card-member-${member.id}`}
                 >
-                  <div className="flex items-center gap-4">
-                    <Link href={`/person/${member.id}?from=group&groupId=${groupId}`} className="flex items-center gap-4 flex-1 min-w-0">
-                      <Avatar className="w-12 h-12">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <Link
+                      href={`/person/${member.id}?from=group&groupId=${groupId}`}
+                      className="flex items-center gap-4 min-w-0 shrink-0 max-w-full sm:max-w-[45%]"
+                    >
+                      <Avatar className="w-12 h-12 shrink-0">
                         {member.imageUrl && (
                           <AvatarImage
                             src={member.imageUrl}
@@ -297,15 +486,15 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                         </AvatarFallback>
                       </Avatar>
 
-                      <div className="flex-1 min-w-0">
+                      <div className="min-w-0">
                         <h3
-                          className="text-lg font-medium hover:underline cursor-pointer"
+                          className="text-lg font-medium hover:underline cursor-pointer truncate"
                           data-testid={`text-member-name-${member.id}`}
                         >
                           {member.firstName} {member.lastName}
                         </h3>
                         {(member.company || member.title) && (
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground truncate">
                             {member.title && <span>{member.title}</span>}
                             {member.title && member.company && <span>•</span>}
                             {member.company && <span>{member.company}</span>}
@@ -314,12 +503,33 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                       </div>
                     </Link>
 
+                    <div className="flex-1 flex items-center justify-start sm:justify-end gap-1.5 flex-wrap min-w-0">
+                      {memberSubGroupsMap[member.id]?.map((sg) => (
+                        <Link
+                          key={sg.id}
+                          href={`/group/${groupId}/subgroup/${sg.id}`}
+                        >
+                          <Badge
+                            variant="outline"
+                            className="text-xs hover:bg-accent cursor-pointer flex items-center gap-1.5 py-0.5 px-2 font-normal"
+                            data-testid={`badge-subgroup-chip-${member.id}-${sg.id}`}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: sg.color }}
+                            />
+                            {sg.name}
+                          </Badge>
+                        </Link>
+                      ))}
+                    </div>
+
                     <Button
                       variant="ghost"
                       size="sm"
                       onClick={() => removeMemberMutation.mutate(member.id)}
                       disabled={removeMemberMutation.isPending}
-                      className="text-destructive hover:text-destructive"
+                      className="text-destructive hover:text-destructive shrink-0 self-end sm:self-center"
                       data-testid={`button-remove-member-${member.id}`}
                     >
                       <X className="h-5 w-5" />
@@ -387,6 +597,90 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                           )
                         ) : (
                           <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                        )}
+                      </div>
+                    </th>
+                    <th
+                      className="py-2 px-3 font-medium cursor-pointer select-none hover:text-foreground group/th transition-colors"
+                      data-testid="th-subgroups"
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <div
+                          className="flex items-center gap-1 flex-1"
+                          onClick={() => handleHeaderSort("subgroups")}
+                          title="Sort by Sub Groups"
+                        >
+                          <span>Sub Groups</span>
+                          {tableSortColumn === "subgroups" ? (
+                            tableSortDirection === "asc" ? (
+                              <ArrowUp className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            ) : (
+                              <ArrowDown className="h-3.5 w-3.5 text-foreground shrink-0" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3.5 w-3.5 opacity-0 group-hover/th:opacity-60 transition-opacity shrink-0" />
+                          )}
+                        </div>
+
+                        {subGroups.length > 0 && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className={`h-5 w-5 p-0 hover:bg-muted ${
+                                  selectedSubGroupFilter
+                                    ? "text-primary font-bold opacity-100"
+                                    : "text-muted-foreground opacity-60 group-hover/th:opacity-100"
+                                }`}
+                                onClick={(e) => e.stopPropagation()}
+                                title="Filter by Sub Group"
+                                data-testid="button-th-filter-subgroup"
+                              >
+                                <Filter className="h-3 w-3" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-52">
+                              <DropdownMenuItem
+                                onClick={() => setSelectedSubGroupFilter(null)}
+                                className="flex items-center justify-between cursor-pointer"
+                                data-testid="th-filter-option-all"
+                              >
+                                <span>All Sub Groups</span>
+                                {!selectedSubGroupFilter && <Check className="h-3.5 w-3.5" />}
+                              </DropdownMenuItem>
+                              {subGroups.map((sg) => (
+                                <DropdownMenuItem
+                                  key={sg.id}
+                                  onClick={() => setSelectedSubGroupFilter(sg.id)}
+                                  className="flex items-center justify-between cursor-pointer"
+                                  data-testid={`th-filter-option-${sg.id}`}
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span
+                                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                                      style={{ backgroundColor: sg.color }}
+                                    />
+                                    <span className="truncate">{sg.name}</span>
+                                    <span className="text-xs text-muted-foreground">
+                                      ({sg.members?.length || 0})
+                                    </span>
+                                  </div>
+                                  {selectedSubGroupFilter === sg.id && (
+                                    <Check className="h-3.5 w-3.5 shrink-0" />
+                                  )}
+                                </DropdownMenuItem>
+                              ))}
+                              <DropdownMenuItem
+                                onClick={() => setSelectedSubGroupFilter("none")}
+                                className="flex items-center justify-between cursor-pointer text-muted-foreground"
+                                data-testid="th-filter-option-none"
+                              >
+                                <span>No Sub Group</span>
+                                {selectedSubGroupFilter === "none" && <Check className="h-3.5 w-3.5" />}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         )}
                       </div>
                     </th>
@@ -502,6 +796,29 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
                               <Badge key={idx} variant="secondary" className="text-xs">
                                 {tag}
                               </Badge>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="py-2 px-3">
+                          <div className="flex flex-wrap gap-1">
+                            {memberSubGroupsMap[member.id]?.map((sg) => (
+                              <Link
+                                key={sg.id}
+                                href={`/group/${groupId}/subgroup/${sg.id}`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Badge
+                                  variant="outline"
+                                  className="text-xs hover:bg-accent cursor-pointer flex items-center gap-1.5 py-0.5 px-2 font-normal"
+                                  data-testid={`table-chip-subgroup-${member.id}-${sg.id}`}
+                                >
+                                  <span
+                                    className="w-2 h-2 rounded-full shrink-0"
+                                    style={{ backgroundColor: sg.color }}
+                                  />
+                                  {sg.name}
+                                </Badge>
+                              </Link>
                             ))}
                           </div>
                         </td>
@@ -640,16 +957,23 @@ export function MembersTab({ members, groupId }: MembersTabProps) {
         open={isAddMemberOpen}
         onOpenChange={setIsAddMemberOpen}
         availablePeople={availablePeople}
-        onAddMembers={(ids) => addMembersMutation.mutate(ids)}
+        subGroups={subGroups}
+        onAddMembers={(ids, sgIds) =>
+          addMembersMutation.mutate({ memberIds: ids, subGroupIds: sgIds })
+        }
         isPending={addMembersMutation.isPending}
       />
 
       <PersonDialog
         open={isCreatePersonOpen}
         onOpenChange={setIsCreatePersonOpen}
-        onPersonCreated={(newPerson) => {
+        subGroups={subGroups}
+        onPersonCreated={(newPerson, selectedSubGroupIds) => {
           if (newPerson?.id) {
-            addMembersMutation.mutate([newPerson.id]);
+            addMembersMutation.mutate({
+              memberIds: [newPerson.id],
+              subGroupIds: selectedSubGroupIds,
+            });
           }
         }}
       />
@@ -661,7 +985,8 @@ interface AddMembersDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   availablePeople: Person[];
-  onAddMembers: (memberIds: string[]) => void;
+  subGroups?: SubGroup[];
+  onAddMembers: (memberIds: string[], subGroupIds: string[]) => void;
   isPending: boolean;
 }
 
@@ -669,16 +994,19 @@ function AddMembersDialog({
   open,
   onOpenChange,
   availablePeople,
+  subGroups = [],
   onAddMembers,
   isPending,
 }: AddMembersDialogProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedSubGroupIds, setSelectedSubGroupIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
 
   const handleSubmit = () => {
     if (selectedIds.length > 0) {
-      onAddMembers(selectedIds);
+      onAddMembers(selectedIds, selectedSubGroupIds);
       setSelectedIds([]);
+      setSelectedSubGroupIds([]);
       setSearchQuery("");
     }
   };
@@ -722,7 +1050,7 @@ function AddMembersDialog({
           />
         </div>
 
-        <ScrollArea className="h-96 border rounded-md p-3">
+        <ScrollArea className="h-80 border rounded-md p-3">
           <div className="space-y-2">
             {filteredPeople.map((person) => {
               const isSelected = selectedIds.includes(person.id);
@@ -777,12 +1105,47 @@ function AddMembersDialog({
           </div>
         </ScrollArea>
 
+        {subGroups.length > 0 && (
+          <div className="space-y-2 pt-2 border-t">
+            <p className="text-xs font-medium text-muted-foreground">
+              Assign to Subgroups (Optional)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {subGroups.map((sg) => {
+                const isSelected = selectedSubGroupIds.includes(sg.id);
+                return (
+                  <Badge
+                    key={sg.id}
+                    variant={isSelected ? "default" : "outline"}
+                    className="cursor-pointer select-none py-1 px-2.5 text-xs flex items-center gap-1.5 transition-all"
+                    onClick={() => {
+                      setSelectedSubGroupIds((prev) =>
+                        prev.includes(sg.id)
+                          ? prev.filter((id) => id !== sg.id)
+                          : [...prev, sg.id]
+                      );
+                    }}
+                    data-testid={`badge-add-member-subgroup-${sg.id}`}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ backgroundColor: sg.color }}
+                    />
+                    <span>{sg.name}</span>
+                  </Badge>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-3">
           <Button
             type="button"
             variant="outline"
             onClick={() => {
               setSelectedIds([]);
+              setSelectedSubGroupIds([]);
               onOpenChange(false);
             }}
             className="flex-1"

@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import type { Group } from "@shared/schema";
+import type { Group, SubGroup } from "@shared/schema";
 import { Link } from "wouter";
 
 interface PersonGroupsTabProps {
@@ -31,6 +31,15 @@ export function PersonGroupsTab({ personId, personGroups, onUpdate }: PersonGrou
 
   const { data: allGroups = [] } = useQuery<Group[]>({
     queryKey: ["/api/groups"],
+  });
+
+  const { data: allSubGroups = [] } = useQuery<SubGroup[]>({
+    queryKey: ["/api/subgroups"],
+  });
+
+  const { data: personSubGroups = [] } = useQuery<SubGroup[]>({
+    queryKey: ["/api/people", personId, "subgroups"],
+    enabled: !!personId,
   });
 
   const personGroupIds = personGroups.map((g) => g.id);
@@ -66,22 +75,44 @@ export function PersonGroupsTab({ personId, personGroups, onUpdate }: PersonGrou
   });
 
   const addToGroupsMutation = useMutation({
-    mutationFn: async (groupIds: string[]) => {
-      const promises = groupIds.map(async (groupId) => {
+    mutationFn: async ({
+      groupIds,
+      subGroupIds = [],
+    }: {
+      groupIds: string[];
+      subGroupIds?: string[];
+    }) => {
+      const groupPromises = groupIds.map(async (groupId) => {
         const group = allGroups.find((g) => g.id === groupId);
         if (!group) throw new Error("Group not found");
-        
-        const updatedMembers = [...(group.members || []), personId];
+
+        const updatedMembers = Array.from(
+          new Set([...(group.members || []), personId])
+        );
         return await apiRequest("PATCH", `/api/groups/${groupId}`, {
           members: updatedMembers,
         });
       });
-      
-      return await Promise.all(promises);
+
+      const subGroupPromises = subGroupIds.map(async (subGroupId) => {
+        const sg = allSubGroups.find((s) => s.id === subGroupId);
+        if (!sg) return;
+
+        const updatedMembers = Array.from(
+          new Set([...(sg.members || []), personId])
+        );
+        return await apiRequest("PATCH", `/api/subgroups/${subGroupId}`, {
+          members: updatedMembers,
+        });
+      });
+
+      return await Promise.all([...groupPromises, ...subGroupPromises]);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/people", personId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people", personId, "subgroups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/subgroups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/me"] });
       onUpdate?.();
       toast({
@@ -155,6 +186,27 @@ export function PersonGroupsTab({ personId, personGroups, onUpdate }: PersonGrou
                     ))}
                   </div>
                 )}
+                {personSubGroups.filter((sg) => sg.groupId === group.id).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-3 pt-2.5 border-t">
+                    {personSubGroups
+                      .filter((sg) => sg.groupId === group.id)
+                      .map((sg) => (
+                        <Link key={sg.id} href={`/group/${group.id}/subgroup/${sg.id}`}>
+                          <Badge
+                            variant="outline"
+                            className="text-xs hover:bg-accent cursor-pointer flex items-center gap-1.5 py-0.5 px-2 font-normal"
+                            data-testid={`badge-subgroup-person-${group.id}-${sg.id}`}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: sg.color }}
+                            />
+                            {sg.name}
+                          </Badge>
+                        </Link>
+                      ))}
+                  </div>
+                )}
               </Card>
             ))}
           </div>
@@ -179,7 +231,10 @@ export function PersonGroupsTab({ personId, personGroups, onUpdate }: PersonGrou
         open={isAddToGroupOpen}
         onOpenChange={setIsAddToGroupOpen}
         availableGroups={availableGroups}
-        onAddToGroups={(ids) => addToGroupsMutation.mutate(ids)}
+        allSubGroups={allSubGroups}
+        onAddToGroups={(groupIds, subGroupIds) =>
+          addToGroupsMutation.mutate({ groupIds, subGroupIds })
+        }
         isPending={addToGroupsMutation.isPending}
       />
     </>
@@ -190,7 +245,8 @@ interface AddToGroupsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   availableGroups: Group[];
-  onAddToGroups: (groupIds: string[]) => void;
+  allSubGroups: SubGroup[];
+  onAddToGroups: (groupIds: string[], subGroupIds: string[]) => void;
   isPending: boolean;
 }
 
@@ -198,24 +254,36 @@ function AddToGroupsDialog({
   open,
   onOpenChange,
   availableGroups,
+  allSubGroups = [],
   onAddToGroups,
   isPending,
 }: AddToGroupsDialogProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedSubGroupIds, setSelectedSubGroupIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
 
   const handleSubmit = () => {
     if (selectedIds.length > 0) {
-      onAddToGroups(selectedIds);
+      onAddToGroups(selectedIds, selectedSubGroupIds);
       setSelectedIds([]);
+      setSelectedSubGroupIds([]);
       setSearchQuery("");
     }
   };
 
   const toggleSelection = (groupId: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]
-    );
+    setSelectedIds((prev) => {
+      const exists = prev.includes(groupId);
+      if (exists) {
+        const groupSgIds = new Set(
+          allSubGroups.filter((sg) => sg.groupId === groupId).map((sg) => sg.id)
+        );
+        setSelectedSubGroupIds((sgPrev) => sgPrev.filter((id) => !groupSgIds.has(id)));
+        return prev.filter((id) => id !== groupId);
+      } else {
+        return [...prev, groupId];
+      }
+    });
   };
 
   // Filter available groups based on search query
@@ -252,31 +320,71 @@ function AddToGroupsDialog({
           <div className="space-y-2">
             {filteredGroups.map((group) => {
               const isSelected = selectedIds.includes(group.id);
+              const groupSubGroups = allSubGroups.filter((sg) => sg.groupId === group.id);
               return (
                 <div
                   key={group.id}
                   onClick={() => toggleSelection(group.id)}
-                  className={`flex items-center gap-3 p-2 rounded-md cursor-pointer hover-elevate ${
-                    isSelected ? "bg-primary/10" : ""
+                  className={`p-3 rounded-md cursor-pointer hover-elevate border transition-all ${
+                    isSelected ? "bg-primary/5 border-primary/40" : "border-transparent hover:bg-muted/40"
                   }`}
                   data-testid={`add-to-group-option-${group.id}`}
                 >
-                  <div
-                    className="w-10 h-10 rounded-md flex items-center justify-center flex-shrink-0"
-                    style={{ backgroundColor: group.color }}
-                  >
-                    <Users className="h-5 w-5 text-white" />
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-10 h-10 rounded-md flex items-center justify-center flex-shrink-0"
+                      style={{ backgroundColor: group.color }}
+                    >
+                      <Users className="h-5 w-5 text-white" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{group.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {group.members?.length || 0} member{group.members?.length !== 1 ? "s" : ""}
+                      </p>
+                    </div>
+                    {isSelected && (
+                      <Badge variant="default" className="text-xs">
+                        Selected
+                      </Badge>
+                    )}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{group.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {group.members?.length || 0} member{group.members?.length !== 1 ? "s" : ""}
-                    </p>
-                  </div>
-                  {isSelected && (
-                    <Badge variant="default" className="text-xs">
-                      Selected
-                    </Badge>
+
+                  {isSelected && groupSubGroups.length > 0 && (
+                    <div
+                      className="mt-2.5 pt-2 border-t flex flex-col gap-1.5"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <p className="text-[11px] font-medium text-muted-foreground">
+                        Subgroups (Optional):
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {groupSubGroups.map((sg) => {
+                          const isSgSelected = selectedSubGroupIds.includes(sg.id);
+                          return (
+                            <Badge
+                              key={sg.id}
+                              variant={isSgSelected ? "default" : "outline"}
+                              className="cursor-pointer select-none py-0.5 px-2 text-xs flex items-center gap-1.5 transition-all"
+                              onClick={() => {
+                                setSelectedSubGroupIds((prev) =>
+                                  prev.includes(sg.id)
+                                    ? prev.filter((id) => id !== sg.id)
+                                    : [...prev, sg.id]
+                                );
+                              }}
+                              data-testid={`badge-select-subgroup-${group.id}-${sg.id}`}
+                            >
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: sg.color }}
+                              />
+                              <span>{sg.name}</span>
+                            </Badge>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
                 </div>
               );
@@ -300,6 +408,7 @@ function AddToGroupsDialog({
             variant="outline"
             onClick={() => {
               setSelectedIds([]);
+              setSelectedSubGroupIds([]);
               setSearchQuery("");
               onOpenChange(false);
             }}

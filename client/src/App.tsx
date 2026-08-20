@@ -32,6 +32,7 @@ const MeProfile = lazy(() => import("@/pages/me-profile"));
 const HomePage = lazy(() => import("@/pages/home"));
 const GroupsList = lazy(() => import("@/pages/groups-list"));
 const GroupProfile = lazy(() => import("@/pages/group-profile"));
+const SubGroupProfile = lazy(() => import("@/pages/subgroup-profile"));
 const PotentialGroupsPage = lazy(() => import("@/pages/potential-groups"));
 const SocialAccountsList = lazy(() => import("@/pages/social-accounts-list"));
 const SocialAccountProfile = lazy(() => import("@/pages/social-account-profile"));
@@ -75,11 +76,11 @@ function useExportNotifier() {
     } catch {}
   }, []);
 
-  const { data: tasks } = useQuery<{ id: string; type: string; status: string }[]>({
+  const { data: tasks } = useQuery<{ id: string; type: string; status: string; result?: string }[]>({
     queryKey: ["/api/tasks"],
     enabled: !!user,
-    refetchInterval: 5000,
-    select: (data) => data.map(t => ({ id: t.id, type: t.type, status: t.status })),
+    refetchInterval: 4000,
+    select: (data) => data.map(t => ({ id: t.id, type: t.type, status: t.status, result: (t as any).result })),
   });
 
   useEffect(() => {
@@ -89,10 +90,22 @@ function useExportNotifier() {
       if (task.type === "export_xml" && task.status === "completed" && !seenRef.current.has(task.id)) {
         seenRef.current.add(task.id);
         newlySeen.push(task.id);
+        const filename = task.result ? task.result.replace(/^(backups|exports)\//, "") : "Backup";
         toast({
-          title: "Export ready",
-          description: "Your XML export is complete. Find the download button in the Tasks list.",
+          title: "Backup Complete",
+          description: `Backup "${filename}" has finished creation and is ready in Backups.`,
         });
+
+        if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+          try {
+            new Notification("Backup Finished", {
+              body: `Backup "${filename}" has finished creation.`,
+              icon: "/favicon.png",
+            });
+          } catch {}
+        }
+
+        queryClient.invalidateQueries({ queryKey: ["/api/backups"] });
       }
     }
     if (newlySeen.length > 0) {
@@ -136,6 +149,8 @@ function Router() {
         <ProtectedRoute path="/me" component={MeProfile} />
         <ProtectedRoute path="/groups" component={GroupsList} />
         <ProtectedRoute path="/groups/potential" component={PotentialGroupsPage} />
+        <ProtectedRoute path="/group/:groupId/subgroup/:subGroupId" component={GroupProfile} />
+        <ProtectedRoute path="/subgroup/:id" component={SubGroupProfile} />
         <ProtectedRoute path="/group/:id" component={GroupProfile} />
         <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
         <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
@@ -159,6 +174,9 @@ function Router() {
         <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
         <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
         <ProtectedRoute path="/super-search" component={SuperSearchPage} />
+        <ProtectedRoute path="/backups" component={() => <Redirect to="/settings/import-export/backups" />} />
+        <ProtectedRoute path="/import-export/backups" component={() => <Redirect to="/settings/import-export/backups" />} />
+        <ProtectedRoute path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
         <ProtectedRoute path="/settings" nest component={SettingsLayout} />
         <Route component={NotFound} />
       </Switch>

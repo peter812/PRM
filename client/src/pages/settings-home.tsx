@@ -12,7 +12,8 @@ import {
   Share2,
   Camera,
   Settings,
-  Loader2
+  Loader2,
+  Archive
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { imageDetailHref } from "@/lib/image-link";
@@ -202,10 +203,10 @@ function ImportExportCard() {
       url: "/import-export/social-media",
     },
     {
-      title: "Application Data",
-      description: "XML backup export and restore.",
-      icon: Database,
-      url: "/import-export/application",
+      title: "Backups",
+      description: "CRM backup export, restore, and upload.",
+      icon: Archive,
+      url: "/import-export/backups",
     },
     {
       title: "Image Pass In",

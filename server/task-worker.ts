@@ -36,6 +36,10 @@ import {
   groups,
   relationships,
   socialFollows,
+  schooling,
+  subGroups,
+  truePersonSearch,
+  faces,
 } from "@shared/schema";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
 
@@ -397,6 +401,7 @@ async function processRefreshFollowerCount(payload: {
 async function processExportXmlTask(taskId: string, payload: {
   includeHistory: boolean;
   userId: number;
+  filename?: string;
 }): Promise<string> {
   const { includeHistory } = payload;
   const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
@@ -905,24 +910,44 @@ async function processExportXmlTask(taskId: string, payload: {
 
   await storage.updateTaskProgress(taskId, 99, "Saving file…");
 
-  const exportsDir = path.join(process.cwd(), "exports");
-  if (!fs.existsSync(exportsDir)) {
-    fs.mkdirSync(exportsDir, { recursive: true });
+  const backupsDir = path.join(process.cwd(), "backups");
+  if (!fs.existsSync(backupsDir)) {
+    fs.mkdirSync(backupsDir, { recursive: true });
   }
-  const fileName = `crm-export-${taskId}.xml`;
-  const filePath = path.join(exportsDir, fileName);
+  const nowStr = new Date().toISOString().replace(/[:.]/g, "-");
+  let fileName = payload.filename
+    ? (payload.filename.endsWith(".xml") ? payload.filename : `${payload.filename}.xml`)
+    : `crm-backup-${nowStr}.xml`;
+
+  // Sanitize filename to avoid path traversal
+  fileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!fileName.endsWith(".xml")) fileName += ".xml";
+
+  const filePath = path.join(backupsDir, fileName);
   fs.writeFileSync(filePath, xml, "utf8");
 
-  return `exports/${fileName}`;
+  return `backups/${fileName}`;
 }
 
 // ── Import XML task ──────────────────────────────────────────────────────────
 
 async function processImportXmlTask(taskId: string, payload: {
-  xml: string;
+  xml?: string;
+  filePath?: string;
   userId: number;
 }): Promise<string> {
-  const xmlText = payload.xml;
+  let xmlText = payload.xml || "";
+  if (!xmlText && payload.filePath) {
+    const fullPath = path.isAbsolute(payload.filePath)
+      ? payload.filePath
+      : path.join(process.cwd(), payload.filePath);
+    if (fs.existsSync(fullPath)) {
+      xmlText = fs.readFileSync(fullPath, "utf8");
+    }
+  }
+  if (!xmlText) {
+    throw new Error("No XML data found for restore/import task");
+  }
   const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 
   const mePersonResult = await db.select().from(people).where(isNotNull(people.userId)).limit(1);
@@ -1587,6 +1612,142 @@ async function processImportXmlTask(taskId: string, payload: {
       importedCounts.appSettings++;
     } catch (e) {
       console.error(`Error importing app setting ${key}:`, e);
+    }
+  }
+
+  // Parse and import schooling
+  const schoolingBlocks = parseAllTags("schooling_entry", xmlText);
+  for (const block of schoolingBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
+    const highSchool = unescapeXml(parseXmlTag("high_school", block)) || null;
+    const collegesStr = unescapeXml(parseXmlTag("colleges", block));
+    const additionalSchoolingStr = unescapeXml(parseXmlTag("additional_schooling", block));
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+    try {
+      await db.insert(schooling).values({
+        id,
+        personId,
+        highSchool,
+        colleges: collegesStr ? JSON.parse(collegesStr) : [],
+        additionalSchooling: additionalSchoolingStr ? JSON.parse(additionalSchoolingStr) : [],
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.schooling = (importedCounts.schooling || 0) + 1;
+    } catch (e) {
+      console.error(`Error importing schooling entry ${id}:`, e);
+    }
+  }
+
+  // Parse and import sub_groups
+  const subGroupBlocks = parseAllTags("sub_group_entry", xmlText);
+  for (const block of subGroupBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const groupId = unescapeXml(parseXmlTag("group_id", block));
+    const name = unescapeXml(parseXmlTag("name", block));
+    const color = unescapeXml(parseXmlTag("color", block));
+    const members = parseXmlArray("members", "member_id", block);
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+    const processedMembers = members.map(m => replaceZeroUUID(m));
+
+    if (!groupId || !name || !color) continue;
+
+    try {
+      await db.insert(subGroups).values({
+        id,
+        groupId,
+        name,
+        color,
+        members: processedMembers,
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.subGroups = (importedCounts.subGroups || 0) + 1;
+    } catch (e) {
+      console.error(`Error importing sub_group entry ${id}:`, e);
+    }
+  }
+
+  // Parse and import true_person_search
+  const tpsBlocks = parseAllTags("true_person_search_entry", xmlText);
+  for (const block of tpsBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const tpsId = unescapeXml(parseXmlTag("tps_id", block));
+    if (!tpsId) continue;
+
+    let personId: string | null = unescapeXml(parseXmlTag("person_id", block)) || null;
+    if (personId) personId = replaceZeroUUID(personId);
+    const importDateStr = unescapeXml(parseXmlTag("import_date", block));
+    const fullName = unescapeXml(parseXmlTag("full_name", block)) || null;
+    const akasStr = unescapeXml(parseXmlTag("akas", block));
+    const birthday = unescapeXml(parseXmlTag("birthday", block)) || null;
+    const currentAddress = unescapeXml(parseXmlTag("current_address", block)) || null;
+    const currentAddressPropertyDetails = unescapeXml(parseXmlTag("current_address_property_details", block)) || null;
+    const currentAddressPropertyUrl = unescapeXml(parseXmlTag("current_address_property_url", block)) || null;
+    const addressesStr = unescapeXml(parseXmlTag("addresses", block));
+    const phoneNumbersStr = unescapeXml(parseXmlTag("phone_numbers", block));
+    const emailsStr = unescapeXml(parseXmlTag("emails", block));
+    const relativesStr = unescapeXml(parseXmlTag("relatives", block));
+    const associatesStr = unescapeXml(parseXmlTag("associates", block));
+    const backgroundProfile = unescapeXml(parseXmlTag("background_profile", block)) || null;
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+    const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
+
+    try {
+      await db.insert(truePersonSearch).values({
+        id,
+        tpsId,
+        personId: personId || null,
+        importDate: importDateStr ? new Date(importDateStr) : new Date(),
+        fullName,
+        akas: akasStr ? JSON.parse(akasStr) : [],
+        birthday,
+        currentAddress,
+        currentAddressPropertyDetails,
+        currentAddressPropertyUrl,
+        addresses: addressesStr ? JSON.parse(addressesStr) : [],
+        phoneNumbers: phoneNumbersStr ? JSON.parse(phoneNumbersStr) : [],
+        emails: emailsStr ? JSON.parse(emailsStr) : [],
+        relatives: relativesStr ? JSON.parse(relativesStr) : [],
+        associates: associatesStr ? JSON.parse(associatesStr) : [],
+        backgroundProfile,
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+        updatedAt: updatedAtStr ? new Date(updatedAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.truePersonSearch = (importedCounts.truePersonSearch || 0) + 1;
+    } catch (e) {
+      console.error(`Error importing true_person_search entry ${id}:`, e);
+    }
+  }
+
+  // Parse and import faces
+  const faceBlocks = parseAllTags("face_entry", xmlText);
+  for (const block of faceBlocks) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const photoId = unescapeXml(parseXmlTag("photo_id", block)) || null;
+    const s3Url = unescapeXml(parseXmlTag("s3_url", block));
+    const embeddingStr = unescapeXml(parseXmlTag("embedding", block));
+    const personfaceUuid = unescapeXml(parseXmlTag("personface_uuid", block)) || null;
+    const detectionConfidence = unescapeXml(parseXmlTag("detection_confidence", block)) || null;
+    const coordinatesStr = unescapeXml(parseXmlTag("coordinates", block));
+    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+
+    if (!s3Url) continue;
+
+    try {
+      await db.insert(faces).values({
+        id,
+        photoId,
+        s3Url,
+        embedding: embeddingStr ? JSON.parse(embeddingStr) : [],
+        personfaceUuid,
+        detectionConfidence,
+        coordinates: coordinatesStr ? JSON.parse(coordinatesStr) : null,
+        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
+      }).onConflictDoNothing();
+      importedCounts.faces = (importedCounts.faces || 0) + 1;
+    } catch (e) {
+      console.error(`Error importing face entry ${id}:`, e);
     }
   }
 
