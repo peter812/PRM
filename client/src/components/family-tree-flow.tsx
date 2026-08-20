@@ -21,15 +21,44 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Trash2, X } from "lucide-react";
-import {
-  FamilyTreeData,
-  FamilyTreePerson,
-  FamilyTreeViewMode,
-  FamilyTreeCanvasHandle,
-} from "./family-tree-canvas";
+export type FamilyTreeViewMode = "name" | "avatar-name" | "avatar-circle";
 
-// Re-export types so the dev page doesn't need to change its imports
-export type { FamilyTreeData, FamilyTreePerson, FamilyTreeViewMode, FamilyTreeCanvasHandle };
+export interface FamilyTreePerson {
+  id: string;
+  firstName: string;
+  lastName: string;
+  avatarUrl: string | null;
+  depth: number;
+  sex?: string;
+}
+
+export interface FamilyTreeRelationship {
+  id: string;
+  fromPersonId: string;
+  toPersonId: string;
+  familyRelationshipType: string;
+}
+
+export interface MissingLink {
+  personId: string;
+  missingRole: string;
+  context: string;
+  relatedPersonId: string;
+}
+
+export interface FamilyTreeData {
+  rootPersonId: string;
+  people: FamilyTreePerson[];
+  relationships: FamilyTreeRelationship[];
+  missingLinks: MissingLink[];
+}
+
+export interface FamilyTreeCanvasHandle {
+  fitToScreen: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  getLayoutData?: () => { nodes: any[]; edges: any[] };
+}
 
 // Layout constants
 const LAYOUT = {

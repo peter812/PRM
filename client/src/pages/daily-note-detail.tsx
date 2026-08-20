@@ -231,6 +231,9 @@ export default function DailyNoteDetail() {
               </Badge>
             )}
             {note.date === today && <Badge>Today</Badge>}
+            {note.status === "unfinished" && (
+              <Badge variant="outline" data-testid="badge-unfinished">Unfinished</Badge>
+            )}
           </div>
           <h1 className="text-xl font-semibold break-words" data-testid="text-daily-note-title">
             {note.userTitle || `${format(parseISO(note.date), "MMMM d, yyyy")} - Daily Note`}

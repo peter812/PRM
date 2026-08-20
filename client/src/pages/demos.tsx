@@ -1,8 +1,16 @@
 import { Link } from "wouter";
-import { Scan, Sparkles } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Radar, Scan, Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { OSINT_TOOLS } from "@/lib/osint-tools";
 
 export default function DemosPage() {
+  // OSINT demo pages are only visible when PRM-osint connectivity is configured.
+  const { data: osintStatus } = useQuery<{ configured: boolean }>({
+    queryKey: ["/api/osint/status"],
+  });
+  const osintConfigured = !!osintStatus?.configured;
+
   return (
     <div className="container mx-auto p-6 max-w-4xl">
       <div className="mb-8">
@@ -76,6 +84,37 @@ export default function DemosPage() {
 
 
       </div>
+
+      {osintConfigured && (
+        <div className="mt-10">
+          <div className="mb-4">
+            <h2 className="text-xl font-semibold mb-1 flex items-center gap-2">
+              <Radar className="h-5 w-5" />
+              OSINT Tools
+            </h2>
+            <p className="text-muted-foreground">
+              Run open-source intelligence lookups against a connected PRM-osint server. Each tool
+              takes a username or email and returns its own structured results.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            {OSINT_TOOLS.map((tool) => (
+              <Link key={tool.name} href={`/demos/osint/${tool.name}`}>
+                <Card className="hover:bg-accent cursor-pointer transition-colors">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Radar className="h-5 w-5" />
+                      {tool.label}
+                    </CardTitle>
+                    <CardDescription>{tool.description}</CardDescription>
+                  </CardHeader>
+                </Card>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

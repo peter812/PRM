@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertPersonSchema, type Person } from "@shared/schema";
+import { insertPersonSchema, type Person, formatPhoneNumberForDisplay } from "@shared/schema";
 import { z } from "zod";
 import { ImageUpload } from "./image-upload";
 
@@ -91,7 +91,7 @@ export function PersonDialog({
           firstName: person.firstName,
           lastName: person.lastName,
           email: person.email || "",
-          phone: person.phone || "",
+          phone: formatPhoneNumberForDisplay(person.phone) || "",
           company: person.company || "",
           title: person.title || "",
           tags: person.tags || [],

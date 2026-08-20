@@ -3,12 +3,12 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, notes, groups, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
-import { eq, sql, isNotNull, and, inArray } from "drizzle-orm";
+import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
 import { computeFamilyLabels } from "../family-relations-helper";
 import {
   insertPersonSchema,
@@ -267,7 +267,34 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: "Failed to fetch person" });
       }
     });
-  
+
+    // TrueDB (TruePeopleSearch) records linked to this person, or empty array if none.
+    app.get("/api/people/:id/true-person-search", async (req, res) => {
+      try {
+        const personId = req.params.id;
+        const person = await storage.getPersonById(personId);
+        
+        let records = await db
+          .select()
+          .from(truePersonSearch)
+          .where(eq(truePersonSearch.personId, personId))
+          .orderBy(desc(truePersonSearch.importDate));
+
+        if (records.length === 0 && person?.tpsId) {
+          records = await db
+            .select()
+            .from(truePersonSearch)
+            .where(eq(truePersonSearch.tpsId, person.tpsId))
+            .orderBy(desc(truePersonSearch.importDate));
+        }
+
+        res.json(records);
+      } catch (error) {
+        console.error("Error fetching TrueDB entries:", error);
+        res.status(500).json({ error: "Failed to fetch TrueDB entries" });
+      }
+    });
+
     // Flow endpoint - unified timeline for notes, interactions, and messages
     app.get("/api/people/:id/flow", async (req, res) => {
       try {
@@ -1224,16 +1251,22 @@ export function registerRoutes(app: Express) {
           return res.json([]);
         }
 
-        const centerState = await storage.getNetworkState(group.centerAccountId);
-        const F_center = new Set(centerState?.followers || []);
+        const F_center = new Set(await storage.getFollowerIds(group.centerAccountId));
 
         const peopleList = await db.select().from(people).where(inArray(people.id, crowdMembers));
         const allSocialAccounts = await db.select().from(socialAccounts).where(inArray(socialAccounts.ownerUuid, crowdMembers));
-        const allNetworkStates = await storage.getAllNetworkStates();
-
+        const memberSaIds = allSocialAccounts.map(sa => sa.id);
         const followingMap = new Map<string, Set<string>>();
-        for (const ns of allNetworkStates) {
-          followingMap.set(ns.socialAccountId, new Set(ns.following || []));
+        if (memberSaIds.length > 0) {
+          const groupFollows = await db
+            .select({ followerId: socialFollows.followerId, followedId: socialFollows.followedId })
+            .from(socialFollows)
+            .where(inArray(socialFollows.followerId, memberSaIds));
+          for (const edge of groupFollows) {
+            let followed = followingMap.get(edge.followerId);
+            if (!followed) { followed = new Set(); followingMap.set(edge.followerId, followed); }
+            followed.add(edge.followedId);
+          }
         }
 
         const personSocialAccountsMap = new Map<string, string[]>();

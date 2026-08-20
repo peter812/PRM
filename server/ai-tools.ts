@@ -16,10 +16,11 @@
 
 import { db } from "./db";
 import { storage } from "./storage";
-import { interactions, interactionTypes, FAMILY_RELATIONSHIP_TYPES, FAMILY_RELATIONSHIP_LABELS, FAMILY_RELATIONSHIP_CATEGORIES, FAMILY_RELATIONSHIP_INVERSES } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { interactions, interactionTypes, FAMILY_RELATIONSHIP_TYPES, FAMILY_RELATIONSHIP_LABELS, FAMILY_RELATIONSHIP_CATEGORIES, FAMILY_RELATIONSHIP_INVERSES, messages, people, socialAccounts, conversations } from "@shared/schema";
+import { eq, and, sql } from "drizzle-orm";
 import { searchUniversal } from "./vector-universal";
 import { searchAppKnowledge } from "./vector-app-knowledge";
+import { computeFamilyLabels } from "./family-relations-helper";
 
 
 export type AiToolIcon =
@@ -51,7 +52,8 @@ export type AiToolCategory =
   | "daily-notes"
   | "social-accounts"
   | "relationships"
-  | "search";
+  | "search"
+  | "messages";
 
 export interface AiToolJsonSchema {
   type: "object";
@@ -511,6 +513,413 @@ export const AI_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: "read_messages",
+    label: "Read messages",
+    icon: "message-square",
+    category: "messages",
+    description:
+      "Read historical message logs. You can filter by conversationId, startDate (YYYY-MM-DD), and endDate (YYYY-MM-DD) to query specific periods of chat history.",
+    parameters: {
+      type: "object",
+      properties: {
+        conversationId: { type: "string", description: "Optional UUID of a specific conversation thread." },
+        startDate: { type: "string", description: "Optional start date filter (ISO format or YYYY-MM-DD)." },
+        endDate: { type: "string", description: "Optional end date filter (ISO format or YYYY-MM-DD)." },
+        limit: { type: "number", description: "Optional maximum messages to return (default 50, max 200)." },
+        offset: { type: "number", description: "Optional pagination offset." },
+      },
+    },
+    handler: async (args) => {
+      const conversationId = asString(args.conversationId).trim();
+      const startDateStr = asString(args.startDate).trim();
+      const endDateStr = asString(args.endDate).trim();
+      const limit = typeof args.limit === "number" ? Math.min(200, Math.max(1, args.limit)) : 50;
+      const offset = typeof args.offset === "number" ? Math.max(0, args.offset) : 0;
+
+      try {
+        let query = db.select().from(messages);
+        const conditions = [];
+
+        if (conversationId) {
+          conditions.push(eq(messages.conversationId, conversationId));
+        }
+        if (startDateStr) {
+          conditions.push(sql`${messages.sentAt} >= ${new Date(startDateStr).toISOString()}`);
+        }
+        if (endDateStr) {
+          conditions.push(sql`${messages.sentAt} <= ${new Date(endDateStr).toISOString()}`);
+        }
+
+        let whereQuery;
+        if (conditions.length > 0) {
+          whereQuery = query.where(and(...conditions));
+        } else {
+          whereQuery = query;
+        }
+
+        const rows = await whereQuery
+          .orderBy(messages.sentAt)
+          .limit(limit)
+          .offset(offset);
+
+        const results = [];
+        for (const row of rows) {
+          let senderName = "Unknown";
+          if (row.senderPersonId) {
+            const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
+              .from(people).where(eq(people.id, row.senderPersonId));
+            if (p) senderName = `${p.firstName} ${p.lastName}`;
+          } else if (row.senderSocialAccountId) {
+            const [sa] = await db.select({ username: socialAccounts.username })
+              .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
+            if (sa) senderName = sa.username;
+          } else if (row.metadata && typeof row.metadata === "object") {
+            senderName = (row.metadata as any).senderName || "Unknown";
+          }
+
+          results.push({
+            id: row.id,
+            conversationId: row.conversationId,
+            senderName,
+            content: row.content,
+            contentType: row.contentType,
+            sentAt: row.sentAt,
+          });
+        }
+
+        return {
+          summary: `Read ${results.length} message${results.length === 1 ? "" : "s"}`,
+          data: { results },
+        };
+      } catch (error: any) {
+        return {
+          summary: "Failed to read messages",
+          data: { error: error?.message || String(error) },
+        };
+      }
+    },
+  },
+  {
+    name: "search_messages",
+    label: "Search messages",
+    icon: "search",
+    category: "messages",
+    description:
+      "Search message logs by text content (substring or regex pattern), optionally filtering by conversation, date range, or fetching a count of messages chronologically backwards or forwards from a reference date. Optionally condenses findings via the LLM.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Optional text or regex pattern to search for in message content." },
+        useRegex: { type: "boolean", description: "If true, treats the query as a regular expression pattern." },
+        conversationId: { type: "string", description: "Optional UUID of a specific conversation thread." },
+        startDate: { type: "string", description: "Optional start date filter (ISO format or YYYY-MM-DD)." },
+        endDate: { type: "string", description: "Optional end date filter (ISO format or YYYY-MM-DD)." },
+        refDate: { type: "string", description: "Optional reference date (ISO format or YYYY-MM-DD) to query messages relative to." },
+        direction: { type: "string", enum: ["backwards", "forwards"], description: "Optional direction to fetch relative to refDate. Required if refDate is provided." },
+        limit: { type: "number", description: "Optional maximum messages to return (default 50, max 200)." },
+        offset: { type: "number", description: "Optional pagination offset." },
+        summarizeFindings: { type: "boolean", description: "Optional. If true, condenses results into a summary utilizing the LLM." },
+        highlightRequest: { type: "string", description: "Optional instructions or question for the summarizer when summarizeFindings is true." },
+        includeIds: { type: "boolean", description: "Optional. If true (default), returns message and conversation UUIDs. Set to false to exclude them to save context token space." },
+      },
+    },
+    handler: async (args) => {
+      const textQuery = asString(args.query).trim();
+      const useRegex = !!args.useRegex;
+      const conversationId = asString(args.conversationId).trim();
+      const startDateStr = asString(args.startDate).trim();
+      const endDateStr = asString(args.endDate).trim();
+      const refDateStr = asString(args.refDate).trim();
+      const direction = asString(args.direction).trim();
+      const limit = typeof args.limit === "number" ? Math.min(200, Math.max(1, args.limit)) : 50;
+      const offset = typeof args.offset === "number" ? Math.max(0, args.offset) : 0;
+      const summarizeFindings = !!args.summarizeFindings;
+      const highlightRequest = asString(args.highlightRequest).trim();
+      const includeIds = args.includeIds !== false;
+
+      try {
+        let queryBuilder = db.select().from(messages);
+        const conditions = [];
+
+        if (conversationId) {
+          conditions.push(eq(messages.conversationId, conversationId));
+        }
+        if (startDateStr) {
+          conditions.push(sql`${messages.sentAt} >= ${new Date(startDateStr).toISOString()}`);
+        }
+        if (endDateStr) {
+          conditions.push(sql`${messages.sentAt} <= ${new Date(endDateStr).toISOString()}`);
+        }
+        if (textQuery) {
+          if (useRegex) {
+            conditions.push(sql`${messages.content} ~* ${textQuery}`);
+          } else {
+            conditions.push(sql`${messages.content} ILIKE ${`%${textQuery}%`}`);
+          }
+        }
+
+        if (refDateStr && direction) {
+          const refIso = new Date(refDateStr).toISOString();
+          if (direction === "backwards") {
+            conditions.push(sql`${messages.sentAt} <= ${refIso}`);
+          } else {
+            conditions.push(sql`${messages.sentAt} >= ${refIso}`);
+          }
+        }
+
+        let whereQuery: any = conditions.length > 0 ? queryBuilder.where(and(...conditions)) : queryBuilder;
+
+        // Order relative queries to fetch closest messages chronologically
+        if (refDateStr && direction === "backwards") {
+          whereQuery = whereQuery.orderBy(sql`${messages.sentAt} DESC`);
+        } else {
+          whereQuery = whereQuery.orderBy(sql`${messages.sentAt} ASC`);
+        }
+
+        const rows = await whereQuery.limit(limit).offset(offset);
+
+        const results = [];
+        for (const row of rows) {
+          let senderName = "Unknown";
+          if (row.senderPersonId) {
+            const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
+              .from(people).where(eq(people.id, row.senderPersonId));
+            if (p) senderName = `${p.firstName} ${p.lastName}`;
+          } else if (row.senderSocialAccountId) {
+            const [sa] = await db.select({ username: socialAccounts.username })
+              .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
+            if (sa) senderName = sa.username;
+          } else if (row.metadata && typeof row.metadata === "object") {
+            senderName = (row.metadata as any).senderName || "Unknown";
+          }
+
+          const msgObj: any = {
+            senderName,
+            content: row.content,
+            contentType: row.contentType,
+            sentAt: row.sentAt,
+          };
+          if (includeIds) {
+            msgObj.id = row.id;
+            msgObj.conversationId = row.conversationId;
+          }
+          results.push(msgObj);
+        }
+
+        // Sort chronologically ascending for readable presentation
+        results.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+
+        if (summarizeFindings && results.length > 0) {
+          const apiUrl = (await storage.getAppSetting("ollama_api_url")) ?? "";
+          if (!apiUrl.trim()) {
+            return {
+              summary: `Found ${results.length} messages, but Ollama is not configured for summarization.`,
+              data: { results },
+            };
+          }
+
+          const base = apiUrl.replace(/\/+$/, "");
+          const headers: Record<string, string> = { "Content-Type": "application/json" };
+          const authRequired = (await storage.getAppSetting("ollama_auth_required")) === "true";
+          if (authRequired) {
+            const username = (await storage.getAppSetting("ollama_username")) ?? "";
+            const password = (await storage.getAppSetting("ollama_password")) ?? "";
+            headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+          }
+
+          const textModel = (await storage.getAppSetting("ollama_text_model")) ?? "";
+          const model = textModel || ((await storage.getAppSetting("ollama_model")) ?? "") || "llava";
+
+          const chatLog = results
+            .map((r) => `[${r.sentAt ? new Date(r.sentAt).toLocaleString() : "Unknown"}] ${r.senderName}: ${r.content || ""}`)
+            .join("\n");
+
+          let promptContent = `Here is the message chain:\n\n${chatLog}\n\n`;
+          if (highlightRequest) {
+            promptContent += `Special Instructions: Please specifically highlight and answer the following details or question in your summary: "${highlightRequest}"`;
+          } else {
+            promptContent += `Please summarize the key takeaways of this message chain in a clean, concise manner.`;
+          }
+
+          const messagesPayload = [
+            {
+              role: "system",
+              content: `You are an expert AI summarizer. Your task is to condense large conversation logs and chat history into short, high-density, accurate summaries. Focus on extracting key dates, facts, plans, and answers to any special highlight instructions, removing all filler and small talk.`,
+            },
+            {
+              role: "user",
+              content: promptContent,
+            },
+          ];
+
+          const response = await fetch(`${base}/api/chat`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ model, messages: messagesPayload, stream: false }),
+          });
+
+          if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Ollama summarization request failed (${response.status}): ${errText}`);
+          }
+
+          const responseData = (await response.json()) as { message?: { content?: string } };
+          const summaryText = responseData.message?.content || "No summary was generated.";
+
+          return {
+            summary: `Summarized ${results.length} messages focusing on highlight instructions.`,
+            data: {
+              summary: summaryText,
+              originalCount: results.length,
+              highlightedDetails: highlightRequest || null,
+            },
+          };
+        }
+
+        return {
+          summary: `Found ${results.length} message${results.length === 1 ? "" : "s"} matching criteria`,
+          data: { results },
+        };
+      } catch (error: any) {
+        return {
+          summary: "Failed to search messages",
+          data: { error: error?.message || String(error) },
+        };
+      }
+    },
+  },
+  {
+    name: "get_message_by_id",
+    label: "Get message by ID",
+    icon: "message-square",
+    category: "messages",
+    description:
+      "Retrieve a specific message by its unique database ID, with option to fetch surrounding messages in the conversation to provide context.",
+    parameters: {
+      type: "object",
+      properties: {
+        messageId: { type: "string", description: "Required. The unique UUID of the target message." },
+        contextCount: { type: "number", description: "Optional. Number of context messages to fetch relative to the message (default 0, max 100)." },
+        contextDirection: {
+          type: "string",
+          enum: ["backwards", "forwards", "both"],
+          description: "Optional. The direction to scan context messages relative to the target message. Required if contextCount > 0."
+        },
+      },
+      required: ["messageId"],
+    },
+    handler: async (args) => {
+      const messageId = asString(args.messageId).trim();
+      const contextCount = typeof args.contextCount === "number" ? Math.min(100, Math.max(0, args.contextCount)) : 0;
+      const contextDirection = asString(args.contextDirection).trim() || "both";
+
+      if (!messageId) {
+        return {
+          summary: "Error: messageId is required.",
+          data: { error: "messageId is required." },
+        };
+      }
+
+      try {
+        const [targetMsg] = await db.select().from(messages).where(eq(messages.id, messageId));
+        if (!targetMsg) {
+          return {
+            summary: `Message ${messageId} not found`,
+            data: { error: `Message with ID ${messageId} was not found.` },
+          };
+        }
+
+        const helperMapSender = async (row: any) => {
+          let senderName = "Unknown";
+          if (row.senderPersonId) {
+            const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
+              .from(people).where(eq(people.id, row.senderPersonId));
+            if (p) senderName = `${p.firstName} ${p.lastName}`;
+          } else if (row.senderSocialAccountId) {
+            const [sa] = await db.select({ username: socialAccounts.username })
+              .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
+            if (sa) senderName = sa.username;
+          } else if (row.metadata && typeof row.metadata === "object") {
+            senderName = (row.metadata as any).senderName || "Unknown";
+          }
+          return {
+            id: row.id,
+            conversationId: row.conversationId,
+            senderName,
+            content: row.content,
+            contentType: row.contentType,
+            sentAt: row.sentAt,
+          };
+        };
+
+        const targetResult = await helperMapSender(targetMsg);
+        const results = [targetResult];
+
+        if (contextCount > 0 && targetMsg.conversationId) {
+          const targetSentAtIso = targetMsg.sentAt ? new Date(targetMsg.sentAt).toISOString() : new Date().toISOString();
+          
+          let backwardsRows: any[] = [];
+          if (contextDirection === "backwards" || contextDirection === "both") {
+            backwardsRows = await db.select()
+              .from(messages)
+              .where(
+                and(
+                  eq(messages.conversationId, targetMsg.conversationId),
+                  sql`${messages.id} != ${targetMsg.id}`,
+                  sql`${messages.sentAt} <= ${targetSentAtIso}`
+                )
+              )
+              .orderBy(sql`${messages.sentAt} DESC`)
+              .limit(contextCount);
+          }
+
+          let forwardsRows: any[] = [];
+          if (contextDirection === "forwards" || contextDirection === "both") {
+            forwardsRows = await db.select()
+              .from(messages)
+              .where(
+                and(
+                  eq(messages.conversationId, targetMsg.conversationId),
+                  sql`${messages.id} != ${targetMsg.id}`,
+                  sql`${messages.sentAt} >= ${targetSentAtIso}`
+                )
+              )
+              .orderBy(sql`${messages.sentAt} ASC`)
+              .limit(contextCount);
+          }
+
+          const allContextRows = [...backwardsRows, ...forwardsRows];
+          
+          // De-duplicate if same sentAt or boundaries overlap
+          const seenIds = new Set<string>([targetMsg.id]);
+          for (const row of allContextRows) {
+            if (!seenIds.has(row.id)) {
+              seenIds.add(row.id);
+              const mapped = await helperMapSender(row);
+              results.push(mapped);
+            }
+          }
+        }
+
+        // Sort chronologically ascending
+        results.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+
+        return {
+          summary: `Fetched message ${messageId} with ${results.length - 1} context messages`,
+          data: {
+            targetMessageId: messageId,
+            messages: results,
+          },
+        };
+      } catch (error: any) {
+        return {
+          summary: "Failed to fetch message by ID",
+          data: { error: error?.message || String(error) },
+        };
+      }
+    },
+  },
+  {
     name: "query_app_knowledge",
     label: "Search app knowledge base",
     icon: "book",
@@ -873,6 +1282,57 @@ export const AI_TOOLS: AiToolDefinition[] = [
       return {
         summary: `Found ${results.length} '${typeFilter}' relationship${results.length === 1 ? "" : "s"} for ${personName || "person"}`,
         data: { uuid, name: personName, typeFilter, relationships: results },
+      };
+    },
+  },
+  {
+    name: "family_tree_pull",
+    label: "Pull family tree",
+    icon: "user-search",
+    category: "relationships",
+    description:
+      "Fetch a person's family tree by UUID: every relative reachable through parent/child and partnership links up to `depth` steps away (default 2, max 5). Returns each relative with a human-readable relationship label relative to that person (e.g. 'Mother', 'Grandson', 'Ex-Wife') plus the raw family edges. Use person_search first if you don't have the UUID.",
+    parameters: {
+      type: "object",
+      properties: {
+        uuid: { type: "string", description: "UUID of the person whose family tree to pull." },
+        depth: { type: "number", description: "Optional traversal depth in relationship steps (1-5). Default 2. Use a higher depth for extended family (e.g. great-grandparents, cousins)." },
+      },
+      required: ["uuid"],
+    },
+    handler: async (args) => {
+      const uuid = asString(args.uuid).trim();
+      if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
+      const person = await storage.getPersonById(uuid);
+      if (!person) return { summary: "Person not found", data: { error: "not_found" } };
+      const personName = `${person.firstName ?? ""} ${person.lastName ?? ""}`.trim();
+
+      const rawDepth = typeof args.depth === "number" ? args.depth : Number(asString(args.depth));
+      const depth = Number.isFinite(rawDepth) && rawDepth >= 1 ? Math.min(Math.floor(rawDepth), 5) : 2;
+
+      const tree = await storage.getFamilyTree(uuid, depth);
+      const labels = computeFamilyLabels(uuid, tree);
+      const relatives = tree.people
+        .filter((p) => p.id !== uuid)
+        .map((p) => ({
+          uuid: p.id,
+          name: `${p.firstName ?? ""} ${p.lastName ?? ""}`.trim(),
+          sex: p.sex ?? null,
+          stepsAway: p.depth,
+          relationshipLabel: labels.get(p.id) ?? "Extended Family",
+        }));
+      relatives.sort((a, b) => a.stepsAway - b.stepsAway || a.relationshipLabel.localeCompare(b.relationshipLabel));
+
+      return {
+        summary: `Found ${relatives.length} family member${relatives.length === 1 ? "" : "s"} for ${personName || "person"}`,
+        data: {
+          uuid,
+          name: personName,
+          depth,
+          relatives,
+          // Raw edges so the model can reason about exact structure if needed.
+          relationships: tree.relationships,
+        },
       };
     },
   },

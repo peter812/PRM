@@ -7,7 +7,7 @@ export interface SearchPreferences {
   enabled: Record<SearchCategory, boolean>;
 }
 
-export const DEFAULT_PREFERENCES: SearchPreferences = {
+const DEFAULT_PREFERENCES: SearchPreferences = {
   order: ['people', 'groups', 'interactions', 'notes', 'socialProfiles', 'dailyNotes', 'chats'],
   enabled: {
     people: true,

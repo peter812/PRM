@@ -1,8 +1,11 @@
 import { storage } from "./storage";
 import { db } from "./db";
 import { syncEntityInBackground } from "./vector-universal";
-import { uploadImageToS3, deleteImageFromS3 } from "./s3";
-import { uploadImageLocally, deleteImageLocally, isLocalImageUrl } from "./local-storage";
+import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3 } from "./s3";
+import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally } from "./local-storage";
+import AdmZip from "adm-zip";
+import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
+import type { MessageAttachment, MessageMetadata } from "@shared/schema";
 import { log } from "./vite";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
 import fs from "fs";
@@ -30,9 +33,9 @@ import {
   appSettings,
   socialAccounts,
   socialProfileVersions,
-  socialNetworkState,
   groups,
   relationships,
+  socialFollows,
 } from "@shared/schema";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
 
@@ -380,18 +383,12 @@ async function processRefreshFollowerCount(payload: {
   socialAccountId: string;
 }): Promise<string> {
   const { socialAccountId } = payload;
+  // Counts are derived directly from the social_follows edge table.
   const state = await storage.getNetworkState(socialAccountId);
   if (!state) {
-    return JSON.stringify({ socialAccountId, message: "No network state found", followerCount: 0, followingCount: 0 });
+    return JSON.stringify({ socialAccountId, message: "Account not found", followerCount: 0, followingCount: 0 });
   }
-  const followerCount = state.followers?.length || 0;
-  const followingCount = state.following?.length || 0;
-  await storage.upsertNetworkState({
-    socialAccountId,
-    followers: state.followers || [],
-    following: state.following || [],
-  });
-  return JSON.stringify({ socialAccountId, followerCount, followingCount });
+  return JSON.stringify({ socialAccountId, followerCount: state.followerCount, followingCount: state.followingCount });
 }
 
 
@@ -427,9 +424,9 @@ async function processExportXmlTask(taskId: string, payload: {
     storage.getAllSocialAccountTypes(),
   ]);
 
-  const [allProfileVersions, allNetworkStates, mePersonResult] = await Promise.all([
+  const [allProfileVersions, allFollows, mePersonResult] = await Promise.all([
     storage.getAllProfileVersions(),
-    storage.getAllNetworkStates(),
+    storage.getAllFollows(),
     db.select().from(people).where(isNotNull(people.userId)).limit(1),
   ]);
 
@@ -460,7 +457,16 @@ async function processExportXmlTask(taskId: string, payload: {
   const user = allUsers[0];
   const mePersonId = mePersonResult[0]?.id || null;
   const peopleToExport = allPeople.filter(p => p.id !== mePersonId);
-  const networkStateMap = new Map(allNetworkStates.map(s => [s.socialAccountId, s]));
+  const followersMap = new Map<string, string[]>();
+  const followingMap = new Map<string, string[]>();
+  for (const edge of allFollows) {
+    const followers = followersMap.get(edge.followedId);
+    if (followers) followers.push(edge.followerId);
+    else followersMap.set(edge.followedId, [edge.followerId]);
+    const following = followingMap.get(edge.followerId);
+    if (following) following.push(edge.followedId);
+    else followingMap.set(edge.followerId, [edge.followedId]);
+  }
 
   // Helper to map mePersonId to ZERO_UUID in photos.prmLocation
   const mapPrmLocationExport = (loc: string | null): string => {
@@ -633,7 +639,6 @@ async function processExportXmlTask(taskId: string, payload: {
   xml += '  <social_accounts>\n';
   for (const account of allSocialAccounts) {
     const ownerUuid = account.ownerUuid === mePersonId ? ZERO_UUID : account.ownerUuid;
-    const accountState = networkStateMap.get(account.id);
     xml += '    <social_account>\n';
     xml += `      <id>${escapeXml(account.id)}</id>\n`;
     xml += `      <username>${escapeXml(account.username)}</username>\n`;
@@ -643,8 +648,8 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
     xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
     xml += `      <notes></notes>\n`;
-    xml += `      <following>${arrayToXml(accountState?.following || [], "account_id")}</following>\n`;
-    xml += `      <followers>${arrayToXml(accountState?.followers || [], "account_id")}</followers>\n`;
+    xml += `      <following>${arrayToXml(followingMap.get(account.id) || [], "account_id")}</following>\n`;
+    xml += `      <followers>${arrayToXml(followersMap.get(account.id) || [], "account_id")}</followers>\n`;
     xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
     xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
     xml += `      <last_scraped_at>${escapeXml(account.lastScrapedAt)}</last_scraped_at>\n`;
@@ -862,15 +867,18 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += '  </social_profile_versions>\n';
 
     xml += '  <social_network_snapshots>\n';
-    for (const state of allNetworkStates) {
+    for (const account of allSocialAccounts) {
+      const snapFollowers = followersMap.get(account.id) || [];
+      const snapFollowing = followingMap.get(account.id) || [];
+      if (snapFollowers.length === 0 && snapFollowing.length === 0) continue;
       xml += '    <social_network_snapshot>\n';
-      xml += `      <id>${escapeXml(state.id)}</id>\n`;
-      xml += `      <social_account_id>${escapeXml(state.socialAccountId)}</social_account_id>\n`;
-      xml += `      <follower_count>${escapeXml(state.followerCount)}</follower_count>\n`;
-      xml += `      <following_count>${escapeXml(state.followingCount)}</following_count>\n`;
-      xml += `      <followers>${arrayToXml(state.followers || [], "account_id")}</followers>\n`;
-      xml += `      <following>${arrayToXml(state.following || [], "account_id")}</following>\n`;
-      xml += `      <captured_at>${escapeXml(state.updatedAt)}</captured_at>\n`;
+      xml += `      <id>${escapeXml(account.id)}</id>\n`;
+      xml += `      <social_account_id>${escapeXml(account.id)}</social_account_id>\n`;
+      xml += `      <follower_count>${escapeXml(snapFollowers.length)}</follower_count>\n`;
+      xml += `      <following_count>${escapeXml(snapFollowing.length)}</following_count>\n`;
+      xml += `      <followers>${arrayToXml(snapFollowers, "account_id")}</followers>\n`;
+      xml += `      <following>${arrayToXml(snapFollowing, "account_id")}</following>\n`;
+      xml += `      <captured_at>${escapeXml(new Date())}</captured_at>\n`;
       xml += '    </social_network_snapshot>\n';
     }
     xml += '  </social_network_snapshots>\n';
@@ -1251,6 +1259,18 @@ async function processImportXmlTask(taskId: string, payload: {
 
   await storage.updateTaskProgress(taskId, 72, "Importing social accounts…");
 
+  // Follow edges referenced in the file, keyed by the file's account ids.
+  // Resolved through socialAccountIdMap and inserted after all accounts exist.
+  const pendingFollowEdges: { followerId: string; followedId: string }[] = [];
+  const collectFollowEdges = (accountId: string, followerIds: string[], followingIds: string[]) => {
+    for (const f of followerIds) {
+      if (f) pendingFollowEdges.push({ followerId: f, followedId: accountId });
+    }
+    for (const g of followingIds) {
+      if (g) pendingFollowEdges.push({ followerId: accountId, followedId: g });
+    }
+  };
+
   for (const block of parseAllTags("social_account", xmlText)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const username = unescapeXml(parseXmlTag("username", block));
@@ -1274,6 +1294,7 @@ async function processImportXmlTask(taskId: string, payload: {
       skippedCounts.socialAccounts++;
       socialAccountIdMap.set(id, existing.id);
       existingSocialAccountUuids.add(existing.id);
+      collectFollowEdges(id, followers, following);
       continue;
     }
 
@@ -1305,14 +1326,7 @@ async function processImportXmlTask(taskId: string, payload: {
           });
         }
       }
-      if ((followers && followers.length > 0) || (following && following.length > 0)) {
-        await storage.upsertNetworkState({
-          socialAccountId: id,
-          followerCount: followers.length,
-          followingCount: following.length,
-          followers, following,
-        });
-      }
+      collectFollowEdges(id, followers, following);
       importedCounts.socialAccounts++;
     } catch (e) { console.error(`Error importing social account ${id}:`, e); }
   }
@@ -1386,11 +1400,9 @@ async function processImportXmlTask(taskId: string, payload: {
       const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
       if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
 
-      const followerCount = parseInt(parseXmlTag("follower_count", block)) || 0;
-      const followingCount = parseInt(parseXmlTag("following_count", block)) || 0;
       const snFollowers = parseXmlArray("followers", "account_id", block);
       const snFollowing = parseXmlArray("following", "account_id", block);
-      await storage.upsertNetworkState({ socialAccountId: mappedAccountId, followerCount, followingCount, followers: snFollowers, following: snFollowing });
+      collectFollowEdges(socialAccountId, snFollowers, snFollowing);
     } catch (e) { console.error("Error importing network snapshot:", e); }
   }
 
@@ -1416,6 +1428,16 @@ async function processImportXmlTask(taskId: string, payload: {
       importedCounts.networkChanges = (importedCounts.networkChanges || 0) + 1;
     } catch (e) { console.error("Error importing network change:", e); }
   }
+
+  // Insert the collected follow edges now that every referenced account exists.
+  // Ids are remapped for accounts that matched an existing account; edges
+  // pointing at accounts not present in the database are skipped.
+  const resolveFollowId = (fileId: string) => socialAccountIdMap.get(fileId) || fileId;
+  await storage.addFollows(
+    pendingFollowEdges
+      .map(e => ({ followerId: resolveFollowId(e.followerId), followedId: resolveFollowId(e.followedId), source: "xml-import" }))
+      .filter(e => existingSocialAccountUuids.has(e.followerId) && existingSocialAccountUuids.has(e.followedId))
+  );
 
   // Parse and import daily notes (new)
   const dailyNoteBlocks = parseAllTags("daily_note_entry", xmlText);
@@ -1579,27 +1601,11 @@ async function isTaskCancelled(taskId: string): Promise<boolean> {
 }
 
 async function processMassRefreshFollowerCount(taskId: string): Promise<string> {
+  // Counts are derived directly from the social_follows edge table, so there
+  // is nothing to recompute; report totals for visibility.
   const allAccounts = await storage.getAllSocialAccounts();
-  let refreshed = 0;
-  let skipped = 0;
-  for (const account of allAccounts) {
-    if (await isTaskCancelled(taskId)) {
-      return JSON.stringify({ refreshed, skipped, total: allAccounts.length, cancelled: true });
-    }
-    const state = await storage.getNetworkState(account.id);
-    if (!state) {
-      skipped++;
-      continue;
-    }
-    await storage.upsertNetworkState({
-      socialAccountId: account.id,
-      followers: state.followers || [],
-      following: state.following || [],
-    });
-    refreshed++;
-    await new Promise(resolve => setTimeout(resolve, REFRESH_DELAY_MS));
-  }
-  return JSON.stringify({ refreshed, skipped, total: allAccounts.length });
+  const allFollows = await storage.getAllFollows();
+  return JSON.stringify({ refreshed: allAccounts.length, skipped: 0, total: allAccounts.length, followEdges: allFollows.length });
 }
 
 async function processTransferImagesToLocal(taskId: string): Promise<string> {
@@ -1801,28 +1807,17 @@ async function processImportInstagram(taskId: string, payload: {
     }
   }
 
-  const existingState = await storage.getNetworkState(accountId);
-  const existingFollowers = existingState?.followers || [];
-  const existingFollowing = existingState?.following || [];
-
-  let newFollowers: string[];
-  let newFollowing: string[];
-
+  // Record each relationship as a single directed edge; both directions of
+  // the UI (target's followers and each account's following) read the same rows.
+  const edges: { followerId: string; followedId: string; source: string }[] = [];
   if (importType === "followers") {
-    newFollowers = Array.from(new Set([...existingFollowers, ...processedAccountIds]));
-    newFollowing = Array.from(new Set([...existingFollowing, ...mutualFollowIds]));
+    for (const id of processedAccountIds) edges.push({ followerId: id, followedId: accountId, source: "csv-import" });
+    for (const id of mutualFollowIds) edges.push({ followerId: accountId, followedId: id, source: "csv-import" });
   } else {
-    newFollowing = Array.from(new Set([...existingFollowing, ...processedAccountIds]));
-    newFollowers = Array.from(new Set([...existingFollowers, ...mutualFollowIds]));
+    for (const id of processedAccountIds) edges.push({ followerId: accountId, followedId: id, source: "csv-import" });
+    for (const id of mutualFollowIds) edges.push({ followerId: id, followedId: accountId, source: "csv-import" });
   }
-
-  await storage.upsertNetworkState({
-    socialAccountId: accountId,
-    followerCount: newFollowers.length,
-    followingCount: newFollowing.length,
-    followers: newFollowers,
-    following: newFollowing,
-  });
+  await storage.addFollows(edges);
 
   // Kick off the image task worker for the download_img_instagram tasks we just created
   triggerImageTaskWorker();
@@ -1834,6 +1829,478 @@ async function processImportInstagram(taskId: string, payload: {
     total: processedAccountIds.length,
     skippedRows,
   });
+}
+
+// ── Instagram DM export import ────────────────────────────────────────────────
+
+/** Sniff an image MIME type from magic bytes (export photos may lack extensions). */
+function sniffImageMime(buffer: Buffer): { mime: string; ext: string } {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { mime: "image/jpeg", ext: "jpg" };
+  }
+  if (buffer.length >= 4 && buffer[0] === 0x89 && buffer.subarray(1, 4).toString("ascii") === "PNG") {
+    return { mime: "image/png", ext: "png" };
+  }
+  if (buffer.length >= 6 && buffer.subarray(0, 4).toString("ascii") === "GIF8") {
+    return { mime: "image/gif", ext: "gif" };
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return { mime: "image/webp", ext: "webp" };
+  }
+  if (buffer.length >= 12 && buffer.subarray(4, 8).toString("ascii") === "ftyp") {
+    return { mime: "image/heic", ext: "heic" };
+  }
+  return { mime: "image/jpeg", ext: "jpg" };
+}
+
+/**
+ * Resolve an export-relative media uri (e.g.
+ * "your_instagram_activity/messages/inbox/<thread>/photos/x.jpg") to a path
+ * inside the extracted thread folder. Returns null for remote or missing files.
+ */
+function resolveMediaPath(threadFolder: string, uri: string): string | null {
+  if (/^https?:\/\//i.test(uri)) return null;
+  const parts = uri.split("/").filter(Boolean);
+  const threadBase = path.basename(threadFolder);
+  const idx = parts.indexOf(threadBase);
+  const candidates: string[] = [];
+  if (idx >= 0) candidates.push(path.join(threadFolder, ...parts.slice(idx + 1)));
+  if (parts.length >= 2) candidates.push(path.join(threadFolder, ...parts.slice(-2)));
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (!resolved.startsWith(path.resolve(threadFolder))) continue; // no escaping the thread dir
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
+  }
+  return null;
+}
+
+function mediaMimeForFile(kind: "video" | "audio", filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "mp4";
+  if (kind === "audio") {
+    if (ext === "mp3") return "audio/mpeg";
+    if (ext === "wav") return "audio/wav";
+    if (ext === "ogg") return "audio/ogg";
+    return "audio/mp4"; // Instagram voice clips are .mp4/.m4a containers
+  }
+  if (ext === "webm") return "video/webm";
+  if (ext === "mov") return "video/quicktime";
+  return "video/mp4";
+}
+
+/** Find every extracted directory that contains message_1.json */
+function findThreadFolders(root: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.isFile() && /^message_\d+\.json$/.test(e.name))) {
+      found.push(dir);
+      return; // thread folders don't nest
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) walk(path.join(dir, e.name));
+    }
+  };
+  walk(root);
+  return found;
+}
+
+interface ImportDmOptions {
+  skipNoise?: boolean;
+  importMedia?: boolean;
+}
+
+interface ImportThreadSummary {
+  conversationId: string;
+  threadFolder: string;
+  /** True when the stored content hash matched and the thread was skipped whole */
+  skippedUnchanged: boolean;
+  inserted: number;
+  skippedDuplicates: number;
+  skippedNoise: number;
+  photosImported: number;
+  videosImported: number;
+  audioImported: number;
+  mediaUnavailable: number;
+}
+
+async function importOneDmThread(
+  taskId: string,
+  userId: number,
+  threadFolder: string,
+  root: { socialAccountId: string; username: string },
+  options: ImportDmOptions,
+  progress: { threadIndex: number; threadCount: number },
+): Promise<ImportThreadSummary> {
+  const skipNoise = options.skipNoise !== false;
+  const importMedia = options.importMedia !== false;
+
+  const parsed: ParsedThread = loadThreadFolder(threadFolder);
+  const storageMode = await storage.getImageStorageMode(userId);
+  const importUuid = crypto.randomUUID();
+  const importDate = new Date();
+
+  // ── Resolve the counterpart social account ──
+  // The thread folder is "<counterpartUsername>_<threadId>". The root account
+  // (whose backup this is) owns every conversation; the counterpart is the
+  // other party. A self-note thread (counterpart == root) has no counterpart.
+  const isSelfThread = parsed.username.toLowerCase() === root.username.toLowerCase();
+  const isGroup = parsed.participants.length > 2;
+  let counterpartId: string | null = null;
+  if (!isSelfThread && !isGroup) {
+    const instagramType = await storage.getSocialAccountTypeByName("instagram");
+    const allAccounts = await storage.getAllSocialAccounts();
+    const existing = allAccounts.find(
+      (a) => a.username.toLowerCase() === parsed.username.toLowerCase()
+    );
+    if (existing) {
+      counterpartId = existing.id;
+    } else {
+      const newAccount = await storage.createSocialAccount({
+        username: parsed.username,
+        ownerUuid: null,
+        typeId: instagramType?.id || null,
+        internalAccountCreationType: "dm backup import",
+      });
+      const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
+      if (currentProfile) {
+        // Non-owner participant's display name; export owner is listed last
+        const nickname = parsed.participants.length >= 1 ? parsed.participants[0] : null;
+        await storage.updateProfileVersion(currentProfile.id, {
+          nickname,
+          accountUrl: `https://instagram.com/${parsed.username}`,
+        });
+      }
+      counterpartId = newAccount.id;
+    }
+  }
+
+  // Meta exports list the export owner (the root account) as the last
+  // participant — this is the display name used to attribute owner messages.
+  const ownerName = parsed.participants.length > 0
+    ? parsed.participants[parsed.participants.length - 1]
+    : null;
+
+  // ── Resolve or create the conversation ──
+  let conversation = await storage.getConversationByIgThreadId(parsed.threadId);
+  if (!conversation) {
+    conversation = await storage.createConversation({
+      userId,
+      title: parsed.title,
+      channelType: "instagram",
+      // Primary "other party" ref; both sides are also in participants below
+      socialAccountId: counterpartId,
+      externalUrl: null,
+      metadata: {
+        igThreadId: parsed.threadId,
+        threadFolder: path.basename(threadFolder),
+        rootUsername: root.username,
+        isGroup,
+        // Export owner's display name — labels the owner side in perspective views
+        ownerName,
+      },
+      lastMessageAt: null,
+      importDate,
+      importUuid,
+    });
+    // Owner participant references the root account (enables owner-on-the-right
+    // perspective on the root account's profile)
+    await storage.addConversationParticipant({
+      conversationId: conversation.id,
+      personId: null,
+      socialAccountId: root.socialAccountId,
+      role: "owner",
+      importDate,
+      importUuid,
+    });
+    if (counterpartId) {
+      await storage.addConversationParticipant({
+        conversationId: conversation.id,
+        personId: null,
+        socialAccountId: counterpartId,
+        role: "participant",
+        importDate,
+        importUuid,
+      });
+    }
+  }
+
+  const summary: ImportThreadSummary = {
+    conversationId: conversation.id,
+    threadFolder: path.basename(threadFolder),
+    skippedUnchanged: false,
+    inserted: 0,
+    skippedDuplicates: 0,
+    skippedNoise: 0,
+    photosImported: 0,
+    videosImported: 0,
+    audioImported: 0,
+    mediaUnavailable: 0,
+  };
+
+  // Fast path: if we've imported this exact file content before, skip the whole
+  // thread without touching individual messages. A changed hash falls through
+  // to the message-level import below (existing externalIds are still skipped).
+  const priorHash = (conversation.metadata as any)?.importHash;
+  if (priorHash && priorHash === parsed.contentHash) {
+    summary.skippedUnchanged = true;
+    return summary;
+  }
+
+  const existingExternalIds = await storage.getMessageExternalIds(conversation.id);
+
+  const total = parsed.messages.length;
+  for (let i = 0; i < total; i++) {
+    const msg: ParsedMessage = parsed.messages[i];
+
+    if (i % 50 === 0) {
+      if (await isTaskCancelled(taskId)) {
+        throw new Error("cancelled");
+      }
+      const threadShare = 100 / progress.threadCount;
+      const pct = Math.min(
+        99,
+        Math.round(progress.threadIndex * threadShare + (i / Math.max(total, 1)) * threadShare)
+      );
+      await storage.updateTaskProgress(
+        taskId,
+        pct,
+        `Thread ${progress.threadIndex + 1}/${progress.threadCount}: message ${i}/${total}`
+      );
+    }
+
+    if (existingExternalIds.has(msg.externalId)) {
+      summary.skippedDuplicates++;
+      continue;
+    }
+    if (skipNoise && msg.isSystemNoise) {
+      summary.skippedNoise++;
+      continue;
+    }
+
+    // Owner messages are attributed to the root account; everything else to the
+    // counterpart (null in group threads, where we fall back to the raw name)
+    const isOwner = ownerName !== null && msg.senderName === ownerName;
+    const senderSocialAccountId = isOwner ? root.socialAccountId : counterpartId;
+
+    const metadata: MessageMetadata = {};
+    if (msg.reactions.length > 0) metadata.reactions = msg.reactions;
+    if (msg.share) metadata.share = msg.share;
+    if (msg.callDurationSec !== undefined) metadata.callDurationSec = msg.callDurationSec;
+    if (!senderSocialAccountId) metadata.senderName = msg.senderName;
+
+    let content = msg.content;
+    if (content === null && msg.callDurationSec !== undefined) {
+      const mins = Math.floor(msg.callDurationSec / 60);
+      const secs = msg.callDurationSec % 60;
+      content = `Call (${mins}m ${secs}s)`;
+    }
+
+    const recipients = isOwner
+      ? counterpartId
+        ? [{ socialAccountId: counterpartId, recipientType: "to" }]
+        : []
+      : [{ socialAccountId: root.socialAccountId, recipientType: "to" }];
+
+    const message = await storage.createMessage(
+      {
+        conversationId: conversation.id,
+        senderPersonId: null,
+        senderSocialAccountId,
+        content,
+        contentType: msg.media.length > 0 && !content ? "media" : "text",
+        imageUuids: [],
+        attachments: null,
+        externalId: msg.externalId,
+        sentAt: msg.sentAt,
+        metadata: Object.keys(metadata).length > 0 ? metadata : null,
+        importDate,
+        importUuid,
+      },
+      recipients
+    );
+    existingExternalIds.add(msg.externalId);
+    summary.inserted++;
+    void syncEntityInBackground("message", message.id);
+
+    if (!importMedia || msg.media.length === 0) continue;
+
+    // ── Media: photos → photos table + imageUuids; video/audio → attachments ──
+    const imageUuids: string[] = [];
+    const attachments: MessageAttachment[] = [];
+
+    for (const media of msg.media as ParsedMedia[]) {
+      const filePath = resolveMediaPath(threadFolder, media.uri);
+
+      if (media.kind === "photo") {
+        if (!filePath) {
+          attachments.push({
+            type: "file",
+            originalUri: media.uri,
+            unavailable: true,
+            reason: media.isRemote ? "expired-cdn-url" : "file-missing",
+          });
+          summary.mediaUnavailable++;
+          continue;
+        }
+        const buffer = fs.readFileSync(filePath);
+        const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+        const existingPhoto = await storage.getPhotoByFileHash(fileHash);
+        if (existingPhoto) {
+          imageUuids.push(existingPhoto.id);
+          summary.photosImported++;
+          continue;
+        }
+        const { mime, ext } = sniffImageMime(buffer);
+        const fileName = path.basename(filePath).includes(".")
+          ? path.basename(filePath)
+          : `${path.basename(filePath)}.${ext}`;
+        const imageUrl =
+          storageMode === "local"
+            ? await uploadImageLocally(buffer, fileName, mime)
+            : await uploadImageToS3(buffer, fileName, mime);
+        const photo = await storage.insertPhoto({
+          location: imageUrl,
+          prmLocation: `message:${message.id}`,
+          isSubImage: false,
+          fileHash,
+          ogMetadata: { source: "instagram-export", originalUri: media.uri },
+        });
+        imageUuids.push(photo.id);
+        summary.photosImported++;
+      } else {
+        // video / audio
+        if (!filePath) {
+          attachments.push({
+            type: media.kind,
+            originalUri: media.uri,
+            unavailable: true,
+            reason: media.isRemote ? "expired-cdn-url" : "file-missing",
+          });
+          summary.mediaUnavailable++;
+          continue;
+        }
+        const buffer = fs.readFileSync(filePath);
+        const mimeType = mediaMimeForFile(media.kind, filePath);
+        const url =
+          storageMode === "local"
+            ? await uploadMediaLocally(buffer, path.basename(filePath), mimeType)
+            : await uploadMediaToS3(buffer, path.basename(filePath), mimeType);
+        attachments.push({
+          type: media.kind,
+          url,
+          originalUri: media.uri,
+          mimeType,
+          sizeBytes: buffer.length,
+          ...(media.creationTimestamp !== undefined
+            ? { creationTimestamp: media.creationTimestamp }
+            : {}),
+        });
+        if (media.kind === "video") summary.videosImported++;
+        else summary.audioImported++;
+      }
+    }
+
+    if (imageUuids.length > 0 || attachments.length > 0) {
+      await storage.updateMessage(message.id, {
+        imageUuids,
+        attachments: attachments.length > 0 ? attachments : null,
+      });
+    }
+  }
+
+  // Record the content hash + date so an identical re-import skips this thread
+  await storage.updateConversation(conversation.id, {
+    metadata: {
+      ...(conversation.metadata as Record<string, unknown> | null),
+      importHash: parsed.contentHash,
+      importHashDate: importDate.toISOString(),
+    },
+  });
+
+  return summary;
+}
+
+/**
+ * Import a full Instagram account backup: the whole Meta export zip
+ * (instagram-<username>-<date>-<id>.zip) containing every DM thread under
+ * your_instagram_activity/messages/inbox/. The root account — whose backup this
+ * is — owns every conversation; each thread folder names the counterpart.
+ */
+export async function processImportInstagramBackup(
+  taskId: string,
+  payload: {
+    userId: number;
+    zipPath: string;
+    rootSocialAccountId: string;
+    rootUsername: string;
+    options?: ImportDmOptions;
+  }
+): Promise<string> {
+  const { userId, zipPath, rootSocialAccountId, rootUsername, options = {} } = payload;
+
+  const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), "prm-ig-dm-"));
+  try {
+    const zip = new AdmZip(zipPath);
+    zip.extractAllTo(extractDir, true);
+
+    const threadFolders = findThreadFolders(extractDir);
+    if (threadFolders.length === 0) {
+      throw new Error("No Instagram message threads (message_1.json) found in the uploaded zip");
+    }
+
+    // Skip threads with deactivated/deleted counterparts — Instagram anonymizes
+    // these as "instagramuser_<numericId>" and there's no real account to attach
+    const importable = threadFolders.filter((f) => !/^instagramuser_\d+$/i.test(path.basename(f)));
+    const threadsSkippedAnonymous = threadFolders.length - importable.length;
+
+    const root = { socialAccountId: rootSocialAccountId, username: rootUsername };
+    const summaries: ImportThreadSummary[] = [];
+    for (let t = 0; t < importable.length; t++) {
+      try {
+        const summary = await importOneDmThread(
+          taskId,
+          userId,
+          importable[t],
+          root,
+          options,
+          { threadIndex: t, threadCount: importable.length }
+        );
+        summaries.push(summary);
+      } catch (error) {
+        if (error instanceof Error && error.message === "cancelled") {
+          return JSON.stringify({ cancelled: true, summaries });
+        }
+        throw error;
+      }
+    }
+
+    return JSON.stringify({
+      success: true,
+      threads: summaries.length,
+      threadsSkippedAnonymous,
+      threadsSkippedUnchanged: summaries.filter((s) => s.skippedUnchanged).length,
+      inserted: summaries.reduce((n, s) => n + s.inserted, 0),
+      skippedDuplicates: summaries.reduce((n, s) => n + s.skippedDuplicates, 0),
+      skippedNoise: summaries.reduce((n, s) => n + s.skippedNoise, 0),
+      photosImported: summaries.reduce((n, s) => n + s.photosImported, 0),
+      videosImported: summaries.reduce((n, s) => n + s.videosImported, 0),
+      audioImported: summaries.reduce((n, s) => n + s.audioImported, 0),
+      mediaUnavailable: summaries.reduce((n, s) => n + s.mediaUnavailable, 0),
+      summaries,
+    });
+  } finally {
+    fs.rmSync(extractDir, { recursive: true, force: true });
+    fs.rmSync(zipPath, { force: true });
+  }
 }
 
 interface MultiImageDownloadItem {
@@ -2007,8 +2474,7 @@ async function processCalculateCrowd(taskId: string, payload: { groupId: string 
   }
 
   await storage.updateTaskProgress(taskId, 20, "Fetching center account followers...");
-  const centerState = await storage.getNetworkState(group.centerAccountId);
-  const F_center = new Set(centerState?.followers || []);
+  const F_center = new Set(await storage.getFollowerIds(group.centerAccountId));
 
   if (F_center.size === 0) {
     await storage.updateGroup(groupId, { crowdMembers: [], crowdLastCalculatedAt: new Date() });
@@ -2022,7 +2488,7 @@ async function processCalculateCrowd(taskId: string, payload: { groupId: string 
   await storage.updateTaskProgress(taskId, 30, "Retrieving all people and social connections...");
   const allPeople = await storage.getAllPeople();
   const allSocialAccounts = await db.select().from(socialAccounts);
-  const allNetworkStates = await storage.getAllNetworkStates();
+  const allFollows = await storage.getAllFollows();
 
   // Map each person to their social account IDs
   const personSocialAccountsMap = new Map<string, Set<string>>();
@@ -2040,8 +2506,10 @@ async function processCalculateCrowd(taskId: string, payload: { groupId: string 
 
   // Map each social account ID to their followed accounts
   const followingMap = new Map<string, Set<string>>();
-  for (const ns of allNetworkStates) {
-    followingMap.set(ns.socialAccountId, new Set(ns.following || []));
+  for (const edge of allFollows) {
+    let followed = followingMap.get(edge.followerId);
+    if (!followed) { followed = new Set(); followingMap.set(edge.followerId, followed); }
+    followed.add(edge.followedId);
   }
 
   await storage.updateTaskProgress(taskId, 40, "Scanning follower networks...");
@@ -2176,40 +2644,31 @@ async function processFindPotentialGroups(taskId: string, payload: {
     nodes = allAccounts.map(a => a.id);
 
     await storage.updateTaskProgress(taskId, 30, "Loading follow networks...");
-    const allNetworkStates = await storage.getAllNetworkStates();
+    const allFollows = await storage.getAllFollows();
 
     if (linkDefinition === "mutual") {
       const followMap = new Set<string>();
-      for (const ns of allNetworkStates) {
-        const following = ns.following || [];
-        for (const fId of following) {
-          followMap.add(`${ns.socialAccountId}->${fId}`);
-        }
+      for (const edge of allFollows) {
+        followMap.add(`${edge.followerId}->${edge.followedId}`);
       }
       const addedKeys = new Set<string>();
-      for (const ns of allNetworkStates) {
-        const following = ns.following || [];
-        for (const fId of following) {
-          const backKey = `${fId}->${ns.socialAccountId}`;
-          if (followMap.has(backKey)) {
-            const key = ns.socialAccountId < fId ? `${ns.socialAccountId}-${fId}` : `${fId}-${ns.socialAccountId}`;
-            if (!addedKeys.has(key)) {
-              edges.push([ns.socialAccountId, fId]);
-              addedKeys.add(key);
-            }
+      for (const edge of allFollows) {
+        const backKey = `${edge.followedId}->${edge.followerId}`;
+        if (followMap.has(backKey)) {
+          const key = edge.followerId < edge.followedId ? `${edge.followerId}-${edge.followedId}` : `${edge.followedId}-${edge.followerId}`;
+          if (!addedKeys.has(key)) {
+            edges.push([edge.followerId, edge.followedId]);
+            addedKeys.add(key);
           }
         }
       }
     } else if (linkDefinition === "any") {
       const addedKeys = new Set<string>();
-      for (const ns of allNetworkStates) {
-        const following = ns.following || [];
-        for (const fId of following) {
-          const key = ns.socialAccountId < fId ? `${ns.socialAccountId}-${fId}` : `${fId}-${ns.socialAccountId}`;
-          if (!addedKeys.has(key)) {
-            edges.push([ns.socialAccountId, fId]);
-            addedKeys.add(key);
-          }
+      for (const edge of allFollows) {
+        const key = edge.followerId < edge.followedId ? `${edge.followerId}-${edge.followedId}` : `${edge.followedId}-${edge.followerId}`;
+        if (!addedKeys.has(key)) {
+          edges.push([edge.followerId, edge.followedId]);
+          addedKeys.add(key);
         }
       }
     }
@@ -2435,6 +2894,11 @@ async function processNextTask(): Promise<boolean> {
       case "import_instagram": {
         const payload = JSON.parse(task.payload);
         result = await processImportInstagram(task.id, payload);
+        break;
+      }
+      case "import_instagram_backup": {
+        const payload = JSON.parse(task.payload);
+        result = await processImportInstagramBackup(task.id, payload);
         break;
       }
       case "export_xml": {

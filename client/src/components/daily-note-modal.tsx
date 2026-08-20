@@ -27,7 +27,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
-import { Plus, Trash2, Eye, Edit2, ChevronDown, X, Lock, Sparkles, Loader2 } from "lucide-react";
+import { Plus, Trash2, Eye, Edit2, ChevronDown, X, Lock, Sparkles, Loader2, Check, CloudOff, Mic, Square } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { format, parseISO } from "date-fns";
@@ -81,6 +81,30 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
   const [partySearch, setPartySearch] = useState("");
   const lastEventRef = useRef<HTMLInputElement>(null);
 
+  // ── Autosave state ────────────────────────────────────────────────────────
+  // The note id is known upfront when editing, or gets populated after the
+  // first autosave POST creates the note. Kept in a ref so timers/unmount
+  // handlers always read the latest value.
+  const [noteId, setNoteId] = useState<string | undefined>(note?.id);
+  const [status, setStatus] = useState<string>(note?.status || "finished");
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
+  const noteIdRef = useRef<string | undefined>(note?.id);
+  const dirtyRef = useRef(false);
+  const creatingRef = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestRef = useRef<{ userTitle: string; body: string; events: EventRow[]; parties: PartyItem[] }>({
+    userTitle: "", body: "", events: [], parties: [],
+  });
+  // Keep the latest field values available to autosave timers / flush handlers.
+  latestRef.current = { userTitle, body, events, parties };
+
+  // ── Dictation (speech-to-text) state ──────────────────────────────────────
+  const [recording, setRecording] = useState<"idle" | "recording" | "transcribing">("idle");
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+
   const { data: people = [] } = useQuery<any[]>({ queryKey: ["/api/people"] });
   const { data: groups = [] } = useQuery<any[]>({ queryKey: ["/api/groups"] });
   const { data: socialAccounts = [] } = useQuery<any[]>({ queryKey: ["/api/social-accounts"] });
@@ -92,6 +116,15 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     setEvents((note?.events || []).map(e => ({ id: generateId(), text: e.text })));
     setShowPreview(false);
     setPartySearch("");
+
+    // Reset autosave tracking whenever the modal (re)opens.
+    setNoteId(note?.id);
+    noteIdRef.current = note?.id;
+    setStatus(note?.status || "finished");
+    setAutosaveStatus("idle");
+    dirtyRef.current = false;
+    creatingRef.current = false;
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
 
     if (note?.involvedParties) {
       const resolved: PartyItem[] = note.involvedParties.map(p => {
@@ -114,23 +147,251 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     }
   }, [open, note]);
 
+  // Build the request payload from the latest field values, tagged with the
+  // given status ("unfinished" for autosaves, "finished" for explicit saves).
+  const buildPayload = (statusValue: "finished" | "unfinished") => {
+    const src = latestRef.current;
+    const payload: any = {
+      date,
+      userTitle: src.userTitle,
+      body: src.body,
+      status: statusValue,
+      events: src.events.filter(e => e.text.trim()).map((e, i) => ({ text: e.text, position: i })),
+      involvedParties: src.parties.map(p => ({ partyType: p.partyType, refId: p.refId })),
+    };
+    return payload;
+  };
+
+  const hasContent = () => {
+    const src = latestRef.current;
+    return (
+      !!src.userTitle.trim() ||
+      !!src.body.trim() ||
+      src.events.some(e => e.text.trim()) ||
+      src.parties.length > 0
+    );
+  };
+
+  // Persist the current draft as "unfinished". Creates the note on first run,
+  // then updates it in place on subsequent runs.
+  const runAutosave = async () => {
+    if (isReadOnly || !dirtyRef.current || creatingRef.current) return;
+    // Never create an empty note; wait until the user has typed something.
+    if (!noteIdRef.current && !hasContent()) return;
+    setAutosaveStatus("saving");
+    try {
+      const payload = buildPayload("unfinished");
+      if (noteIdRef.current) {
+        payload.autosave = true;
+        if (pinOverride) payload.pin = pinOverride;
+        await apiRequest("PUT", `/api/daily-notes/${noteIdRef.current}`, payload);
+      } else {
+        creatingRef.current = true;
+        const res = await apiRequest("POST", "/api/daily-notes", payload);
+        const created = await res.json();
+        noteIdRef.current = created.id;
+        setNoteId(created.id);
+        creatingRef.current = false;
+      }
+      dirtyRef.current = false;
+      setStatus("unfinished");
+      setAutosaveStatus("saved");
+      queryClient.invalidateQueries({ queryKey: ["/api/daily-notes"] });
+    } catch {
+      creatingRef.current = false;
+      setAutosaveStatus("error");
+    }
+  };
+
+  // Debounce autosave so we save shortly after the user stops typing.
+  const scheduleAutosave = () => {
+    if (isReadOnly) return;
+    dirtyRef.current = true;
+    setAutosaveStatus("pending");
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => { void runAutosave(); }, 900);
+  };
+
+  // Save any pending changes immediately (used when the modal closes).
+  const flushAutosave = () => {
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
+    if (dirtyRef.current && !isReadOnly) void runAutosave();
+  };
+
+  // ── Dictation helpers ─────────────────────────────────────────────────────
+  const stopMediaStream = () => {
+    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
+    mediaStreamRef.current = null;
+  };
+
+  // Insert transcribed text into the body at the caret (or append if no focus).
+  const insertTranscript = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setBody(prev => {
+      const el = bodyRef.current;
+      if (el && el.selectionStart != null) {
+        const start = el.selectionStart;
+        const end = el.selectionEnd ?? start;
+        const before = prev.slice(0, start);
+        const after = prev.slice(end);
+        const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+        const insert = (needsLeadingSpace ? " " : "") + trimmed;
+        const next = before + insert + after;
+        // Restore caret just after the inserted text on the next tick.
+        const caret = before.length + insert.length;
+        setTimeout(() => {
+          el.focus();
+          el.setSelectionRange(caret, caret);
+        }, 0);
+        return next;
+      }
+      // No caret info — append with a separating space.
+      return prev ? `${prev.replace(/\s*$/, "")} ${trimmed}` : trimmed;
+    });
+    scheduleAutosave();
+  };
+
+  const transcribeBlob = async (blob: Blob) => {
+    setRecording("transcribing");
+    try {
+      const form = new FormData();
+      const ext = blob.type.includes("ogg") ? "ogg" : "webm";
+      form.append("audio", blob, `dictation.${ext}`);
+      const res = await fetch("/api/daily-notes/transcribe", {
+        method: "POST",
+        body: form,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Transcription failed (${res.status})`);
+      }
+      const data = await res.json() as { text?: string };
+      insertTranscript(data.text || "");
+    } catch (err: any) {
+      toast({ title: "Dictation failed", description: err.message || "Could not transcribe audio.", variant: "destructive" });
+    } finally {
+      setRecording("idle");
+    }
+  };
+
+  const startRecording = async () => {
+    if (isReadOnly || recording !== "idle") return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : MediaRecorder.isTypeSupported("audio/ogg")
+          ? "audio/ogg"
+          : "";
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onstop = () => {
+        stopMediaStream();
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        audioChunksRef.current = [];
+        if (blob.size > 0) void transcribeBlob(blob);
+        else setRecording("idle");
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording("recording");
+    } catch (err: any) {
+      stopMediaStream();
+      setRecording("idle");
+      toast({
+        title: "Microphone unavailable",
+        description: err?.name === "NotAllowedError"
+          ? "Microphone permission was denied."
+          : (err?.message || "Could not access the microphone."),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const toggleRecording = () => {
+    if (recording === "recording") stopRecording();
+    else if (recording === "idle") void startRecording();
+  };
+
+  // Stop the mic if the modal unmounts mid-recording.
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      stopMediaStream();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Best-effort save if the tab/page is closing mid-edit.
+  useEffect(() => {
+    const handler = () => {
+      if (!dirtyRef.current || isReadOnly) return;
+      const payload = buildPayload("unfinished");
+      const targetId = noteIdRef.current;
+      if (targetId) {
+        payload.autosave = true;
+        if (pinOverride) payload.pin = pinOverride;
+      }
+      try {
+        fetch(targetId ? `/api/daily-notes/${targetId}` : "/api/daily-notes", {
+          method: targetId ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          credentials: "include",
+          keepalive: true,
+        });
+      } catch { /* best effort */ }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReadOnly, pinOverride]);
+
+  // Flush pending changes when the modal unmounts (e.g. navigation away).
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (dirtyRef.current && !isReadOnly) void runAutosave();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const payload: any = {
-        date,
-        userTitle,
-        body,
-        events: events.filter(e => e.text.trim()).map((e, i) => ({ text: e.text, position: i })),
-        involvedParties: parties.map(p => ({ partyType: p.partyType, refId: p.refId })),
-      };
-      if (isEditing && note) {
+      if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
+      // If an autosave create is mid-flight, wait for its id so we update the
+      // existing draft instead of creating a duplicate note for the same day.
+      let waited = 0;
+      while (creatingRef.current && waited < 5000) {
+        await new Promise(r => setTimeout(r, 100));
+        waited += 100;
+      }
+      const payload = buildPayload("finished");
+      const targetId = noteIdRef.current;
+      if (targetId) {
         if (pinOverride) payload.pin = pinOverride;
-        return apiRequest("PUT", `/api/daily-notes/${note.id}`, payload);
+        return apiRequest("PUT", `/api/daily-notes/${targetId}`, payload);
       }
       return apiRequest("POST", "/api/daily-notes", payload);
     },
     onSuccess: () => {
+      dirtyRef.current = false;
+      setStatus("finished");
+      setAutosaveStatus("idle");
       queryClient.invalidateQueries({ queryKey: ["/api/daily-notes"] });
+      if (noteIdRef.current) queryClient.invalidateQueries({ queryKey: ["/api/daily-notes", noteIdRef.current] });
       toast({ title: "Saved", description: "Daily note saved." });
       onOpenChange(false);
     },
@@ -153,6 +414,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
         return;
       }
       setEvents(prev => [...prev, ...generated]);
+      scheduleAutosave();
       toast({ title: "Events generated", description: `Added ${generated.length} event${generated.length === 1 ? "" : "s"}.` });
     },
     onError: (err: any) => {
@@ -167,10 +429,12 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
 
   const updateEvent = (id: string, text: string) => {
     setEvents(prev => prev.map(e => e.id === id ? { ...e, text } : e));
+    scheduleAutosave();
   };
 
   const removeEvent = (id: string) => {
     setEvents(prev => prev.filter(e => e.id !== id));
+    scheduleAutosave();
   };
 
   const handleEventKeyDown = (e: React.KeyboardEvent, id: string) => {
@@ -208,10 +472,12 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     setParties(prev => [...prev, item]);
     setPartySearch("");
     setPartyPopoverOpen(false);
+    scheduleAutosave();
   };
 
   const removeParty = (refId: string, partyType: string) => {
     setParties(prev => prev.filter(p => !(p.refId === refId && p.partyType === partyType)));
+    scheduleAutosave();
   };
 
   const partyTypeLabel: Record<string, string> = {
@@ -220,13 +486,24 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     social_account: "Account",
   };
 
+  // Closing the modal flushes any pending autosave so nothing is lost.
+  const handleOpenChange = (next: boolean) => {
+    if (!next) flushAutosave();
+    onOpenChange(next);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2" data-testid="text-daily-note-modal-title">
             {isReadOnly && <Lock className="h-4 w-4 text-muted-foreground" />}
             {`${formatModalTitleDate(date)} - Daily Note`}
+            {!isReadOnly && status === "unfinished" && (
+              <Badge variant="outline" className="ml-1 text-[10px] font-normal" data-testid="badge-draft-status">
+                Unfinished
+              </Badge>
+            )}
           </DialogTitle>
         </DialogHeader>
 
@@ -237,7 +514,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
             <Input
               id="daily-note-title"
               value={userTitle}
-              onChange={e => setUserTitle(e.target.value)}
+              onChange={e => { setUserTitle(e.target.value); scheduleAutosave(); }}
               placeholder="Optional title for this day"
               disabled={isReadOnly}
               data-testid="input-daily-note-title"
@@ -249,16 +526,35 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
             <div className="flex items-center justify-between">
               <Label>Body</Label>
               {!isReadOnly && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowPreview(!showPreview)}
-                  data-testid="button-toggle-preview"
-                >
-                  {showPreview ? <Edit2 className="h-3 w-3 mr-1" /> : <Eye className="h-3 w-3 mr-1" />}
-                  {showPreview ? "Edit" : "Preview"}
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant={recording === "recording" ? "destructive" : "ghost"}
+                    size="sm"
+                    onClick={toggleRecording}
+                    disabled={showPreview || recording === "transcribing"}
+                    data-testid="button-dictate-body"
+                    title={recording === "recording" ? "Stop dictation" : "Dictate with your microphone"}
+                  >
+                    {recording === "transcribing" ? (
+                      <><Loader2 className="h-3 w-3 mr-1 animate-spin" /> Transcribing…</>
+                    ) : recording === "recording" ? (
+                      <><Square className="h-3 w-3 mr-1 fill-current" /> Stop</>
+                    ) : (
+                      <><Mic className="h-3 w-3 mr-1" /> Dictate</>
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowPreview(!showPreview)}
+                    data-testid="button-toggle-preview"
+                  >
+                    {showPreview ? <Edit2 className="h-3 w-3 mr-1" /> : <Eye className="h-3 w-3 mr-1" />}
+                    {showPreview ? "Edit" : "Preview"}
+                  </Button>
+                </div>
               )}
             </div>
             {showPreview || isReadOnly ? (
@@ -270,14 +566,23 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
                 )}
               </div>
             ) : (
-              <Textarea
-                value={body}
-                onChange={e => setBody(e.target.value)}
-                placeholder="Write your daily note in markdown..."
-                className="min-h-[8rem] font-mono text-sm resize-y"
-                disabled={isReadOnly}
-                data-testid="textarea-daily-note-body"
-              />
+              <>
+                <Textarea
+                  ref={bodyRef}
+                  value={body}
+                  onChange={e => { setBody(e.target.value); scheduleAutosave(); }}
+                  placeholder="Write your daily note in markdown..."
+                  className="min-h-[8rem] font-mono text-sm resize-y"
+                  disabled={isReadOnly}
+                  data-testid="textarea-daily-note-body"
+                />
+                {recording === "recording" && (
+                  <p className="flex items-center gap-1.5 text-xs text-destructive" data-testid="text-recording-indicator">
+                    <span className="inline-block h-2 w-2 rounded-full bg-destructive animate-pulse" />
+                    Recording… click Stop when finished.
+                  </p>
+                )}
+              </>
             )}
           </div>
 
@@ -447,8 +752,23 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
         </div>
 
         {/* Actions */}
-        <div className="flex justify-end gap-2 pt-2 border-t mt-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-daily-note-cancel">
+        <div className="flex items-center justify-end gap-2 pt-2 border-t mt-2">
+          {!isReadOnly && (
+            <div className="mr-auto flex items-center text-xs text-muted-foreground" data-testid="text-autosave-status">
+              {(autosaveStatus === "pending" || autosaveStatus === "saving") && (
+                <><Loader2 className="h-3 w-3 mr-1 animate-spin" /> Saving draft…</>
+              )}
+              {autosaveStatus === "saved" && (
+                <><Check className="h-3 w-3 mr-1 text-green-600" /> Draft saved</>
+              )}
+              {autosaveStatus === "error" && (
+                <span className="flex items-center text-destructive">
+                  <CloudOff className="h-3 w-3 mr-1" /> Autosave failed
+                </span>
+              )}
+            </div>
+          )}
+          <Button variant="outline" onClick={() => handleOpenChange(false)} data-testid="button-daily-note-cancel">
             {isReadOnly ? "Close" : "Cancel"}
           </Button>
           {!isReadOnly && (

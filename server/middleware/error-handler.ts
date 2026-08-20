@@ -1,20 +1,4 @@
-import type { Request, Response } from "express";
-
-export interface ApiError {
-  error: {
-    code: string;
-    message: string;
-    details: Record<string, any>;
-    request_id: string;
-  };
-}
-
-/**
- * Generate a unique request ID for tracking/debugging.
- */
-export function generateRequestId(req: Request): string {
-  return (req.headers["x-request-id"] as string) || `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
+import type { Response } from "express";
 
 /**
  * Send a structured error response following the PRM API error format.

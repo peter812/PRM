@@ -24,6 +24,18 @@ function getMentionsForImage(raw: string | null | undefined, imageIndex: number)
   return [];
 }
 
+function isVideoUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const cleanUrl = url.split("?")[0].toLowerCase();
+  return (
+    cleanUrl.endsWith(".mp4") ||
+    cleanUrl.endsWith(".webm") ||
+    cleanUrl.endsWith(".mov") ||
+    url.includes("/api/media") ||
+    url.includes("video")
+  );
+}
+
 interface PostDetailDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -56,6 +68,27 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
 
   const mentionsForCurrentImage = getMentionsForImage(post.mentionedAccounts, currentImageIndex);
 
+  const renderDescriptionWithLinks = (text: string) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const parts = text.split(urlRegex);
+    return parts.map((part, i) => {
+      if (part.match(urlRegex)) {
+        return (
+          <a
+            key={i}
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline break-all"
+          >
+            {part}
+          </a>
+        );
+      }
+      return part;
+    });
+  };
+
   return (
     <Dialog open={open} onOpenChange={(o) => {
       onOpenChange(o);
@@ -77,16 +110,25 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
         </Button>
 
         <div className="flex flex-col md:flex-row min-h-[400px] max-h-[85vh]">
-          {/* Image Section */}
+          {/* Image/Video Section */}
           <div className="relative flex-1 bg-black flex items-center justify-center min-h-[300px] md:min-h-[400px]">
             {images.length > 0 ? (
               <>
-                <img
-                  src={images[currentImageIndex]}
-                  alt={`Post image ${currentImageIndex + 1}`}
-                  className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain"
-                  data-testid="img-post-detail"
-                />
+                {isVideoUrl(images[currentImageIndex]) ? (
+                  <video
+                    src={images[currentImageIndex]}
+                    controls
+                    className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain"
+                    data-testid="video-post-detail"
+                  />
+                ) : (
+                  <img
+                    src={images[currentImageIndex]}
+                    alt={`Post image ${currentImageIndex + 1}`}
+                    className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain"
+                    data-testid="img-post-detail"
+                  />
+                )}
 
                 {/* Navigation Arrows */}
                 {images.length > 1 && (
@@ -144,7 +186,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
               {post.description && (
                 <div>
                   <p className="text-sm whitespace-pre-wrap" data-testid="text-post-description">
-                    {post.description}
+                    {renderDescriptionWithLinks(post.description)}
                   </p>
                 </div>
               )}

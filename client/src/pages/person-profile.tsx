@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase, ChevronDown, Home, Calendar } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useRef, lazy, Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Card } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -12,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
+import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 import { AddNoteDialog } from "@/components/add-note-dialog";
@@ -34,6 +36,57 @@ import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { getInitials } from "@/lib/utils";
 import { MessagesTab } from "@/components/messages-tab";
+import { TrueDbTab } from "@/components/true-db-tab";
+
+function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit?: number }) {
+  const { data, isLoading } = useQuery<any>({
+    queryKey: ["/api/image/query-person-overview", personId, limit],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/image/query-person?personUuid=${encodeURIComponent(personId)}&page=1&page_size=${limit}`,
+        { credentials: "include" }
+      );
+      if (!res.ok) throw new Error("Failed to fetch photos overview");
+      return res.json();
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-4 gap-2">
+        {[...Array(limit)].map((_, i) => (
+          <div key={i} className="aspect-square bg-muted animate-pulse rounded-md" />
+        ))}
+      </div>
+    );
+  }
+
+  const images = data?.images ?? [];
+
+  if (images.length === 0) {
+    return <p className="text-xs text-muted-foreground italic">No photos recorded.</p>;
+  }
+
+  return (
+    <div className="grid grid-cols-4 gap-2">
+      {images.map((img: any) => (
+        <a
+          key={img.image_uuid}
+          href={img.image_url}
+          target="_blank"
+          rel="noreferrer"
+          className="block overflow-hidden rounded-md border aspect-square hover:opacity-90 transition-opacity bg-muted"
+        >
+          <img
+            src={img.thumb_url || img.image_url}
+            alt="Person thumbnail"
+            className="w-full h-full object-cover"
+          />
+        </a>
+      ))}
+    </div>
+  );
+}
 
 export default function PersonProfile() {
   const { id } = useParams<{ id: string }>();
@@ -46,6 +99,7 @@ export default function PersonProfile() {
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
   const [isAddSocialAccountOpen, setIsAddSocialAccountOpen] = useState(false);
   const [isAccountInfoOpen, setIsAccountInfoOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("home");
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
@@ -177,236 +231,407 @@ export default function PersonProfile() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleBack}
-          className="mb-3"
-          data-testid="button-back"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back
-        </Button>
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Compact Top-Bar Header */}
+      <div className="border-b px-4 py-2 flex items-center justify-between shrink-0 bg-card/40 backdrop-blur-md z-10">
+        <div className="flex items-center gap-3 min-w-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleBack}
+            className="h-8 w-8 rounded-full shrink-0"
+            data-testid="button-back"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
 
-        <div className="flex items-start gap-6">
-          <Avatar className="w-24 h-24">
-            {person.imageUrl && (
-              <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+          {activeTab !== "home" && (
+            <Avatar className="w-9 h-9 shrink-0">
+              {person.imageUrl && (
+                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+              )}
+              <AvatarFallback className="text-xs">
+                {getInitials(person.firstName, person.lastName)}
+              </AvatarFallback>
+            </Avatar>
+          )}
+
+          <div className="min-w-0">
+            <h1 className="text-sm font-bold truncate flex items-center gap-1.5 leading-none" data-testid="text-person-name">
+              {person.firstName} {person.lastName}
+              {person.maidenName && (
+                <span className="text-muted-foreground font-normal text-xs">
+                  (née {person.maidenName})
+                </span>
+              )}
+            </h1>
+            {(person.title || person.company) && (
+              <p className="text-xs text-muted-foreground truncate leading-none mt-1">
+                {person.title} {person.title && person.company && "•"} {person.company}
+              </p>
             )}
-            <AvatarFallback className="text-2xl">
-              {getInitials(person.firstName, person.lastName)}
-            </AvatarFallback>
-          </Avatar>
-
-          <div className="flex-1">
-            <div className="flex items-start justify-between gap-4 mb-1">
-              <div>
-                <h1 className="text-3xl font-semibold mb-1" data-testid="text-person-name">
-                  {person.firstName} {person.lastName}
-                  {person.maidenName && (
-                    <span className="text-muted-foreground font-normal text-xl ml-2">
-                      (née {person.maidenName})
-                    </span>
-                  )}
-                </h1>
-                {(person.company || person.title) && (
-                  <div className="flex items-center gap-1 text-lg text-muted-foreground">
-                    {person.title && <span data-testid="text-person-title">{person.title}</span>}
-                    {person.title && person.company && <span>•</span>}
-                    {person.company && <span data-testid="text-person-company">{person.company}</span>}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" data-testid="button-add-menu">
-                      <Plus className="h-4 w-4" />
-                      Add
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => setIsAddRelationshipOpen(true)} data-testid="menu-item-add-relationship">
-                      <GitBranch className="h-4 w-4" />
-                      Relationship
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setIsAddNoteOpen(true)} data-testid="menu-item-add-note">
-                      <StickyNote className="h-4 w-4" />
-                      Note
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setIsAddInteractionOpen(true)} data-testid="menu-item-add-interaction">
-                      <CalendarDays className="h-4 w-4" />
-                      Interaction
-                    </DropdownMenuItem>
-                    {showPhotosTab && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={() => photoFileInputRef.current?.click()}
-                          disabled={addPhotoMutation.isPending}
-                          data-testid="menu-item-add-photo"
-                        >
-                          <ImageIcon className="h-4 w-4" />
-                          Photo
-                        </DropdownMenuItem>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
-                      data-testid="button-view-in-graph"
-                      aria-label="Open in graph"
-                    >
-                      <GraphTriangleIcon className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Open in graph</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      onClick={() => setIsAccountInfoOpen(true)}
-                      data-testid="button-account-info"
-                      aria-label="Account info"
-                    >
-                      <Info className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Account info</TooltipContent>
-                </Tooltip>
-
-                <Button
-                  variant="outline"
-                  onClick={() => setIsEditPersonOpen(true)}
-                  data-testid="button-edit-person"
-                >
-                  <Edit className="h-4 w-4" />
-                  Edit
-                </Button>
-              </div>
-            </div>
-
-            <PersonSocialAccountsChips
-              personId={person.id}
-              socialAccountUuids={person.socialAccountUuids || []}
-              onUpdate={() => {
-                queryClient.invalidateQueries({
-                  queryKey: ["/api/people", person.id],
-                });
-              }}
-            />
-            <div className="mt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsAddSocialAccountOpen(true)}
-                data-testid="button-add-social-account"
-              >
-                <Plus className="h-4 w-4" />
-                Add Social Account
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
-              {person.email && (
-                <div className="flex items-center gap-2 text-sm">
-                  <Mail className="h-4 w-4 text-muted-foreground" />
-                  <a
-                    href={`mailto:${person.email}`}
-                    className="hover:underline"
-                    data-testid="link-email"
-                  >
-                    {person.email}
-                  </a>
-                </div>
-              )}
-              {person.phone && (
-                <div className="flex items-center gap-2 text-sm">
-                  <Phone className="h-4 w-4 text-muted-foreground" />
-                  <a
-                    href={`tel:${person.phone}`}
-                    className="hover:underline"
-                    data-testid="link-phone"
-                  >
-                    {person.phone}
-                  </a>
-                </div>
-              )}
-            </div>
-
-            <PersonTagsChips personId={person.id} tags={person.tags || []} />
           </div>
         </div>
-      </div>
 
-      <Tabs defaultValue="flow" className="flex-1 flex flex-col overflow-hidden">
-        <div className="border-b px-6">
-          <TabsList className="h-12 bg-transparent p-0 flex-nowrap touch-scroll">
-            <TabsTrigger
-              value="flow"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-flow"
-            >
-              Flow
-            </TabsTrigger>
-            <TabsTrigger
-              value="relationships"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-relationships"
-            >
-              Relationships
-            </TabsTrigger>
-            <TabsTrigger
-              value="tree"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-tree"
-            >
-              Tree
-            </TabsTrigger>
-            <TabsTrigger
-              value="groups"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-groups"
-            >
-              Groups
-            </TabsTrigger>
-            <TabsTrigger
-              value="messages"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-messages"
-            >
-              Messages
-            </TabsTrigger>
-            <TabsTrigger
-              value="education-career"
-              className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-              data-testid="tab-education-career"
-            >
-              Education & Career
-            </TabsTrigger>
-            {showPhotosTab && (
+        {/* Consolidated Actions Dropdown Menu */}
+        <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1" data-testid="button-actions-menu">
+                Actions
+                <ChevronDown className="h-3.5 w-3.5 opacity-70" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onClick={() => setIsEditPersonOpen(true)} data-testid="button-edit-person">
+                <Edit className="h-4 w-4 mr-2" />
+                Edit Profile
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setIsAddSocialAccountOpen(true)} data-testid="button-add-social-account">
+                <Plus className="h-4 w-4 mr-2" />
+                Add Social Account
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)} data-testid="button-view-in-graph">
+                <GraphTriangleIcon className="h-4 w-4 mr-2" />
+                Open in Graph
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setIsAccountInfoOpen(true)} data-testid="button-account-info">
+                <Info className="h-4 w-4 mr-2" />
+                Account Info
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setIsAddRelationshipOpen(true)} data-testid="menu-item-add-relationship">
+                <GitBranch className="h-4 w-4 mr-2" />
+                Add Relationship
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setIsAddNoteOpen(true)} data-testid="menu-item-add-note">
+                <StickyNote className="h-4 w-4 mr-2" />
+                Add Note
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setIsAddInteractionOpen(true)} data-testid="menu-item-add-interaction">
+                <CalendarDays className="h-4 w-4 mr-2" />
+                Add Interaction
+              </DropdownMenuItem>
+              {showPhotosTab && (
+                <DropdownMenuItem onClick={() => photoFileInputRef.current?.click()} data-testid="menu-item-add-photo">
+                  <ImageIcon className="h-4 w-4 mr-2" />
+                  Add Photo
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>      {/* Main Content Area with Left Sidebar Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        {/* Left Side Navigation Menu */}
+        <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-y-auto">
+          <div className="p-3">
+            <TabsList className="flex flex-col items-stretch justify-start h-auto bg-transparent p-0 gap-1">
               <TabsTrigger
-                value="photos"
-                className="data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
-                data-testid="tab-photos"
+                value="home"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-home"
               >
-                Photos
+                Home
               </TabsTrigger>
-            )}
-          </TabsList>
+              <TabsTrigger
+                value="flow"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-flow"
+              >
+                Flow
+              </TabsTrigger>
+              <TabsTrigger
+                value="relationships"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-relationships"
+              >
+                Relationships
+              </TabsTrigger>
+              <TabsTrigger
+                value="tree"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-tree"
+              >
+                Tree
+              </TabsTrigger>
+              <TabsTrigger
+                value="groups"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-groups"
+              >
+                Groups
+              </TabsTrigger>
+              <TabsTrigger
+                value="messages"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-messages"
+              >
+                Messages
+              </TabsTrigger>
+              <TabsTrigger
+                value="education-career"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-education-career"
+              >
+                Education & Career
+              </TabsTrigger>
+              <TabsTrigger
+                value="truedb"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-truedb"
+              >
+                TrueDB
+              </TabsTrigger>
+              {showPhotosTab && (
+                <TabsTrigger
+                  value="photos"
+                  className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                  data-testid="tab-photos"
+                >
+                  Photos
+                </TabsTrigger>
+              )}
+            </TabsList>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-auto">
-          <TabsContent value="flow" className="mt-0 h-full">
+        {/* Selected Tab Content Pane */}
+        <div className="flex-1 flex flex-col min-h-0 bg-background overflow-hidden">
+          {/* Home Tab Dashboard */}
+          <TabsContent value="home" className="mt-0 flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex flex-col lg:flex-row gap-6 items-start">
+              {/* Left/Main Column: Overview Summary Panels */}
+              <div className="flex-1 space-y-6 w-full min-w-0">
+                {/* Profile Brief */}
+                <div className="space-y-1">
+                  <h2 className="text-2xl font-bold">{person.firstName} {person.lastName}</h2>
+                  {person.maidenName && (
+                    <p className="text-sm text-muted-foreground">Maiden Name: {person.maidenName}</p>
+                  )}
+                  {(person.title || person.company) && (
+                    <p className="text-sm text-muted-foreground">
+                      {person.title} {person.title && person.company && "at"} {person.company}
+                    </p>
+                  )}
+                </div>
+
+                {/* Quick Actions Action Areas */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <Button variant="outline" className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" onClick={() => setIsEditPersonOpen(true)}>
+                    <Edit className="h-4 w-4 text-primary" />
+                    Edit Profile
+                  </Button>
+                  <Button variant="outline" className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" onClick={() => setIsAddRelationshipOpen(true)}>
+                    <GitBranch className="h-4 w-4 text-primary" />
+                    Add Relation
+                  </Button>
+                  <Button variant="outline" className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" onClick={() => setIsAddNoteOpen(true)}>
+                    <StickyNote className="h-4 w-4 text-primary" />
+                    Add Note
+                  </Button>
+                  <Button variant="outline" className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" onClick={() => setIsAddInteractionOpen(true)}>
+                    <CalendarDays className="h-4 w-4 text-primary" />
+                    Add Interaction
+                  </Button>
+                </div>
+
+                {/* Summaries: Relationships & Groups */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Relationships Overview */}
+                  <Card className="p-4 space-y-3 shadow-none">
+                    <h3 className="font-semibold text-sm flex items-center justify-between">
+                      <span>Relationships</span>
+                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("relationships")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                    </h3>
+                    {person.relationships && person.relationships.length > 0 ? (
+                      <div className="space-y-2 text-xs">
+                        {person.relationships.slice(0, 3).map((r: any, idx: number) => (
+                          <div key={idx} className="flex justify-between border-b pb-1 last:border-0 last:pb-0">
+                            <span className="font-medium text-foreground">
+                              {r.relatedPerson?.firstName} {r.relatedPerson?.lastName}
+                            </span>
+                            <span className="text-muted-foreground">{r.type?.name || "Relation"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic">No relationships recorded.</p>
+                    )}
+                  </Card>
+
+                  {/* Groups Overview */}
+                  <Card className="p-4 space-y-3 shadow-none">
+                    <h3 className="font-semibold text-sm flex items-center justify-between">
+                      <span>Groups</span>
+                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("groups")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                    </h3>
+                    {person.groups && person.groups.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {person.groups.slice(0, 4).map((g: any, idx: number) => (
+                          <Badge key={idx} variant="secondary" className="text-[10px]">
+                            {g.name}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic">Not in any groups.</p>
+                    )}
+                  </Card>
+                </div>
+
+                {/* Summaries: Education & Career */}
+                <Card className="p-4 space-y-3 shadow-none">
+                  <h3 className="font-semibold text-sm flex items-center justify-between">
+                    <span>Education & Career</span>
+                    <Button variant="ghost" size="sm" onClick={() => setActiveTab("education-career")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <div>
+                      <span className="text-muted-foreground block mb-1 text-[10px] uppercase font-bold tracking-wider">Education</span>
+                      {person.schooling?.highSchool || (person.schooling?.colleges && person.schooling.colleges.length > 0) ? (
+                        <div className="space-y-1">
+                          {person.schooling.highSchool && <p className="font-medium">{person.schooling.highSchool} (HS)</p>}
+                          {person.schooling.colleges?.[0] && <p className="font-medium">{person.schooling.colleges[0].name}</p>}
+                        </div>
+                      ) : (
+                        <p className="italic text-muted-foreground">No education history.</p>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground block mb-1 text-[10px] uppercase font-bold tracking-wider">Career & Employment</span>
+                      {person.jobs && person.jobs.length > 0 ? (
+                        <div>
+                          <p className="font-medium">{person.jobs[0].company}</p>
+                          <p className="text-muted-foreground text-[11px]">{person.jobs[0].position}</p>
+                        </div>
+                      ) : (
+                        <p className="italic text-muted-foreground">No employment history.</p>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Summaries: Photos */}
+                {showPhotosTab && (
+                  <Card className="p-4 space-y-3 shadow-none">
+                    <h3 className="font-semibold text-sm flex items-center justify-between">
+                      <span>Photos</span>
+                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("photos")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                    </h3>
+                    <PersonPhotosOverview personId={person.id} limit={4} />
+                  </Card>
+                )}
+              </div>
+
+              {/* Right Column: Large Profile Picture & Contact details */}
+              <div className="w-full lg:w-80 shrink-0 space-y-4">
+                {/* Large Profile Image */}
+                <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden group shadow-sm">
+                  {person.imageUrl ? (
+                    <img src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-4xl font-bold bg-primary/10 text-primary">
+                      {getInitials(person.firstName, person.lastName)}
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <Button variant="secondary" size="sm" onClick={() => setIsEditPersonOpen(true)}>
+                      Change Image
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Contact Details Card */}
+                <Card className="p-4 space-y-3 text-xs shadow-none">
+                  <h3 className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block">Contact Details</h3>
+                  <div className="space-y-2">
+                    {person.birthday && (
+                      <div className="flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span>{person.birthday}</span>
+                      </div>
+                    )}
+                    {person.email && (
+                      <div className="flex items-center gap-2 truncate">
+                        <Mail className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <a href={`mailto:${person.email}`} className="hover:underline truncate" data-testid="link-email">{person.email}</a>
+                      </div>
+                    )}
+                    {person.phone && (
+                      <div className="flex items-center gap-2">
+                        <Phone className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <a href={getTruePeopleSearchUrl(person.phone)} target="_blank" rel="noopener noreferrer" className="hover:underline text-[11px]" data-testid="link-phone">
+                          {formatPhoneNumberForDisplay(person.phone)}
+                        </a>
+                      </div>
+                    )}
+                    {person.address && (
+                      <div className="flex items-start gap-2">
+                        <Home className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                        <span className="break-words">{person.address}</span>
+                      </div>
+                    )}
+                    {!person.email && !person.phone && !person.address && !person.birthday && (
+                      <span className="text-muted-foreground italic">No details set</span>
+                    )}
+
+                    {person.additionalEmails && person.additionalEmails.length > 0 && (
+                      <div className="border-t pt-2 mt-2 space-y-1">
+                        <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Additional Emails</span>
+                        {person.additionalEmails.map((e, idx) => (
+                          <div key={idx} className="flex items-center gap-2 truncate">
+                            <Mail className="h-3 w-3 text-muted-foreground shrink-0" />
+                            <a href={`mailto:${e}`} className="hover:underline truncate">{e}</a>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {person.additionalPhones && person.additionalPhones.length > 0 && (
+                      <div className="border-t pt-2 mt-2 space-y-1">
+                        <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Additional Phones</span>
+                        {person.additionalPhones.map((p, idx) => (
+                          <div key={idx} className="flex items-center gap-2">
+                            <Phone className="h-3 w-3 text-muted-foreground shrink-0" />
+                            <a href={getTruePeopleSearchUrl(p)} target="_blank" rel="noopener noreferrer" className="hover:underline text-[11px]">
+                              {formatPhoneNumberForDisplay(p)}
+                            </a>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="border-t pt-3 space-y-2">
+                    <span className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block">Social Accounts</span>
+                    <PersonSocialAccountsChips
+                      personId={person.id}
+                      socialAccountUuids={person.socialAccountUuids || []}
+                      onUpdate={() => {
+                        queryClient.invalidateQueries({
+                          queryKey: ["/api/people", person.id],
+                        });
+                      }}
+                    />
+                    <div className="pt-1">
+                      <Button variant="outline" size="sm" className="w-full text-xs h-8" onClick={() => setIsAddSocialAccountOpen(true)}>
+                        <Plus className="h-3.5 w-3.5 mr-1" />
+                        Add Social Account
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-3">
+                    <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block mb-1.5">Tags</span>
+                    <PersonTagsChips personId={person.id} tags={person.tags || []} />
+                  </div>
+                </Card>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="flow" className="mt-0 flex-1 min-h-0">
             <PersonFlowTab
               personId={person.id}
               onAddNote={() => setIsAddNoteOpen(true)}
@@ -416,7 +641,7 @@ export default function PersonProfile() {
             />
           </TabsContent>
 
-          <TabsContent value="relationships" className="mt-0 h-full">
+          <TabsContent value="relationships" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <RelationshipsTab
               relationships={person.relationships}
               personId={person.id}
@@ -425,9 +650,7 @@ export default function PersonProfile() {
             />
           </TabsContent>
 
-
-
-          <TabsContent value="tree" className="mt-0 h-full">
+          <TabsContent value="tree" className="mt-0 flex-1 min-h-0">
             <Suspense fallback={<Skeleton className="w-full h-[400px]" />}>
               <FamilyTreeTab
                 personId={person.id}
@@ -436,18 +659,18 @@ export default function PersonProfile() {
             </Suspense>
           </TabsContent>
 
-          <TabsContent value="groups" className="mt-0 h-full">
+          <TabsContent value="groups" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <PersonGroupsTab
               personId={person.id}
               personGroups={person.groups}
             />
           </TabsContent>
 
-          <TabsContent value="messages" className="mt-0 h-full p-6 overflow-auto">
+          <TabsContent value="messages" className="mt-0 flex-1 min-h-0">
             <MessagesTab personId={person.id} />
           </TabsContent>
 
-          <TabsContent value="education-career" className="mt-0 h-full p-6 overflow-auto">
+          <TabsContent value="education-career" className="mt-0 flex-1 min-h-0 p-6 overflow-y-auto">
             <div className="max-w-3xl space-y-6">
               <div className="flex justify-end">
                 <Button
@@ -553,8 +776,12 @@ export default function PersonProfile() {
             </div>
           </TabsContent>
 
+          <TabsContent value="truedb" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <TrueDbTab person={person} />
+          </TabsContent>
+
           {showPhotosTab && (
-            <TabsContent value="photos" className="mt-0 h-full">
+            <TabsContent value="photos" className="mt-0 flex-1 min-h-0">
               <PersonPhotosTab personId={person.id} />
             </TabsContent>
           )}

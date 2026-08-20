@@ -15,7 +15,6 @@ import {
   Scan,
   Sparkles,
   MessagesSquare,
-  MessageSquare,
   BookOpen,
   Home,
   Image,
@@ -23,7 +22,9 @@ import {
   Gamepad2,
   ChevronRight,
   Leaf,
+  Radar,
 } from "lucide-react";
+import { OSINT_TOOLS } from "@/lib/osint-tools";
 import { Link, useLocation } from "wouter";
 import { useEffect, useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -59,11 +60,6 @@ const menuItems = [
     title: "AI Chat",
     url: "/ai-chat-demo",
     icon: MessagesSquare,
-  },
-  {
-    title: "Messages",
-    url: "/messages",
-    icon: MessageSquare,
   },
   {
     title: "Me",
@@ -169,6 +165,11 @@ export function AppSidebar() {
   });
   const demosEnabled = settings?.experimental_demos_enabled === "true";
 
+  const { data: osintStatus } = useQuery<{ configured: boolean }>({
+    queryKey: ["/api/osint/status"],
+  });
+  const osintConfigured = !!osintStatus?.configured;
+
   const { data: questions = [] } = useQuery<any[]>({
     queryKey: ["/api/image-questions/pending"],
   });
@@ -178,9 +179,25 @@ export function AppSidebar() {
   });
 
   const displayedMenuItems = useMemo(() => {
-    if (demosEnabled) return menuItems;
-    return menuItems.filter(item => item.title !== "Demos");
-  }, [demosEnabled]);
+    if (!demosEnabled) return menuItems.filter(item => item.title !== "Demos");
+    // Append the OSINT tool demos under "Demos" only when PRM-osint is configured.
+    if (!osintConfigured) return menuItems;
+    return menuItems.map(item =>
+      item.title === "Demos"
+        ? {
+            ...item,
+            subItems: [
+              ...(item.subItems ?? []),
+              ...OSINT_TOOLS.map(tool => ({
+                title: tool.label,
+                url: `/demos/osint/${tool.name}`,
+                icon: Radar,
+              })),
+            ],
+          }
+        : item,
+    );
+  }, [demosEnabled, osintConfigured]);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | "aero" | null;

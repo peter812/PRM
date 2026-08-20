@@ -50,6 +50,7 @@ const UnknownFaces = lazy(() => import("@/pages/unknown-faces"));
 const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
+const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
 const GamesPage = lazy(() => import("@/pages/games"));
 const ImageDetailPage = lazy(() => import("@/pages/image-detail"));
 const ImagesListPage = lazy(() => import("@/pages/images-list"));
@@ -57,8 +58,6 @@ const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
 const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
 const SuperSearchPage = lazy(() => import("@/pages/super-search"));
 const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
-const MessagesListPage = lazy(() => import("@/pages/messages-list"));
-const MessageConversationPage = lazy(() => import("@/pages/message-conversation"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 
@@ -148,6 +147,7 @@ function Router() {
         <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
         <ProtectedRoute path="/account-matching" component={AccountMatching} />
         <ProtectedRoute path="/demos" component={DemosPage} />
+        <ProtectedRoute path="/demos/osint/:tool" component={OsintDemoPage} />
         <ProtectedRoute path="/games" component={GamesPage} />
         <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
         <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
@@ -159,8 +159,6 @@ function Router() {
         <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
         <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
         <ProtectedRoute path="/super-search" component={SuperSearchPage} />
-        <ProtectedRoute path="/messages" component={MessagesListPage} />
-        <ProtectedRoute path="/messages/:id" component={MessageConversationPage} />
         <ProtectedRoute path="/settings" nest component={SettingsLayout} />
         <Route component={NotFound} />
       </Switch>

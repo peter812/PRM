@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -96,15 +96,11 @@ export function registerRoutes(app: Express) {
     // ── PRM-Face integration ──────────────────────────────────────────────────
   
     async function getPrmFaceSetting(key: string): Promise<string | null> {
-      const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
-      return row?.value ?? null;
+      return storage.getAppSetting(key);
     }
   
     async function setPrmFaceSetting(key: string, value: string): Promise<void> {
-      await db.execute(
-        sql`INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
-      );
+      await storage.setAppSetting(key, value);
     }
   
     /** Strip any trailing slashes so URL + "/path" never produces a double-slash. */
@@ -372,6 +368,9 @@ export function registerRoutes(app: Express) {
           imageDescriptionAt: new Date(),
         })
         .where(eq(photos.id, photoId));
+
+      // The photo now has an AI description, so it's eligible for vector storage.
+      if (description.trim()) syncEntityInBackground("image", photoId);
 
       return description;
     }
@@ -660,6 +659,119 @@ export function registerRoutes(app: Express) {
         res.json({ success: true, description });
       } catch (error: any) {
         console.error("Error saving photo assignments:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/photos/:id/run-face-recog", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { id } = req.params;
+      const { background } = req.body;
+
+      try {
+        const [photo] = await db.select().from(photos).where(eq(photos.id, id));
+        if (!photo) return res.status(404).json({ error: "Photo not found." });
+
+        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+        if (!apiUrl || !apiKey) {
+          return res.status(400).json({ error: "PRM-Face service is not configured." });
+        }
+
+        // 1. Fetch the image file into a buffer
+        let buffer: Buffer;
+        let mimeType = "image/jpeg";
+        
+        if (isLocalImageUrl(photo.location)) {
+          const fileName = photo.location.split("/api/images/").pop();
+          if (!fileName) {
+            return res.status(400).json({ error: "Invalid local image path" });
+          }
+          const filePath = getLocalImagePath(fileName);
+          if (!filePath) {
+            return res.status(404).json({ error: "Local photo file not found" });
+          }
+          buffer = fs.readFileSync(filePath);
+          // Simple extension-based mime type detection
+          const ext = path.extname(filePath).toLowerCase();
+          if (ext === ".png") mimeType = "image/png";
+          else if (ext === ".webp") mimeType = "image/webp";
+        } else {
+          // S3 or external URL
+          const imgRes = await fetch(photo.location);
+          if (!imgRes.ok) {
+            return res.status(500).json({ error: `Failed to download image from S3: ${imgRes.statusText}` });
+          }
+          const arrayBuffer = await imgRes.arrayBuffer();
+          buffer = Buffer.from(arrayBuffer);
+          mimeType = imgRes.headers.get("content-type") || "image/jpeg";
+        }
+
+        // 2. Send image to PRM-Face microservice img/add
+        const formData = new FormData();
+        const blob = new Blob([buffer], { type: mimeType });
+        const originalName = path.basename(photo.location) || "image.jpg";
+        formData.append("image", blob, originalName);
+        formData.append("max_faces", "100");
+
+        let prmResponse;
+        try {
+          prmResponse = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
+            method: "POST",
+            headers: { "X-API-Key": apiKey },
+            body: formData,
+            signal: AbortSignal.timeout(30000),
+          });
+        } catch (fetchErr: any) {
+          console.error("Failed to contact PRM-Face microservice:", fetchErr.message);
+          return res.status(503).json({
+            error: `Could not reach the PRM-Face server. Please check that the microservice at ${apiUrl} is online and running.`
+          });
+        }
+
+        if (!prmResponse.ok) {
+          const errBody = await prmResponse.text();
+          return res.status(prmResponse.status).json({ error: `PRM-Face error: ${errBody}` });
+        }
+
+        const data = await prmResponse.json() as any;
+        const detectedFaces = data.results ?? data.faces ?? [];
+
+        // 3. Handle background vs foreground
+        if (background) {
+          const facialIds = detectedFaces.map((f: any) => ({
+            faceUuid: f.face_uuid || f.faceUuid,
+            coordinates: f.box || f.coordinates || null,
+            personId: f.person_uuid || f.personId || null,
+            socialAccountId: null,
+          }));
+
+          await db.update(photos)
+            .set({
+              facialIds,
+              faceIdAt: new Date(),
+            })
+            .where(eq(photos.id, id));
+
+          return res.json({
+            success: true,
+            background: true,
+            facesDetected: detectedFaces.length,
+          });
+        }
+
+        // Foreground: return detection results in the shape expected by client
+        res.json({
+          imageUrl: photo.location,
+          photoId: photo.id,
+          faceDetection: {
+            faces_detected: data.faces_detected ?? detectedFaces.length,
+            results: detectedFaces,
+          },
+        });
+
+      } catch (error: any) {
+        console.error("Error in run-face-recog endpoint:", error);
         res.status(500).json({ error: error.message });
       }
     });
@@ -1237,15 +1349,11 @@ export function registerRoutes(app: Express) {
     // ── Ollama AI Description ─────────────────────────────────────────────────
   
     async function getOllamaSetting(key: string): Promise<string | null> {
-      const row = await db.query.appSettings?.findFirst({ where: (t, { eq }) => eq(t.key, key) });
-      return row?.value ?? null;
+      return storage.getAppSetting(key);
     }
   
     async function setOllamaSetting(key: string, value: string): Promise<void> {
-      await db.execute(
-        sql`INSERT INTO app_settings (key, value) VALUES (${key}, ${value})
-            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
-      );
+      await storage.setAppSetting(key, value);
     }
   
     app.get("/api/ollama/settings", async (req, res) => {
@@ -1264,7 +1372,9 @@ export function registerRoutes(app: Express) {
         const familyTreeModel = (await getOllamaSetting("ollama_family_tree_model")) ?? "";
         const autoDescribeImages = (await getOllamaSetting("ollama_auto_describe_images")) ?? "false";
         const sexGuessModel = (await getOllamaSetting("ollama_sex_guess_model")) ?? "";
-        res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true", sexGuessModel });
+        const whisperApiUrl = (await getOllamaSetting("whisper_api_url")) ?? "";
+        const whisperModel = (await getOllamaSetting("whisper_model")) ?? "";
+        res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true", sexGuessModel, whisperApiUrl, whisperModel });
       } catch (error) {
         res.status(500).json({ error: "Failed to fetch Ollama settings" });
       }
@@ -1272,7 +1382,7 @@ export function registerRoutes(app: Express) {
   
     app.post("/api/ollama/settings", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages, sexGuessModel } = req.body;
+      const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages, sexGuessModel, whisperApiUrl, whisperModel } = req.body;
       try {
         if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
         if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
@@ -1287,6 +1397,8 @@ export function registerRoutes(app: Express) {
         if (typeof familyTreeModel === "string") await setOllamaSetting("ollama_family_tree_model", familyTreeModel);
         if (typeof autoDescribeImages === "boolean") await setOllamaSetting("ollama_auto_describe_images", String(autoDescribeImages));
         if (typeof sexGuessModel === "string") await setOllamaSetting("ollama_sex_guess_model", sexGuessModel);
+        if (typeof whisperApiUrl === "string") await setOllamaSetting("whisper_api_url", whisperApiUrl.trim());
+        if (typeof whisperModel === "string") await setOllamaSetting("whisper_model", whisperModel.trim());
         res.json({ success: true });
       } catch (error) {
         res.status(500).json({ error: "Failed to save Ollama settings" });
@@ -1437,6 +1549,14 @@ export function registerRoutes(app: Express) {
     // ── AI Chat (Ollama text chat) ────────────────────────────────────────────
   
     const DEFAULT_CHAT_MODEL = "llama3";
+    const AGENTIC_SYSTEM_INSTRUCTIONS =
+      "\n\n[AGENTIC MODE ACTIVE: HIGH AUTONOMY & MULTI-STEP REASONING REQUIRED]\n" +
+      "You are running in AGENTIC mode. Your primary objective is to solve the user's request thoroughly, even if it requires a complex, multi-step process. " +
+      "Follow these guidelines strictly:\n" +
+      "1. BE PROACTIVE WITH TOOLS: Do not hesitate to call multiple tools in sequence. If you need more information to answer a question or perform an action, run the tools necessary to get it. Do not ask the user for permission to search or query if you have tools available to find the answer yourself.\n" +
+      "2. THINK STEP-BY-STEP: Before calling tools or answering, analyze what you need to solve the request. Write down a clear plan or mental model, and execute it step-by-step. If one tool call doesn't yield the result, try a different tool or strategy.\n" +
+      "3. MULTI-STEP INVESTIGATION: If the user's request is broad or ambiguous, use search tools (like person_search, super_search, social_account_search, etc.) to discover clues, and then pull full details (using person_pull, etc.) for any relevant entities. Don't stop at the first result; verify facts, explore relationships, and cross-reference details across different entities.\n" +
+      "4. GENERATE PLANS: When dealing with complex questions (e.g., finding connections, compiling summaries, or solving data discrepancies), outline your steps and explain your reasoning clearly to the user. Do not give up easily or return partial answers when further tool execution could provide the complete picture.";
     const DEFAULT_PRM_SYSTEM_MESSAGE =
       "You are an intelligent assistant integrated with a Personal Relationship Manager (PRM). " +
       "You have access to tools that allow you to read live data from the PRM — including people, " +
@@ -1940,6 +2060,7 @@ export function registerRoutes(app: Express) {
           title: r.title,
           systemMessage: r.systemMessage,
           model: r.model,
+          agentMode: r.agentMode,
           messageCount: Array.isArray(r.messages)
             ? (r.messages as any[]).filter(
                 (m) => m.role === "user" || m.role === "assistant"
@@ -1977,12 +2098,14 @@ export function registerRoutes(app: Express) {
         const title = typeof req.body.title === "string" && req.body.title.trim() ? req.body.title.trim() : "New chat";
         const systemMessage = typeof req.body.systemMessage === "string" ? req.body.systemMessage : "";
         const model = typeof req.body.model === "string" ? req.body.model : "";
+        const agentMode = req.body.agentMode === true;
         const [row] = await db.insert(aiChats).values({
           userId: req.user!.id,
           title,
           systemMessage,
           model,
           messages: [],
+          agentMode,
         }).returning();
         syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
@@ -2003,6 +2126,7 @@ export function registerRoutes(app: Express) {
         if (typeof req.body.title === "string") patch.title = req.body.title.trim() || "New chat";
         if (typeof req.body.systemMessage === "string") patch.systemMessage = req.body.systemMessage;
         if (typeof req.body.model === "string") patch.model = req.body.model;
+        if (req.body.agentMode !== undefined) patch.agentMode = req.body.agentMode === true;
         if (req.body.messages !== undefined) patch.messages = sanitizeChatMessages(req.body.messages);
         const [row] = await db.update(aiChats).set(patch).where(eq(aiChats.id, req.params.id)).returning();
         syncEntityInBackground("ai_chat", req.params.id);
@@ -2028,7 +2152,25 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: error.message });
       }
     });
-  
+
+    // Delete all chats for the current user
+    app.delete("/api/ai-chats", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const existing = await db.query.aiChats.findMany({
+          where: (t, { eq }) => eq(t.userId, req.user!.id),
+          columns: { id: true, vectorId: true },
+        });
+        await db.delete(aiChats).where(eq(aiChats.userId, req.user!.id));
+        for (const row of existing) {
+          if (row.vectorId) void deleteEntityVector("ai_chat", row.vectorId);
+        }
+        res.json({ success: true, deleted: existing.length });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     // Send a message in a chat and get the assistant reply (persists the conversation)
     app.post("/api/ai-chats/:id/message", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -2060,7 +2202,9 @@ export function registerRoutes(app: Express) {
         // Build the messages payload for Ollama, including the system message if present.
         const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
-        ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
+        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
+        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
+        ollamaMessages.push({ role: "system", content: fullSysMsg });
         for (const m of history) {
           if (m.role === "tool") {
             ollamaMessages.push({
@@ -2175,7 +2319,9 @@ export function registerRoutes(app: Express) {
   
         const ollamaMessages: { role: string; content: string }[] = [];
         const systemMessage = chat.systemMessage?.trim();
-        ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
+        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
+        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
+        ollamaMessages.push({ role: "system", content: fullSysMsg });
         for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
         ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
   
@@ -2253,7 +2399,9 @@ export function registerRoutes(app: Express) {
   
         const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
-        ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
+        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
+        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
+        ollamaMessages.push({ role: "system", content: fullSysMsg });
         for (const m of history) {
           if (m.role === "tool") {
             ollamaMessages.push({
@@ -2356,7 +2504,9 @@ export function registerRoutes(app: Express) {
   
         const ollamaMessages: any[] = [];
         const systemMessage = chat.systemMessage?.trim();
-        ollamaMessages.push({ role: "system", content: systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE });
+        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
+        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
+        ollamaMessages.push({ role: "system", content: fullSysMsg });
         for (const m of trimmed) {
           if (m.role === "tool") {
             ollamaMessages.push({
@@ -2435,6 +2585,7 @@ export function registerRoutes(app: Express) {
           systemMessage: source.systemMessage,
           model: newModel,
           messages: sanitizeChatMessages(source.messages),
+          agentMode: source.agentMode,
         }).returning();
         syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
@@ -2539,6 +2690,68 @@ export function registerRoutes(app: Express) {
     });
   
   
+    // Transcribe a recorded audio clip to text using a configured local Whisper
+    // server. Forwards the audio to an OpenAI-compatible transcription endpoint
+    // (whisper.cpp whisper-server, faster-whisper / speaches, etc.).
+    app.post("/api/daily-notes/transcribe", upload.single("audio"), async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const apiUrl = (await getOllamaSetting("whisper_api_url")) ?? "";
+        if (!apiUrl.trim()) {
+          return res.status(400).json({ error: "No Whisper (speech-to-text) server URL configured. Set one in Intelligence settings." });
+        }
+        if (!req.file) return res.status(400).json({ error: "No audio provided." });
+
+        const base = apiUrl.replace(/\/+$/, "");
+        const model = ((await getOllamaSetting("whisper_model")) ?? "").trim() || "whisper-1";
+
+        const headers: Record<string, string> = {};
+        const authRequired = (await getOllamaSetting("whisper_auth_required")) === "true";
+        if (authRequired) {
+          const username = (await getOllamaSetting("whisper_username")) ?? "";
+          const password = (await getOllamaSetting("whisper_password")) ?? "";
+          headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+        }
+
+        // Build multipart body; do NOT set Content-Type manually so fetch adds the boundary.
+        const form = new FormData();
+        form.append(
+          "file",
+          new Blob([req.file.buffer], { type: req.file.mimetype || "audio/webm" }),
+          req.file.originalname || "audio.webm",
+        );
+        form.append("model", model);
+        form.append("response_format", "json");
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 120000);
+        try {
+          const resp = await fetch(`${base}/v1/audio/transcriptions`, {
+            method: "POST",
+            headers,
+            body: form,
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          if (!resp.ok) {
+            const text = await resp.text();
+            return res.status(502).json({ error: `Whisper server returned ${resp.status}: ${text.slice(0, 200)}` });
+          }
+          const data = await resp.json() as { text?: string; error?: string };
+          if (data.error) return res.status(502).json({ error: data.error });
+          res.json({ text: data.text ?? "" });
+        } catch (err: any) {
+          clearTimeout(timeout);
+          if (err.name === "AbortError") {
+            return res.status(504).json({ error: "Transcription timed out after 120 seconds." });
+          }
+          return res.status(502).json({ error: `Failed to reach Whisper server: ${err.message}` });
+        }
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     app.get("/api/daily-notes/by-date/:date", async (req, res) => {
       try {
         const note = await storage.getDailyNoteByDate(req.params.date);
@@ -2565,6 +2778,7 @@ export function registerRoutes(app: Express) {
           date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
           userTitle: z.string().default(""),
           body: z.string().default(""),
+          status: z.enum(["finished", "unfinished"]).default("finished"),
           events: z.array(z.object({ text: z.string(), position: z.number().int() })).default([]),
           involvedParties: z.array(z.object({ partyType: z.enum(["person", "social_account", "group"]), refId: z.string() })).default([]),
         });
@@ -2614,17 +2828,21 @@ export function registerRoutes(app: Express) {
         const schema = z.object({
           userTitle: z.string().optional(),
           body: z.string().optional(),
+          status: z.enum(["finished", "unfinished"]).optional(),
           events: z.array(z.object({ text: z.string(), position: z.number().int() })).optional(),
           involvedParties: z.array(z.object({ partyType: z.enum(["person", "social_account", "group"]), refId: z.string() })).optional(),
           pin: z.string().optional(),
+          // Autosaves happen on every keystroke (debounced); they don't add audit-log
+          // entries so the log isn't flooded with intermediate drafts.
+          autosave: z.boolean().optional(),
         });
         const parsed = schema.parse(req.body);
-        const { events, involvedParties, pin: _pin, ...noteData } = parsed;
+        const { events, involvedParties, pin: _pin, autosave, ...noteData } = parsed;
         if (Object.keys(noteData).length > 0) await storage.updateDailyNote(req.params.id, noteData);
         if (events !== undefined) await storage.replaceDailyNoteEvents(req.params.id, events);
         if (involvedParties !== undefined) await storage.replaceDailyNoteParties(req.params.id, involvedParties);
-        // Add audit log for the edit
-        await storage.addDailyNoteAuditLog(req.params.id, "edited", needsPin);
+        // Only record an audit-log entry for explicit saves, not intermediate autosaves.
+        if (!autosave) await storage.addDailyNoteAuditLog(req.params.id, "edited", needsPin);
         const full = await storage.getDailyNoteById(req.params.id);
         syncDailyNoteInBackground(req.params.id);
         syncEntityInBackground("daily_note", req.params.id);
@@ -3002,6 +3220,7 @@ export function registerRoutes(app: Express) {
           { name: "social_accounts", table: socialAccounts },
           { name: "daily_notes", table: dailyNotes },
           { name: "ai_chats", table: aiChats },
+          { name: "messages", table: messages },
         ];
         const stats: Record<string, { total: number; vectorized: number }> = {};
         for (const { name, table } of tables) {

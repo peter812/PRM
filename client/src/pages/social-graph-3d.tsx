@@ -647,8 +647,9 @@ function SocialGraphContent({
 
       const graphNodes = fgRef.current.graphData().nodes as any[];
       const crowdNodes = graphNodes.filter(n => {
+        if (!n) return false;
         const ownerId = graphData.nodes.find(dn => dn.id === n.id)?.ownerPersonId;
-        return ownerId && group.crowdMembers?.includes(ownerId) && n.x !== undefined;
+        return ownerId && group.crowdMembers?.includes(ownerId) && n.x !== undefined && n.y !== undefined && n.z !== undefined;
       });
 
       if (crowdNodes.length === 0) {
@@ -746,9 +747,13 @@ function SocialGraphContent({
             ? new THREE.LineSegments(geometry, material)
             : new THREE.Line(geometry, material);
         })
-        .linkPositionUpdate((obj: any, { start, end }: { start: any; end: any }) => {
+        .linkPositionUpdate((obj: any, coords: any) => {
+          if (!coords || !coords.start || !coords.end) return false;
+          const { start, end } = coords;
+          if (typeof start.x !== 'number' || typeof end.x !== 'number') return false;
           const line = obj as THREE.Line;
-          const positions = line.geometry.attributes.position as THREE.BufferAttribute;
+          const positions = line?.geometry?.attributes?.position as THREE.BufferAttribute;
+          if (!positions || !positions.array) return false;
           positions.array[0] = start.x;
           positions.array[1] = start.y;
           positions.array[2] = start.z;

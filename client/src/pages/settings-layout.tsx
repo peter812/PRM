@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/collapsible";
 import { lazy, Suspense } from "react";
 
+const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
@@ -49,7 +50,6 @@ const IntelligenceSettingsPage = lazy(() => import("@/pages/intelligence-setting
 const IntelligenceToolsSettingsPage = lazy(() => import("@/pages/intelligence-tools-settings"));
 const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelligence-external-tools-settings"));
 const IntelligenceImagesSettingsPage = lazy(() => import("@/pages/intelligence-images-settings"));
-const IntelligenceFamilyTreeSettingsPage = lazy(() => import("@/pages/intelligence-family-tree-settings"));
 const VectorSettingsPage = lazy(() => import("@/pages/vector-settings"));
 const TaskDetailPage = lazy(() => import("@/pages/task-detail"));
 const NotFound = lazy(() => import("@/pages/not-found"));
@@ -66,6 +66,11 @@ const settingsMenuItems: MenuItem[] = [
     title: "Back to Site",
     url: "/people",
     icon: ArrowLeft,
+  },
+  {
+    title: "Home",
+    url: "/settings/home",
+    icon: Home,
   },
   {
     title: "User Options",
@@ -105,7 +110,6 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Tools", url: "/settings/intelligence/tools", icon: Wrench },
       { title: "External Tools", url: "/settings/intelligence/external-tools", icon: Plug },
       { title: "Images", url: "/settings/intelligence/images", icon: ImageIcon },
-      { title: "Family Tree", url: "/settings/intelligence/family-tree", icon: Network },
       { title: "Vector Storage", url: "/settings/vector", icon: Database },
     ],
   },
@@ -263,7 +267,8 @@ export default function SettingsLayout() {
         </div>
       }>
         <Switch>
-          <Route path="/" component={() => <Redirect to="/user" />} />
+          <Route path="/" component={() => <Redirect to="/home" />} />
+          <Route path="/home" component={SettingsHomePage} />
           <Route path="/user" component={UserOptionsPage} />
           <Route path="/app" component={AppOptionsPage} />
           <Route path="/search" component={SearchSettingsPage} />
@@ -276,7 +281,6 @@ export default function SettingsLayout() {
           <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
           <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
           <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
-          <Route path="/intelligence/family-tree" component={IntelligenceFamilyTreeSettingsPage} />
           <Route path="/intelligence" component={IntelligenceSettingsPage} />
           <Route path="/vector" component={VectorSettingsPage} />
           <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />

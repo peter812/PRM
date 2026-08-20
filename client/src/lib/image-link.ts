@@ -2,7 +2,7 @@
 // the originating page so the detail page's back button can return to it.
 
 /** Returns the current path + search string (used as the `from` param value). */
-export function currentLocationFrom(): string {
+function currentLocationFrom(): string {
   if (typeof window === "undefined") return "/images";
   return window.location.pathname + window.location.search;
 }

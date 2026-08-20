@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -71,6 +71,10 @@ export function TaskTrackerModal() {
   const [minimized, setMinimized] = useState(false);
   const [trackedTasks, setTrackedTasks] = useState<Record<string, TrackedTask>>({});
   const [dismissedTaskIds, setDismissedTaskIds] = useState<Set<string>>(new Set());
+  const dismissedTaskIdsRef = useRef(dismissedTaskIds);
+  useEffect(() => {
+    dismissedTaskIdsRef.current = dismissedTaskIds;
+  }, [dismissedTaskIds]);
 
   // Determine if there are active tasks in our tracked tasks list
   const activeTasksCount = Object.values(trackedTasks).filter(
@@ -115,9 +119,10 @@ export function TaskTrackerModal() {
     setTrackedTasks((prev) => {
       let changed = false;
       const next = { ...prev };
+      const dismissed = dismissedTaskIdsRef.current;
 
       const processTask = (t: any, isImageTask: boolean) => {
-        if (dismissedTaskIds.has(t.id)) return;
+        if (dismissed.has(t.id)) return;
 
         const isTerminal =
           t.status === "completed" || t.status === "failed" || t.status === "cancelled";
@@ -209,7 +214,7 @@ export function TaskTrackerModal() {
 
       return () => clearTimeout(timer);
     }
-  }, [tasks, imageTasks, dismissedTaskIds]);
+  }, [tasks, imageTasks]);
 
   // Mutation to cancel a running task
   const cancelTaskMutation = useMutation({

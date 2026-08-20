@@ -72,6 +72,7 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
 // in server/ai-tools.ts.
 const CATEGORY_LABELS: Record<string, string> = {
   search: "Search",
+  messages: "Messages",
   people: "People",
   notes: "Notes",
   interactions: "Interactions",
@@ -82,6 +83,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
   search: Search,
+  messages: MessageSquare,
   people: User,
   notes: Book,
   interactions: MessageSquare,
@@ -92,7 +94,7 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
 
 
 // Stable category ordering for the UI.
-const CATEGORY_ORDER = ["search", "people", "interactions", "notes", "daily-notes", "social-accounts", "relationships"];
+const CATEGORY_ORDER = ["search", "messages", "people", "interactions", "notes", "daily-notes", "social-accounts", "relationships"];
 
 export default function IntelligenceToolsSettingsPage() {
   const { toast } = useToast();

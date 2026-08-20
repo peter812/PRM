@@ -237,16 +237,92 @@ async function addColumnIfNotExists(
 }
 
 /**
+ * Migrates follower/following storage to the social_follows edge table.
+ * Creates social_follows, backfills it from the deprecated social_network_state
+ * arrays (and legacy social_network_snapshots) if present, then drops them.
+ */
+async function migrateToSocialFollows(): Promise<void> {
+  const followsExists = await tableExists("social_follows");
+  if (!followsExists) {
+    await pool.query(`
+      CREATE TABLE social_follows (
+        follower_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        followed_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        detected_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        source TEXT,
+        PRIMARY KEY (follower_id, followed_id)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS social_follows_followed_id_idx ON social_follows(followed_id)`);
+    log("Created social_follows table");
+  }
+
+  // Backfill from social_network_state arrays, then drop the table.
+  // Entries in the arrays that don't reference an existing account are skipped.
+  const stateExists = await tableExists("social_network_state");
+  if (stateExists) {
+    log("Migrating social_network_state arrays to social_follows...");
+    await pool.query(`
+      INSERT INTO social_follows (follower_id, followed_id, source)
+      SELECT DISTINCT f.fid, sns.social_account_id, 'migration'
+      FROM social_network_state sns, unnest(sns.followers) AS f(fid)
+      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = f.fid)
+        AND f.fid <> sns.social_account_id
+      ON CONFLICT DO NOTHING
+    `);
+    await pool.query(`
+      INSERT INTO social_follows (follower_id, followed_id, source)
+      SELECT DISTINCT sns.social_account_id, g.gid, 'migration'
+      FROM social_network_state sns, unnest(sns.following) AS g(gid)
+      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = g.gid)
+        AND g.gid <> sns.social_account_id
+      ON CONFLICT DO NOTHING
+    `);
+    await pool.query(`DROP TABLE social_network_state`);
+    log("Migrated social_network_state to social_follows and dropped old table");
+  }
+
+  // Very old databases: latest snapshot per account from social_network_snapshots.
+  const snapshotsExists = await tableExists("social_network_snapshots");
+  if (snapshotsExists) {
+    log("Migrating social_network_snapshots to social_follows...");
+    await pool.query(`
+      INSERT INTO social_follows (follower_id, followed_id, source)
+      SELECT DISTINCT f.fid, s.social_account_id, 'migration'
+      FROM (
+        SELECT DISTINCT ON (social_account_id) social_account_id, followers
+        FROM social_network_snapshots ORDER BY social_account_id, captured_at DESC
+      ) s, unnest(COALESCE(s.followers, ARRAY[]::text[])) AS f(fid)
+      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = f.fid)
+        AND f.fid <> s.social_account_id
+      ON CONFLICT DO NOTHING
+    `);
+    await pool.query(`
+      INSERT INTO social_follows (follower_id, followed_id, source)
+      SELECT DISTINCT s.social_account_id, g.gid, 'migration'
+      FROM (
+        SELECT DISTINCT ON (social_account_id) social_account_id, following
+        FROM social_network_snapshots ORDER BY social_account_id, captured_at DESC
+      ) s, unnest(COALESCE(s.following, ARRAY[]::text[])) AS g(gid)
+      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = g.gid)
+        AND g.gid <> s.social_account_id
+      ON CONFLICT DO NOTHING
+    `);
+    await pool.query(`DROP TABLE social_network_snapshots`);
+    log("Migrated social_network_snapshots to social_follows and dropped old table");
+  }
+}
+
+/**
  * Migrates social_accounts from flat model to historical model.
- * Creates social_profile_versions and social_network_state/social_network_changes tables,
+ * Creates social_profile_versions and social_network_changes tables,
  * copies existing data, then drops old columns.
  */
 async function migrateSocialAccountsToHistorical(): Promise<void> {
   const profileVersionsExists = await tableExists("social_profile_versions");
-  const networkStateExists = await tableExists("social_network_state");
   const networkChangesExists = await tableExists("social_network_changes");
 
-  if (profileVersionsExists && networkStateExists && networkChangesExists) {
+  if (profileVersionsExists && networkChangesExists) {
     await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
     return;
   }
@@ -271,23 +347,7 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
     log("Created social_profile_versions table");
   }
 
-  // 2. Create social_network_state table
-  if (!networkStateExists) {
-    await pool.query(`
-      CREATE TABLE social_network_state (
-        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        social_account_id VARCHAR NOT NULL UNIQUE REFERENCES social_accounts(id) ON DELETE CASCADE,
-        follower_count INTEGER NOT NULL DEFAULT 0,
-        following_count INTEGER NOT NULL DEFAULT 0,
-        followers TEXT[] DEFAULT ARRAY[]::text[],
-        following TEXT[] DEFAULT ARRAY[]::text[],
-        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
-    log("Created social_network_state table");
-  }
-
-  // 3. Create social_network_changes table
+  // 2. Create social_network_changes table
   if (!networkChangesExists) {
     await pool.query(`
       CREATE TABLE social_network_changes (
@@ -303,26 +363,7 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
     log("Created social_network_changes table");
   }
 
-  // 4. Migrate data from old social_network_snapshots table if it exists
-  const snapshotsExists = await tableExists("social_network_snapshots");
-  if (snapshotsExists && !networkStateExists) {
-    log("Migrating social_network_snapshots to social_network_state...");
-    await pool.query(`
-      INSERT INTO social_network_state (social_account_id, follower_count, following_count, followers, following, updated_at)
-      SELECT DISTINCT ON (social_account_id) social_account_id, follower_count, following_count,
-        COALESCE(followers, ARRAY[]::text[]),
-        COALESCE(following, ARRAY[]::text[]),
-        captured_at
-      FROM social_network_snapshots
-      ORDER BY social_account_id, captured_at DESC
-    `);
-    log("Migrated latest snapshots to social_network_state");
-
-    await pool.query(`DROP TABLE social_network_snapshots`);
-    log("Dropped old social_network_snapshots table");
-  }
-
-  // 5. Check if old columns exist on social_accounts (original flat model migration)
+  // 4. Check if old columns exist on social_accounts (original flat model migration)
   const hasNickname = await columnExists("social_accounts", "nickname");
   const hasAccountUrl = await columnExists("social_accounts", "account_url");
   const hasFollowers = await columnExists("social_accounts", "followers");
@@ -340,20 +381,25 @@ async function migrateSocialAccountsToHistorical(): Promise<void> {
     }
 
     if (hasFollowers) {
+      // migrateToSocialFollows() has already created social_follows by this point
       await pool.query(`
-        INSERT INTO social_network_state (social_account_id, follower_count, following_count, followers, following, updated_at)
-        SELECT id,
-          COALESCE(array_length(followers, 1), 0),
-          COALESCE(array_length(following, 1), 0),
-          COALESCE(followers, ARRAY[]::text[]),
-          COALESCE(following, ARRAY[]::text[]),
-          COALESCE(created_at, NOW())
-        FROM social_accounts
+        INSERT INTO social_follows (follower_id, followed_id, source)
+        SELECT DISTINCT f.fid, sa.id, 'migration'
+        FROM social_accounts sa, unnest(sa.followers) AS f(fid)
+        WHERE EXISTS (SELECT 1 FROM social_accounts x WHERE x.id = f.fid) AND f.fid <> sa.id
+        ON CONFLICT DO NOTHING
       `);
-      log("Copied network data to social_network_state");
+      await pool.query(`
+        INSERT INTO social_follows (follower_id, followed_id, source)
+        SELECT DISTINCT sa.id, g.gid, 'migration'
+        FROM social_accounts sa, unnest(sa.following) AS g(gid)
+        WHERE EXISTS (SELECT 1 FROM social_accounts x WHERE x.id = g.gid) AND g.gid <> sa.id
+        ON CONFLICT DO NOTHING
+      `);
+      log("Copied network data to social_follows");
     }
 
-    // 6. Drop old columns
+    // 5. Drop old columns
     const columnsToDrop = ['nickname', 'account_url', 'image_url', 'notes', 'following', 'followers', 'latest_import_followers', 'latest_import_following'];
     for (const col of columnsToDrop) {
       const exists = await columnExists("social_accounts", col);
@@ -428,18 +474,16 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
       },
-      social_network_state: {
-        followers: "TEXT[] DEFAULT ARRAY[]::text[]",
-        following: "TEXT[] DEFAULT ARRAY[]::text[]",
-      },
       ai_chats: {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
+        agent_mode: "BOOLEAN NOT NULL DEFAULT FALSE",
       },
       daily_notes: {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         updated_at: "TIMESTAMP",
+        status: "TEXT NOT NULL DEFAULT 'finished'",
       },
       relationships: {
         family_relationship_type: "VARCHAR(50)",
@@ -599,6 +643,7 @@ async function validateAndSyncSchema(): Promise<void> {
           system_message TEXT NOT NULL DEFAULT '',
           model TEXT NOT NULL DEFAULT '',
           messages JSONB NOT NULL DEFAULT '[]'::jsonb,
+          agent_mode BOOLEAN NOT NULL DEFAULT FALSE,
           created_at TIMESTAMP NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
@@ -638,8 +683,10 @@ async function validateAndSyncSchema(): Promise<void> {
           date TEXT NOT NULL,
           user_title TEXT NOT NULL DEFAULT '',
           body TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'finished',
           vector_id TEXT,
           vector_synced_at TIMESTAMP,
+          updated_at TIMESTAMP,
           created_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
       `);
@@ -678,6 +725,9 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("daily_note_audit_logs table created successfully");
     }
+
+    // Migrate follower/following storage to the social_follows edge table (v3)
+    await migrateToSocialFollows();
 
     // Migrate social_accounts to historical model (v2)
     await migrateSocialAccountsToHistorical();
@@ -721,6 +771,8 @@ async function validateAndSyncSchema(): Promise<void> {
           external_id TEXT,
           sent_at TIMESTAMP,
           metadata JSONB,
+          vector_id TEXT,
+          vector_synced_at TIMESTAMP,
           import_date TIMESTAMP,
           import_uuid VARCHAR,
           created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -728,6 +780,10 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("messages table created successfully");
     }
+
+    // Ensure vector columns exist on messages table
+    await addColumnIfNotExists("messages", "vector_id", "TEXT");
+    await addColumnIfNotExists("messages", "vector_synced_at", "TIMESTAMP");
 
     // Create message_recipients table if it doesn't exist
     const recipientsExists = await tableExists("message_recipients");
@@ -804,6 +860,52 @@ async function validateAndSyncSchema(): Promise<void> {
         )
       `);
       log("image_questions table created successfully");
+    }
+
+    // Ensure people.tps_id exists (TruePeopleSearch person link)
+    await addColumnIfNotExists("people", "tps_id", "TEXT");
+    await addColumnIfNotExists("people", "birthday", "TEXT");
+    await addColumnIfNotExists("people", "address", "TEXT");
+    await addColumnIfNotExists("people", "additional_emails", "JSONB NOT NULL DEFAULT '[]'::jsonb");
+    await addColumnIfNotExists("people", "additional_phones", "JSONB NOT NULL DEFAULT '[]'::jsonb");
+    await addColumnIfNotExists("people", "denied_recommendations", "JSONB NOT NULL DEFAULT '[]'::jsonb");
+
+    // Ensure true_person_search table exists (TruePeopleSearch scraped records)
+    const truePersonSearchExists = await tableExists("true_person_search");
+    if (!truePersonSearchExists) {
+      log("Creating true_person_search table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS true_person_search (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          tps_id TEXT NOT NULL,
+          person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
+          import_date TIMESTAMP NOT NULL DEFAULT NOW(),
+          full_name TEXT,
+          akas JSONB NOT NULL DEFAULT '[]'::jsonb,
+          birthday TEXT,
+          current_address TEXT,
+          current_address_property_details TEXT,
+          current_address_property_url TEXT,
+          addresses JSONB NOT NULL DEFAULT '[]'::jsonb,
+          phone_numbers JSONB NOT NULL DEFAULT '[]'::jsonb,
+          emails JSONB NOT NULL DEFAULT '[]'::jsonb,
+          relatives JSONB NOT NULL DEFAULT '[]'::jsonb,
+          associates JSONB NOT NULL DEFAULT '[]'::jsonb,
+          background_profile TEXT,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      log("true_person_search table created successfully");
+    } else {
+      // Drop unique constraint on true_person_search.tps_id to allow multiple entries
+      try {
+        await pool.query(`
+          ALTER TABLE true_person_search DROP CONSTRAINT IF EXISTS true_person_search_tps_id_key;
+        `);
+      } catch (err) {
+        log(`Error dropping unique constraint on true_person_search.tps_id: ${err}`);
+      }
     }
 
     log("Schema validation completed");
