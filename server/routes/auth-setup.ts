@@ -29,11 +29,15 @@ import {
   FAMILY_RELATIONSHIP_INVERSES,
   FAMILY_RELATIONSHIP_CATEGORIES,
   type FamilyRelationshipType,
+  type UserRole,
+  userRoleSchema,
+  canManageUser,
+  canAssignRole,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl, getLocalMediaPath } from "../local-storage";
-import { hashPassword, requireAuth, authenticateExtensionToken } from "../auth";
+import { hashPassword, requireAuth, requireAdmin, publicUser, authenticateExtensionToken } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { syncEntityInBackground } from "../vector-universal";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -1587,7 +1591,7 @@ export function registerRoutes(app: Express) {
           const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
   
           try {
-            await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
+            await storage.createNoteWithId({ id, userId: req.user!.id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
             importedCounts.notes++;
           } catch (error) {
             console.error(`Error importing note ${id}:`, error);
@@ -1842,7 +1846,7 @@ export function registerRoutes(app: Express) {
 
           try {
             await db.insert(dailyNotes).values({
-              id, date, userTitle, body,
+              id, userId: req.user!.id, date, userTitle, body,
               createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
               updatedAt: updatedAtStr ? new Date(updatedAtStr) : null,
             }).onConflictDoNothing();
@@ -2066,6 +2070,7 @@ export function registerRoutes(app: Express) {
         }
   
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "import_instagram",
           status: "pending",
           title: targetAccount.username,
@@ -2373,6 +2378,195 @@ export function registerRoutes(app: Express) {
         console.error("Error updating user:", error);
         res.status(400).json({ error: "Failed to update user" });
       }
+    });
+
+    // Admin user management endpoints
+    app.get("/api/users", requireAdmin, async (req, res) => {
+      try {
+        const usersList = await storage.getAllUsers();
+        res.json(usersList.map(publicUser));
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        res.status(500).json({ error: "Failed to fetch users" });
+      }
+    });
+
+    app.post("/api/users", requireAdmin, async (req, res) => {
+      try {
+        const callerRole = (req.user!.role ?? "user") as UserRole;
+        const createSchema = z.object({
+          username: z.string().min(1, "Username is required"),
+          password: z.string().min(1, "Password is required"),
+          name: z.string().nullable().optional(),
+          nickname: z.string().nullable().optional(),
+          ssoEmail: z.string().nullable().optional(),
+          role: userRoleSchema.optional(),
+        });
+        const parseResult = createSchema.safeParse(req.body);
+        if (!parseResult.success) {
+          return res.status(400).json({ error: parseResult.error.errors[0]?.message || "Invalid user data" });
+        }
+
+        const { username, password, name, nickname, ssoEmail, role } = parseResult.data;
+        const targetRole = (role ?? "user") as UserRole;
+
+        if (!canAssignRole(callerRole, targetRole)) {
+          return res.status(403).json({ error: `Cannot create user with role '${targetRole}'` });
+        }
+
+        const existingUser = await storage.getUserByUsername(username);
+        if (existingUser) {
+          return res.status(400).json({ error: "Username already taken" });
+        }
+
+        if (ssoEmail) {
+          const existingSso = await storage.getUserBySsoEmail(ssoEmail);
+          if (existingSso) {
+            return res.status(400).json({ error: "SSO email already in use" });
+          }
+        }
+
+        const hashedPassword = await hashPassword(password);
+        const newUser = await storage.createUser({
+          username,
+          password: hashedPassword,
+          name: name ?? null,
+          nickname: nickname ?? null,
+          ssoEmail: ssoEmail ?? null,
+          role: targetRole,
+        });
+
+        // Create initial "Me" Person entry for the user
+        const [firstName, ...lastNameParts] = (name || username).split(" ");
+        const lastName = lastNameParts.join(" ") || "";
+        await storage.createPerson({
+          firstName,
+          lastName,
+          userId: newUser.id,
+          createdByUserId: newUser.id,
+        });
+
+        res.status(201).json(publicUser(newUser));
+      } catch (error) {
+        console.error("Error creating user:", error);
+        res.status(500).json({ error: "Failed to create user" });
+      }
+    });
+
+    app.patch("/api/users/:id", requireAdmin, async (req, res) => {
+      try {
+        const targetId = parseInt(req.params.id, 10);
+        if (isNaN(targetId)) {
+          return res.status(400).json({ error: "Invalid user ID" });
+        }
+
+        const callerRole = (req.user!.role ?? "user") as UserRole;
+        const targetUser = await storage.getUser(targetId);
+        if (!targetUser) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        const targetRole = (targetUser.role ?? "user") as UserRole;
+        if (!canManageUser({ id: req.user!.id, role: callerRole }, { id: targetUser.id, role: targetRole })) {
+          return res.status(403).json({ error: "Cannot manage a user with an equal or higher role" });
+        }
+
+        const { username, password, name, nickname, ssoEmail, role } = req.body;
+        const updateData: any = {};
+
+        if (role !== undefined) {
+          const newRole = role as UserRole;
+          if (!canAssignRole(callerRole, newRole)) {
+            return res.status(403).json({ error: `Cannot assign role '${newRole}'` });
+          }
+          updateData.role = newRole;
+        }
+
+        if (username !== undefined) {
+          const existingUser = await storage.getUserByUsername(username);
+          if (existingUser && existingUser.id !== targetUser.id) {
+            return res.status(400).json({ error: "Username already taken" });
+          }
+          updateData.username = username;
+        }
+
+        if (ssoEmail !== undefined) {
+          if (ssoEmail && typeof ssoEmail === "string" && ssoEmail.trim()) {
+            const existingSso = await storage.getUserBySsoEmail(ssoEmail.trim());
+            if (existingSso && existingSso.id !== targetUser.id) {
+              return res.status(400).json({ error: "SSO email already in use" });
+            }
+            updateData.ssoEmail = ssoEmail.trim();
+          } else {
+            updateData.ssoEmail = null;
+          }
+        }
+
+        if (name !== undefined) updateData.name = name;
+        if (nickname !== undefined) updateData.nickname = nickname;
+        if (password) {
+          updateData.password = await hashPassword(password);
+        }
+
+        const updatedUser = await storage.updateUser(targetUser.id, updateData);
+        if (!updatedUser) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        if (updateData.name !== undefined) {
+          const [firstName, ...lastNameParts] = (updateData.name || updatedUser.username).split(" ");
+          const lastName = lastNameParts.join(" ") || "";
+          await storage.updateUserPerson(targetUser.id, { firstName, lastName });
+        }
+
+        res.json(publicUser(updatedUser));
+      } catch (error) {
+        console.error("Error updating user:", error);
+        res.status(500).json({ error: "Failed to update user" });
+      }
+    });
+
+    app.delete("/api/users/:id", requireAdmin, async (req, res) => {
+      try {
+        const targetId = parseInt(req.params.id, 10);
+        if (isNaN(targetId)) {
+          return res.status(400).json({ error: "Invalid user ID" });
+        }
+
+        if (req.user!.id === targetId) {
+          return res.status(400).json({ error: "Cannot delete your own account" });
+        }
+
+        const callerRole = (req.user!.role ?? "user") as UserRole;
+        const targetUser = await storage.getUser(targetId);
+        if (!targetUser) {
+          return res.status(404).json({ error: "User not found" });
+        }
+
+        const targetRole = (targetUser.role ?? "user") as UserRole;
+        if (!canManageUser({ id: req.user!.id, role: callerRole }, { id: targetUser.id, role: targetRole })) {
+          return res.status(403).json({ error: "Cannot delete a user with an equal or higher role" });
+        }
+
+        await storage.deleteUser(targetUser.id);
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error deleting user:", error);
+        res.status(500).json({ error: "Failed to delete user" });
+      }
+    });
+
+    // Session Admin View toggle
+    app.post("/api/admin/view", requireAdmin, (req, res) => {
+      const enabled = Boolean(req.body.enabled);
+      (req.session as any).adminView = enabled;
+      req.session.save((err) => {
+        if (err) {
+          console.error("Error saving session adminView:", err);
+          return res.status(500).json({ error: "Failed to update admin view mode" });
+        }
+        res.json({ adminView: enabled });
+      });
     });
   
     app.get("/api/me", async (req, res) => {

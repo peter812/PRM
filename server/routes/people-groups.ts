@@ -38,6 +38,7 @@ import {
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
+import { visibleShared } from "../access";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -332,7 +333,10 @@ export function registerRoutes(app: Express) {
           });
         }
         
-        let person = await storage.createPerson(validatedData);
+        let person = await storage.createPerson({
+          ...validatedData,
+          createdByUserId: req.user!.id,
+        });
         
         if (schoolingData) {
           const validatedSchooling = insertSchoolingSchema.omit({ personId: true }).partial().parse(schoolingData);
@@ -472,7 +476,10 @@ export function registerRoutes(app: Express) {
     app.post("/api/notes", async (req, res) => {
       try {
         const validatedData = insertNoteSchema.parse(req.body);
-        const note = await storage.createNote(validatedData);
+        const note = await storage.createNote({
+          ...validatedData,
+          userId: req.user!.id,
+        });
         syncEntityInBackground("note", note.id);
         res.status(201).json(note);
       } catch (error) {
@@ -499,11 +506,12 @@ export function registerRoutes(app: Express) {
       try {
         const { personId, groupId, isgroup, startDate, endDate, start_date, end_date, count_limit, date_back } = req.query;
         
-        // Get all interactions
+        // Get all interactions visible to user
         const allInteractions = await db
           .select()
           .from(interactions)
-          .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id));
+          .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id))
+          .where(visibleShared(interactions.visibility, interactions.createdByUserId));
         
         let filteredInteractions = allInteractions;
         
@@ -581,7 +589,10 @@ export function registerRoutes(app: Express) {
     app.post("/api/interactions", async (req, res) => {
       try {
         const validatedData = insertInteractionSchema.parse(req.body);
-        const interaction = await storage.createInteraction(validatedData);
+        const interaction = await storage.createInteraction({
+          ...validatedData,
+          createdByUserId: req.user!.id,
+        });
         syncEntityInBackground("interaction", interaction.id);
         res.status(201).json(interaction);
       } catch (error) {
@@ -831,7 +842,10 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "Family relationship types must use dedicated family endpoints" });
         }
   
-        const relationship = await storage.createRelationship(validatedData);
+        const relationship = await storage.createRelationship({
+          ...validatedData,
+          createdByUserId: req.user!.id,
+        });
         res.status(201).json(relationship);
       } catch (error) {
         console.error("Error creating relationship:", error);
@@ -1066,7 +1080,10 @@ export function registerRoutes(app: Express) {
     app.post("/api/groups", async (req, res) => {
       try {
         const validatedData = insertGroupSchema.parse(req.body);
-        const group = await storage.createGroup(validatedData);
+        const group = await storage.createGroup({
+          ...validatedData,
+          createdByUserId: req.user!.id,
+        });
         syncEntityInBackground("group", group.id);
         res.status(201).json(group);
       } catch (error) {
@@ -1320,6 +1337,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "No center account associated with this group." });
         }
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "calculate_crowd",
           status: "pending",
           title: `Crowd for ${group.name}`,
@@ -1426,6 +1444,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "entityType and linkDefinition are required." });
         }
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "find_potential_groups",
           status: "pending",
           title: `Community detection: ${settings.entityType} (${settings.linkDefinition})`,

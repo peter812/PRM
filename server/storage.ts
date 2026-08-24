@@ -131,6 +131,7 @@ import {
   cleanPhoneNumberForStorage,
 } from "@shared/schema";
 import { computeFamilyLabels } from "./family-relations-helper";
+import { visibleShared, ownedByCurrentUser, currentAccess, actingUserId } from "./access";
 import { db, pool } from "./db";
 import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull } from "drizzle-orm";
 import session from "express-session";
@@ -309,8 +310,10 @@ export interface IStorage {
   // User operations
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
+  getAllUsers(): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, user: Partial<InsertUser>): Promise<User | undefined>;
+  deleteUser(id: number): Promise<void>;
   getUserCount(): Promise<number>;
   updateUserPerson(userId: number, person: Partial<InsertPerson>): Promise<void>;
   getMePerson(userId: number): Promise<PersonWithRelations | undefined>;
@@ -710,18 +713,21 @@ export class DatabaseStorage implements IStorage {
         .select()
         .from(people)
         .where(
-          sql`(
-            ${people.firstName} ILIKE ${query} OR
-            ${people.lastName} ILIKE ${query} OR
-            CONCAT(${people.firstName}, ' ', ${people.lastName}) ILIKE ${query} OR
-            CONCAT(${people.lastName}, ' ', ${people.firstName}) ILIKE ${query} OR
-            ${people.email} ILIKE ${query} OR
-            ${people.company} ILIKE ${query} OR
-            EXISTS (
-              SELECT 1 FROM unnest(${people.tags}) AS tag
-              WHERE tag ILIKE ${query}
-            )
-          )`
+          and(
+            sql`(
+              ${people.firstName} ILIKE ${query} OR
+              ${people.lastName} ILIKE ${query} OR
+              CONCAT(${people.firstName}, ' ', ${people.lastName}) ILIKE ${query} OR
+              CONCAT(${people.lastName}, ' ', ${people.firstName}) ILIKE ${query} OR
+              ${people.email} ILIKE ${query} OR
+              ${people.company} ILIKE ${query} OR
+              EXISTS (
+                SELECT 1 FROM unnest(${people.tags}) AS tag
+                WHERE tag ILIKE ${query}
+              )
+            )`,
+            visibleShared(people.visibility, people.createdByUserId),
+          )
         )
         .orderBy(
           sql`CASE
@@ -741,13 +747,16 @@ export class DatabaseStorage implements IStorage {
           END`
         );
     }
-    return await db.select().from(people);
+    return await db
+      .select()
+      .from(people)
+      .where(visibleShared(people.visibility, people.createdByUserId));
   }
 
   async getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>> {
     // Fetch all people and all relationships in just 2 queries (instead of N+1)
     const [allPeople, allRelationshipsData] = await Promise.all([
-      db.select().from(people),
+      db.select().from(people).where(visibleShared(people.visibility, people.createdByUserId)),
       db
         .select({
           id: relationships.id,
@@ -761,7 +770,15 @@ export class DatabaseStorage implements IStorage {
           direction: sql<string>`'from'`.as('direction'),
         })
         .from(relationships)
-        .innerJoin(people, eq(relationships.toPersonId, people.id))
+        // §2.4: an edge is only visible when its other endpoint is. Filtering in
+        // the join keeps a private person from leaking through `relatedPerson`.
+        .innerJoin(
+          people,
+          and(
+            eq(relationships.toPersonId, people.id),
+            visibleShared(people.visibility, people.createdByUserId),
+          ),
+        )
         .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
         .unionAll(
           db
@@ -777,7 +794,13 @@ export class DatabaseStorage implements IStorage {
               direction: sql<string>`'to'`.as('direction'),
             })
             .from(relationships)
-            .innerJoin(people, eq(relationships.fromPersonId, people.id))
+            .innerJoin(
+              people,
+              and(
+                eq(relationships.fromPersonId, people.id),
+                visibleShared(people.visibility, people.createdByUserId),
+              ),
+            )
             .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
         ),
     ]);
@@ -877,7 +900,15 @@ export class DatabaseStorage implements IStorage {
             )
       )
       .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
-      .where(sql`${people.userId} IS NULL`)
+      // Hide only the caller's *own* "Me" row. This used to be
+      // `people.user_id IS NULL`, which hid every user's Me person from
+      // everyone — so users could not see, link to, or relate to each other.
+      .where(
+        and(
+          mePersonId ? sql`${people.id} <> ${mePersonId}` : undefined,
+          visibleShared(people.visibility, people.createdByUserId),
+        )
+      )
       .groupBy(people.id)
       .orderBy(
         ...(sortBy === 'elo_high'
@@ -919,7 +950,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getPersonById(id: string): Promise<PersonWithRelations | undefined> {
-    const [person] = await db.select().from(people).where(eq(people.id, id));
+    const [person] = await db
+      .select()
+      .from(people)
+      .where(and(eq(people.id, id), visibleShared(people.visibility, people.createdByUserId)));
     if (!person) return undefined;
 
     // Build list of identifiers for this person (email, phone, social account UUIDs)
@@ -932,10 +966,42 @@ export class DatabaseStorage implements IStorage {
 
     // Run all independent queries in parallel
     const [personNotes, personInteractions, personGroups, personSubGroups, relationshipsFrom, relationshipsTo, personSchooling] = await Promise.all([
-      db.select().from(notes).where(eq(notes.personId, id)),
-      db.select().from(interactions).where(sql`${id} = ANY(${interactions.peopleIds})`),
-      db.select().from(groups).where(arrayContains(groups.members, [id])),
-      db.select().from(subGroups).where(arrayContains(subGroups.members, [id])),
+      db.select().from(notes).where(and(eq(notes.personId, id), ownedByCurrentUser(notes.userId))),
+      db
+        .select()
+        .from(interactions)
+        .where(
+          and(
+            sql`${id} = ANY(${interactions.peopleIds})`,
+            visibleShared(interactions.visibility, interactions.createdByUserId),
+          )
+        ),
+      db
+        .select()
+        .from(groups)
+        .where(
+          and(
+            arrayContains(groups.members, [id]),
+            visibleShared(groups.visibility, groups.createdByUserId),
+          )
+        ),
+      db
+        .select({
+          id: subGroups.id,
+          groupId: subGroups.groupId,
+          name: subGroups.name,
+          color: subGroups.color,
+          members: subGroups.members,
+          createdAt: subGroups.createdAt,
+        })
+        .from(subGroups)
+        .innerJoin(groups, eq(subGroups.groupId, groups.id))
+        .where(
+          and(
+            arrayContains(subGroups.members, [id]),
+            visibleShared(groups.visibility, groups.createdByUserId),
+          )
+        ),
       db
         .select({
           id: relationships.id,
@@ -944,12 +1010,19 @@ export class DatabaseStorage implements IStorage {
           typeId: relationships.typeId,
           notes: relationships.notes,
           familyRelationshipType: relationships.familyRelationshipType,
+          createdByUserId: relationships.createdByUserId,
           createdAt: relationships.createdAt,
           toPerson: people,
           type: relationshipTypes,
         })
         .from(relationships)
-        .innerJoin(people, eq(relationships.toPersonId, people.id))
+        .innerJoin(
+          people,
+          and(
+            eq(relationships.toPersonId, people.id),
+            visibleShared(people.visibility, people.createdByUserId),
+          ),
+        )
         .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
         .where(eq(relationships.fromPersonId, id)),
       db
@@ -960,12 +1033,19 @@ export class DatabaseStorage implements IStorage {
           typeId: relationships.typeId,
           notes: relationships.notes,
           familyRelationshipType: relationships.familyRelationshipType,
+          createdByUserId: relationships.createdByUserId,
           createdAt: relationships.createdAt,
           toPerson: people,
           type: relationshipTypes,
         })
         .from(relationships)
-        .innerJoin(people, eq(relationships.fromPersonId, people.id))
+        .innerJoin(
+          people,
+          and(
+            eq(relationships.fromPersonId, people.id),
+            visibleShared(people.visibility, people.createdByUserId),
+          ),
+        )
         .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
         .where(eq(relationships.toPersonId, id)),
       db.select().from(schooling).where(eq(schooling.personId, id)),
@@ -995,7 +1075,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createPerson(insertPerson: InsertPerson): Promise<Person> {
-    const data = { ...insertPerson };
+    const data = {
+      createdByUserId: insertPerson.createdByUserId ?? actingUserId() ?? undefined,
+      ...insertPerson,
+    };
     if (data.phone !== undefined) {
       data.phone = cleanPhoneNumberForStorage(data.phone);
     }
@@ -1088,10 +1171,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getRandomPeoplePair(): Promise<Person[]> {
+    // You don't rank yourself, but other users' "Me" people are fair game.
+    const selfUserId = currentAccess()?.userId ?? null;
     const result = await db
       .select()
       .from(people)
-      .where(sql`${people.userId} IS NULL AND ${people.eloRankable} = 1`)
+      .where(
+        and(
+          sql`${people.eloRankable} = 1`,
+          selfUserId === null
+            ? undefined
+            : sql`(${people.userId} IS NULL OR ${people.userId} <> ${selfUserId})`,
+          visibleShared(people.visibility, people.createdByUserId),
+        )
+      )
       .orderBy(sql`RANDOM()`)
       .limit(2);
     return result;
@@ -1139,7 +1232,12 @@ export class DatabaseStorage implements IStorage {
 
   // Note operations
   async createNote(insertNote: InsertNote): Promise<Note> {
-    const [note] = await db.insert(notes).values(insertNote).returning();
+    const effectiveUserId = (insertNote as any).userId ?? actingUserId() ?? 1;
+    const data = {
+      ...insertNote,
+      userId: effectiveUserId,
+    };
+    const [note] = await db.insert(notes).values(data).returning();
     return note;
   }
 
@@ -1148,7 +1246,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getNoteById(id: string): Promise<Note | undefined> {
-    const [note] = await db.select().from(notes).where(eq(notes.id, id));
+    const [note] = await db
+      .select()
+      .from(notes)
+      .where(and(eq(notes.id, id), ownedByCurrentUser(notes.userId)));
     return note || undefined;
   }
 
@@ -1156,9 +1257,13 @@ export class DatabaseStorage implements IStorage {
   async createInteraction(
     insertInteraction: InsertInteraction
   ): Promise<Interaction> {
+    const data = {
+      createdByUserId: insertInteraction.createdByUserId ?? actingUserId() ?? undefined,
+      ...insertInteraction,
+    };
     const [interaction] = await db
       .insert(interactions)
-      .values(insertInteraction)
+      .values(data)
       .returning();
     return interaction;
   }
@@ -1181,9 +1286,13 @@ export class DatabaseStorage implements IStorage {
 
   // Relationship operations
   async createRelationship(insertRelationship: InsertRelationship): Promise<Relationship> {
+    const data = {
+      createdByUserId: insertRelationship.createdByUserId ?? actingUserId() ?? undefined,
+      ...insertRelationship,
+    };
     const [relationship] = await db
       .insert(relationships)
-      .values(insertRelationship)
+      .values(data)
       .returning();
     return relationship;
   }
@@ -1235,6 +1344,8 @@ export class DatabaseStorage implements IStorage {
         fromPersonId: personId,
         toPersonId: otherId,
         typeId: null,
+        // Derived from a lineage/partnership row, which carries no creator attribution.
+        createdByUserId: null,
         notes: null,
         familyRelationshipType: type as any,
         createdAt: rel.createdAt,
@@ -1256,6 +1367,8 @@ export class DatabaseStorage implements IStorage {
         fromPersonId: personId,
         toPersonId: otherId,
         typeId: null,
+        // Derived from a lineage/partnership row, which carries no creator attribution.
+        createdByUserId: null,
         notes: null,
         familyRelationshipType: type as any,
         createdAt: rel.createdAt,
@@ -1287,6 +1400,8 @@ export class DatabaseStorage implements IStorage {
         fromPersonId,
         toPersonId,
         typeId: null,
+        // Derived from a lineage/partnership row, which carries no creator attribution.
+        createdByUserId: null,
         notes: null,
         familyRelationshipType: type as any,
         createdAt: lin.createdAt,
@@ -1315,6 +1430,8 @@ export class DatabaseStorage implements IStorage {
         fromPersonId,
         toPersonId,
         typeId: null,
+        // Derived from a lineage/partnership row, which carries no creator attribution.
+        createdByUserId: null,
         notes: null,
         familyRelationshipType: type as any,
         createdAt: part.createdAt,
@@ -1914,6 +2031,10 @@ export class DatabaseStorage implements IStorage {
     return user || undefined;
   }
 
+  async getAllUsers(): Promise<User[]> {
+    return await db.select().from(users);
+  }
+
   async createUser(insertUser: InsertUser): Promise<User> {
     const [user] = await db.insert(users).values(insertUser).returning();
     return user;
@@ -1926,6 +2047,16 @@ export class DatabaseStorage implements IStorage {
       .where(eq(users.id, id))
       .returning();
     return user || undefined;
+  }
+
+  /**
+   * Removes an account. Foreign keys do the rest: their user-private rows
+   * (notes, daily notes, tasks, image tasks) and their "Me" person cascade
+   * away, while shared rows they created have `created_by_user_id` set to NULL
+   * and stay readable by everyone (§6.7).
+   */
+  async deleteUser(id: number): Promise<void> {
+    await db.delete(users).where(eq(users.id, id));
   }
 
   async getUserCount(): Promise<number> {
@@ -1955,19 +2086,29 @@ export class DatabaseStorage implements IStorage {
     const personNotes = await db
       .select()
       .from(notes)
-      .where(eq(notes.personId, person.id));
+      .where(and(eq(notes.personId, person.id), ownedByCurrentUser(notes.userId)));
 
     // Get interactions
     const personInteractions = await db
       .select()
       .from(interactions)
-      .where(sql`${person.id} = ANY(${interactions.peopleIds})`);
+      .where(
+        and(
+          sql`${person.id} = ANY(${interactions.peopleIds})`,
+          visibleShared(interactions.visibility, interactions.createdByUserId),
+        )
+      );
 
     // Get groups where this person is a member
     const personGroups = await db
       .select()
       .from(groups)
-      .where(arrayContains(groups.members, [person.id]));
+      .where(
+        and(
+          arrayContains(groups.members, [person.id]),
+          visibleShared(groups.visibility, groups.createdByUserId),
+        )
+      );
 
     // Get relationships (bidirectional)
     const relationshipsFrom = await db
@@ -1978,12 +2119,19 @@ export class DatabaseStorage implements IStorage {
         typeId: relationships.typeId,
         notes: relationships.notes,
         familyRelationshipType: relationships.familyRelationshipType,
+        createdByUserId: relationships.createdByUserId,
         createdAt: relationships.createdAt,
         toPerson: people,
         type: relationshipTypes,
       })
       .from(relationships)
-      .innerJoin(people, eq(relationships.toPersonId, people.id))
+      .innerJoin(
+        people,
+        and(
+          eq(relationships.toPersonId, people.id),
+          visibleShared(people.visibility, people.createdByUserId),
+        ),
+      )
       .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
       .where(eq(relationships.fromPersonId, person.id));
 
@@ -1995,36 +2143,29 @@ export class DatabaseStorage implements IStorage {
         typeId: relationships.typeId,
         notes: relationships.notes,
         familyRelationshipType: relationships.familyRelationshipType,
+        createdByUserId: relationships.createdByUserId,
         createdAt: relationships.createdAt,
         toPerson: people,
         type: relationshipTypes,
       })
       .from(relationships)
-      .innerJoin(people, eq(relationships.fromPersonId, people.id))
+      .innerJoin(
+        people,
+        and(
+          eq(relationships.fromPersonId, people.id),
+          visibleShared(people.visibility, people.createdByUserId),
+        ),
+      )
       .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
       .where(eq(relationships.toPersonId, person.id));
 
     const allRelationships = [
       ...relationshipsFrom.map(rel => ({
-        id: rel.id,
-        fromPersonId: rel.fromPersonId,
-        toPersonId: rel.toPersonId,
-        typeId: rel.typeId,
-        notes: rel.notes,
-        familyRelationshipType: rel.familyRelationshipType,
-        createdAt: rel.createdAt,
-        toPerson: rel.toPerson,
+        ...rel,
         type: rel.type || undefined,
       })),
       ...relationshipsTo.map(rel => ({
-        id: rel.id,
-        fromPersonId: rel.fromPersonId,
-        toPersonId: rel.toPersonId,
-        typeId: rel.typeId,
-        notes: rel.notes,
-        familyRelationshipType: rel.familyRelationshipType,
-        createdAt: rel.createdAt,
-        toPerson: rel.toPerson,
+        ...rel,
         type: rel.type || undefined,
       })),
     ];
@@ -2269,8 +2410,9 @@ export class DatabaseStorage implements IStorage {
 
   // Group operations
   async getAllGroups(searchQuery?: string): Promise<Group[]> {
+    const visible = visibleShared(groups.visibility, groups.createdByUserId);
     if (!searchQuery) {
-      return await db.select().from(groups);
+      return await db.select().from(groups).where(visible);
     }
 
     const query = `%${searchQuery}%`;
@@ -2280,8 +2422,11 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(groups)
       .where(
-        or(
-          ilike(groups.name, query),
+        and(
+          or(
+            ilike(groups.name, query),
+          ),
+          visible,
         )
       )
       .orderBy(
@@ -2294,16 +2439,35 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getGroupById(id: string): Promise<any> {
-    const [group] = await db.select().from(groups).where(eq(groups.id, id));
+    const [group] = await db
+      .select()
+      .from(groups)
+      .where(and(eq(groups.id, id), visibleShared(groups.visibility, groups.createdByUserId)));
     if (!group) return undefined;
 
     // Run all independent queries in parallel
     const [groupNotesList, memberDetails, groupInteractions, groupSubGroups] = await Promise.all([
       db.select().from(groupNotes).where(eq(groupNotes.groupId, id)),
       group.members && group.members.length > 0
-        ? db.select().from(people).where(inArray(people.id, group.members))
+        ? db
+            .select()
+            .from(people)
+            .where(
+              and(
+                inArray(people.id, group.members),
+                visibleShared(people.visibility, people.createdByUserId),
+              )
+            )
         : Promise.resolve([]),
-      db.select().from(interactions).where(arrayContains(interactions.groupIds, [id])),
+      db
+        .select()
+        .from(interactions)
+        .where(
+          and(
+            arrayContains(interactions.groupIds, [id]),
+            visibleShared(interactions.visibility, interactions.createdByUserId),
+          )
+        ),
       db.select().from(subGroups).where(eq(subGroups.groupId, id)),
     ]);
 
@@ -2317,7 +2481,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createGroup(insertGroup: InsertGroup): Promise<Group> {
-    const [group] = await db.insert(groups).values(insertGroup).returning();
+    const data = {
+      createdByUserId: insertGroup.createdByUserId ?? actingUserId() ?? undefined,
+      ...insertGroup,
+    };
+    const [group] = await db.insert(groups).values(data).returning();
     return group;
   }
 
@@ -2343,10 +2511,23 @@ export class DatabaseStorage implements IStorage {
 
   // Sub group operations
   async getAllSubGroups(): Promise<SubGroup[]> {
-    return await db.select().from(subGroups);
+    return await db
+      .select({
+        id: subGroups.id,
+        groupId: subGroups.groupId,
+        name: subGroups.name,
+        color: subGroups.color,
+        members: subGroups.members,
+        createdAt: subGroups.createdAt,
+      })
+      .from(subGroups)
+      .innerJoin(groups, eq(subGroups.groupId, groups.id))
+      .where(visibleShared(groups.visibility, groups.createdByUserId));
   }
 
   async getSubGroupsByGroupId(groupId: string): Promise<SubGroup[]> {
+    const parent = await this.getGroupById(groupId);
+    if (!parent) return [];
     return await db.select().from(subGroups).where(eq(subGroups.groupId, groupId));
   }
 
@@ -2354,12 +2535,21 @@ export class DatabaseStorage implements IStorage {
     const [subGroup] = await db.select().from(subGroups).where(eq(subGroups.id, id));
     if (!subGroup) return undefined;
 
-    const [parentGroup, memberDetails] = await Promise.all([
-      db.select().from(groups).where(eq(groups.id, subGroup.groupId)).then(([g]) => g || undefined),
-      subGroup.members && subGroup.members.length > 0
-        ? db.select().from(people).where(inArray(people.id, subGroup.members))
-        : Promise.resolve([]),
-    ]);
+    const parentGroup = await this.getGroupById(subGroup.groupId);
+    if (!parentGroup) return undefined;
+
+    let memberDetails: Person[] = [];
+    if (subGroup.members && subGroup.members.length > 0) {
+      memberDetails = await db
+        .select()
+        .from(people)
+        .where(
+          and(
+            inArray(people.id, subGroup.members),
+            visibleShared(people.visibility, people.createdByUserId)
+          )
+        );
+    }
 
     return {
       ...subGroup,
@@ -2390,7 +2580,25 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSubGroupsByPersonId(personId: string): Promise<SubGroup[]> {
-    return await db.select().from(subGroups).where(arrayContains(subGroups.members, [personId]));
+    const targetPerson = await this.getPersonById(personId);
+    if (!targetPerson) return [];
+    return await db
+      .select({
+        id: subGroups.id,
+        groupId: subGroups.groupId,
+        name: subGroups.name,
+        color: subGroups.color,
+        members: subGroups.members,
+        createdAt: subGroups.createdAt,
+      })
+      .from(subGroups)
+      .innerJoin(groups, eq(subGroups.groupId, groups.id))
+      .where(
+        and(
+          sql`${personId} = ANY(${subGroups.members})`,
+          visibleShared(groups.visibility, groups.createdByUserId)
+        )
+      );
   }
 
   // Group note operations
@@ -2756,6 +2964,9 @@ export class DatabaseStorage implements IStorage {
       conditions.push(eq(socialAccounts.typeId, typeId));
     }
 
+    const accountsVisible = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId);
+    if (accountsVisible) conditions.push(accountsVisible);
+
     const startQuery = searchQuery ? `${searchQuery}%` : null;
 
     let rows;
@@ -2839,6 +3050,9 @@ export class DatabaseStorage implements IStorage {
       );
     }
 
+    const paginatedVisible = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId);
+    if (paginatedVisible) conditions.push(paginatedVisible);
+
     const whereClause = conditions.length === 0
       ? undefined
       : conditions.length === 1
@@ -2916,7 +3130,7 @@ export class DatabaseStorage implements IStorage {
           eq(socialProfileVersions.isCurrent, true)
         )
       )
-      .where(eq(socialAccounts.id, id));
+      .where(and(eq(socialAccounts.id, id), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
     if (!row) return undefined;
 
@@ -2941,7 +3155,7 @@ export class DatabaseStorage implements IStorage {
           eq(socialProfileVersions.isCurrent, true)
         )
       )
-      .where(inArray(socialAccounts.id, ids));
+      .where(and(inArray(socialAccounts.id, ids), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
     return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
   }
@@ -2960,7 +3174,7 @@ export class DatabaseStorage implements IStorage {
           eq(socialProfileVersions.isCurrent, true)
         )
       )
-      .where(eq(socialAccounts.ownerUuid, ownerUuid));
+      .where(and(eq(socialAccounts.ownerUuid, ownerUuid), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
     return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
   }
@@ -2979,13 +3193,14 @@ export class DatabaseStorage implements IStorage {
           eq(socialProfileVersions.isCurrent, true)
         )
       )
-      .where(eq(socialAccounts.groupId, groupId));
+      .where(and(eq(socialAccounts.groupId, groupId), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
     return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
   }
 
   async createSocialAccount(insertAccount: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile> {
     const [account] = await db.insert(socialAccounts).values({
+      createdByUserId: insertAccount.createdByUserId ?? actingUserId() ?? undefined,
       ...insertAccount,
       internalAccountCreationDate: new Date(),
       internalAccountCreationType: insertAccount.internalAccountCreationType || "User",
@@ -3017,7 +3232,7 @@ export class DatabaseStorage implements IStorage {
     const [account] = await db
       .update(socialAccounts)
       .set(updateFields)
-      .where(eq(socialAccounts.id, id))
+      .where(and(eq(socialAccounts.id, id), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)))
       .returning();
     return account || undefined;
   }
@@ -3034,7 +3249,7 @@ export class DatabaseStorage implements IStorage {
       }
     }
     
-    await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
+    await db.delete(socialAccounts).where(and(eq(socialAccounts.id, id), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
   }
 
   async deleteAllSocialAccounts(): Promise<number> {
@@ -3160,6 +3375,9 @@ export class DatabaseStorage implements IStorage {
         )`
       );
     }
+
+    const searchVisible = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId);
+    if (searchVisible) conditions.push(searchVisible);
 
     const whereClause = conditions.length === 1 ? conditions[0]! : and(...conditions);
 
@@ -3562,20 +3780,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Export helper methods
-  async getAllUsers(): Promise<User[]> {
-    return await db.select().from(users);
-  }
-
   async getAllRelationships(): Promise<Relationship[]> {
     return await db.select().from(relationships);
   }
 
   async getAllInteractions(): Promise<Interaction[]> {
-    return await db.select().from(interactions);
+    return await db
+      .select()
+      .from(interactions)
+      .where(visibleShared(interactions.visibility, interactions.createdByUserId));
   }
 
   async getAllNotes(): Promise<Note[]> {
-    return await db.select().from(notes);
+    return await db.select().from(notes).where(ownedByCurrentUser(notes.userId));
   }
 
   async getAllGroupNotes(): Promise<GroupNote[]> {
@@ -3608,7 +3825,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createNoteWithId(note: InsertNote & { id: string }): Promise<Note> {
-    const [newNote] = await db.insert(notes).values(note).returning();
+    const data = {
+      ...note,
+      userId: note.userId ?? actingUserId() ?? 1,
+    };
+    const [newNote] = await db.insert(notes).values(data).returning();
     return newNote;
   }
 
@@ -3642,7 +3863,8 @@ export class DatabaseStorage implements IStorage {
         .from(notes)
         .where(and(
           eq(notes.personId, personId),
-          sql`${notes.createdAt} < ${cursorDate}`
+          sql`${notes.createdAt} < ${cursorDate}`,
+          ownedByCurrentUser(notes.userId)
         ))
         .orderBy(sql`${notes.createdAt} DESC`)
         .limit(limit + 1),
@@ -3658,13 +3880,16 @@ export class DatabaseStorage implements IStorage {
           imageUrl: interactions.imageUrl,
           imageUuid: interactions.imageUuid,
           createdAt: interactions.createdAt,
+          createdByUserId: interactions.createdByUserId,
+          visibility: interactions.visibility,
           type: interactionTypes,
         })
         .from(interactions)
         .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id))
         .where(and(
           sql`${personId} = ANY(${interactions.peopleIds})`,
-          sql`${interactions.date} < ${cursorDate}`
+          sql`${interactions.date} < ${cursorDate}`,
+          visibleShared(interactions.visibility, interactions.createdByUserId)
         ))
         .orderBy(sql`${interactions.date} DESC`)
         .limit(limit + 1),
@@ -3676,6 +3901,7 @@ export class DatabaseStorage implements IStorage {
       type: 'note' as const,
       date: note.createdAt,
       content: note.content,
+      userId: note.userId,
       imageUrl: note.imageUrl,
       imageUuid: note.imageUuid,
     }));
@@ -3685,6 +3911,8 @@ export class DatabaseStorage implements IStorage {
       type: 'interaction' as const,
       date: interaction.date,
       content: interaction.description || '',
+      createdByUserId: interaction.createdByUserId,
+      visibility: interaction.visibility,
       title: interaction.title,
       description: interaction.description,
       interactionType: interaction.type || undefined,
@@ -3894,22 +4122,12 @@ export class DatabaseStorage implements IStorage {
 
   // Task operations
   async createTask(insertTask: InsertTask): Promise<Task> {
-    const taskData: any = { ...insertTask };
-    if (!taskData.userId) {
-      try {
-        const payloadObj = JSON.parse(taskData.payload || "{}");
-        if (payloadObj.userId) {
-          taskData.userId = payloadObj.userId;
-        }
-      } catch {}
-    }
-    if (!taskData.userId) {
-      const allUsers = await this.getAllUsers();
-      if (allUsers.length > 0) {
-        taskData.userId = allUsers[0].id;
-      }
-    }
-    const [task] = await db.insert(tasks).values(taskData).returning();
+    const effectiveUserId = (insertTask as any).userId ?? (actingUserId() || undefined);
+    const data = {
+      ...insertTask,
+      userId: effectiveUserId,
+    };
+    const [task] = await db.insert(tasks).values(data).returning();
     return task;
   }
 
@@ -3955,6 +4173,7 @@ export class DatabaseStorage implements IStorage {
     const rows = await db
       .select({
         id: tasks.id,
+        userId: tasks.userId,
         type: tasks.type,
         status: tasks.status,
         title: tasks.title,
@@ -3967,7 +4186,7 @@ export class DatabaseStorage implements IStorage {
         completedAt: tasks.completedAt,
       })
       .from(tasks)
-      .where(eq(tasks.status, status))
+      .where(and(eq(tasks.status, status), ownedByCurrentUser(tasks.userId)))
       .orderBy(tasks.createdAt);
     return rows as Task[];
   }
@@ -3976,6 +4195,7 @@ export class DatabaseStorage implements IStorage {
     const rows = await db
       .select({
         id: tasks.id,
+        userId: tasks.userId,
         type: tasks.type,
         status: tasks.status,
         title: tasks.title,
@@ -3988,6 +4208,7 @@ export class DatabaseStorage implements IStorage {
         completedAt: tasks.completedAt,
       })
       .from(tasks)
+      .where(ownedByCurrentUser(tasks.userId))
       .orderBy(desc(tasks.createdAt))
       .limit(limit);
     return rows as Task[];
@@ -3997,7 +4218,7 @@ export class DatabaseStorage implements IStorage {
     const [task] = await db
       .select()
       .from(tasks)
-      .where(eq(tasks.id, id));
+      .where(and(eq(tasks.id, id), ownedByCurrentUser(tasks.userId)));
     return task || undefined;
   }
 
@@ -4136,15 +4357,24 @@ export class DatabaseStorage implements IStorage {
 
   // Image task operations
   async createImageTask(task: InsertImageTask): Promise<ImageTask> {
-    const [created] = await db.insert(imageTasks).values(task).returning();
+    const effectiveUserId = (task as any).userId ?? (actingUserId() || undefined);
+    const data = {
+      ...task,
+      userId: effectiveUserId,
+    };
+    const [created] = await db.insert(imageTasks).values(data).returning();
     return created;
   }
 
   async getImageTaskById(id: string): Promise<ImageTask | undefined> {
-    const [task] = await db.select().from(imageTasks).where(eq(imageTasks.id, id));
+    const [task] = await db
+      .select()
+      .from(imageTasks)
+      .where(and(eq(imageTasks.id, id), ownedByCurrentUser(imageTasks.userId)));
     return task || undefined;
   }
 
+  /** Queue polling — deliberately unfiltered; the worker runs it as the system. */
   async getNextPendingImageTask(): Promise<ImageTask | undefined> {
     const [task] = await db
       .select()
@@ -4178,6 +4408,8 @@ export class DatabaseStorage implements IStorage {
     if (type) conditions.push(eq(imageTasks.type, type));
     if (status) conditions.push(eq(imageTasks.status, status));
     if (parentTaskId) conditions.push(eq(imageTasks.parentTaskId, parentTaskId));
+    const ownerFilter = ownedByCurrentUser(imageTasks.userId);
+    if (ownerFilter) conditions.push(ownerFilter);
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [items, countResult] = await Promise.all([
@@ -4263,24 +4495,40 @@ export class DatabaseStorage implements IStorage {
   }
 
   async listDailyNotes(): Promise<DailyNoteWithDetails[]> {
-    const allNotes = await db.select().from(dailyNotes).orderBy(desc(dailyNotes.date));
+    const allNotes = await db
+      .select()
+      .from(dailyNotes)
+      .where(ownedByCurrentUser(dailyNotes.userId))
+      .orderBy(desc(dailyNotes.date));
     return Promise.all(allNotes.map(n => this.buildDailyNoteWithDetails(n)));
   }
 
   async getDailyNoteById(id: string): Promise<DailyNoteWithDetails | undefined> {
-    const [note] = await db.select().from(dailyNotes).where(eq(dailyNotes.id, id));
+    const [note] = await db
+      .select()
+      .from(dailyNotes)
+      .where(and(eq(dailyNotes.id, id), ownedByCurrentUser(dailyNotes.userId)));
     if (!note) return undefined;
     return this.buildDailyNoteWithDetails(note);
   }
 
   async getDailyNoteByDate(date: string): Promise<DailyNoteWithDetails | undefined> {
-    const [note] = await db.select().from(dailyNotes).where(eq(dailyNotes.date, date));
+    // A date is unique per user, not per instance — scope before picking one.
+    const [note] = await db
+      .select()
+      .from(dailyNotes)
+      .where(and(eq(dailyNotes.date, date), ownedByCurrentUser(dailyNotes.userId)));
     if (!note) return undefined;
     return this.buildDailyNoteWithDetails(note);
   }
 
   async createDailyNote(data: InsertDailyNote): Promise<DailyNoteWithDetails> {
-    const [note] = await db.insert(dailyNotes).values(data).returning();
+    const effectiveUserId = data.userId ?? actingUserId() ?? 1;
+    const insertData = {
+      ...data,
+      userId: effectiveUserId,
+    };
+    const [note] = await db.insert(dailyNotes).values(insertData).returning();
     // Add audit log entry for creation
     await db.insert(dailyNoteAuditLogs).values({ dailyNoteId: note.id, action: "created", pinUsed: false });
     return this.buildDailyNoteWithDetails(note);
@@ -4562,12 +4810,24 @@ export class DatabaseStorage implements IStorage {
   // ── Conversations & Messages Implementation ──
 
   async createConversation(data: InsertConversation): Promise<Conversation> {
-    const [row] = await db.insert(conversations).values(data).returning();
+    const insertData = {
+      createdByUserId: data.createdByUserId ?? actingUserId() ?? undefined,
+      ...data,
+    };
+    const [row] = await db.insert(conversations).values(insertData).returning();
     return row;
   }
 
   async getConversation(id: string): Promise<Conversation | undefined> {
-    const [row] = await db.select().from(conversations).where(eq(conversations.id, id));
+    const [row] = await db
+      .select()
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.id, id),
+          visibleShared(conversations.visibility, conversations.createdByUserId),
+        )
+      );
     return row;
   }
 
@@ -4625,6 +4885,13 @@ export class DatabaseStorage implements IStorage {
     if (filters?.search) {
       conditions.push(ilike(conversations.title, `%${filters.search}%`));
     }
+
+    // Threads default to private (§8.1) — this is what makes that stick.
+    const conversationsVisible = visibleShared(
+      conversations.visibility,
+      conversations.createdByUserId,
+    );
+    if (conversationsVisible) conditions.push(conversationsVisible);
 
     const queryWhere = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -4745,6 +5012,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getConversationParticipants(conversationId: string): Promise<ConversationParticipant[]> {
+    // Participants inherit the thread's visibility and carry none of their own.
+    if (!(await this.getConversation(conversationId))) return [];
     return await db
       .select()
       .from(conversationParticipants)
@@ -4781,6 +5050,8 @@ export class DatabaseStorage implements IStorage {
     offset: number,
     limit: number
   ): Promise<{ messages: MessageWithRecipients[]; total: number }> {
+    // Messages inherit the thread's visibility and carry none of their own.
+    if (!(await this.getConversation(conversationId))) return { messages: [], total: 0 };
     const totalResult = await db
       .select({ count: sql<number>`count(*)` })
       .from(messages)
@@ -4859,7 +5130,12 @@ export class DatabaseStorage implements IStorage {
     const [row] = await db
       .select()
       .from(conversations)
-      .where(sql`${conversations.metadata}->>'igThreadId' = ${threadId}`)
+      .where(
+        and(
+          sql`${conversations.metadata}->>'igThreadId' = ${threadId}`,
+          visibleShared(conversations.visibility, conversations.createdByUserId),
+        )
+      )
       .limit(1);
     return row;
   }

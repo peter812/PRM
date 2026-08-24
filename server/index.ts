@@ -7,6 +7,7 @@ if (!fs.existsSync('/.dockerenv')) {
 import express, { type Request, Response, NextFunction } from "express";
 import compression from "compression";
 import { setupAuth } from "./auth";
+import { accessMiddleware } from "./access";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
@@ -61,11 +62,15 @@ app.use((req, res, next) => {
   if (process.env.DISABLE_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
     // Mock authenticated user for development
     if (!req.isAuthenticated()) {
-      (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev' };
+      (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev', role: 'super_admin' };
     }
   }
   next();
 });
+
+// Ambient request-level access context for all multi-user query predicates.
+// Must run after passport (and the dev bypass above) so req.user is set.
+app.use(accessMiddleware);
 
 function getJsonPreview(obj: any): string {
   if (obj === null || obj === undefined) return "null";

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, AnyPgColumn, index, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, uniqueIndex, AnyPgColumn, index, primaryKey } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -47,8 +47,74 @@ export const users = pgTable("users", {
   password: text("password").notNull(),
   ssoEmail: text("sso_email"),
   imageStorageMode: text("image_storage_mode").notNull().default("s3"),
+  role: text("role").$type<UserRole>().notNull().default("user"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+/**
+ * Instance roles, least to most privileged.
+ *
+ * - `user`      — ordinary account.
+ * - `admin`     — edits lookup tables, instance settings, and other users.
+ * - `super_admin` — the instance owner. Everything an admin can do, plus: only a
+ *   super admin may create or modify another super admin. An admin cannot change
+ *   a super admin's role, rename them, reset their password, or delete them.
+ *
+ * The bootstrap account is promoted to `super_admin` by the migration, and the
+ * last remaining super admin can never be demoted or deleted.
+ */
+export type UserRole = "user" | "admin" | "super_admin";
+
+export const USER_ROLES = ["user", "admin", "super_admin"] as const;
+
+export const userRoleSchema = z.enum(USER_ROLES);
+
+/** Rank for privilege comparisons. Higher wins. */
+export const ROLE_RANK: Record<UserRole, number> = {
+  user: 0,
+  admin: 1,
+  super_admin: 2,
+};
+
+export const ROLE_LABELS: Record<UserRole, string> = {
+  user: "User",
+  admin: "Admin",
+  super_admin: "Super Admin",
+};
+
+/** Admin-or-better: may reach user management and instance settings at all. */
+export function isAdminRole(role: UserRole | undefined | null): boolean {
+  return role === "admin" || role === "super_admin";
+}
+
+/**
+ * Whether `actor` may modify `target` (role change, rename, password reset,
+ * deletion). A super admin is untouchable by anyone below them — that is the
+ * whole point of the role — and nobody may demote or delete themselves.
+ */
+export function canManageUser(
+  actor: { id: number; role: UserRole },
+  target: { id: number; role: UserRole },
+): boolean {
+  if (!isAdminRole(actor.role)) return false;
+  if (target.role === "super_admin" && actor.role !== "super_admin") return false;
+  return true;
+}
+
+/** Whether `actor` may grant `role`. You cannot hand out more than you hold. */
+export function canAssignRole(actorRole: UserRole, role: UserRole): boolean {
+  return isAdminRole(actorRole) && ROLE_RANK[role] <= ROLE_RANK[actorRole];
+}
+
+// Per-user key/value settings. Instance-wide config stays in `app_settings`;
+// anything a user should be able to set independently lives here.
+export const userSettings = pgTable("user_settings", {
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  key: text("key").notNull(),
+  value: text("value").notNull(),
+}, (t) => [
+  primaryKey({ columns: [t.userId, t.key] }),
+]);
 
 // API Keys table for external API access (NEVER EXPORT THIS TABLE)
 export const apiKeys = pgTable("api_keys", {
@@ -81,10 +147,28 @@ export const ssoConfig = pgTable("sso_config", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+export type Visibility = "public" | "private";
+
+/**
+ * Ownership + visibility columns for "shared by default" entities
+ * (see Guides/pathway-to-multi-user.md §2.2).
+ *
+ * `createdByUserId` is nullable on purpose: NULL means the row is orphaned
+ * (its creator's account was deleted) or was created by a system importer, and
+ * such rows are always treated as public. Pass "private" to default a table to
+ * private — `conversations` does this, since a DM thread is personal until
+ * explicitly shared (§8.1).
+ */
+const sharedOwnership = (defaultVisibility: Visibility = "public") => ({
+  createdByUserId: integer("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  visibility: text("visibility").$type<Visibility>().notNull().default(defaultVisibility),
+});
+
 // People table
 export const people = pgTable("people", {
+  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }), // set only on this user's "Me" person; at most one row per user
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email"),
@@ -112,7 +196,10 @@ export const people = pgTable("people", {
   deniedRecommendations: jsonb("denied_recommendations").$type<string[]>().default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
-  index("people_user_id_idx").on(t.userId),
+  // One "Me" person per user (§8.4). Partial so the many non-Me rows stay unconstrained.
+  uniqueIndex("people_me_user_id_uniq").on(t.userId).where(sql`user_id IS NOT NULL`),
+  index("people_visibility_idx").on(t.visibility),
+  index("people_created_by_user_id_idx").on(t.createdByUserId),
   index("people_last_name_idx").on(t.lastName),
   index("people_elo_score_idx").on(t.eloScore),
   index("people_created_at_idx").on(t.createdAt),
@@ -123,6 +210,7 @@ export const people = pgTable("people", {
 // Notes table
 export const notes = pgTable("notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   content: text("content").notNull(),
   imageUrl: text("image_url"),
@@ -132,6 +220,7 @@ export const notes = pgTable("notes", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("notes_person_id_idx").on(t.personId),
+  index("notes_user_id_idx").on(t.userId),
   index("notes_image_uuid_idx").on(t.imageUuid),
 ]);
 
@@ -147,6 +236,7 @@ export const interactionTypes = pgTable("interaction_types", {
 
 // Interactions table
 export const interactions = pgTable("interactions", {
+  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   peopleIds: text("people_ids").array().notNull().default(sql`ARRAY[]::text[]`), // Array of person UUIDs (2 or more)
   groupIds: text("group_ids").array().default(sql`ARRAY[]::text[]`), // Optional array of group UUIDs
@@ -161,6 +251,7 @@ export const interactions = pgTable("interactions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("interactions_type_id_idx").on(t.typeId),
+  index("interactions_visibility_idx").on(t.visibility),
   index("interactions_image_uuid_idx").on(t.imageUuid),
   index("interactions_people_ids_gin_idx").using("gin", t.peopleIds),
 ]);
@@ -178,6 +269,9 @@ export const relationshipTypes = pgTable("relationship_types", {
 // Relationships table
 export const relationships = pgTable("relationships", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Attribution only — a relationship's visibility is derived from its two endpoints
+  // (§2.4), so it deliberately has no `visibility` column of its own.
+  createdByUserId: integer("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   fromPersonId: varchar("from_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   toPersonId: varchar("to_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   typeId: varchar("type_id").references(() => relationshipTypes.id, { onDelete: "set null" }),
@@ -230,6 +324,7 @@ export const schooling = pgTable("schooling", {
 
 // Groups table
 export const groups = pgTable("groups", {
+  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   color: text("color").notNull(), // hex color code
@@ -244,6 +339,7 @@ export const groups = pgTable("groups", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("groups_center_account_id_idx").on(t.centerAccountId),
+  index("groups_visibility_idx").on(t.visibility),
   index("groups_members_gin_idx").using("gin", t.members),
   index("groups_crowd_members_gin_idx").using("gin", t.crowdMembers),
 ]);
@@ -281,6 +377,7 @@ export const socialAccountTypes = pgTable("social_account_types", {
 
 // Social accounts table (Registry - lightweight stable identity)
 export const socialAccounts = pgTable("social_accounts", {
+  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull(),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
@@ -296,6 +393,7 @@ export const socialAccounts = pgTable("social_accounts", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("social_accounts_username_idx").on(t.username),
+  index("social_accounts_visibility_idx").on(t.visibility),
   index("social_accounts_owner_uuid_idx").on(t.ownerUuid),
   index("social_accounts_group_id_idx").on(t.groupId),
   index("social_accounts_type_id_idx").on(t.typeId),
@@ -394,6 +492,9 @@ export const appSettings = pgTable("app_settings", {
 // Photos table - central registry for every image in the system
 export const photos = pgTable("photos", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Attribution only. A photo's visibility is derived from the entity named by
+  // `prmLocation` (§3.3 option A); `faces` and `image_questions` inherit from here.
+  createdByUserId: integer("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   location: text("location").notNull(), // current CDN or local URL/path
   uploadedAt: timestamp("uploaded_at").notNull().defaultNow(),
   isSubImage: boolean("is_sub_image").notNull().default(false),
@@ -419,6 +520,7 @@ export const photos = pgTable("photos", {
 // Daily notes tables
 export const dailyNotes = pgTable("daily_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   date: text("date").notNull(), // YYYY-MM-DD format
   userTitle: text("user_title").notNull().default(""),
   body: text("body").notNull().default(""),
@@ -429,6 +531,7 @@ export const dailyNotes = pgTable("daily_notes", {
   updatedAt: timestamp("updated_at"), // Timestamp of last edit; null = never edited
 }, (t) => [
   index("daily_notes_date_idx").on(t.date),
+  index("daily_notes_user_id_idx").on(t.userId),
 ]);
 
 export const dailyNoteEvents = pgTable("daily_note_events", {
@@ -458,6 +561,7 @@ export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
   action: text("action").notNull(), // 'created' | 'edited'
   timestamp: timestamp("timestamp").notNull().defaultNow(),
   pinUsed: boolean("pin_used").notNull().default(false), // whether PIN authorization was required for this edit
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("daily_note_audit_logs_daily_note_id_idx").on(t.dailyNoteId),
 ]);
@@ -465,7 +569,7 @@ export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), // user this task was queued on behalf of; results land in their view
   type: text("type").notNull(), // e.g. 'get_img'
   status: text("status").notNull().default("pending"), // 'pending', 'in_progress', 'completed', 'failed'
   title: text("title"), // Name/username of the entity targeted by the task
@@ -483,6 +587,7 @@ export const tasks = pgTable("tasks", {
 // Image tasks table - specialized operations performed on images
 export const imageTasks = pgTable("image_tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   type: text("type").notNull(), // 'download_img_instagram' | 'analyze_img_full' | 'analyze_img_face' | 'analyze_img_metadata' | 'analyze_img_llm' | 'convert_img'
   status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
   payload: text("payload").notNull().default("{}"),
@@ -496,6 +601,7 @@ export const imageTasks = pgTable("image_tasks", {
   completedAt: timestamp("completed_at"),
 }, (t) => [
   index("image_tasks_parent_task_id_idx").on(t.parentTaskId),
+  index("image_tasks_user_id_idx").on(t.userId),
   index("image_tasks_photo_id_idx").on(t.photoId),
 ]);
 
@@ -797,12 +903,30 @@ export const additionalSchoolingExperienceZodSchema = z.object({
   endDate: z.string().nullable().optional(),
 });
 
+export const visibilitySchema = z.enum(["public", "private"]);
+
+/**
+ * Ownership columns are assigned by the server, never accepted from a request
+ * body — otherwise a client could spoof attribution. Request schemas therefore
+ * `.omit()` them, and the Insert* types intersect them back in so the storage
+ * layer can still be handed a value.
+ *
+ * `visibility` is *not* here: creating something already-private is a legitimate
+ * thing for a client to ask for.
+ */
+export type OwnershipInput = { createdByUserId?: number | null };
+
+/** Same idea for the user-private bucket, where the owner is stamped by the server. */
+export type UserOwnedInput = { userId?: number };
+
 export const insertPersonSchema = createInsertSchema(people)
   .omit({
     id: true,
     createdAt: true,
+    createdByUserId: true,
   })
   .extend({
+    visibility: visibilitySchema.optional(),
     jobs: z.array(jobExperienceZodSchema).optional(),
     birthday: z.string().optional().nullable(),
     address: z.string().optional().nullable(),
@@ -824,14 +948,17 @@ export const insertSchoolingSchema = createInsertSchema(schooling)
 export const insertNoteSchema = createInsertSchema(notes).omit({
   id: true,
   createdAt: true,
+  userId: true,
 });
 
 export const insertInteractionSchema = createInsertSchema(interactions)
   .omit({
     id: true,
     createdAt: true,
+    createdByUserId: true,
   })
   .extend({
+    visibility: visibilitySchema.optional(),
     date: z.coerce.date(),
     peopleIds: z.array(z.string()).min(2, "At least 2 people are required"),
     groupIds: z.array(z.string()).optional(),
@@ -1054,6 +1181,7 @@ export const FAMILY_RELATIONSHIP_RULES: Array<{
 export const insertRelationshipSchema = createInsertSchema(relationships).omit({
   id: true,
   createdAt: true,
+  createdByUserId: true,
 }).extend({
   familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES).nullable().optional(),
 });
@@ -1068,14 +1196,20 @@ export const insertPartnershipSchema = createInsertSchema(partnerships).omit({
   createdAt: true,
 });
 
+// `role` is server-assigned (bootstrap admin, or an admin promoting someone) and
+// never accepted from a signup body — see OwnershipInput for the same pattern.
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
+  role: true,
 });
 
 export const insertGroupSchema = createInsertSchema(groups).omit({
   id: true,
   createdAt: true,
+  createdByUserId: true,
+}).extend({
+  visibility: visibilitySchema.optional(),
 });
 
 export const insertSubGroupSchema = createInsertSchema(subGroups).omit({
@@ -1112,6 +1246,9 @@ export const insertSsoConfigSchema = createInsertSchema(ssoConfig).omit({
 export const insertSocialAccountSchema = createInsertSchema(socialAccounts).omit({
   id: true,
   createdAt: true,
+  createdByUserId: true,
+}).extend({
+  visibility: visibilitySchema.optional(),
 });
 
 export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTypes).omit({
@@ -1143,6 +1280,7 @@ export const insertAppSettingSchema = createInsertSchema(appSettings);
 
 export const insertPhotoSchema = createInsertSchema(photos).omit({
   uploadedAt: true,
+  createdByUserId: true,
 }).extend({
   id: z.string().optional(),
 });
@@ -1152,8 +1290,7 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   createdAt: true,
   startedAt: true,
   completedAt: true,
-}).extend({
-  userId: z.number().optional(),
+  userId: true,
 });
 
 export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
@@ -1161,6 +1298,7 @@ export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
   createdAt: true,
   startedAt: true,
   completedAt: true,
+  userId: true,
 });
 
 export const insertFaceSchema = createInsertSchema(faces).omit({
@@ -1178,6 +1316,7 @@ export const insertDailyNoteSchema = createInsertSchema(dailyNotes).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  userId: true,
 });
 
 export const insertDailyNoteEventSchema = createInsertSchema(dailyNoteEvents).omit({
@@ -1214,13 +1353,13 @@ export const insertTruePersonSearchSchema = createInsertSchema(truePersonSearch)
 
 // Types
 export type User = typeof users.$inferSelect;
-export type InsertUser = z.infer<typeof insertUserSchema>;
+export type InsertUser = z.infer<typeof insertUserSchema> & { role?: UserRole };
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type InsertApiKey = z.infer<typeof insertApiKeySchema>;
 export type SsoConfig = typeof ssoConfig.$inferSelect;
 export type InsertSsoConfig = z.infer<typeof insertSsoConfigSchema>;
 export type Person = typeof people.$inferSelect;
-export type InsertPerson = z.infer<typeof insertPersonSchema>;
+export type InsertPerson = z.infer<typeof insertPersonSchema> & OwnershipInput;
 
 export const insertAppKnowledgeSchema = createInsertSchema(appKnowledge).omit({
   id: true,
@@ -1231,13 +1370,13 @@ export type InsertAppKnowledge = z.infer<typeof insertAppKnowledgeSchema>;
 
 
 export type Note = typeof notes.$inferSelect;
-export type InsertNote = z.infer<typeof insertNoteSchema>;
+export type InsertNote = z.infer<typeof insertNoteSchema> & UserOwnedInput;
 
 export type Interaction = typeof interactions.$inferSelect;
-export type InsertInteraction = z.infer<typeof insertInteractionSchema>;
+export type InsertInteraction = z.infer<typeof insertInteractionSchema> & OwnershipInput;
 
 export type Relationship = typeof relationships.$inferSelect;
-export type InsertRelationship = z.infer<typeof insertRelationshipSchema>;
+export type InsertRelationship = z.infer<typeof insertRelationshipSchema> & OwnershipInput;
 
 export type Lineage = typeof lineage.$inferSelect;
 export type InsertLineage = z.infer<typeof insertLineageSchema>;
@@ -1245,7 +1384,7 @@ export type Partnership = typeof partnerships.$inferSelect;
 export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 
 export type Group = typeof groups.$inferSelect;
-export type InsertGroup = z.infer<typeof insertGroupSchema>;
+export type InsertGroup = z.infer<typeof insertGroupSchema> & OwnershipInput;
 
 export type SubGroup = typeof subGroups.$inferSelect;
 export type InsertSubGroup = z.infer<typeof insertSubGroupSchema>;
@@ -1283,7 +1422,7 @@ export type InteractionType = typeof interactionTypes.$inferSelect;
 export type InsertInteractionType = z.infer<typeof insertInteractionTypeSchema>;
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
-export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
+export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema> & OwnershipInput;
 
 export type SocialAccountType = typeof socialAccountTypes.$inferSelect;
 export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSchema>;
@@ -1320,13 +1459,13 @@ export type AppSetting = typeof appSettings.$inferSelect;
 export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
 
 export type Photo = typeof photos.$inferSelect;
-export type InsertPhoto = z.infer<typeof insertPhotoSchema>;
+export type InsertPhoto = z.infer<typeof insertPhotoSchema> & OwnershipInput;
 
 export type Task = typeof tasks.$inferSelect;
-export type InsertTask = z.infer<typeof insertTaskSchema>;
+export type InsertTask = z.infer<typeof insertTaskSchema> & UserOwnedInput;
 
 export type ImageTask = typeof imageTasks.$inferSelect;
-export type InsertImageTask = z.infer<typeof insertImageTaskSchema>;
+export type InsertImageTask = z.infer<typeof insertImageTaskSchema> & UserOwnedInput;
 
 export type Face = typeof faces.$inferSelect;
 export type InsertFace = z.infer<typeof insertFaceSchema>;
@@ -1382,7 +1521,7 @@ export type TruePersonSearch = typeof truePersonSearch.$inferSelect;
 export type InsertTruePersonSearch = z.infer<typeof insertTruePersonSearchSchema>;
 
 export type DailyNote = typeof dailyNotes.$inferSelect;
-export type InsertDailyNote = z.infer<typeof insertDailyNoteSchema>;
+export type InsertDailyNote = z.infer<typeof insertDailyNoteSchema> & UserOwnedInput;
 export type DailyNoteEvent = typeof dailyNoteEvents.$inferSelect;
 export type InsertDailyNoteEvent = z.infer<typeof insertDailyNoteEventSchema>;
 export type DailyNoteInvolvedParty = typeof dailyNoteInvolvedParties.$inferSelect;
@@ -1458,9 +1597,12 @@ export type FlowItem = {
   date: Date;
   content: string;
   imageUuid?: string | null;
-  // Note-specific
-  imageUrl?: string | null;
+  // Note-specific: notes are user-private, so this is the owner
+  userId?: number;
   // Interaction-specific
+  createdByUserId?: number | null;
+  visibility?: Visibility;
+  imageUrl?: string | null;
   title?: string | null;
   description?: string | null;
   interactionType?: InteractionType | null;
@@ -1566,9 +1708,13 @@ export type UuidLookupResult = {
 
 // ── Conversations & Messages Tables ──
 
+// A conversation uses the shared-entity column pair but defaults to private (§8.1):
+// the thread hangs off a social account everyone can see, yet it is a personal inbox
+// until its owner deliberately shares it. Messages, recipients, and participants all
+// inherit visibility from here and carry no ownership columns of their own.
 export const conversations = pgTable("conversations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+  ...sharedOwnership("private"),
   title: text("title"),                          // Optional display name (e.g. email subject, group chat name)
   channelType: text("channel_type").notNull(),   // "phone" | "instagram" | "email" | "discord" | "x" | "facebook" | "generic"
   socialAccountId: varchar("social_account_id")  // Optional FK
@@ -1579,7 +1725,10 @@ export const conversations = pgTable("conversations", {
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("conversations_visibility_idx").on(t.visibility),
+  index("conversations_created_by_user_id_idx").on(t.createdByUserId),
+]);
 
 export const messages = pgTable("messages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1631,7 +1780,9 @@ export const conversationParticipants = pgTable("conversation_participants", {
 });
 
 // Zod insert schemas
-export const insertConversationSchema = createInsertSchema(conversations).omit({ id: true, createdAt: true });
+export const insertConversationSchema = createInsertSchema(conversations)
+  .omit({ id: true, createdAt: true, createdByUserId: true })
+  .extend({ visibility: visibilitySchema.optional() });
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });
 export const insertMessageRecipientSchema = createInsertSchema(messageRecipients).omit({ id: true });
 export const insertConversationParticipantSchema = createInsertSchema(conversationParticipants).omit({ id: true });
@@ -1664,7 +1815,7 @@ export interface MessageMetadata {
 
 // Types
 export type Conversation = typeof conversations.$inferSelect;
-export type InsertConversation = z.infer<typeof insertConversationSchema>;
+export type InsertConversation = z.infer<typeof insertConversationSchema> & OwnershipInput;
 export type Message = typeof messages.$inferSelect;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type MessageRecipient = typeof messageRecipients.$inferSelect;
@@ -1675,7 +1826,7 @@ export type InsertConversationParticipant = z.infer<typeof insertConversationPar
 // Relations
 export const conversationsRelations = relations(conversations, ({ one, many }) => ({
   user: one(users, {
-    fields: [conversations.userId],
+    fields: [conversations.createdByUserId],
     references: [users.id],
   }),
   socialAccount: one(socialAccounts, {
@@ -1768,3 +1919,4 @@ export function getTruePeopleSearchUrl(phone: string | null | undefined): string
   const searchNumber = digits.startsWith("1") ? digits.slice(1) : digits;
   return `https://www.truepeoplesearch.com/results?name=${searchNumber}`;
 }
+

@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -24,6 +24,8 @@ import { lazy, Suspense } from "react";
 
 const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
+const AdminSettingsPage = lazy(() => import("@/pages/admin-settings"));
+const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
 const ExperimentalFeaturesPage = lazy(() => import("@/pages/experimental-features"));
@@ -143,6 +145,15 @@ const settingsMenuItems: MenuItem[] = [
     ],
   },
   {
+    title: "Admin",
+    url: "/settings/admin",
+    icon: Shield,
+    subItems: [
+      { title: "Admin Mode", url: "/settings/admin", icon: Eye },
+      { title: "User Management", url: "/settings/admin/users", icon: Users },
+    ],
+  },
+  {
     title: "API Documentation",
     url: "/settings/api",
     icon: Book,
@@ -160,6 +171,7 @@ const settingsMenuItems: MenuItem[] = [
 export function SettingsSidebar() {
   const [location] = useLocation();
 
+  const isAdminActive = location.startsWith("/settings/admin");
   const isDataTypesActive = location.startsWith("/settings/data-types");
   const isImportExportActive = location.startsWith("/settings/import-export") || location === "/settings/instagram";
   const isRecognitionActive = location.startsWith("/settings/recognition");
@@ -176,6 +188,7 @@ export function SettingsSidebar() {
 
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
+      case "/settings/admin": return isAdminActive;
       case "/settings/data-types": return isDataTypesActive;
       case "/settings/recognition": return isRecognitionActive;
       case "/settings/app": return isAppOptionsActive;
@@ -298,6 +311,8 @@ export default function SettingsLayout() {
           <Route path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
           <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
           <Route path="/import-export" component={ImportExportHome} />
+          <Route path="/admin/users" component={AdminUsersPage} />
+          <Route path="/admin" component={AdminSettingsPage} />
           <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
           <Route path="/api/settings" component={ApiSettingsPage} />
           <Route path="/api" component={ApiDocs} />

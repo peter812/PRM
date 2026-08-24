@@ -4,6 +4,7 @@ import path from "path";
 import multer from "multer";
 import { storage } from "../storage";
 import { triggerTaskWorker } from "../task-worker";
+import { requireAdmin } from "../auth";
 
 const BACKUPS_DIR = path.join(process.cwd(), "backups");
 
@@ -236,8 +237,8 @@ export function registerRoutes(app: Express) {
     }
   });
 
-  // POST /api/backups/:filename/restore - Restore CRM data from a backup file in backups/
-  app.post("/api/backups/:filename/restore", async (req: Request, res: Response) => {
+  // POST /api/backups/:filename/restore - Restore from a backup XML file
+  app.post("/api/backups/:filename/restore", requireAdmin, async (req: Request, res: Response) => {
     try {
       if (!req.isAuthenticated() || !req.user) {
         return res.status(401).json({ error: "Not authenticated" });

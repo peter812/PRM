@@ -951,6 +951,118 @@ async function ensureSsoEmailColumn(): Promise<void> {
 }
 
 /**
+ * Migrates existing data to the multi-user model (Guides/pathway-to-multi-user.md §3).
+ *
+ * Adds created_by_user_id and visibility to shared tables, backfills from the
+ * primary user, and only then promotes the user-private columns to NOT NULL.
+ * This cannot live in `schemaDefinitions` because ADD COLUMN ... NOT NULL fails
+ * on a table that already has rows — the backfill has to happen in between.
+ *
+ * Idempotent: safe to run on every boot.
+ */
+async function migrateToMultiUser(): Promise<void> {
+  // The single owner of everything that exists today. Prefer whoever owns the
+  // "Me" person; fall back to the lowest user id.
+  const primary = await pool.query(`
+    SELECT COALESCE(
+      (SELECT user_id FROM people WHERE user_id IS NOT NULL ORDER BY user_id LIMIT 1),
+      (SELECT id FROM users ORDER BY id LIMIT 1)
+    ) AS id
+  `);
+  const primaryUserId: number | null = primary.rows[0]?.id ?? null;
+  if (primaryUserId === null) {
+    log("Multi-user migration: no users yet, skipping backfill");
+    return;
+  }
+  log(`Multi-user migration: attributing existing rows to user ${primaryUserId}`);
+
+  // Shared-by-default entities: creator attribution + a visibility flag.
+  // `conversations` defaults to private (§8.1); the rest default to public.
+  const sharedTables: Array<[table: string, defaultVisibility: string]> = [
+    ["people", "public"],
+    ["social_accounts", "public"],
+    ["groups", "public"],
+    ["interactions", "public"],
+    ["conversations", "private"],
+  ];
+  for (const [table, defaultVisibility] of sharedTables) {
+    if (!(await tableExists(table))) continue;
+    await addColumnIfNotExists(table, "created_by_user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL");
+    await addColumnIfNotExists(table, "visibility", `TEXT NOT NULL DEFAULT '${defaultVisibility}'`);
+    await pool.query(
+      `UPDATE ${table} SET created_by_user_id = $1 WHERE created_by_user_id IS NULL`,
+      [primaryUserId],
+    );
+  }
+
+  // Attribution only — visibility is derived from their parent rows (§2.4, §3.3).
+  for (const table of ["relationships", "photos"]) {
+    if (!(await tableExists(table))) continue;
+    await addColumnIfNotExists(table, "created_by_user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL");
+    await pool.query(
+      `UPDATE ${table} SET created_by_user_id = $1 WHERE created_by_user_id IS NULL`,
+      [primaryUserId],
+    );
+  }
+
+  // `conversations` previously carried a nullable `user_id`. Fold it into
+  // `created_by_user_id` (preferring the real owner over the primary-user
+  // default written above) and drop it.
+  if (await columnExists("conversations", "user_id")) {
+    await pool.query(`UPDATE conversations SET created_by_user_id = user_id WHERE user_id IS NOT NULL`);
+    await pool.query(`ALTER TABLE conversations DROP COLUMN user_id`);
+    log("Folded conversations.user_id into created_by_user_id");
+  }
+
+  // User-private entities: add nullable, backfill, then enforce NOT NULL.
+  for (const table of ["notes", "daily_notes", "tasks", "image_tasks"]) {
+    if (!(await tableExists(table))) continue;
+    await addColumnIfNotExists(table, "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE");
+    await pool.query(`UPDATE ${table} SET user_id = $1 WHERE user_id IS NULL`, [primaryUserId]);
+    await pool.query(`ALTER TABLE ${table} ALTER COLUMN user_id SET NOT NULL`);
+  }
+
+  // One "Me" person per user (§8.4). This fails if existing data has more than
+  // one people row per user — historically `people.user_id` was also (mis)used
+  // as an owner column. Don't take the whole app down over it; the operator
+  // needs to dedupe by hand.
+  try {
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS people_me_user_id_uniq
+      ON people(user_id) WHERE user_id IS NOT NULL
+    `);
+  } catch (error) {
+    log(
+      `WARNING: could not create people_me_user_id_uniq (${error}). ` +
+      `More than one person row shares a user_id. Resolve with: ` +
+      `SELECT user_id, count(*) FROM people WHERE user_id IS NOT NULL GROUP BY user_id HAVING count(*) > 1;`,
+    );
+  }
+
+  // Per-user settings (§3.4). Instance-wide config stays in app_settings.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      PRIMARY KEY (user_id, key)
+    )
+  `);
+
+  // The bootstrap user owns the instance (§8.5). It becomes the super admin —
+  // the one account ordinary admins cannot demote, rename, or delete — and an
+  // instance always has at least one.
+  await addColumnIfNotExists("users", "role", "TEXT NOT NULL DEFAULT 'user'");
+  await pool.query(
+    `UPDATE users SET role = 'super_admin'
+      WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'super_admin')`,
+    [primaryUserId],
+  );
+
+  log("Multi-user migration complete");
+}
+
+/**
  * Seeds example people and groups for demo purposes
  */
 async function seedExampleData(userId: number, mePerson: any): Promise<void> {
@@ -970,10 +1082,10 @@ async function seedExampleData(userId: number, mePerson: any): Promise<void> {
     const createdPeopleIds: string[] = [];
     for (const person of examplePeople) {
       const result = await pool.query(
-        `INSERT INTO people (first_name, last_name, email, company, title) 
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO people (first_name, last_name, email, company, title, created_by_user_id) 
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id`,
-        [person.firstName, person.lastName, person.email, person.company, person.title]
+        [person.firstName, person.lastName, person.email, person.company, person.title, userId]
       );
       createdPeopleIds.push(result.rows[0].id);
     }
@@ -983,15 +1095,15 @@ async function seedExampleData(userId: number, mePerson: any): Promise<void> {
     const group2Members = [createdPeopleIds[2], createdPeopleIds[3], mePerson.id]; // Emily, David, Me
     
     await pool.query(
-      `INSERT INTO groups (name, color, members) 
-       VALUES ($1, $2, $3)`,
-      ['Work Team', '#3b82f6', group1Members]
+      `INSERT INTO groups (name, color, members, created_by_user_id) 
+       VALUES ($1, $2, $3, $4)`,
+      ['Work Team', '#3b82f6', group1Members, userId]
     );
     
     await pool.query(
-      `INSERT INTO groups (name, color, members) 
-       VALUES ($1, $2, $3)`,
-      ['Close Friends', '#ec4899', group2Members]
+      `INSERT INTO groups (name, color, members, created_by_user_id) 
+       VALUES ($1, $2, $3, $4)`,
+      ['Close Friends', '#ec4899', group2Members, userId]
     );
     
     log("Seeded 6 example people and 2 groups");
@@ -1040,8 +1152,8 @@ export async function resetDatabase(
     if (userData) {
       // Recreate the user (will get a new ID, likely 1)
       const userResult = await pool.query(
-        `INSERT INTO users (name, nickname, username, password)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO users (name, nickname, username, password, role)
+         VALUES ($1, $2, $3, $4, 'super_admin')
          RETURNING id`,
         [userData.name, userData.nickname, userData.username, userData.password]
       );
@@ -1049,8 +1161,8 @@ export async function resetDatabase(
       
       // Create the "Me" person for the recreated user
       const personResult = await pool.query(
-        `INSERT INTO people (user_id, first_name, last_name) 
-         VALUES ($1, $2, $3)
+        `INSERT INTO people (user_id, created_by_user_id, first_name, last_name) 
+         VALUES ($1, $1, $2, $3)
          RETURNING *`,
         [newUserId, userData.name, '']
       );
@@ -1101,6 +1213,9 @@ export async function initializeDatabase(): Promise<void> {
       
       // Validate schema and add missing columns if needed
       await validateAndSyncSchema();
+
+      // Ownership + visibility columns, backfilled to the primary user.
+      await migrateToMultiUser();
 
       // Always seed defaults so new types (e.g. Ex-spouse) are picked up by existing databases.
       // Seed functions check for existing names before inserting, making this idempotent.

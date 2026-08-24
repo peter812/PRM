@@ -57,6 +57,7 @@ import { syncEntityInBackground, deleteEntityVector } from "../vector-universal"
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "../image-pass-in-utils";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "../xml-utils";
 import { parseExportZipName } from "../instagram-dm-import";
+import { runAsUser } from "../access";
 
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -542,7 +543,10 @@ export function registerRoutes(app: Express) {
     app.post("/api/social-accounts", async (req, res) => {
       try {
         const validatedData = insertSocialAccountSchema.parse(req.body);
-        const account = await storage.createSocialAccount(validatedData);
+        const account = await storage.createSocialAccount({
+          ...validatedData,
+          createdByUserId: req.user?.id,
+        });
         sseManager.broadcast("social_account.created", { id: account.id, username: account.username });
         syncEntityInBackground("social_account", account.id);
         res.status(201).json(account);
@@ -1427,6 +1431,7 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Social account not found" });
         }
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "refresh_follower_count",
           status: "pending",
           title: account.username,
@@ -1443,6 +1448,7 @@ export function registerRoutes(app: Express) {
     app.post("/api/tasks/mass-refresh-follower-count", async (req, res) => {
       try {
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "mass_refresh_follower_count",
           status: "pending",
           payload: JSON.stringify({}),
@@ -1463,6 +1469,7 @@ export function registerRoutes(app: Express) {
         }
         const includeHistory = req.body.includeHistory === true || req.body.includeHistory === "true";
         const task = await storage.createTask({
+          userId: req.user.id,
           type: "export_xml",
           status: "pending",
           payload: JSON.stringify({ includeHistory, userId: req.user.id }),
@@ -1486,6 +1493,7 @@ export function registerRoutes(app: Express) {
         }
         const xmlText = req.file.buffer.toString("utf-8");
         const task = await storage.createTask({
+          userId: req.user.id,
           type: "import_xml",
           status: "pending",
           payload: JSON.stringify({ xml: xmlText, userId: req.user.id }),
@@ -1528,6 +1536,7 @@ export function registerRoutes(app: Express) {
           const rootUsername = parsedName?.username || account.username;
 
           const task = await storage.createTask({
+            userId: req.user.id,
             type: "import_instagram_backup",
             status: "pending",
             payload: JSON.stringify({
@@ -1587,6 +1596,7 @@ export function registerRoutes(app: Express) {
         });
 
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "multi_image_download",
           status: "pending",
           payload: JSON.stringify({ images: resolvedImages }),
@@ -1727,6 +1737,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "imageUrl is required" });
         }
         const task = await storage.createImageTask({
+          userId: req.user.id,
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: parentTaskId || null,
@@ -1799,6 +1810,7 @@ export function registerRoutes(app: Express) {
       }
       try {
         const task = await storage.createTask({
+          userId: req.user.id,
           type: "transfer_images_to_local",
           status: "pending",
           payload: JSON.stringify({ userId: req.user.id }),
@@ -1817,6 +1829,7 @@ export function registerRoutes(app: Express) {
       }
       try {
         const task = await storage.createTask({
+          userId: req.user.id,
           type: "transfer_images_to_s3",
           status: "pending",
           payload: JSON.stringify({ userId: req.user.id }),
@@ -2284,118 +2297,121 @@ export function registerRoutes(app: Express) {
         // Update session's last accessed timestamp
         await storage.updateExtensionSessionLastAccessed(session.id);
 
-        // 2. Validate payload
-        const parsedResult = importInstagramPostSchema.safeParse(req.body);
-        if (!parsedResult.success) {
-          return res.status(400).json({
-            error: "Invalid request payload",
-            details: parsedResult.error.errors,
-          });
-        }
-        const payload = parsedResult.data;
-
-        // 3. Resolve target account (Instagram)
-        const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
-        const normalizedUsername = payload.username.trim().toLowerCase();
-
-        let targetAccount = await db
-          .select()
-          .from(socialAccounts)
-          .where(
-            and(
-              eq(socialAccounts.username, normalizedUsername),
-              eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)
-            )
-          )
-          .limit(1)
-          .then(rows => rows[0]);
-
-        if (!targetAccount) {
-          targetAccount = await storage.createSocialAccount({
-            username: normalizedUsername,
-            typeId: INSTAGRAM_TYPE_ID,
-            internalAccountCreationType: "auto-import",
-          });
-        }
-
-        // 4. De-duplication check using deterministic post UUID
-        const deterministicPostId = generateDeterministicUuid(`instagram:post:${payload.post.post_id}`);
-        const [existingPost] = await db
-          .select()
-          .from(socialAccountPosts)
-          .where(eq(socialAccountPosts.id, deterministicPostId))
-          .limit(1);
-
-        if (existingPost) {
-          return res.status(200).json({
-            status: "already_exists",
-            message: "Post already exists, skipped duplicate",
-            post: existingPost,
-          });
-        }
-
-        // 5. Process media and upload files
-        const storageMode = await storage.getImageStorageMode(session.userId);
-        const uploadedUrls: string[] = [];
-
-        for (const mediaItem of payload.post.media) {
-          const matches = mediaItem.data.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-          if (!matches) {
+        await runAsUser(session.userId, async () => {
+          // 2. Validate payload
+          const parsedResult = importInstagramPostSchema.safeParse(req.body);
+          if (!parsedResult.success) {
             return res.status(400).json({
-              error: `Invalid media data URL format for file ${mediaItem.filename}`,
+              error: "Invalid request payload",
+              details: parsedResult.error.errors,
+            });
+          }
+          const payload = parsedResult.data;
+
+          // 3. Resolve target account (Instagram)
+          const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
+          const normalizedUsername = payload.username.trim().toLowerCase();
+
+          let targetAccount = await db
+            .select()
+            .from(socialAccounts)
+            .where(
+              and(
+                eq(socialAccounts.username, normalizedUsername),
+                eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)
+              )
+            )
+            .limit(1)
+            .then(rows => rows[0]);
+
+          if (!targetAccount) {
+            targetAccount = await storage.createSocialAccount({
+              createdByUserId: session.userId,
+              username: normalizedUsername,
+              typeId: INSTAGRAM_TYPE_ID,
+              internalAccountCreationType: "auto-import",
             });
           }
 
-          const mimeType = matches[1];
-          const base64Data = matches[2];
-          const buffer = Buffer.from(base64Data, "base64");
+          // 4. De-duplication check using deterministic post UUID
+          const deterministicPostId = generateDeterministicUuid(`instagram:post:${payload.post.post_id}`);
+          const [existingPost] = await db
+            .select()
+            .from(socialAccountPosts)
+            .where(eq(socialAccountPosts.id, deterministicPostId))
+            .limit(1);
 
-          let imageUrl: string;
-          if (storageMode === "local") {
-            imageUrl = await uploadImageLocally(buffer, mediaItem.filename, mimeType);
-          } else {
-            imageUrl = await uploadImageToS3(buffer, mediaItem.filename, mimeType);
-          }
-          uploadedUrls.push(imageUrl);
-
-          // Register in photos table with post locator
-          try {
-            const photo = await storage.insertPhoto({
-              location: imageUrl,
-              prmLocation: `post:${deterministicPostId}`,
-              isSubImage: false,
+          if (existingPost) {
+            return res.status(200).json({
+              status: "already_exists",
+              message: "Post already exists, skipped duplicate",
+              post: existingPost,
             });
-            // Auto-describe and vectorize images in the background (fire-and-forget)
-            syncEntityInBackground("image", photo.id);
-          } catch (photoErr) {
-            console.error("Warning: failed to register photo in photos table:", photoErr);
           }
-        }
 
-        // 6. Create post
-        const postType = payload.post.media_type === 2 ? "video" : (payload.post.media_type === 8 ? "carousel" : "post");
-        const [createdPost] = await db
-          .insert(socialAccountPosts)
-          .values({
-            id: deterministicPostId,
-            socialAccountId: targetAccount.id,
-            postType,
-            content: JSON.stringify(uploadedUrls),
-            description: payload.post.caption || null,
-            likeCount: 0,
-            commentCount: 0,
-            postedAt: new Date(payload.post.taken_at * 1000),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .returning();
+          // 5. Process media and upload files
+          const storageMode = await storage.getImageStorageMode(session.userId);
+          const uploadedUrls: string[] = [];
 
-        // Sync social account in background
-        syncEntityInBackground("social_account", targetAccount.id);
+          for (const mediaItem of payload.post.media) {
+            const matches = mediaItem.data.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+            if (!matches) {
+              return res.status(400).json({
+                error: `Invalid media data URL format for file ${mediaItem.filename}`,
+              });
+            }
 
-        res.status(201).json({
-          message: "Instagram post imported successfully",
-          post: createdPost,
+            const mimeType = matches[1];
+            const base64Data = matches[2];
+            const buffer = Buffer.from(base64Data, "base64");
+
+            let imageUrl: string;
+            if (storageMode === "local") {
+              imageUrl = await uploadImageLocally(buffer, mediaItem.filename, mimeType);
+            } else {
+              imageUrl = await uploadImageToS3(buffer, mediaItem.filename, mimeType);
+            }
+            uploadedUrls.push(imageUrl);
+
+            // Register in photos table with post locator
+            try {
+              const photo = await storage.insertPhoto({
+                location: imageUrl,
+                prmLocation: `post:${deterministicPostId}`,
+                isSubImage: false,
+              });
+              // Auto-describe and vectorize images in the background (fire-and-forget)
+              syncEntityInBackground("image", photo.id);
+            } catch (photoErr) {
+              console.error("Warning: failed to register photo in photos table:", photoErr);
+            }
+          }
+
+          // 6. Create post
+          const postType = payload.post.media_type === 2 ? "video" : (payload.post.media_type === 8 ? "carousel" : "post");
+          const [createdPost] = await db
+            .insert(socialAccountPosts)
+            .values({
+              id: deterministicPostId,
+              socialAccountId: targetAccount.id,
+              postType,
+              content: JSON.stringify(uploadedUrls),
+              description: payload.post.caption || null,
+              likeCount: 0,
+              commentCount: 0,
+              postedAt: new Date(payload.post.taken_at * 1000),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .returning();
+
+          // Sync social account in background
+          syncEntityInBackground("social_account", targetAccount.id);
+
+          res.status(201).json({
+            message: "Instagram post imported successfully",
+            post: createdPost,
+          });
         });
       } catch (error) {
         console.error("Error importing Instagram post:", error);
@@ -2417,29 +2433,31 @@ export function registerRoutes(app: Express) {
 
         await storage.updateExtensionSessionLastAccessed(session.id);
 
-        const { postIds } = req.body;
-        if (!Array.isArray(postIds)) {
-          return res.status(400).json({ error: "postIds must be an array of strings" });
-        }
+        await runAsUser(session.userId, async () => {
+          const { postIds } = req.body;
+          if (!Array.isArray(postIds)) {
+            return res.status(400).json({ error: "postIds must be an array of strings" });
+          }
 
-        if (postIds.length === 0) {
-          return res.json({ existingPostIds: [] });
-        }
+          if (postIds.length === 0) {
+            return res.json({ existingPostIds: [] });
+          }
 
-        const deterministicIds = postIds.map(id => generateDeterministicUuid(`instagram:post:${id}`));
+          const deterministicIds = postIds.map(id => generateDeterministicUuid(`instagram:post:${id}`));
 
-        const existing = await db
-          .select({ id: socialAccountPosts.id })
-          .from(socialAccountPosts)
-          .where(inArray(socialAccountPosts.id, deterministicIds));
+          const existing = await db
+            .select({ id: socialAccountPosts.id })
+            .from(socialAccountPosts)
+            .where(inArray(socialAccountPosts.id, deterministicIds));
 
-        const existingSet = new Set(existing.map(p => p.id));
-        const existingPostIds = postIds.filter(id => {
-          const detId = generateDeterministicUuid(`instagram:post:${id}`);
-          return existingSet.has(detId);
+          const existingSet = new Set(existing.map(p => p.id));
+          const existingPostIds = postIds.filter(id => {
+            const detId = generateDeterministicUuid(`instagram:post:${id}`);
+            return existingSet.has(detId);
+          });
+
+          res.json({ existingPostIds });
         });
-
-        res.json({ existingPostIds });
       } catch (error) {
         console.error("Error checking post duplicates:", error);
         res.status(500).json({ error: "Failed to check duplicates" });

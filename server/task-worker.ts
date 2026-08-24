@@ -5,14 +5,30 @@ import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally } from "./local-storage";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
-import type { MessageAttachment, MessageMetadata } from "@shared/schema";
 import { log } from "./vite";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
+import { runAsSystem, runAsUser, actingUserId } from "./access";
 import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
 import { eq, isNotNull } from "drizzle-orm";
+
+interface MessageMetadata {
+  reactions?: any[];
+  share?: any;
+  callDurationSec?: number;
+  senderName?: string;
+  [key: string]: any;
+}
+
+interface MessageAttachment {
+  type: string;
+  originalUri?: string;
+  unavailable?: boolean;
+  reason?: string;
+  [key: string]: any;
+}
 import {
   people,
   tasks,
@@ -238,58 +254,62 @@ async function processConvertImg(imageTaskId: string, payload: { photoId?: strin
 }
 
 async function processNextImageTask(): Promise<boolean> {
-  const task = await storage.getNextPendingImageTask();
+  const task = await runAsSystem(() => storage.getNextPendingImageTask());
   if (!task) return false;
 
   log(`[ImageWorker] Processing image task ${task.id} (type: ${task.type})`);
-  await storage.updateImageTaskStatus(task.id, "in_progress");
+  await runAsSystem(() => storage.updateImageTaskStatus(task.id, "in_progress"));
 
-  try {
-    let result: string;
-    const payload = JSON.parse(task.payload || "{}");
+  const effectiveUserId = task.userId || (await runAsSystem(() => storage.getAllUsers()))[0]?.id;
 
-    switch (task.type) {
-      case "download_img_instagram":
-        result = await processDownloadImgInstagram(task.id, payload);
-        break;
-      case "analyze_img_full":
-        result = await processAnalyzeImgFull(task.id, payload);
-        break;
-      case "analyze_img_face":
-        result = await processAnalyzeImgFace(task.id, payload);
-        break;
-      case "analyze_img_metadata":
-        result = await processAnalyzeImgMetadata(task.id, payload);
-        break;
-      case "analyze_img_llm":
-        result = await processAnalyzeImgLlm(task.id, payload);
-        break;
-      case "convert_img":
-        result = await processConvertImg(task.id, payload);
-        break;
-      default:
-        throw new Error(`Unknown image task type: ${task.type}`);
-    }
+  return runAsUser(effectiveUserId, async () => {
+    try {
+      let result: string;
+      const payload = JSON.parse(task.payload || "{}");
 
-    // Re-check cancellation before persisting completed state — a DELETE during execution should win
-    const postHandlerTask = await storage.getImageTaskById(task.id);
-    if (postHandlerTask?.status === "cancelled") {
-      log(`[ImageWorker] Image task ${task.id} was cancelled during execution — preserving cancelled state`);
-    } else {
-      await storage.updateImageTaskStatus(task.id, "completed", result);
-      log(`[ImageWorker] Image task ${task.id} completed`);
+      switch (task.type) {
+        case "download_img_instagram":
+          result = await processDownloadImgInstagram(task.id, payload);
+          break;
+        case "analyze_img_full":
+          result = await processAnalyzeImgFull(task.id, payload);
+          break;
+        case "analyze_img_face":
+          result = await processAnalyzeImgFace(task.id, payload);
+          break;
+        case "analyze_img_metadata":
+          result = await processAnalyzeImgMetadata(task.id, payload);
+          break;
+        case "analyze_img_llm":
+          result = await processAnalyzeImgLlm(task.id, payload);
+          break;
+        case "convert_img":
+          result = await processConvertImg(task.id, payload);
+          break;
+        default:
+          throw new Error(`Unknown image task type: ${task.type}`);
+      }
+
+      // Re-check cancellation before persisting completed state — a DELETE during execution should win
+      const postHandlerTask = await storage.getImageTaskById(task.id);
+      if (postHandlerTask?.status === "cancelled") {
+        log(`[ImageWorker] Image task ${task.id} was cancelled during execution — preserving cancelled state`);
+      } else {
+        await storage.updateImageTaskStatus(task.id, "completed", result);
+        log(`[ImageWorker] Image task ${task.id} completed`);
+      }
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
+      // Only write failed state if not already cancelled
+      const postErrorTask = await storage.getImageTaskById(task.id).catch(() => null);
+      if (!postErrorTask || postErrorTask.status !== "cancelled") {
+        await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
+      }
+      return true;
     }
-    return true;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
-    // Only write failed state if not already cancelled
-    const postErrorTask = await storage.getImageTaskById(task.id).catch(() => null);
-    if (!postErrorTask || postErrorTask.status !== "cancelled") {
-      await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
-    }
-    return true;
-  }
+  });
 }
 
 async function runImageTaskWorkerLoop() {
@@ -1252,7 +1272,7 @@ async function processImportXmlTask(taskId: string, payload: {
     const imageUrl = unescapeXml(parseXmlTag("image_url", block));
     const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
     try {
-      await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
+      await storage.createNoteWithId({ id, userId: payload.userId, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
       importedCounts.notes++;
     } catch (e) { console.error(`Error importing note ${id}:`, e); }
   }
@@ -1476,7 +1496,7 @@ async function processImportXmlTask(taskId: string, payload: {
 
     try {
       await db.insert(dailyNotes).values({
-        id, date, userTitle, body,
+        id, userId: payload.userId, date, userTitle, body,
         createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
         updatedAt: updatedAtStr ? new Date(updatedAtStr) : null,
       }).onConflictDoNothing();
@@ -1916,6 +1936,7 @@ async function processImportInstagram(taskId: string, payload: {
       if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
         const currentProfile = await storage.getCurrentProfileVersion(existingAccount.id);
         await storage.createImageTask({
+          userId: actingUserId(),
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
@@ -1946,6 +1967,7 @@ async function processImportInstagram(taskId: string, payload: {
 
       if (profilePicUrl) {
         await storage.createImageTask({
+          userId: actingUserId(),
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
@@ -2154,7 +2176,7 @@ async function importOneDmThread(
   let conversation = await storage.getConversationByIgThreadId(parsed.threadId);
   if (!conversation) {
     conversation = await storage.createConversation({
-      userId,
+      createdByUserId: userId,
       title: parsed.title,
       channelType: "instagram",
       // Primary "other party" ref; both sides are also in participants below
@@ -3005,93 +3027,106 @@ function runLabelPropagation(nodes: string[], edges: [string, string][], maxIter
 }
 
 async function processNextTask(): Promise<boolean> {
-  const task = await storage.getNextPendingTask();
+  const task = await runAsSystem(() => storage.getNextPendingTask());
   if (!task) return false;
 
   log(`[TaskWorker] Processing task ${task.id} (type: ${task.type})`);
-  await storage.updateTaskStatus(task.id, "in_progress");
+  await runAsSystem(() => storage.updateTaskStatus(task.id, "in_progress"));
 
-  try {
-    let result: string;
+  let taskUserId = task.userId;
+  if (!taskUserId) {
+    try {
+      const p = JSON.parse(task.payload);
+      taskUserId = p.userId;
+    } catch {}
+  }
+  if (!taskUserId) {
+    taskUserId = (await runAsSystem(() => storage.getAllUsers()))[0]?.id;
+  }
 
-    switch (task.type) {
-      case "calculate_crowd": {
-        const payload = JSON.parse(task.payload);
-        result = await processCalculateCrowd(task.id, payload);
-        break;
-      }
-      case "find_potential_groups": {
-        const payload = JSON.parse(task.payload);
-        result = await processFindPotentialGroups(task.id, payload);
-        break;
-      }
-      case "multi_image_download": {
-        const payload = JSON.parse(task.payload);
-        result = await processMultiImageDownload(task.id, payload);
-        break;
-      }
-      case "get_img": {
-        const payload = JSON.parse(task.payload);
-        result = await processGetImgTask(payload);
-        break;
-      }
-      case "refresh_follower_count": {
-        const payload = JSON.parse(task.payload);
-        result = await processRefreshFollowerCount(payload);
-        break;
-      }
-      case "mass_refresh_follower_count": {
-        result = await processMassRefreshFollowerCount(task.id);
-        break;
-      }
-      case "transfer_images_to_local": {
-        result = await processTransferImagesToLocal(task.id);
-        break;
-      }
-      case "transfer_images_to_s3": {
-        result = await processTransferImagesToS3(task.id);
-        break;
-      }
-      case "import_instagram": {
-        const payload = JSON.parse(task.payload);
-        result = await processImportInstagram(task.id, payload);
-        break;
-      }
-      case "import_instagram_backup": {
-        const payload = JSON.parse(task.payload);
-        result = await processImportInstagramBackup(task.id, payload);
-        break;
-      }
-      case "export_xml": {
-        const payload = JSON.parse(task.payload);
-        result = await processExportXmlTask(task.id, payload);
-        break;
-      }
-      case "import_xml": {
-        const payload = JSON.parse(task.payload);
-        await db.update(tasks).set({
-          payload: JSON.stringify({ userId: payload.userId, xmlCleared: true }),
-        }).where(eq(tasks.id, task.id));
-        result = await processImportXmlTask(task.id, payload);
-        break;
-      }
-      default:
-        throw new Error(`Unknown task type: ${task.type}`);
-    }
+  return runAsUser(taskUserId, async () => {
+    try {
+      let result: string;
 
-    if (await isTaskCancelled(task.id)) {
-      log(`[TaskWorker] Task ${task.id} was cancelled during processing`);
+      switch (task.type) {
+        case "calculate_crowd": {
+          const payload = JSON.parse(task.payload);
+          result = await processCalculateCrowd(task.id, payload);
+          break;
+        }
+        case "find_potential_groups": {
+          const payload = JSON.parse(task.payload);
+          result = await processFindPotentialGroups(task.id, payload);
+          break;
+        }
+        case "multi_image_download": {
+          const payload = JSON.parse(task.payload);
+          result = await processMultiImageDownload(task.id, payload);
+          break;
+        }
+        case "get_img": {
+          const payload = JSON.parse(task.payload);
+          result = await processGetImgTask(payload);
+          break;
+        }
+        case "refresh_follower_count": {
+          const payload = JSON.parse(task.payload);
+          result = await processRefreshFollowerCount(payload);
+          break;
+        }
+        case "mass_refresh_follower_count": {
+          result = await processMassRefreshFollowerCount(task.id);
+          break;
+        }
+        case "transfer_images_to_local": {
+          result = await processTransferImagesToLocal(task.id);
+          break;
+        }
+        case "transfer_images_to_s3": {
+          result = await processTransferImagesToS3(task.id);
+          break;
+        }
+        case "import_instagram": {
+          const payload = JSON.parse(task.payload);
+          result = await processImportInstagram(task.id, payload);
+          break;
+        }
+        case "import_instagram_backup": {
+          const payload = JSON.parse(task.payload);
+          result = await processImportInstagramBackup(task.id, payload);
+          break;
+        }
+        case "export_xml": {
+          const payload = JSON.parse(task.payload);
+          result = await processExportXmlTask(task.id, payload);
+          break;
+        }
+        case "import_xml": {
+          const payload = JSON.parse(task.payload);
+          await db.update(tasks).set({
+            payload: JSON.stringify({ userId: payload.userId, xmlCleared: true }),
+          }).where(eq(tasks.id, task.id));
+          result = await processImportXmlTask(task.id, payload);
+          break;
+        }
+        default:
+          throw new Error(`Unknown task type: ${task.type}`);
+      }
+
+      if (await isTaskCancelled(task.id)) {
+        log(`[TaskWorker] Task ${task.id} was cancelled during processing`);
+        return true;
+      }
+      await storage.updateTaskStatus(task.id, "completed", result);
+      log(`[TaskWorker] Task ${task.id} completed`);
+      return true;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      log(`[TaskWorker] Task ${task.id} failed: ${errorMessage}`);
+      await storage.updateTaskStatus(task.id, "failed", errorMessage);
       return true;
     }
-    await storage.updateTaskStatus(task.id, "completed", result);
-    log(`[TaskWorker] Task ${task.id} completed`);
-    return true;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    log(`[TaskWorker] Task ${task.id} failed: ${errorMessage}`);
-    await storage.updateTaskStatus(task.id, "failed", errorMessage);
-    return true;
-  }
+  });
 }
 
 async function runWorkerLoop() {

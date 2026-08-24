@@ -19,6 +19,7 @@ import {
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { authenticateExtensionToken } from "../auth";
+import { runAsUser } from "../access";
 
 /**
  * Express helper: pull + verify the extension token, updating last-accessed.
@@ -96,13 +97,15 @@ export function registerRoutes(app: Express) {
     }
 
     try {
-      const cache = new Map<string, Awaited<ReturnType<typeof storage.getAllPeople>>>();
-      const results: Record<string, { found: boolean; personUuid: string | null }> = {};
-      for (const item of parsed.data.items) {
-        const match = await findMatchingPerson(item.name, cache);
-        results[item.tpsId] = { found: !!match, personUuid: match?.id ?? null };
-      }
-      res.json({ results });
+      await runAsUser(session.userId, async () => {
+        const cache = new Map<string, Awaited<ReturnType<typeof storage.getAllPeople>>>();
+        const results: Record<string, { found: boolean; personUuid: string | null }> = {};
+        for (const item of parsed.data.items) {
+          const match = await findMatchingPerson(item.name, cache);
+          results[item.tpsId] = { found: !!match, personUuid: match?.id ?? null };
+        }
+        res.json({ results });
+      });
     } catch (error) {
       console.error("Error in TPS match:", error);
       res.status(500).json({ error: "Failed to match names" });
@@ -119,18 +122,20 @@ export function registerRoutes(app: Express) {
     if (!tpsId) return res.status(400).json({ error: "tpsId is required" });
 
     try {
-      const match = await findMatchingPerson(name);
-      const [record] = await db
-        .select({ id: truePersonSearch.id })
-        .from(truePersonSearch)
-        .where(eq(truePersonSearch.tpsId, tpsId))
-        .limit(1);
+      await runAsUser(session.userId, async () => {
+        const match = await findMatchingPerson(name);
+        const [record] = await db
+          .select({ id: truePersonSearch.id })
+          .from(truePersonSearch)
+          .where(eq(truePersonSearch.tpsId, tpsId))
+          .limit(1);
 
-      res.json({
-        found: !!match,
-        personUuid: match?.id ?? null,
-        extracted: !!record,
-        tpsRecordId: record?.id ?? null,
+        res.json({
+          found: !!match,
+          personUuid: match?.id ?? null,
+          extracted: !!record,
+          tpsRecordId: record?.id ?? null,
+        });
       });
     } catch (error) {
       console.error("Error in TPS person-status:", error);
@@ -160,20 +165,22 @@ export function registerRoutes(app: Express) {
     const { tpsId, firstName, lastName, city, state, phone } = parsed.data;
 
     try {
-      // Provenance tags: mark the source and (when present) the location.
-      const location = [city, state].filter(Boolean).join(", ");
-      const tags = ["truepeoplesearch", ...(location ? [location] : [])];
+      await runAsUser(session.userId, async () => {
+        // Provenance tags: mark the source and (when present) the location.
+        const location = [city, state].filter(Boolean).join(", ");
+        const tags = ["truepeoplesearch", ...(location ? [location] : [])];
 
-      const person = await storage.createPerson({
-        userId: session.userId,
-        firstName,
-        lastName: lastName || "",
-        phone: phone || null,
-        tpsId,
-        tags,
-      } as any);
+        const person = await storage.createPerson({
+          createdByUserId: session.userId,
+          firstName,
+          lastName: lastName || "",
+          phone: phone || null,
+          tpsId,
+          tags,
+        });
 
-      res.status(201).json({ personUuid: person.id });
+        res.status(201).json({ personUuid: person.id });
+      });
     } catch (error) {
       console.error("Error adding TPS person to PRM:", error);
       res.status(500).json({ error: "Failed to add person" });
@@ -218,21 +225,23 @@ export function registerRoutes(app: Express) {
     const data = parsed.data;
 
     try {
-      const now = new Date();
-      const [record] = await db
-        .insert(truePersonSearch)
-        .values({ ...data, importDate: now, updatedAt: now })
-        .returning();
+      await runAsUser(session.userId, async () => {
+        const now = new Date();
+        const [record] = await db
+          .insert(truePersonSearch)
+          .values({ ...data, importDate: now, updatedAt: now })
+          .returning();
 
-      // Backfill the contact's tps_id link when we extracted for a Found person.
-      if (data.personId) {
-        await db
-          .update(people)
-          .set({ tpsId: data.tpsId })
-          .where(eq(people.id, data.personId));
-      }
+        // Backfill the contact's tps_id link when we extracted for a Found person.
+        if (data.personId) {
+          await db
+            .update(people)
+            .set({ tpsId: data.tpsId })
+            .where(eq(people.id, data.personId));
+        }
 
-      res.status(201).json({ tpsRecordId: record.id, status: "extracted" });
+        res.status(201).json({ tpsRecordId: record.id, status: "extracted" });
+      });
     } catch (error) {
       console.error("Error extracting TPS record:", error);
       res.status(500).json({ error: "Failed to extract record" });
