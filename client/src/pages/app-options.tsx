@@ -1,6 +1,6 @@
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Network, Chrome, Key, Search, ChevronRight } from "lucide-react";
+import { Network, Chrome, Key, Search, Sparkles, Layers, Trash2, ChevronRight } from "lucide-react";
 
 const APP_OPTIONS = [
   {
@@ -30,6 +30,27 @@ const APP_OPTIONS = [
     title: "Search Options",
     description: "Customize the order and visibility of global search results",
     testId: "card-search-options-link",
+  },
+  {
+    href: "/experimental",
+    icon: Sparkles,
+    title: "Experimental Features",
+    description: "Enable and test experimental tools and integrations",
+    testId: "card-experimental-features-link",
+  },
+  {
+    href: "/data-types",
+    icon: Layers,
+    title: "Data Types",
+    description: "Manage relationship types, interaction types, and social account types",
+    testId: "card-data-types-link",
+  },
+  {
+    href: "/delete",
+    icon: Trash2,
+    title: "Delete Options",
+    description: "Reset or clean up database records, media, and cached data",
+    testId: "card-delete-options-link",
   },
 ];
 

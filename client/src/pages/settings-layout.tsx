@@ -40,6 +40,7 @@ const ImportSocialMediaPage = lazy(() => import("@/pages/import-social-media"));
 const BackupsPage = lazy(() => import("@/pages/backups-page"));
 const ImagePassInPage = lazy(() => import("@/pages/image-pass-in"));
 const InstagramXmlTransferPage = lazy(() => import("@/pages/instagram-xml-transfer"));
+const ExtensionImportsSettingsPage = lazy(() => import("@/pages/extension-imports-settings"));
 const TasksSettingsPage = lazy(() => import("@/pages/tasks-settings"));
 const ImageStorageSettingsPage = lazy(() => import("@/pages/image-storage-settings"));
 const ImageTablePage = lazy(() => import("@/pages/image-table-page"));
@@ -75,6 +76,15 @@ const settingsMenuItems: MenuItem[] = [
     icon: Home,
   },
   {
+    title: "Admin",
+    url: "/settings/admin",
+    icon: Shield,
+    subItems: [
+      { title: "Admin Mode", url: "/settings/admin", icon: Eye },
+      { title: "User Management", url: "/settings/admin/users", icon: Users },
+    ],
+  },
+  {
     title: "User Options",
     url: "/settings/user",
     icon: User,
@@ -88,12 +98,9 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
       { title: "Search Options", url: "/settings/search", icon: Search },
       { title: "Experimental Features", url: "/settings/experimental", icon: Sparkles },
+      { title: "Data Types", url: "/settings/data-types", icon: Layers },
+      { title: "Delete Options", url: "/settings/delete", icon: Trash2 },
     ],
-  },
-  {
-    title: "Data Types",
-    url: "/settings/data-types",
-    icon: Layers,
   },
   {
     title: "Image Storage",
@@ -130,6 +137,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Contacts", url: "/settings/import-export/contacts", icon: Users },
       { title: "Social Media", url: "/settings/import-export/social-media", icon: Share2 },
+      { title: "Ext Imports", url: "/settings/import-export/extension-imports", icon: Chrome },
       { title: "Backups", url: "/settings/import-export/backups", icon: Archive },
       { title: "Image Pass In", url: "/settings/import-export/image-pass-in", icon: ImageIcon },
       { title: "Instagram XML Transfer", url: "/settings/import-export/instagram-xml", icon: Camera },
@@ -145,15 +153,6 @@ const settingsMenuItems: MenuItem[] = [
     ],
   },
   {
-    title: "Admin",
-    url: "/settings/admin",
-    icon: Shield,
-    subItems: [
-      { title: "Admin Mode", url: "/settings/admin", icon: Eye },
-      { title: "User Management", url: "/settings/admin/users", icon: Users },
-    ],
-  },
-  {
     title: "API Documentation",
     url: "/settings/api",
     icon: Book,
@@ -161,18 +160,12 @@ const settingsMenuItems: MenuItem[] = [
       { title: "API Settings", url: "/settings/api/settings", icon: Key },
     ],
   },
-  {
-    title: "Delete Options",
-    url: "/settings/delete",
-    icon: Trash2,
-  },
 ];
 
 export function SettingsSidebar() {
   const [location] = useLocation();
 
   const isAdminActive = location.startsWith("/settings/admin");
-  const isDataTypesActive = location.startsWith("/settings/data-types");
   const isImportExportActive = location.startsWith("/settings/import-export") || location === "/settings/instagram";
   const isRecognitionActive = location.startsWith("/settings/recognition");
   const isAppOptionsActive =
@@ -180,7 +173,9 @@ export function SettingsSidebar() {
     location.startsWith("/settings/social-graph") ||
     location.startsWith("/settings/chrome-extension") ||
     location.startsWith("/settings/experimental") ||
-    location.startsWith("/settings/search");
+    location.startsWith("/settings/search") ||
+    location.startsWith("/settings/data-types") ||
+    location.startsWith("/settings/delete");
   const isApiDocsActive = location.startsWith("/settings/api");
   const isImageStorageActive = location.startsWith("/settings/image-storage") && location !== "/settings/image-storage/tasks";
   const isIntelligenceActive = location.startsWith("/settings/intelligence") || location === "/settings/vector";
@@ -189,7 +184,6 @@ export function SettingsSidebar() {
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
       case "/settings/admin": return isAdminActive;
-      case "/settings/data-types": return isDataTypesActive;
       case "/settings/recognition": return isRecognitionActive;
       case "/settings/app": return isAppOptionsActive;
       case "/settings/image-storage": return isImageStorageActive;
@@ -306,6 +300,7 @@ export default function SettingsLayout() {
           <Route path="/recognition" component={RecognitionSettingsPage} />
           <Route path="/import-export/contacts" component={ImportContactsPage} />
           <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
+          <Route path="/import-export/extension-imports" component={ExtensionImportsSettingsPage} />
           <Route path="/import-export/backups" component={BackupsPage} />
           <Route path="/backups" component={BackupsPage} />
           <Route path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />

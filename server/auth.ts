@@ -16,9 +16,18 @@ declare global {
 }
 
 /** Strip sensitive hash before sending a user object down to the client. */
-export function publicUser(user: SelectUser): Omit<SelectUser, "password"> {
+export function publicUser(
+  user: SelectUser,
+  session?: { adminView?: boolean },
+): Omit<SelectUser, "password"> & { adminView?: boolean } {
   const { password: _, ...safe } = user;
-  return safe;
+  const isAdmin = isAdminRole(user.role);
+  const sessionAdminView =
+    session && typeof session === "object" && session.adminView === true;
+  return {
+    ...safe,
+    adminView: isAdmin && sessionAdminView,
+  };
 }
 
 const scryptAsync = promisify(scrypt);
@@ -72,7 +81,7 @@ export function setupAuth(app: Express) {
   // during first-time setup or after an explicit database reset.
 
   app.post("/api/login", passport.authenticate("local"), (req, res) => {
-    res.status(200).json(publicUser(req.user!));
+    res.status(200).json(publicUser(req.user!, req.session));
   });
 
   app.post("/api/logout", (req, res, next) => {
@@ -84,7 +93,7 @@ export function setupAuth(app: Express) {
 
   app.get("/api/user", (req, res) => {
     if (!req.isAuthenticated() || !req.user) return res.sendStatus(401);
-    res.json(publicUser(req.user));
+    res.json(publicUser(req.user, req.session));
   });
 }
 

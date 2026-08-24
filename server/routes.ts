@@ -8,6 +8,7 @@ import { registerRoutes as registerFamily } from "./routes/family";
 import { registerRoutes as registerMessages } from "./routes/messages";
 import { registerRoutes as registerOsint } from "./routes/osint";
 import { registerRoutes as registerTps } from "./routes/tps";
+import { registerPendingImportsRoutes } from "./routes/pending-imports";
 import { registerRoutes as registerBackups } from "./routes/backups";
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -18,11 +19,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerAuthSetup(app);
   registerPeopleGroups(app);
   registerSocialMedia(app);
-  // TPS uses extension-token auth (no browser session), so it MUST be registered
+  // TPS and pending-imports use extension-token auth (no browser session), so they MUST be registered
   // before registerMessages — that module mounts a catch-all router at
   // app.use("/api", ...) whose gate rejects any non-session request with 401
-  // "Unauthorized", which would otherwise shadow every /api/v1/tps/* route.
+  // "Unauthorized", which would otherwise shadow every /api/v1/* route.
   registerTps(app);
+  registerPendingImportsRoutes(app);
   registerAiVector(app);
   registerFamily(app);
   registerMessages(app);

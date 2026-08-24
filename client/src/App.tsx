@@ -59,6 +59,7 @@ const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
 const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
 const SuperSearchPage = lazy(() => import("@/pages/super-search"));
 const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
+const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-imports"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 
@@ -153,6 +154,7 @@ function Router() {
         <ProtectedRoute path="/subgroup/:id" component={SubGroupProfile} />
         <ProtectedRoute path="/group/:id" component={GroupProfile} />
         <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
+        <ProtectedRoute path="/social-accounts/pending-imports" component={PendingSocialImportsPage} />
         <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
         <ProtectedRoute path="/graph" component={Graph} />
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />

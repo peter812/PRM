@@ -22,6 +22,13 @@
       "when": 1782941289007,
       "tag": "0002_neat_jack_murdock",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783000000000,
+      "tag": "0003_assign_unassigned_daily_notes_to_super_admin",
+      "breakpoints": true
     }
   ]
 }

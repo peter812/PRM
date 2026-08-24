@@ -480,6 +480,7 @@ async function validateAndSyncSchema(): Promise<void> {
         agent_mode: "BOOLEAN NOT NULL DEFAULT FALSE",
       },
       daily_notes: {
+        user_id: "INTEGER REFERENCES users(id) ON DELETE CASCADE",
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         updated_at: "TIMESTAMP",
@@ -680,6 +681,7 @@ async function validateAndSyncSchema(): Promise<void> {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS daily_notes (
           id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           date TEXT NOT NULL,
           user_title TEXT NOT NULL DEFAULT '',
           body TEXT NOT NULL DEFAULT '',
@@ -961,10 +963,11 @@ async function ensureSsoEmailColumn(): Promise<void> {
  * Idempotent: safe to run on every boot.
  */
 async function migrateToMultiUser(): Promise<void> {
-  // The single owner of everything that exists today. Prefer whoever owns the
-  // "Me" person; fall back to the lowest user id.
+  // The single owner of everything that exists today. Prefer the super admin;
+  // then whoever owns the "Me" person; fall back to the lowest user id.
   const primary = await pool.query(`
     SELECT COALESCE(
+      (SELECT id FROM users WHERE role = 'super_admin' ORDER BY id LIMIT 1),
       (SELECT user_id FROM people WHERE user_id IS NOT NULL ORDER BY user_id LIMIT 1),
       (SELECT id FROM users ORDER BY id LIMIT 1)
     ) AS id
@@ -1224,6 +1227,9 @@ export async function initializeDatabase(): Promise<void> {
       await seedSocialAccountTypes();
     }
 
+    // Assign any unassigned daily notes to the super admin owner
+    await migrateUnassignedDailyNotesToSuperAdmin();
+
     // Migrate Partner relationship types to spouse role if needed
     await migratePartnerToSpouse();
 
@@ -1417,3 +1423,73 @@ async function migrateFamilyToNormalizedSchema(): Promise<void> {
     log(`Error migrating family relationships to normalized schema: ${error}`);
   }
 }
+
+/**
+ * Assigns any unassigned daily notes (where user_id is NULL or references a non-existent user)
+ * to the super admin instance owner.
+ */
+async function migrateUnassignedDailyNotesToSuperAdmin(): Promise<void> {
+  log("Checking for unassigned daily notes to assign to super admin...");
+  try {
+    if (!(await tableExists("daily_notes")) || !(await tableExists("users"))) {
+      return;
+    }
+
+    // Ensure user_id column exists
+    await addColumnIfNotExists(
+      "daily_notes",
+      "user_id",
+      "INTEGER REFERENCES users(id) ON DELETE CASCADE"
+    );
+
+    // Find the super admin owner (prefer role = 'super_admin', fallback to Me user or first user)
+    const superAdminRes = await pool.query(`
+      SELECT COALESCE(
+        (SELECT id FROM users WHERE role = 'super_admin' ORDER BY id ASC LIMIT 1),
+        (SELECT user_id FROM people WHERE user_id IS NOT NULL ORDER BY user_id ASC LIMIT 1),
+        (SELECT id FROM users ORDER BY id ASC LIMIT 1)
+      ) AS id
+    `);
+
+    const superAdminId: number | null = superAdminRes.rows[0]?.id ?? null;
+    if (!superAdminId) {
+      log("No users found to assign daily notes to. Skipping daily notes assignment.");
+      return;
+    }
+
+    // Check count of unassigned or invalid-owner daily notes
+    const unassignedCountRes = await pool.query(`
+      SELECT COUNT(*) as count FROM daily_notes
+      WHERE user_id IS NULL OR user_id NOT IN (SELECT id FROM users)
+    `);
+    const count = parseInt(unassignedCountRes.rows[0]?.count || "0", 10);
+
+    if (count > 0) {
+      log(`Assigning ${count} unassigned daily note(s) to super admin (user id: ${superAdminId})...`);
+      await pool.query(
+        `UPDATE daily_notes
+         SET user_id = $1
+         WHERE user_id IS NULL OR user_id NOT IN (SELECT id FROM users)`,
+        [superAdminId]
+      );
+      log(`Successfully assigned ${count} daily note(s) to super admin (user id: ${superAdminId})`);
+    }
+
+    // Enforce NOT NULL on user_id if there are no remaining NULLs
+    try {
+      await pool.query(`ALTER TABLE daily_notes ALTER COLUMN user_id SET NOT NULL`);
+    } catch (e) {
+      log(`Note: could not enforce NOT NULL on daily_notes.user_id: ${e}`);
+    }
+
+    // Ensure index on user_id exists
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS daily_notes_user_id_idx ON daily_notes(user_id)`);
+    } catch (e) {
+      log(`Note: could not create index daily_notes_user_id_idx: ${e}`);
+    }
+  } catch (error) {
+    log(`Error assigning unassigned daily notes to super admin: ${error}`);
+  }
+}
+

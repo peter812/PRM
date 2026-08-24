@@ -86,6 +86,7 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/v1/tps/person-status",
   "/v1/tps/add",
   "/v1/tps/extract",
+  "/v1/pending-imports",
 ]);
 
 
@@ -2196,7 +2197,7 @@ export function registerRoutes(app: Express) {
             console.error("Error logging in after setup:", err);
             return res.status(500).json({ error: "Setup completed but login failed" });
           }
-          res.status(201).json(user);
+          res.status(201).json(publicUser(user, req.session));
         });
       } catch (error) {
         console.error("Error initializing setup:", error);
@@ -2373,7 +2374,7 @@ export function registerRoutes(app: Express) {
           });
         }
   
-        res.json(updatedUser);
+        res.json(publicUser(updatedUser, req.session));
       } catch (error) {
         console.error("Error updating user:", error);
         res.status(400).json({ error: "Failed to update user" });
@@ -2384,7 +2385,7 @@ export function registerRoutes(app: Express) {
     app.get("/api/users", requireAdmin, async (req, res) => {
       try {
         const usersList = await storage.getAllUsers();
-        res.json(usersList.map(publicUser));
+        res.json(usersList.map((u) => publicUser(u)));
       } catch (error) {
         console.error("Error fetching users:", error);
         res.status(500).json({ error: "Failed to fetch users" });

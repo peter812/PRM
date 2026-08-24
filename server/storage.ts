@@ -40,6 +40,9 @@ import {
   dailyNoteInvolvedParties,
   aiChats,
   dailyNoteAuditLogs,
+  pendingSocialAccountImports,
+  type PendingSocialAccountImport,
+  type InsertPendingSocialAccountImport,
   type DailyNote,
   type InsertDailyNote,
   type DailyNoteEvent,
@@ -543,6 +546,13 @@ export interface IStorage {
 
   getConversationsByPerson(personId: string, offset: number, limit: number): Promise<{ conversations: ConversationWithParticipants[]; total: number }>;
   getConversationsBySocialAccount(socialAccountId: string, offset: number, limit: number): Promise<{ conversations: ConversationWithParticipants[]; total: number }>;
+
+  // Pending social account imports
+  createPendingSocialAccountImport(data: InsertPendingSocialAccountImport): Promise<PendingSocialAccountImport>;
+  getPendingSocialAccountImports(options?: { page?: number; limit?: number; status?: "pending" | "imported" | "all"; search?: string }): Promise<{ items: Array<Omit<PendingSocialAccountImport, "accountFollowers" | "accountFollowing"> & { followersCount: number; followingCount: number }>; total: number; page: number; totalPages: number }>;
+  getPendingSocialAccountImportById(id: string): Promise<PendingSocialAccountImport | undefined>;
+  markPendingImportAsImported(id: string): Promise<PendingSocialAccountImport | undefined>;
+  deletePendingSocialAccountImport(id: string): Promise<boolean>;
 
   // Session store
   sessionStore: session.Store;
@@ -5189,6 +5199,117 @@ export class DatabaseStorage implements IStorage {
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
     );
     this.settingsCache.set(key, value);
+  }
+
+  async createPendingSocialAccountImport(data: InsertPendingSocialAccountImport): Promise<PendingSocialAccountImport> {
+    const [row] = await db
+      .insert(pendingSocialAccountImports)
+      .values(data)
+      .returning();
+    return row;
+  }
+
+  async getPendingSocialAccountImports(options: { page?: number; limit?: number; status?: "pending" | "imported" | "all"; search?: string } = {}) {
+    const page = Math.max(1, options.page || 1);
+    const limit = Math.min(100, Math.max(1, options.limit || 20));
+    const offset = (page - 1) * limit;
+
+    const conditions: any[] = [];
+    if (options.status === "pending") {
+      conditions.push(eq(pendingSocialAccountImports.alreadyAdded, false));
+    } else if (options.status === "imported") {
+      conditions.push(eq(pendingSocialAccountImports.alreadyAdded, true));
+    }
+
+    if (options.search && options.search.trim()) {
+      const q = `%${options.search.trim()}%`;
+      conditions.push(or(
+        ilike(pendingSocialAccountImports.accountUsername, q),
+        ilike(pendingSocialAccountImports.accountDisplayName, q),
+        ilike(pendingSocialAccountImports.accountBio, q)
+      ));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [countResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(pendingSocialAccountImports)
+      .where(whereClause);
+
+    const total = Number(countResult?.count || 0);
+
+    const rows = await db
+      .select({
+        id: pendingSocialAccountImports.id,
+        timestampAdded: pendingSocialAccountImports.timestampAdded,
+        timestampImported: pendingSocialAccountImports.timestampImported,
+        alreadyAdded: pendingSocialAccountImports.alreadyAdded,
+        accountUsername: pendingSocialAccountImports.accountUsername,
+        accountDisplayName: pendingSocialAccountImports.accountDisplayName,
+        accountBio: pendingSocialAccountImports.accountBio,
+        accountWebsite: pendingSocialAccountImports.accountWebsite,
+        accountEmail: pendingSocialAccountImports.accountEmail,
+        accountPhone: pendingSocialAccountImports.accountPhone,
+        accountLocationArea: pendingSocialAccountImports.accountLocationArea,
+        accountFollowers: pendingSocialAccountImports.accountFollowers,
+        accountFollowing: pendingSocialAccountImports.accountFollowing,
+        createdAt: pendingSocialAccountImports.createdAt,
+        updatedAt: pendingSocialAccountImports.updatedAt,
+      })
+      .from(pendingSocialAccountImports)
+      .where(whereClause)
+      .orderBy(desc(pendingSocialAccountImports.timestampAdded))
+      .limit(limit)
+      .offset(offset);
+
+    const items = rows.map(row => {
+      const followersCount = row.accountFollowers ? row.accountFollowers.split("\n").filter(l => l.trim().length > 0).length : 0;
+      const followingCount = row.accountFollowing ? row.accountFollowing.split("\n").filter(l => l.trim().length > 0).length : 0;
+      const { accountFollowers, accountFollowing, ...rest } = row;
+      return {
+        ...rest,
+        followersCount,
+        followingCount,
+      };
+    });
+
+    return {
+      items,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit) || 1,
+    };
+  }
+
+  async getPendingSocialAccountImportById(id: string): Promise<PendingSocialAccountImport | undefined> {
+    const [row] = await db
+      .select()
+      .from(pendingSocialAccountImports)
+      .where(eq(pendingSocialAccountImports.id, id))
+      .limit(1);
+    return row;
+  }
+
+  async markPendingImportAsImported(id: string): Promise<PendingSocialAccountImport | undefined> {
+    const [updated] = await db
+      .update(pendingSocialAccountImports)
+      .set({
+        alreadyAdded: true,
+        timestampImported: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(pendingSocialAccountImports.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deletePendingSocialAccountImport(id: string): Promise<boolean> {
+    const result = await db
+      .delete(pendingSocialAccountImports)
+      .where(eq(pendingSocialAccountImports.id, id))
+      .returning({ id: pendingSocialAccountImports.id });
+    return result.length > 0;
   }
 }
 

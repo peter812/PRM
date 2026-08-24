@@ -705,6 +705,28 @@ export const sexGuessQueue = pgTable("sex_guess_queue", {
   index("sex_guess_queue_person_id_idx").on(t.personId),
 ]);
 
+// Pending social account imports table - scraped Chrome extension payloads awaiting review / ingestion
+export const pendingSocialAccountImports = pgTable("pending_social_account_imports", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  timestampAdded: timestamp("timestamp_added", { withTimezone: true }).notNull(),
+  timestampImported: timestamp("timestamp_imported", { withTimezone: true }),
+  alreadyAdded: boolean("already_added").notNull().default(false),
+  accountUsername: varchar("account_username", { length: 255 }).notNull(),
+  accountDisplayName: varchar("account_display_name", { length: 255 }),
+  accountBio: text("account_bio"),
+  accountWebsite: varchar("account_website", { length: 500 }),
+  accountEmail: varchar("account_email", { length: 255 }),
+  accountPhone: varchar("account_phone", { length: 100 }),
+  accountLocationArea: varchar("account_location_area", { length: 255 }),
+  accountFollowers: text("account_followers"), // Raw CSV string
+  accountFollowing: text("account_following"), // Raw CSV string
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_pending_imports_username").on(t.accountUsername),
+  index("idx_pending_imports_already_added").on(t.alreadyAdded),
+]);
+
 // Relations
 export const usersRelations = relations(users, ({ one }) => ({
   person: one(people, {
@@ -1350,6 +1372,14 @@ export const insertTruePersonSearchSchema = createInsertSchema(truePersonSearch)
   updatedAt: true,
   importDate: true,
 });
+
+export const insertPendingSocialAccountImportSchema = createInsertSchema(pendingSocialAccountImports).omit({
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type PendingSocialAccountImport = typeof pendingSocialAccountImports.$inferSelect;
+export type InsertPendingSocialAccountImport = z.infer<typeof insertPendingSocialAccountImportSchema>;
 
 // Types
 export type User = typeof users.$inferSelect;

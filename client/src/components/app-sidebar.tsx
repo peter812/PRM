@@ -23,6 +23,7 @@ import {
   ChevronRight,
   Leaf,
   Radar,
+  Inbox,
 } from "lucide-react";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 import { Link, useLocation } from "wouter";
@@ -90,6 +91,11 @@ const menuItems = [
         title: "Account Matching",
         url: "/account-matching",
         icon: Link2,
+      },
+      {
+        title: "Pending Imports",
+        url: "/social-accounts/pending-imports",
+        icon: Inbox,
       },
     ],
   },
