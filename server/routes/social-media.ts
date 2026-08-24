@@ -3,7 +3,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, photos, notes, faces, isAdminRole, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -34,6 +34,7 @@ import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
 import { hashPassword, requireAuth, authenticateExtensionToken } from "../auth";
+import { enterAccessContext } from "../access";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -60,6 +61,21 @@ import { parseExportZipName } from "../instagram-dm-import";
 
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+/**
+ * Chrome-extension routes are on the public path list, so accessMiddleware
+ * never ran for them. Install the access context once the extension token has
+ * identified the user, otherwise every filtered storage read throws.
+ */
+async function enterExtensionAccess(userId: number): Promise<void> {
+  const user = await storage.getUser(userId);
+  enterAccessContext({
+    userId,
+    isAdmin: isAdminRole(user?.role),
+    adminView: false,
+    system: false,
+  });
+}
 
 // Instagram DM export zips can contain video and far exceed what we want in
 // memory — stream them to the OS temp dir instead (task worker deletes the file)
@@ -542,7 +558,7 @@ export function registerRoutes(app: Express) {
     app.post("/api/social-accounts", async (req, res) => {
       try {
         const validatedData = insertSocialAccountSchema.parse(req.body);
-        const account = await storage.createSocialAccount(validatedData);
+        const account = await storage.createSocialAccount({ ...validatedData, createdByUserId: req.user!.id });
         sseManager.broadcast("social_account.created", { id: account.id, username: account.username });
         syncEntityInBackground("social_account", account.id);
         res.status(201).json(account);
@@ -1427,6 +1443,7 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Social account not found" });
         }
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "refresh_follower_count",
           status: "pending",
           title: account.username,
@@ -1443,6 +1460,7 @@ export function registerRoutes(app: Express) {
     app.post("/api/tasks/mass-refresh-follower-count", async (req, res) => {
       try {
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "mass_refresh_follower_count",
           status: "pending",
           payload: JSON.stringify({}),
@@ -1463,6 +1481,7 @@ export function registerRoutes(app: Express) {
         }
         const includeHistory = req.body.includeHistory === true || req.body.includeHistory === "true";
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "export_xml",
           status: "pending",
           payload: JSON.stringify({ includeHistory, userId: req.user.id }),
@@ -1486,6 +1505,7 @@ export function registerRoutes(app: Express) {
         }
         const xmlText = req.file.buffer.toString("utf-8");
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "import_xml",
           status: "pending",
           payload: JSON.stringify({ xml: xmlText, userId: req.user.id }),
@@ -1528,6 +1548,7 @@ export function registerRoutes(app: Express) {
           const rootUsername = parsedName?.username || account.username;
 
           const task = await storage.createTask({
+            userId: req.user!.id,
             type: "import_instagram_backup",
             status: "pending",
             payload: JSON.stringify({
@@ -1587,6 +1608,7 @@ export function registerRoutes(app: Express) {
         });
 
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "multi_image_download",
           status: "pending",
           payload: JSON.stringify({ images: resolvedImages }),
@@ -1727,6 +1749,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "imageUrl is required" });
         }
         const task = await storage.createImageTask({
+          userId: req.user!.id,
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: parentTaskId || null,
@@ -1799,6 +1822,7 @@ export function registerRoutes(app: Express) {
       }
       try {
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "transfer_images_to_local",
           status: "pending",
           payload: JSON.stringify({ userId: req.user.id }),
@@ -1817,6 +1841,7 @@ export function registerRoutes(app: Express) {
       }
       try {
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "transfer_images_to_s3",
           status: "pending",
           payload: JSON.stringify({ userId: req.user.id }),
@@ -2284,6 +2309,8 @@ export function registerRoutes(app: Express) {
         // Update session's last accessed timestamp
         await storage.updateExtensionSessionLastAccessed(session.id);
 
+        await enterExtensionAccess(session.userId);
+
         // 2. Validate payload
         const parsedResult = importInstagramPostSchema.safeParse(req.body);
         if (!parsedResult.success) {
@@ -2416,6 +2443,9 @@ export function registerRoutes(app: Express) {
         }
 
         await storage.updateExtensionSessionLastAccessed(session.id);
+
+        await enterExtensionAccess(session.userId);
+
 
         const { postIds } = req.body;
         if (!Array.isArray(postIds)) {

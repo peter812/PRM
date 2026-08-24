@@ -1,5 +1,7 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, ShieldCheck } from "lucide-react";
+import { isAdminRole } from "@shared/schema";
+import { useAuth } from "@/hooks/use-auth";
 import {
   Sidebar,
   SidebarContent,
@@ -23,6 +25,8 @@ import {
 import { lazy, Suspense } from "react";
 
 const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
+const AdminSettingsPage = lazy(() => import("@/pages/admin-settings"));
+const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
@@ -59,6 +63,8 @@ interface MenuItem {
   url: string;
   icon: React.ComponentType<{ className?: string }>;
   subItems?: { title: string; url: string; icon: React.ComponentType<{ className?: string }> }[];
+  /** Only rendered for admins and super admins. */
+  adminOnly?: boolean;
 }
 
 const settingsMenuItems: MenuItem[] = [
@@ -66,6 +72,15 @@ const settingsMenuItems: MenuItem[] = [
     title: "Back to Site",
     url: "/people",
     icon: ArrowLeft,
+  },
+  {
+    title: "Admin",
+    url: "/settings/admin",
+    icon: ShieldCheck,
+    adminOnly: true,
+    subItems: [
+      { title: "Users", url: "/settings/admin/users", icon: Users },
+    ],
   },
   {
     title: "Home",
@@ -159,7 +174,10 @@ const settingsMenuItems: MenuItem[] = [
 
 export function SettingsSidebar() {
   const [location] = useLocation();
+  const { user } = useAuth();
+  const isAdmin = isAdminRole(user?.role);
 
+  const isAdminActive = location.startsWith("/settings/admin");
   const isDataTypesActive = location.startsWith("/settings/data-types");
   const isImportExportActive = location.startsWith("/settings/import-export") || location === "/settings/instagram";
   const isRecognitionActive = location.startsWith("/settings/recognition");
@@ -176,6 +194,7 @@ export function SettingsSidebar() {
 
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
+      case "/settings/admin": return isAdminActive;
       case "/settings/data-types": return isDataTypesActive;
       case "/settings/recognition": return isRecognitionActive;
       case "/settings/app": return isAppOptionsActive;
@@ -195,6 +214,8 @@ export function SettingsSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {settingsMenuItems.map((item) => {
+                if (item.adminOnly && !isAdmin) return null;
+
                 if (item.subItems) {
                   const isActive = getIsActive(item);
                   return (
@@ -258,6 +279,39 @@ export function SettingsSidebar() {
   );
 }
 
+/**
+ * Renders admin-only settings pages, or a plain "not available" panel for
+ * everyone else. Client-side only — the real enforcement is `requireAdmin` on
+ * the API, which these pages would hit anyway.
+ */
+function AdminOnly({ children }: { children: React.ReactNode }) {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full w-full">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!isAdminRole(user?.role)) {
+    return (
+      <div className="container max-w-full md:max-w-3xl py-8 px-4 md:pl-12 mx-auto md:mx-0">
+        <h1 className="text-2xl font-semibold flex items-center gap-2 mb-2">
+          <ShieldCheck className="h-6 w-6" />
+          Admin
+        </h1>
+        <p className="text-muted-foreground">
+          These settings are only available to instance admins.
+        </p>
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+}
+
 export default function SettingsLayout() {
   return (
     <div className="flex-1 overflow-auto h-full">
@@ -269,6 +323,10 @@ export default function SettingsLayout() {
         <Switch>
           <Route path="/" component={() => <Redirect to="/home" />} />
           <Route path="/home" component={SettingsHomePage} />
+          {/* The sidebar hides these for non-admins; the guard here is what
+              actually stops someone typing the URL. The API enforces it too. */}
+          <Route path="/admin/users" component={() => <AdminOnly><AdminUsersPage /></AdminOnly>} />
+          <Route path="/admin" component={() => <AdminOnly><AdminSettingsPage /></AdminOnly>} />
           <Route path="/user" component={UserOptionsPage} />
           <Route path="/app" component={AppOptionsPage} />
           <Route path="/search" component={SearchSettingsPage} />

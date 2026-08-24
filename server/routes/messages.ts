@@ -97,7 +97,7 @@ export function registerRoutes(app: any) {
 
       // 1. Create conversation
       const conversation = await storage.createConversation({
-        userId,
+        createdByUserId: userId,
         title: parsed.title || null,
         channelType: parsed.channelType,
         socialAccountId: parsed.socialAccountId || null,

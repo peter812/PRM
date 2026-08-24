@@ -165,7 +165,6 @@ docker ps
 | `S3_BUCKET` | Yes | S3 bucket name | `peoplewild` |
 | `S3_ACCESS_KEY` | Yes | S3 access key | Your S3 access key |
 | `S3_SECRET_KEY` | Yes | S3 secret key | Your S3 secret key |
-| `DISABLE_AUTH` | No | Disable authentication (dev only) | `true` or `false` |
 
 ## Security Notes
 

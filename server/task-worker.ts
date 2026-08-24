@@ -5,7 +5,8 @@ import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally } from "./local-storage";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
-import type { MessageAttachment, MessageMetadata } from "@shared/schema";
+import type { MessageAttachment, MessageMetadata, Task, ImageTask } from "@shared/schema";
+import { runAsSystem, runAsUser } from "./access";
 import { log } from "./vite";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
 import fs from "fs";
@@ -234,9 +235,12 @@ async function processConvertImg(imageTaskId: string, payload: { photoId?: strin
 }
 
 async function processNextImageTask(): Promise<boolean> {
-  const task = await storage.getNextPendingImageTask();
+  const task = await runAsSystem(() => storage.getNextPendingImageTask());
   if (!task) return false;
+  return runAsUser(task.userId, "user", () => runImageTask(task));
+}
 
+async function runImageTask(task: ImageTask): Promise<boolean> {
   log(`[ImageWorker] Processing image task ${task.id} (type: ${task.type})`);
   await storage.updateImageTaskStatus(task.id, "in_progress");
 
@@ -427,7 +431,7 @@ async function processExportXmlTask(taskId: string, payload: {
   const [allProfileVersions, allFollows, mePersonResult] = await Promise.all([
     storage.getAllProfileVersions(),
     storage.getAllFollows(),
-    db.select().from(people).where(isNotNull(people.userId)).limit(1),
+    db.select().from(people).where(eq(people.userId, payload.userId)).limit(1),
   ]);
 
   const [
@@ -925,7 +929,8 @@ async function processImportXmlTask(taskId: string, payload: {
   const xmlText = payload.xml;
   const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 
-  const mePersonResult = await db.select().from(people).where(isNotNull(people.userId)).limit(1);
+  // The importing user's own "Me" person — each user has their own (§8.4).
+  const mePersonResult = await db.select().from(people).where(eq(people.userId, payload.userId)).limit(1);
   const mePersonId = mePersonResult[0]?.id || null;
 
   const replaceZeroUUID = (uuid: string): string => {
@@ -1100,6 +1105,7 @@ async function processImportXmlTask(taskId: string, payload: {
     try {
       await storage.createPersonWithId({
         id, firstName, lastName,
+        createdByUserId: payload.userId,
         email: email || null, phone: phone || null, company: company || null, title: title || null,
         tags: tags.length > 0 ? tags : [],
         imageUrl: imageUrl || null,
@@ -1125,6 +1131,7 @@ async function processImportXmlTask(taskId: string, payload: {
     try {
       await storage.createGroupWithId({
         id, name, color,
+        createdByUserId: payload.userId,
         type: type.length > 0 ? type : [],
         members: processedMembers.length > 0 ? processedMembers : [],
         imageUrl: imageUrl || null,
@@ -1146,6 +1153,7 @@ async function processImportXmlTask(taskId: string, payload: {
     try {
       await storage.createRelationshipWithId({
         id, fromPersonId, toPersonId, typeId,
+        createdByUserId: payload.userId,
         notes: notes || null,
         familyRelationshipType: (familyRelationshipType || null) as any,
       });
@@ -1205,6 +1213,7 @@ async function processImportXmlTask(taskId: string, payload: {
     try {
       await storage.createInteractionWithId({
         id, typeId: typeId || undefined,
+        createdByUserId: payload.userId,
         title: interactionTitle || undefined,
         date: new Date(date),
         description: description || undefined,
@@ -1227,7 +1236,7 @@ async function processImportXmlTask(taskId: string, payload: {
     const imageUrl = unescapeXml(parseXmlTag("image_url", block));
     const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
     try {
-      await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
+      await storage.createNoteWithId({ id, userId: payload.userId, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
       importedCounts.notes++;
     } catch (e) { console.error(`Error importing note ${id}:`, e); }
   }
@@ -1302,6 +1311,7 @@ async function processImportXmlTask(taskId: string, payload: {
     try {
       const created = await storage.createSocialAccountWithId({
         id, username,
+        createdByUserId: payload.userId,
         ownerUuid: processedOwnerUuid || null,
         typeId: typeId || null,
         internalAccountCreationType: internalAccountCreationType || "Import",
@@ -1451,7 +1461,7 @@ async function processImportXmlTask(taskId: string, payload: {
 
     try {
       await db.insert(dailyNotes).values({
-        id, date, userTitle, body,
+        id, userId: payload.userId, date, userTitle, body,
         createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
         updatedAt: updatedAtStr ? new Date(updatedAtStr) : null,
       }).onConflictDoNothing();
@@ -1595,6 +1605,16 @@ async function processImportXmlTask(taskId: string, payload: {
   return JSON.stringify({ imported: importedCounts, skipped: skippedCounts });
 }
 
+/**
+ * The user a background task is running on behalf of (§4.5). Rows a worker
+ * creates are attributed to them, so results land in the right user's view.
+ */
+async function taskUserId(taskId: string): Promise<number> {
+  const task = await storage.getTaskById(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+  return task.userId;
+}
+
 async function isTaskCancelled(taskId: string): Promise<boolean> {
   const task = await storage.getTaskById(taskId);
   return !task || task.status === "cancelled" || task.status === "failed";
@@ -1714,6 +1734,7 @@ async function processImportInstagram(taskId: string, payload: {
   skippedRows: number;
 }): Promise<string> {
   const { accountId, targetAccountUsername, importType, forceUpdateImages, rows, skippedRows } = payload;
+  const ownerId = await taskUserId(taskId);
 
   const instagramType = await storage.getSocialAccountTypeByName("instagram");
   const instagramTypeId = instagramType?.id || null;
@@ -1757,6 +1778,7 @@ async function processImportInstagram(taskId: string, payload: {
         await storage.createImageTask({
           type: "download_img_instagram",
           status: "pending",
+          userId: ownerId,
           parentTaskId: taskId,
           payload: JSON.stringify({
             socialAccountId: existingAccount.id,
@@ -1773,6 +1795,8 @@ async function processImportInstagram(taskId: string, payload: {
         ownerUuid: null,
         typeId: instagramTypeId,
         internalAccountCreationType: `${targetAccountUsername} import`,
+
+        createdByUserId: ownerId,
       });
 
       const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
@@ -1787,6 +1811,7 @@ async function processImportInstagram(taskId: string, payload: {
         await storage.createImageTask({
           type: "download_img_instagram",
           status: "pending",
+          userId: ownerId,
           parentTaskId: taskId,
           payload: JSON.stringify({
             socialAccountId: newAccount.id,
@@ -1969,6 +1994,8 @@ async function importOneDmThread(
         ownerUuid: null,
         typeId: instagramType?.id || null,
         internalAccountCreationType: "dm backup import",
+
+        createdByUserId: userId,
       });
       const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
       if (currentProfile) {
@@ -1993,7 +2020,7 @@ async function importOneDmThread(
   let conversation = await storage.getConversationByIgThreadId(parsed.threadId);
   if (!conversation) {
     conversation = await storage.createConversation({
-      userId,
+      createdByUserId: userId,
       title: parsed.title,
       channelType: "instagram",
       // Primary "other party" ref; both sides are also in participants below
@@ -2844,9 +2871,15 @@ function runLabelPropagation(nodes: string[], edges: [string, string][], maxIter
 }
 
 async function processNextTask(): Promise<boolean> {
-  const task = await storage.getNextPendingTask();
+  // Polling the queue crosses every user's tasks, so it runs as the system.
+  // The task itself then runs as the user who queued it, so anything it reads
+  // or writes is scoped to what that user can see (§4.5).
+  const task = await runAsSystem(() => storage.getNextPendingTask());
   if (!task) return false;
+  return runAsUser(task.userId, "user", () => runTask(task));
+}
 
+async function runTask(task: Task): Promise<boolean> {
   log(`[TaskWorker] Processing task ${task.id} (type: ${task.type})`);
   await storage.updateTaskStatus(task.id, "in_progress");
 

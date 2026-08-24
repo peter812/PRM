@@ -14,11 +14,13 @@ import { storage } from "../storage";
 import {
   people,
   truePersonSearch,
+  isAdminRole,
   type ExtensionSession,
 } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { authenticateExtensionToken } from "../auth";
+import { enterAccessContext } from "../access";
 
 /**
  * Express helper: pull + verify the extension token, updating last-accessed.
@@ -39,6 +41,17 @@ async function requireExtensionSession(
     return null;
   }
   await storage.updateExtensionSessionLastAccessed(session.id);
+  // These routes are on the public list (no browser session), so accessMiddleware
+  // never ran. Install the access context now that we know who is calling —
+  // without it every filtered storage read throws AccessContextMissingError.
+  // Admin cross-user view is deliberately never on for extension traffic.
+  const user = await storage.getUser(session.userId);
+  enterAccessContext({
+    userId: session.userId,
+    isAdmin: isAdminRole(user?.role),
+    adminView: false,
+    system: false,
+  });
   return session;
 }
 
@@ -165,7 +178,9 @@ export function registerRoutes(app: Express) {
       const tags = ["truepeoplesearch", ...(location ? [location] : [])];
 
       const person = await storage.createPerson({
-        userId: session.userId,
+        // Attribution, not ownership — `people.userId` marks a user's own "Me"
+        // person and is unique per user (§8.4).
+        createdByUserId: session.userId,
         firstName,
         lastName: lastName || "",
         phone: phone || null,

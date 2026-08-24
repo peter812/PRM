@@ -68,6 +68,7 @@ export function PersonFlowTab({
       onSelectNote({
         id: item.id,
         personId,
+        userId: item.userId!,
         content: item.content,
         imageUrl: item.imageUrl || null,
         imageUuid: item.imageUuid || null,
@@ -78,6 +79,8 @@ export function PersonFlowTab({
     } else if (item.type === "interaction") {
       onSelectInteraction({
         id: item.id,
+        createdByUserId: item.createdByUserId ?? null,
+        visibility: item.visibility ?? "public",
         peopleIds: item.peopleIds || [],
         groupIds: item.groupIds || [],
         typeId: item.interactionType?.id || null,

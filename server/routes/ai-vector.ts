@@ -2784,7 +2784,7 @@ export function registerRoutes(app: Express) {
         });
         const parsed = schema.parse(req.body);
         const { events, involvedParties, ...noteData } = parsed;
-        const created = await storage.createDailyNote(noteData);
+        const created = await storage.createDailyNote({ ...noteData, userId: req.user!.id });
         if (events.length > 0) await storage.replaceDailyNoteEvents(created.id, events);
         if (involvedParties.length > 0) await storage.replaceDailyNoteParties(created.id, involvedParties);
         const full = await storage.getDailyNoteById(created.id);

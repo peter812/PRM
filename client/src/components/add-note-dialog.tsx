@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { insertNoteSchema, type InsertNote } from "@shared/schema";
+import { insertNoteSchema } from "@shared/schema";
 import { z } from "zod";
 import { ImageUpload } from "./image-upload";
 
@@ -55,7 +55,8 @@ export function AddNoteDialog({
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: InsertNote) => {
+    // The request shape, not the storage shape — the server assigns `userId`.
+    mutationFn: async (data: z.infer<typeof insertNoteSchema>) => {
       return await apiRequest("POST", "/api/notes", data);
     },
     onSuccess: () => {

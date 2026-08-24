@@ -16,6 +16,7 @@
  */
 
 import { storage } from "./storage";
+import { currentAccess } from "./access";
 import {
   FAMILY_RELATIONSHIP_TYPES,
   FAMILY_RELATIONSHIP_LABELS,
@@ -555,6 +556,9 @@ export async function applyFamilyTreeChanges(
           const created = await storage.createPerson({
             firstName: change.newPerson.firstName,
             lastName: change.newPerson.lastName ?? "",
+            // Attribute to whoever is driving the request; NULL only if this
+            // somehow runs outside one, in which case the row reads as public.
+            createdByUserId: currentAccess()?.userId ?? null,
           } as any);
           targetId = created.id;
         }
@@ -612,6 +616,7 @@ export async function applyFamilyTreeChanges(
             const placeholder = await storage.createPerson({
               firstName: "Parent of",
               lastName: `${change.fromPersonName} & ${change.newPerson?.firstName ?? change.toPersonName ?? "Sibling"}`,
+              createdByUserId: currentAccess()?.userId ?? null,
             } as any);
             await storage.createLineage({
               childId: change.fromPersonId,

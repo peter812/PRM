@@ -3,7 +3,16 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    // Most endpoints answer with `{ "error": "..." }`. Surface that sentence on
+    // its own so it can go straight into a toast, rather than "403: {...}".
+    let message: string | null = null;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed.error === "string") message = parsed.error;
+    } catch {
+      // Not JSON — fall through to the status-prefixed form.
+    }
+    throw new Error(message ?? `${res.status}: ${text}`);
   }
 }
 

@@ -7,6 +7,7 @@ if (!fs.existsSync('/.dockerenv')) {
 import express, { type Request, Response, NextFunction } from "express";
 import compression from "compression";
 import { setupAuth } from "./auth";
+import { accessMiddleware, runAsSystem } from "./access";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
@@ -54,18 +55,9 @@ app.use(etagMiddleware);
 // Setup auth after body parsers
 setupAuth(app);
 
-// Middleware to bypass auth if DISABLE_AUTH is set.
-// Guarded to non-production environments so a stray DISABLE_AUTH=true in
-// production can never bypass authentication.
-app.use((req, res, next) => {
-  if (process.env.DISABLE_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
-    // Mock authenticated user for development
-    if (!req.isAuthenticated()) {
-      (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev' };
-    }
-  }
-  next();
-});
+// Installs the per-request access context read by the visibility filters in
+// server/access.ts. Must come after auth (needs req.user) and before routes.
+app.use(accessMiddleware);
 
 function getJsonPreview(obj: any): string {
   if (obj === null || obj === undefined) return "null";
@@ -120,7 +112,8 @@ app.use((req, res, next) => {
 
 (async () => {
   // Initialize database (reset if no users exist)
-  await initializeDatabase();
+  // Schema migration and seeding act for no particular user.
+  await runAsSystem(() => initializeDatabase());
 
   const server = await registerRoutes(app);
 

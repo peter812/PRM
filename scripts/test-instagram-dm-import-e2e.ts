@@ -10,6 +10,7 @@ import { db } from "../server/db";
 import { users } from "@shared/schema";
 import { storage } from "../server/storage";
 import { processImportInstagramBackup } from "../server/task-worker";
+import { runAsSystem } from "../server/access";
 
 async function resolveRootAccount(username: string): Promise<string> {
   const all = await storage.getAllSocialAccounts();
@@ -110,7 +111,8 @@ async function main() {
   process.exit(failed ? 1 : 0);
 }
 
-main().catch((e) => {
+// A CLI script acts for no particular user, so it opts out of access filtering.
+runAsSystem(main).catch((e) => {
   console.error(e);
   process.exit(1);
 });

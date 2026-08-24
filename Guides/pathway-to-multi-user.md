@@ -37,10 +37,10 @@ user can see every row.
 - A `requireAuth` middleware exists but is **not applied globally**;
   individual routes either call `req.isAuthenticated()` themselves or
   read `req.user` directly.
-- `server/index.ts` contains a `DISABLE_AUTH=true` dev bypass that
-  injects a mock user `{ id: 1, username: 'dev' }`. Anything we do must
-  preserve this bypass (it is explicitly documented as "do not
-  remove").
+- There is no auth bypass. A `DISABLE_AUTH=true` dev flag used to inject a
+  mock user `{ id: 1, username: 'dev' }`; it was removed during the
+  multi-user conversion because a mock `req.user` is not a real row, and
+  the per-user visibility filters assume it is.
 - SSO (OAuth2/OIDC) is configurable per-user via the `sso_config`
   table.
 
@@ -113,17 +113,18 @@ Per repository convention (see `server/db-init.ts`'s `validateAndSyncSchema`), e
 We will partition every domain table into one of three buckets:
 
 1. **User-private (always)** — only the owning user can ever see or modify the row.
-   - `notes` (per-person notes), `daily_notes` and children (daily note events, involved parties, audit logs), `interactions`, `ai_chats`, `tasks`, `image_tasks`, `app_settings` scoped to a user, `api_keys`, `extension_sessions`, `sso_config`, dashboard / UI preferences, follow-up reminders.
-   - `conversations`, `messages`, `message_recipients`, `conversation_participants` (unified messaging channels and all threaded content, since they represent personal inbox histories).
+   - `notes` (per-person notes), `daily_notes` and children (daily note events, involved parties, audit logs), `ai_chats`, `tasks`, `image_tasks`, `app_settings` scoped to a user, `api_keys`, `extension_sessions`, `sso_config`, dashboard / UI preferences, follow-up reminders.
 
 2. **Shared by default, optionally private** — visible to every authenticated user unless the creator marks it private.
    - `people` (contacts), `social_accounts`, and everything that hangs off a social account: `social_profile_versions`, `social_follows`, `social_network_changes`, `social_account_posts`.
+   - `interactions` — logged activity is a collaborative history on a shared contact (see §8, decision on §3.2).
    - `lineage`, `partnerships`, `schooling` (family tree structure and contact educational history).
    - Profile photos and post images stored in `photos` follow the visibility of their parent (`prm_location` already encodes the parent kind).
    - `faces` and `image_questions` (facial recognition bounding boxes, crops, and face resolution queues) inherit visibility from their parent photo.
    - `true_person_search` and `sex_guess_queue` records inherit visibility from the `people` contact record they reference.
    - `relationships` (edges between people) — visible if **both** endpoints are visible to the viewer.
    - `groups` and `group_notes` (crowds features) — shared by default but privatable.
+   - `conversations` and their threaded content (`messages`, `message_recipients`, `conversation_participants`) — same column shape as the rest of this bucket, but `visibility` defaults to `'private'`. See §8.1.
 
 3. **Global / system** — readable by everyone, writable only by admins.
    - `interaction_types`, `social_account_types`, `relationship_types` (taxonomy / lookup tables).
@@ -160,10 +161,10 @@ Decisions we need to make explicit and document for users:
 - A **private person** hides: their `people` row, all their `notes`, any `social_accounts` whose `owner_uuid` is that person, their `schooling` details, their family tree edges (`lineage`, `partnerships`), their background search records (`true_person_search`, `sex_guess_queue`), and all `posts` / `profile_versions` under those accounts. Photos whose `prm_location` points at any of the above are hidden.
 - A **private photo** hides: itself, its detected faces (`faces`), and unrecognized face assignment queues (`image_questions`).
 - A **private social account** hides itself and its descendants but does **not** hide the person it belongs to.
-- An **interaction** is visible if every person referenced in `people_ids` is visible to the viewer; otherwise the whole interaction is hidden (we do not show "redacted" interactions in v1).
+- An **interaction** is visible if its own `visibility` allows it **and** every person referenced in `people_ids` is visible to the viewer; otherwise the whole interaction is hidden (we do not show "redacted" interactions in v1).
 - **Relationships**, **lineage**, and **partnerships** are visible if both endpoints are visible.
 - **Groups** are visible by their own `visibility` flag; group membership lists are filtered by per-person visibility.
-- **Conversations** are visible only if the authenticated user matches the conversation's `user_id`. When a conversation is private to a user, its messages (`messages`), recipients (`message_recipients`), and participants (`conversation_participants`) are also private.
+- **Conversations** default to private, so in practice they are visible only to `created_by_user_id` unless deliberately shared. Messages, recipients, and participants always follow the parent conversation.
 - The **graph view**, React Flow family tree, and search results must apply the same filters as the list views.
 
 These rules need to be implemented as **central authorization helpers** (see §4.2) so they cannot drift between endpoints.
@@ -182,6 +183,10 @@ Add `created_by_user_id INTEGER NOT NULL REFERENCES users(id)` and `visibility T
 - `social_accounts`
 - `groups`
 - `relationships`
+- `interactions`
+- `conversations` — same columns, but `visibility` defaults to `'private'` (§8.1). The existing nullable `userId` is backfilled into `created_by_user_id` and dropped.
+
+Also add a unique partial index on `people(user_id) WHERE user_id IS NOT NULL` for the per-user Me row (§8.4).
 
 Children/leaves inherit visibility from their parent and therefore **do not need their own `visibility` column**:
 - `notes` references `people`.
@@ -198,13 +203,11 @@ Only add `created_by_user_id` to children if explicit creator attribution is req
 Add `user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE` to:
 
 - `notes` (the per-person notes a single user writes)
-- `interactions`
 - `daily_notes` (and cascade naturally to children via `daily_note_id`)
 - `tasks`, `image_tasks`
 - `ai_chats` (already has it)
-- `conversations` (modify the existing nullable `userId` to be `NOT NULL` after data backfill, and ensure cascade deletes propagate)
 
-Decide policy for `interactions`: in many CRMs, "interaction" is also something you log on someone else's behalf. For v1 the simplest model is *interactions are per-user logs about shared people*, i.e. each user sees their own interaction history. If the team wants collaborative interaction logs, treat `interactions` as shared-by-default instead.
+`interactions` and `conversations` are **not** in this list — both were moved to the shared-by-default bucket (§3.1, §8.1). Interactions are a collaborative log on a shared contact; conversations use the shared column shape with a private default so a thread can be opted into sharing later.
 
 ### 3.3 Photos, Faces, and Image Questions
 
@@ -255,7 +258,7 @@ This must run **inside `validateAndSyncSchema`** (or a one-shot migration step i
 
 - Apply `requireAuth` (or a wrapper) to **every** `/api/*` route except `/api/login`, `/api/user`, the SSO callback, health checks, and the public extension auth-code exchange.
 - Audit every route that reads `req.user` defensively (`if (!req.user) return 401`).
-- Keep the `DISABLE_AUTH=true` dev bypass intact; it must continue to produce a real `users.id = 1` row (seed it on init when the bypass is on).
+- ~~Keep the `DISABLE_AUTH=true` dev bypass intact.~~ The bypass has been removed; every request authenticates for real.
 
 ### 4.2 A central authorization layer
 
@@ -265,7 +268,7 @@ Introduce a thin module (e.g. `server/access.ts`) that exposes helpers like:
 - `assertCanWrite(user, entityType, row): void` (throws 403)
 - `visiblePeopleFilter(user)` → a Drizzle SQL fragment to AND into queries (`visibility = 'public' OR created_by_user_id = :uid`).
 - `visibleSocialAccountFilter(user)` likewise.
-- `visibleConversationFilter(user)` → checks `userId = :uid`.
+- `visibleConversationFilter(user)` → same shape as the people filter (`visibility = 'public' OR created_by_user_id = :uid`); in practice almost everything is private.
 - `assertOwnsPrivate(user, row)` for user-private resources.
 
 **Every** storage method that returns shared-by-default data must accept the current user and apply the filter. Every method that returns user-private data must take a `userId` and filter on it.
@@ -307,7 +310,8 @@ Toggling does **not** retroactively delete other users' caches / references; it 
 ### 4.5 Background workers & Vector store
 
 - `server/task-worker.ts` and `server/vector.ts` must persist the originating `user_id` on every queued task (like OSINT background fetches or facial recognition photo indexing) so that results land in the right user's view.
-- For vector sync (`server/vector-universal.ts`): Namespace Qdrant collections per user (e.g. `daily_notes_<userId>`) **or** add a `user_id` payload field and filter on it at query time. The latter is simpler and ensures a unified vector index.
+- For vector sync (`server/vector-universal.ts`): keep one collection per entity type and add `user_id` + `visibility` payload fields, filtered at query time (§8.9). No per-user collections.
+- Face pipeline: resolve a photo's derived visibility *before* enqueuing an embedding job, and skip private ones entirely. Privatizing a person must enqueue an eviction task for their photos' embeddings; re-publishing re-enqueues them (§8.2).
 - For AI tools (`server/ai-tools.ts`): Every tool that reads PRM data (including searching `app_knowledge` or checking messages/social posts) must do so as the calling user, so the model only sees rows that user is allowed to see. Leaking another user's private contact through an AI answer is the worst-case failure mode.
 
 ### 4.6 External API & extension
@@ -326,7 +330,7 @@ Toggling does **not** retroactively delete other users' caches / references; it 
 
 ### 5.1 Account & registration
 
-- Decide whether registration is open, invite-only, or admin-only. A simple v1 is "first user becomes admin; admin can create more from Settings → Users".
+- Registration is **admin-only** (§8.5): the first user becomes admin; further accounts are created from Settings → Users with a temporary password. No public signup page, no invites table in v1.
 - Settings page gains a **Users** section (admin only): list, create, reset password, deactivate.
 - Settings page gains a **My account** section: change name, change password, link SSO.
 
@@ -338,8 +342,8 @@ Toggling does **not** retroactively delete other users' caches / references; it 
 
 ### 5.3 Per-user views
 
-- Notes, interactions, daily notes, AI chats, tasks, messages, dashboard widgets, follow-ups — all driven by `viewer.id` server-side, no client-side switching needed.
-- The "Me" person resolution (currently the single `people.user_id IS NOT NULL` row) becomes per-user: each user has their own Me-person, and graph centering / "you" highlighting uses it.
+- Notes, daily notes, AI chats, tasks, messages, dashboard widgets, follow-ups — all driven by `viewer.id` server-side, no client-side switching needed. Interactions are shared, so they show every user's entries with an attribution badge.
+- The "Me" person resolution becomes per-user in v1 (§8.4): each user has their own Me-person, and graph centering / family-tree rooting / "you" highlighting resolve against the viewer's.
 - **Messages page**: Thread index list is scoped to the current user's conversations.
 - **OSINT Dashboard**: Unknown face resolution queue displays unrecognized faces from photos visible to the user.
 
@@ -409,9 +413,9 @@ The work above is large. Recommended order:
 
 **Phase 1 — Schema & migration (no behavior change)**
 
-3. Add `created_by_user_id` + `visibility` to shared tables (`people`, `social_accounts`, `groups`, `relationships`).
-4. Add `user_id` to user-private tables that lack it (`notes`, `interactions`, `daily_notes`, `tasks`, `image_tasks`).
-5. Backfill from the primary user (and alter `conversations.user_id` to be non-nullable).
+3. Add `created_by_user_id` + `visibility` to shared tables (`people`, `social_accounts`, `groups`, `relationships`, `interactions`, `conversations`).
+4. Add `user_id` to user-private tables that lack it (`notes`, `daily_notes`, `tasks`, `image_tasks`).
+5. Backfill from the primary user; migrate `conversations.user_id` → `created_by_user_id`; add the per-user Me unique partial index (§8.4).
 6. Add `user_settings`; migrate per-user keys.
 7. Deploy. Everything still works because every row is owned by user 1 and `visibility='public'`.
 
@@ -439,14 +443,123 @@ Each phase is independently shippable and reversible.
 
 ---
 
-## 8. Open questions to resolve before coding
+## 8. Decisions (resolved)
 
-1. Are **conversations** strictly user-private (e.g. personal inbox DMs/SMS) or can they be shared if they are linked to public social accounts?
-2. Are **face recognition models** trained system-wide or per-user? (If User A labels a face crop as Person X, does the face recognizer automatically link it for User B?)
-3. Are **groups** and crowds owned by a user or jointly editable by all members?
-4. Do we need **per-user "Me" graph centering** in v1, or is the current single-Me UX acceptable?
-5. Closed registration vs open? (Affects landing page.)
-6. When a contact is privatized, do **other users' interactions / notes** that referenced it become hidden, or do we forbid privatizing a contact that other users have written about?
-7. Photos: option (A) inherited visibility, or (B) explicit `visibility` column?
-8. Do API keys inherit the issuer's visibility rules verbatim, or do we want a "scoped" key that can only see public data?
-9. Vector store: per-user collection vs payload-filter — pick now to avoid a re-index later.
+The open questions from the original draft are now settled. These are binding for v1.
+
+### 8.0 Trust model — **small trusted group**
+
+The instance is shared by family / close collaborators who mostly want a *shared*
+contact database. Privacy flags are a convenience boundary ("don't clutter their
+view", "this one's sensitive"), not a defence against a hostile tenant.
+
+Consequences:
+
+- Enforcement still lives **server-side** in `server/access.ts` — we do not filter
+  in React. But we do not need constant-time / oracle-proof behaviour, and returning
+  a 403 that reveals a row exists is acceptable.
+- Transitive-hiding edge cases get the *simple* treatment; if a private row leaks its
+  existence (e.g. an orphaned relationship edge count), that is a bug to fix later,
+  not a release blocker.
+- The negative integration tests in §6.5 are still required, but the exhaustive
+  cross-surface matrix (search + graph + AI tools + export + extension) can land
+  incrementally through Phase 2 rather than gating it.
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Conversations / messages | **Shared-bucket columns, but `visibility` defaults to `'private'`** — see §8.1 |
+| 2 | Face recognition model | **System-wide, built from public data only** — see §8.2 |
+| 3 | Groups / crowds | **Creator owns; any authenticated user may edit** — see §8.3 |
+| 4 | Per-user "Me" | **Yes, in v1** — see §8.4 |
+| 5 | Registration | **Admin-only**; first user is admin — see §8.5 |
+| 6 | Privatizing a contact others wrote about | **Warn, then allow** — see §8.6 |
+| 7 | Photos | **Option (A), inherited visibility** — no `visibility` column on `photos` |
+| 8 | API keys | **Inherit the issuing user's rules verbatim.** No public-only scoped keys in v1 |
+| 9 | Vector store | **Single collection per entity type + `user_id` payload filter** — see §8.9 |
+
+### 8.1 Conversations are shared-shaped but private-by-default
+
+`conversations` gets the *shared-by-default* column pair (`created_by_user_id`,
+`visibility`) rather than a bare `user_id` — but the default is `'private'`, not
+`'public'`. `messages`, `message_recipients`, and `conversation_participants`
+inherit visibility from their parent conversation and get no columns of their own.
+
+Rationale: an imported Instagram DM thread hangs off a social account that everybody
+can see, yet the thread itself is a personal inbox. Using the shared column shape
+means a user can later opt *in* to sharing a specific thread (e.g. "here's the whole
+exchange with this contact") without a schema migration.
+
+This supersedes §2.1's placement of conversations in the user-private bucket and
+§3.2's "make `conversations.user_id` NOT NULL" instruction. The existing nullable
+`userId` column is **renamed/backfilled into `created_by_user_id`** during migration.
+
+### 8.2 Face recognition is system-wide over public data
+
+One shared embedding index. Photos whose derived visibility is private are **excluded
+from the index entirely** rather than indexed-then-filtered — this prevents a private
+contact from being inferred through a match.
+
+Consequences:
+
+- The face pipeline must resolve a photo's derived visibility (via `prm_location` →
+  parent → person/account) *before* enqueuing an embedding job.
+- Privatizing a person must **evict** their photos' embeddings from the index; making
+  them public again must re-enqueue. This is a new background task type.
+- When user A labels a crop as Person X, user B's recognizer does learn it. That is
+  intended.
+
+### 8.3 Groups: creator owns, everyone edits
+
+`groups` carries `created_by_user_id` + `visibility`. Only the creator (or an admin)
+may toggle visibility or delete the group. Any authenticated user who can *see* the
+group may add/remove members and write `group_notes`.
+
+### 8.4 Per-user "Me" ships in v1
+
+`people.user_id` (already nullable today) becomes the per-user Me marker: at most one
+row per user. Graph centering, family-tree rooting, and "you" highlighting resolve
+against the *viewer's* Me row. Do this in Phase 1 while the table is already being
+altered — retrofitting later means re-touching the force graph, React Flow tree, and
+dashboard.
+
+Add a unique partial index on `people(user_id) WHERE user_id IS NOT NULL`.
+
+### 8.5 Admin-only account creation
+
+No public signup page. The first user (created by the existing guarded
+`/api/setup/initialize`) becomes `role = 'admin'`. Admins create further accounts from
+Settings → Users with a temporary password. No invites table in v1.
+
+### 8.6 Privatizing warns, then allows
+
+`PATCH /api/people/:id { visibility: 'private' }` supports a dry-run: without a
+`confirm: true` flag it returns a 409 with an impact summary —
+
+```
+{ blocked: false, impact: { otherUsers: 2, notes: 12, interactions: 4, conversations: 1 } }
+```
+
+— which the client renders as "This will hide 12 notes and 4 interactions from 2 other
+users." Re-submitting with `confirm: true` performs the toggle. The same dry-run shape
+applies to social accounts and groups.
+
+### 8.9 Vector store: payload filter
+
+One Qdrant collection per entity type (as today). Every point's payload grows
+`user_id` (the creator) and `visibility`. Queries AND in a filter of
+`visibility = 'public' OR user_id = <viewer>`; user-private entity types filter on
+`user_id` alone.
+
+This avoids collection sprawl, keeps shared entities in a single index, and means the
+Phase 1 backfill is a payload update rather than a full re-index.
+
+---
+
+## 9. Still to decide (not blocking Phase 1)
+
+1. Account deletion: reassign a departing user's shared rows to an `archived` system
+   user, or orphan them with `created_by_user_id = NULL`? (§6.7)
+2. Do `app_knowledge` chunks stay global, or does each user get private documentation
+   vectors? (Assume global for now.)
+3. Whether the `shared_acl` stretch goal (§2.3) ever ships, or "private" stays
+   strictly owner-only.

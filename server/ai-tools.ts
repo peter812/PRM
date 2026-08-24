@@ -980,7 +980,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
       },
       required: ["firstName", "lastName"],
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const firstName = asString(args.firstName).trim();
       const lastName = asString(args.lastName).trim();
       if (!firstName || !lastName) {
@@ -993,6 +993,9 @@ export const AI_TOOLS: AiToolDefinition[] = [
         phone: asString(args.phone).trim() || null,
         company: asString(args.company).trim() || null,
         title: asString(args.title).trim() || null,
+        // Attribute to the user whose session invoked the AI, not to nobody —
+        // otherwise every AI-created contact is permanently orphaned.
+        createdByUserId: ctx.userId,
       } as any);
       return { summary: `Created ${firstName} ${lastName}`, data: trimPerson(person) };
     },
@@ -1049,13 +1052,14 @@ export const AI_TOOLS: AiToolDefinition[] = [
       },
       required: ["personId", "content"],
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const personId = asString(args.personId).trim();
       const content = asString(args.content);
       if (!personId || !content.trim()) {
         return { summary: "personId and content are required", data: { error: "missing_required" } };
       }
-      const note = await storage.createNote({ personId, content } as any);
+      // notes.user_id is NOT NULL — the note belongs to whoever asked for it.
+      const note = await storage.createNote({ personId, content, userId: ctx.userId });
       return { summary: "Created note", data: trimNote(note) };
     },
   },
@@ -1082,7 +1086,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
       },
       required: ["peopleIds", "date"],
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const peopleIds = Array.isArray(args.peopleIds)
         ? (args.peopleIds as unknown[]).filter((v): v is string => typeof v === "string" && v.trim().length > 0)
         : [];
@@ -1094,7 +1098,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
       if (!date || Number.isNaN(date.getTime())) {
         return { summary: "Invalid date", data: { error: "invalid_date" } };
       }
-      const payload: Record<string, unknown> = { peopleIds, date };
+      const payload: Record<string, unknown> = { peopleIds, date, createdByUserId: ctx.userId };
       const title = asString(args.title).trim();
       if (title) payload.title = title;
       const description = asString(args.description).trim();
@@ -1161,12 +1165,13 @@ export const AI_TOOLS: AiToolDefinition[] = [
       },
       required: ["date"],
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const date = asString(args.date).trim();
       if (!date) return { summary: "Missing date", data: { error: "date is required" } };
       const userTitle = asString(args.userTitle);
       const body = asString(args.body);
-      const note = await storage.createDailyNote({ date, userTitle, body } as any);
+      // daily_notes.user_id is NOT NULL — daily notes are strictly per-user.
+      const note = await storage.createDailyNote({ date, userTitle, body, userId: ctx.userId });
       return { summary: `Created daily note for ${date}`, data: trimDailyNote(note) };
     },
   },

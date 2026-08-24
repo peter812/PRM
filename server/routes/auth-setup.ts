@@ -28,12 +28,17 @@ import {
   FAMILY_RELATIONSHIP_LABELS,
   FAMILY_RELATIONSHIP_INVERSES,
   FAMILY_RELATIONSHIP_CATEGORIES,
+  userRoleSchema,
+  canAssignRole,
+  canManageUser,
+  isAdminRole,
   type FamilyRelationshipType,
+  type UserRole,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl, getLocalMediaPath } from "../local-storage";
-import { hashPassword, requireAuth, authenticateExtensionToken } from "../auth";
+import { hashPassword, requireAuth, requireAdmin, publicUser, authenticateExtensionToken } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { syncEntityInBackground } from "../vector-universal";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -400,11 +405,12 @@ export function registerRoutes(app: Express) {
               tags: row["Labels"]?.trim() ? row["Labels"].trim().split(/[,;]/).map((t: string) => t.trim()).filter(Boolean) : [],
             };
   
-            const person = await storage.createPerson(personData);
+            const person = await storage.createPerson({ ...personData, createdByUserId: req.user!.id });
   
             // Create a note if there's additional info
             if (noteParts.length > 0) {
               await storage.createNote({
+                userId: req.user!.id,
                 personId: person.id,
                 content: noteParts.join("\n"),
               });
@@ -613,10 +619,11 @@ export function registerRoutes(app: Express) {
               tags: [],
             };
   
-            const person = await storage.createPerson(personData);
+            const person = await storage.createPerson({ ...personData, createdByUserId: req.user!.id });
   
             if (noteParts.length > 0) {
               await storage.createNote({
+                userId: req.user!.id,
                 personId: person.id,
                 content: noteParts.join("\n"),
               });
@@ -694,7 +701,7 @@ export function registerRoutes(app: Express) {
           storage.getAllSocialAccountTypes(),
           storage.getAllProfileVersions(),
           storage.getAllFollows(),
-          db.select().from(people).where(isNotNull(people.userId)).limit(1),
+          db.select().from(people).where(eq(people.userId, req.user!.id)).limit(1),
           db.select().from(lineage),
           db.select().from(partnerships),
           db.select().from(photos),
@@ -1220,7 +1227,7 @@ export function registerRoutes(app: Express) {
         };
   
         // Get ME user's person ID for replacing all-zero UUIDs
-        const mePersonResult = await db.select().from(people).where(isNotNull(people.userId)).limit(1);
+        const mePersonResult = await db.select().from(people).where(eq(people.userId, req.user!.id)).limit(1);
         const mePersonId = mePersonResult[0]?.id || null;
         const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
         
@@ -1414,6 +1421,7 @@ export function registerRoutes(app: Express) {
           try {
             await storage.createPersonWithId({
               id,
+              createdByUserId: req.user!.id,
               firstName,
               lastName,
               email: email || null,
@@ -1452,6 +1460,7 @@ export function registerRoutes(app: Express) {
           try {
             await storage.createGroupWithId({
               id,
+              createdByUserId: req.user!.id,
               name,
               color,
               type: type.length > 0 ? type : [],
@@ -1483,6 +1492,7 @@ export function registerRoutes(app: Express) {
           try {
             await storage.createRelationshipWithId({
               id,
+              createdByUserId: req.user!.id,
               fromPersonId,
               toPersonId,
               typeId,
@@ -1561,6 +1571,7 @@ export function registerRoutes(app: Express) {
           try {
             await storage.createInteractionWithId({
               id,
+              createdByUserId: req.user!.id,
               typeId: typeId || undefined,
               title: interactionTitle || undefined,
               date: new Date(date),
@@ -1587,7 +1598,7 @@ export function registerRoutes(app: Express) {
           const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
   
           try {
-            await storage.createNoteWithId({ id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
+            await storage.createNoteWithId({ id, userId: req.user!.id, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
             importedCounts.notes++;
           } catch (error) {
             console.error(`Error importing note ${id}:`, error);
@@ -1671,6 +1682,7 @@ export function registerRoutes(app: Express) {
           try {
             const created = await storage.createSocialAccountWithId({
               id,
+              createdByUserId: req.user!.id,
               username,
               ownerUuid: processedOwnerUuid || null,
               typeId: typeId || null,
@@ -1842,7 +1854,7 @@ export function registerRoutes(app: Express) {
 
           try {
             await db.insert(dailyNotes).values({
-              id, date, userTitle, body,
+              id, userId: req.user!.id, date, userTitle, body,
               createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
               updatedAt: updatedAtStr ? new Date(updatedAtStr) : null,
             }).onConflictDoNothing();
@@ -2041,6 +2053,7 @@ export function registerRoutes(app: Express) {
           } else {
             // Auto-create the Instagram account
             targetAccount = await storage.createSocialAccount({
+              createdByUserId: req.user!.id,
               username: normalizedUsername,
               typeId: INSTAGRAM_TYPE_ID,
               internalAccountCreationType: "auto-import",
@@ -2066,6 +2079,7 @@ export function registerRoutes(app: Express) {
         }
   
         const task = await storage.createTask({
+          userId: req.user!.id,
           type: "import_instagram",
           status: "pending",
           title: targetAccount.username,
@@ -2163,15 +2177,21 @@ export function registerRoutes(app: Express) {
           username: req.body.username,
           password: await hashPassword(req.body.password),
         });
-  
-        const user = await storage.createUser(validatedData);
-        
-        // Create a person entry for the new user
+
+        // The very first account is the instance admin (§8.5); accounts created
+        // after a database reset are ordinary users.
+        const user = await storage.createUser({
+          ...validatedData,
+          role: userCount === 0 ? "admin" : "user",
+        });
+
+        // Create the new user's own "Me" person (§8.4)
         const [firstName, ...lastNameParts] = (user.name || user.username).split(' ');
         const lastName = lastNameParts.join(' ') || '';
-        
+
         await storage.createPerson({
           userId: user.id,
+          createdByUserId: user.id,
           firstName: firstName,
           lastName: lastName,
           email: '',
@@ -2191,7 +2211,7 @@ export function registerRoutes(app: Express) {
             console.error("Error logging in after setup:", err);
             return res.status(500).json({ error: "Setup completed but login failed" });
           }
-          res.status(201).json(user);
+          res.status(201).json(publicUser(user));
         });
       } catch (error) {
         console.error("Error initializing setup:", error);
@@ -2375,6 +2395,208 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    // ── Admin: user management and cross-user view (§8.5, §8.6) ──────────────
+
+    /**
+     * Create an additional account. Admin-only: there is deliberately no open
+     * registration endpoint, and /api/setup/initialize only works when the
+     * instance has no users at all.
+     */
+    app.post("/api/users", requireAdmin, async (req, res) => {
+      try {
+        const validatedData = insertUserSchema.parse({
+          name: req.body.name,
+          nickname: req.body.nickname,
+          username: req.body.username,
+          password: await hashPassword(req.body.password),
+        });
+
+        const existing = await storage.getUserByUsername(validatedData.username);
+        if (existing) {
+          return res.status(409).json({ error: "That username is already taken" });
+        }
+
+        const role = userRoleSchema.catch("user").parse(req.body.role);
+        if (!canAssignRole(req.user!.role, role)) {
+          return res
+            .status(403)
+            .json({ error: "You cannot grant a role above your own" });
+        }
+        const user = await storage.createUser({ ...validatedData, role });
+
+        // Every user gets their own "Me" person (§8.4).
+        const [firstName, ...lastNameParts] = (user.name || user.username).split(" ");
+        await storage.createPerson({
+          userId: user.id,
+          createdByUserId: user.id,
+          firstName,
+          lastName: lastNameParts.join(" ") || "",
+          email: "",
+          phone: null,
+          company: null,
+          title: null,
+          tags: [],
+          imageUrl: null,
+        });
+
+        console.log(
+          `[admin] user ${req.user!.id} created account "${user.username}" (role=${role})`,
+        );
+        res.status(201).json(publicUser(user));
+      } catch (error) {
+        console.error("Error creating user:", error);
+        res.status(400).json({ error: "Failed to create user" });
+      }
+    });
+
+    app.get("/api/users", requireAdmin, async (_req, res) => {
+      try {
+        const all = await storage.getAllUsers();
+        res.json(all.map(publicUser));
+      } catch (error) {
+        console.error("Error listing users:", error);
+        res.status(500).json({ error: "Failed to list users" });
+      }
+    });
+
+    /**
+     * Resolve the target of a user-management request and check the actor is
+     * allowed to touch it. Sends its own error response and returns null when
+     * not — a super admin is off limits to everyone below them.
+     */
+    async function resolveManageableUser(
+      req: import("express").Request,
+      res: import("express").Response,
+    ) {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id)) {
+        res.status(400).json({ error: "Invalid user id" });
+        return null;
+      }
+      const target = await storage.getUser(id);
+      if (!target) {
+        res.status(404).json({ error: "User not found" });
+        return null;
+      }
+      if (!canManageUser(req.user!, target)) {
+        res.status(403).json({ error: "You cannot modify a super admin" });
+        return null;
+      }
+      return target;
+    }
+
+    /** True if demoting or removing this user would leave zero super admins. */
+    async function isLastSuperAdmin(userId: number): Promise<boolean> {
+      const all = await storage.getAllUsers();
+      const supers = all.filter((u) => u.role === "super_admin");
+      return supers.length <= 1 && supers.some((u) => u.id === userId);
+    }
+
+    app.patch("/api/users/:id", requireAdmin, async (req, res) => {
+      try {
+        const target = await resolveManageableUser(req, res);
+        if (!target) return;
+
+        const updates: { name?: string; nickname?: string; role?: UserRole } = {};
+        if (typeof req.body.name === "string") updates.name = req.body.name;
+        if (typeof req.body.nickname === "string") updates.nickname = req.body.nickname;
+
+        if (req.body.role !== undefined) {
+          const role = userRoleSchema.parse(req.body.role);
+          if (!canAssignRole(req.user!.role, role)) {
+            return res.status(403).json({ error: "You cannot grant a role above your own" });
+          }
+          if (role !== "super_admin" && (await isLastSuperAdmin(target.id))) {
+            return res.status(409).json({
+              error: "This is the only super admin. Promote someone else first.",
+            });
+          }
+          if (target.id === req.user!.id && role !== req.user!.role) {
+            return res.status(403).json({ error: "You cannot change your own role" });
+          }
+          updates.role = role;
+        }
+
+        const updated = await storage.updateUser(target.id, updates);
+        console.log(
+          `[admin] user ${req.user!.id} updated account ${target.id} (${Object.keys(updates).join(", ") || "no changes"})`,
+        );
+        res.json(publicUser(updated!));
+      } catch (error) {
+        console.error("Error updating user:", error);
+        res.status(400).json({ error: "Failed to update user" });
+      }
+    });
+
+    app.post("/api/users/:id/password", requireAdmin, async (req, res) => {
+      try {
+        const target = await resolveManageableUser(req, res);
+        if (!target) return;
+
+        const password = String(req.body.password ?? "");
+        if (password.length < 8) {
+          return res.status(400).json({ error: "Password must be at least 8 characters" });
+        }
+
+        await storage.updateUser(target.id, { password: await hashPassword(password) });
+        console.log(`[admin] user ${req.user!.id} reset the password for account ${target.id}`);
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error resetting password:", error);
+        res.status(400).json({ error: "Failed to reset password" });
+      }
+    });
+
+    /**
+     * Delete an account. Their private rows (notes, daily notes, tasks) and
+     * their "Me" person cascade away; shared rows they created are orphaned to
+     * `created_by_user_id = NULL` and stay readable by everyone (§6.7).
+     */
+    app.delete("/api/users/:id", requireAdmin, async (req, res) => {
+      try {
+        const target = await resolveManageableUser(req, res);
+        if (!target) return;
+
+        if (target.id === req.user!.id) {
+          return res.status(403).json({ error: "You cannot delete your own account" });
+        }
+        if (await isLastSuperAdmin(target.id)) {
+          return res.status(409).json({ error: "The only super admin cannot be deleted" });
+        }
+
+        await storage.deleteUser(target.id);
+        console.log(`[admin] user ${req.user!.id} deleted account ${target.id} ("${target.username}")`);
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error deleting user:", error);
+        res.status(400).json({ error: "Failed to delete user" });
+      }
+    });
+
+    /**
+     * Cross-user view. Being an admin is not the same as reading as one: this
+     * is off by default every session and has to be switched on deliberately,
+     * so the UI can label rows that are only visible because it is on.
+     */
+    app.get("/api/admin/view", (req, res) => {
+      const isAdmin = isAdminRole(req.user?.role);
+      res.json({
+        isAdmin,
+        isSuperAdmin: req.user?.role === "super_admin",
+        enabled: isAdmin && req.session.adminView === true,
+      });
+    });
+
+    app.post("/api/admin/view", requireAdmin, (req, res) => {
+      const enabled = req.body?.enabled === true;
+      req.session.adminView = enabled;
+      console.log(
+        `[admin] user ${req.user!.id} turned cross-user view ${enabled ? "ON" : "off"}`,
+      );
+      // Takes effect on the next request — this one already has its context.
+      req.session.save(() => res.json({ isAdmin: true, enabled }));
+    });
+
     app.get("/api/me", async (req, res) => {
       try {
         if (!req.user) {
