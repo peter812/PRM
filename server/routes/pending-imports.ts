@@ -3,10 +3,9 @@ import { storage, countPendingImportEntries } from "../storage";
 import { db } from "../db";
 import { authenticateExtensionToken } from "../auth";
 import { runAsUser } from "../access";
-import { triggerImageTaskWorker } from "../task-worker";
-import { socialAccounts, people, socialFollows } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
-import Papa from "papaparse";
+import { triggerTaskWorker } from "../task-worker";
+import { socialAccounts } from "@shared/schema";
+import { eq } from "drizzle-orm";
 import crypto from "crypto";
 
 /**
@@ -75,206 +74,6 @@ async function authenticateSessionOrExtensionToken(req: Request, res: Response):
   return null;
 }
 
-/**
- * Queue the profile picture behind `imageUrl` for a social account.
- *
- * The download itself belongs to the image worker, which already handles
- * hash/resolution de-duplication, storage upload, the photos row, and passing
- * the result on to a linked person who has no image yet. All this has to do is
- * make sure there is a profile version for it to write the result into —
- * without one the worker uploads the file and then has nowhere to attach it.
- */
-async function queueProfileImage(socialAccountId: string, imageUrl: string | null | undefined, userId: number) {
-  if (!imageUrl || !imageUrl.trim()) return;
-
-  const current = await storage.getCurrentProfileVersion(socialAccountId);
-  const profileVersion = current
-    ? (await storage.updateProfileVersion(current.id, { externalImageUrl: imageUrl }), current)
-    : await storage.createProfileVersion({
-        socialAccountId,
-        isCurrent: true,
-        externalImageUrl: imageUrl,
-      });
-
-  await storage.createImageTask({
-    userId,
-    type: "download_img_instagram",
-    status: "pending",
-    payload: JSON.stringify({
-      socialAccountId,
-      imageUrl,
-      profileVersionId: profileVersion.id,
-    }),
-  });
-}
-
-/**
- * Ingestion helper function for a single pending import record.
- *
- * `includeGraphImages` opts into fetching a picture for every follower and
- * following account as well, which at the 3,000-per-side cap is thousands of
- * downloads — so it is off unless the caller asks.
- */
-async function ingestPendingImportRecord(
-  pendingImport: any,
-  userId: number = 1,
-  options: { includeGraphImages?: boolean } = {},
-) {
-  return await runAsUser(userId, async () => {
-    const instagramType = await storage.getSocialAccountTypeByName("instagram");
-    const typeId = instagramType?.id || null;
-
-  // 1. Resolve or create main social account
-  const mainUsername = pendingImport.accountUsername.trim().toLowerCase();
-  let [mainAccount] = await db.select().from(socialAccounts).where(eq(socialAccounts.username, mainUsername)).limit(1);
-
-  let personId: string | null = mainAccount?.ownerUuid || null;
-
-  if (!personId) {
-    // Check if a person with this display name or username already exists
-    const displayName = pendingImport.accountDisplayName || mainUsername;
-    const nameParts = displayName.split(" ");
-    const firstName = nameParts[0] || mainUsername;
-    const lastName = nameParts.slice(1).join(" ") || "";
-
-    const newPerson = await storage.createPerson({
-      firstName,
-      lastName,
-      email: pendingImport.accountEmail || null,
-      phone: pendingImport.accountPhone || null,
-      address: pendingImport.accountLocationArea || null,
-    });
-    personId = newPerson.id;
-  }
-
-  if (!mainAccount) {
-    mainAccount = await storage.createSocialAccount({
-      username: mainUsername,
-      typeId: typeId || undefined,
-      ownerUuid: personId,
-      internalAccountCreationType: "pending-import-ingest",
-    });
-  } else if (!mainAccount.ownerUuid) {
-    await storage.updateSocialAccount(mainAccount.id, { ownerUuid: personId });
-  }
-
-  await storage.updateSocialAccount(mainAccount.id, { isSimple: false, lastScrapedAt: new Date() });
-
-  const profileFields: Record<string, any> = {};
-  if (pendingImport.accountDisplayName) profileFields.nickname = pendingImport.accountDisplayName;
-  if (pendingImport.accountBio) profileFields.bio = pendingImport.accountBio;
-  if (pendingImport.accountWebsite) profileFields.accountUrl = pendingImport.accountWebsite;
-
-  if (Object.keys(profileFields).length > 0) {
-    const currentProfile = await storage.getCurrentProfileVersion(mainAccount.id);
-    if (currentProfile) {
-      await storage.updateProfileVersion(currentProfile.id, profileFields);
-    } else {
-      await storage.createProfileVersion({
-        socialAccountId: mainAccount.id,
-        isCurrent: true,
-        ...profileFields,
-      });
-    }
-  }
-
-  // The selected account always gets its picture, whatever the import type.
-  await queueProfileImage(mainAccount.id, pendingImport.accountImageUrl, userId);
-
-  let totalFollowersIngested = 0;
-  let totalFollowingIngested = 0;
-
-  // Helper to process raw CSV lines/rows
-  const processCsvPayload = async (csvText: string | null | undefined, isFollower: boolean) => {
-    if (!csvText || !csvText.trim()) return 0;
-
-    let rows: any[] = [];
-    const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    if (lines.length === 0) return 0;
-
-    const firstLine = lines[0].toLowerCase();
-    const hasHeaders = firstLine.includes("username") || firstLine.includes("handle") || firstLine.includes(",") || firstLine.includes("account");
-
-    if (hasHeaders) {
-      const parseResult = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-      if (parseResult.data && parseResult.data.length > 0) {
-        rows = parseResult.data;
-      }
-    } else {
-      // Direct single-column list of usernames/handles without header row
-      rows = lines.map(line => ({ username: line.replace(/^@/, "").trim() }));
-    }
-
-    let count = 0;
-    for (const row of rows) {
-      const handle = (row.username || row.handle || row.Account || row.Username || "").toString().trim().replace(/^@/, "").toLowerCase();
-      if (!handle) continue;
-
-      let [subAccount] = await db.select().from(socialAccounts).where(eq(socialAccounts.username, handle)).limit(1);
-
-      if (!subAccount) {
-        const subPerson = await storage.createPerson({
-          firstName: row.full_name || row.displayName || handle,
-          lastName: "",
-        });
-
-        subAccount = await storage.createSocialAccount({
-          username: handle,
-          typeId: typeId || undefined,
-          ownerUuid: subPerson.id,
-          internalAccountCreationType: "pending-import-contact",
-        });
-      }
-
-      if (options.includeGraphImages) {
-        // The scraped CSV carries each account's picture URL alongside its handle.
-        await queueProfileImage(subAccount.id, row.profile_pic_url || row.profilePicUrl, userId);
-      }
-
-      // Link social follow relationship
-      const followerId = isFollower ? subAccount.id : mainAccount.id;
-      const followedId = isFollower ? mainAccount.id : subAccount.id;
-
-      const [existingFollow] = await db.select().from(socialFollows).where(
-        and(
-          eq(socialFollows.followerId, followerId),
-          eq(socialFollows.followedId, followedId)
-        )
-      ).limit(1);
-
-      if (!existingFollow) {
-        await db.insert(socialFollows).values({
-          followerId,
-          followedId,
-          source: "extension-pending-import",
-        });
-      }
-      count++;
-    }
-    return count;
-  };
-
-  if (pendingImport.importType !== 'account') {
-    totalFollowersIngested = await processCsvPayload(pendingImport.accountFollowers, true);
-    totalFollowingIngested = await processCsvPayload(pendingImport.accountFollowing, false);
-  }
-
-  // Update status in pending_social_account_imports
-  await storage.markPendingImportAsImported(pendingImport.id);
-
-  // Wake the image worker once for the whole record rather than per queued task.
-  triggerImageTaskWorker();
-
-  return {
-    success: true,
-    id: pendingImport.id,
-    mainUsername,
-    followersIngested: totalFollowersIngested,
-    followingIngested: totalFollowingIngested,
-  };
-  });
-}
-
 export function registerPendingImportsRoutes(app: Express) {
   /**
    * POST /api/v1/scrape-results
@@ -294,16 +93,25 @@ export function registerPendingImportsRoutes(app: Express) {
           const contacts = body.contacts;
           const csvLines = contacts.map((c: any) => c.username || c.handle).filter(Boolean).join("\n");
 
-          const id = crypto.randomUUID();
-          const newImport = await storage.createPendingSocialAccountImport({
-            id,
-            timestampAdded: body.timestamp ? new Date(body.timestamp) : new Date(),
-            alreadyAdded: false,
+          const importPayload = {
             accountUsername: targetAccount || `bulk_import_${Date.now()}`,
             accountDisplayName: targetAccount ? `@${targetAccount} Audience` : "Bulk Scraped Contacts",
             accountFollowers: csvLines || null,
             accountFollowing: null,
             importType: "full",
+          };
+
+          const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
+          if (duplicate) {
+            return res.status(200).json({ success: true, id: duplicate.id, count: contacts.length, duplicate: true });
+          }
+
+          const id = crypto.randomUUID();
+          const newImport = await storage.createPendingSocialAccountImport({
+            id,
+            timestampAdded: body.timestamp ? new Date(body.timestamp) : new Date(),
+            alreadyAdded: false,
+            ...importPayload,
           });
 
           return res.status(201).json({ success: true, id: newImport.id, count: contacts.length });
@@ -318,13 +126,7 @@ export function registerPendingImportsRoutes(app: Express) {
           return res.status(400).json({ error: "Username could not be determined from scrape payload" });
         }
 
-        const id = body.uuid || body.id || crypto.randomUUID();
-        const timestampAdded = body.timestamp ? new Date(body.timestamp) : new Date();
-
-        const newImport = await storage.createPendingSocialAccountImport({
-          id,
-          timestampAdded,
-          alreadyAdded: false,
+        const importPayload = {
           accountUsername: username,
           accountDisplayName: data.displayName || data.name || username,
           accountBio: data.bio || data.headline || null,
@@ -340,6 +142,21 @@ export function registerPendingImportsRoutes(app: Express) {
           accountFollowersCount: parseCount(data.followers),
           accountFollowingCount: parseCount(data.following),
           importType: "account",
+        };
+
+        const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
+        if (duplicate) {
+          return res.status(200).json({ success: true, id: duplicate.id, duplicate: true });
+        }
+
+        const id = body.uuid || body.id || crypto.randomUUID();
+        const timestampAdded = body.timestamp ? new Date(body.timestamp) : new Date();
+
+        const newImport = await storage.createPendingSocialAccountImport({
+          id,
+          timestampAdded,
+          alreadyAdded: false,
+          ...importPayload,
         });
 
         res.status(201).json({ success: true, id: newImport.id });
@@ -361,20 +178,13 @@ export function registerPendingImportsRoutes(app: Express) {
 
       await runAsUser(auth.userId, async () => {
         const body = req.body || {};
-        const id = body.uuid || body.id || crypto.randomUUID();
         const accountUsername = body.account_username || body.accountUsername;
 
         if (!accountUsername) {
           return res.status(400).json({ error: "account_username is required" });
         }
 
-        const timestampAddedInput = body.timestamp_added || body.timestampAdded;
-        const timestampAdded = timestampAddedInput ? new Date(timestampAddedInput) : new Date();
-
-        const newImport = await storage.createPendingSocialAccountImport({
-          id,
-          timestampAdded,
-          alreadyAdded: body.already_added || body.alreadyAdded || false,
+        const importPayload = {
           accountUsername: accountUsername.trim(),
           accountDisplayName: body.account_display_name || body.accountDisplayName || null,
           accountBio: body.account_bio || body.accountBio || null,
@@ -388,6 +198,22 @@ export function registerPendingImportsRoutes(app: Express) {
           accountFollowersCount: parseCount(body.account_followers_count ?? body.accountFollowersCount),
           accountFollowingCount: parseCount(body.account_following_count ?? body.accountFollowingCount),
           importType: body.import_type || body.importType || 'full',
+        };
+
+        const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
+        if (duplicate) {
+          return res.status(200).json({ success: true, id: duplicate.id, duplicate: true });
+        }
+
+        const id = body.uuid || body.id || crypto.randomUUID();
+        const timestampAddedInput = body.timestamp_added || body.timestampAdded;
+        const timestampAdded = timestampAddedInput ? new Date(timestampAddedInput) : new Date();
+
+        const newImport = await storage.createPendingSocialAccountImport({
+          id,
+          timestampAdded,
+          alreadyAdded: body.already_added || body.alreadyAdded || false,
+          ...importPayload,
         });
 
         res.status(201).json({ success: true, id: newImport.id });
@@ -530,7 +356,7 @@ export function registerPendingImportsRoutes(app: Express) {
 
   /**
    * POST /api/v1/pending-imports/:id/import
-   * Ingests followers & following CSVs into PRM main contact list.
+   * Queues a background import_social task to ingest followers & following.
    */
   app.post("/api/v1/pending-imports/:id/import", async (req: Request, res: Response) => {
     try {
@@ -543,14 +369,24 @@ export function registerPendingImportsRoutes(app: Express) {
           return res.status(404).json({ error: "Pending import record not found" });
         }
 
-        const result = await ingestPendingImportRecord(record, auth.userId, {
-          includeGraphImages: Boolean(req.body?.includeGraphImages),
+        const task = await storage.createTask({
+          userId: auth.userId,
+          type: "import_social",
+          status: "pending",
+          title: record.accountUsername,
+          payload: JSON.stringify({
+            pendingImportId: record.id,
+            includeGraphImages: Boolean(req.body?.includeGraphImages),
+          }),
         });
-        res.json({ success: true, result });
+
+        triggerTaskWorker();
+
+        res.json({ success: true, taskId: task.id });
       });
     } catch (error) {
-      console.error("Error ingesting pending import:", error);
-      res.status(500).json({ error: "Failed to ingest pending import record" });
+      console.error("Error queueing pending import task:", error);
+      res.status(500).json({ error: "Failed to queue pending import task" });
     }
   });
 
@@ -604,7 +440,7 @@ export function registerPendingImportsRoutes(app: Express) {
 
   /**
    * POST /api/v1/pending-imports/bulk-import
-   * Ingests multiple pending import records.
+   * Queues background import_social tasks for multiple pending import records.
    */
   app.post("/api/v1/pending-imports/bulk-import", async (req: Request, res: Response) => {
     try {
@@ -617,22 +453,33 @@ export function registerPendingImportsRoutes(app: Express) {
           return res.status(400).json({ error: "Array of ids is required" });
         }
 
-        const results: any[] = [];
+        const taskIds: string[] = [];
         for (const id of ids) {
           const record = await storage.getPendingSocialAccountImportById(id);
-          if (record) {
-            const resObj = await ingestPendingImportRecord(record, auth.userId, {
-              includeGraphImages: Boolean(includeGraphImages),
+          if (record && !record.alreadyAdded) {
+            const task = await storage.createTask({
+              userId: auth.userId,
+              type: "import_social",
+              status: "pending",
+              title: record.accountUsername,
+              payload: JSON.stringify({
+                pendingImportId: record.id,
+                includeGraphImages: Boolean(includeGraphImages),
+              }),
             });
-            results.push(resObj);
+            taskIds.push(task.id);
           }
         }
 
-        res.json({ success: true, count: results.length, results });
+        if (taskIds.length > 0) {
+          triggerTaskWorker();
+        }
+
+        res.json({ success: true, count: taskIds.length, taskIds });
       });
     } catch (error) {
-      console.error("Error bulk ingesting pending imports:", error);
-      res.status(500).json({ error: "Failed to bulk ingest pending imports" });
+      console.error("Error bulk queueing pending imports:", error);
+      res.status(500).json({ error: "Failed to bulk queue pending imports" });
     }
   });
 

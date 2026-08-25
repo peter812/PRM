@@ -39,6 +39,9 @@ export default function DeleteOptionsPage() {
   const [confirmDeleteMessages, setConfirmDeleteMessages] = useState(false);
   const [deleteMessagesChannel, setDeleteMessagesChannel] = useState("all");
 
+  const [isDeleteRecentPeopleDialogOpen, setIsDeleteRecentPeopleDialogOpen] = useState(false);
+  const [confirmDeleteRecentPeople, setConfirmDeleteRecentPeople] = useState(false);
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
@@ -301,6 +304,47 @@ export default function DeleteOptionsPage() {
   const handleDeleteMessages = () => {
     if (confirmDeleteMessages) {
       deleteMessagesMutation.mutate(deleteMessagesChannel);
+    }
+  };
+
+  const deleteRecentPeopleMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/people/created-past-24-hours", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || "Failed to delete recent people");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Recent People Deleted",
+        description: `Successfully deleted ${data.deleted} person record(s) created in the past 24 hours.`,
+      });
+
+      setIsDeleteRecentPeopleDialogOpen(false);
+      setConfirmDeleteRecentPeople(false);
+
+      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Delete Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDeleteRecentPeople = () => {
+    if (confirmDeleteRecentPeople) {
+      deleteRecentPeopleMutation.mutate();
     }
   };
 
@@ -622,6 +666,25 @@ export default function DeleteOptionsPage() {
               >
                 <MessageSquare className="h-4 w-4" />
                 Delete Messages...
+              </Button>
+            </div>
+
+            {/* Row 7: Delete People Created in Past 24 Hours */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Delete People Created in Past 24 Hours</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Permanently deletes all contacts created in the past 24 hours (e.g. accidental imports). Your "Me" profile and social accounts are preserved.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsDeleteRecentPeopleDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-delete-recent-people-trigger"
+              >
+                <Users className="h-4 w-4" />
+                Delete Recent People...
               </Button>
             </div>
 
@@ -1060,6 +1123,68 @@ export default function DeleteOptionsPage() {
               data-testid="button-confirm-reset"
             >
               {resetDatabaseMutation.isPending ? "Resetting..." : "Reset Database"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Delete People Created in Past 24 Hours */}
+      <Dialog open={isDeleteRecentPeopleDialogOpen} onOpenChange={(open) => {
+        setIsDeleteRecentPeopleDialogOpen(open);
+        if (!open) setConfirmDeleteRecentPeople(false);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Deletion of Recent People
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete all people records created in the past 24 hours.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>All contacts created in the past 24 hours will be permanently deleted</li>
+                <li>Associated notes and relationships for those contacts will be removed</li>
+                <li>Linked social accounts will be preserved (unlinked rather than deleted)</li>
+                <li>Your "Me" profile and older contacts will not be affected</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-delete-recent-people" className="text-sm font-medium pr-4 leading-normal">
+                I understand that this action is irreversible and wish to proceed
+              </Label>
+              <Switch
+                id="confirm-delete-recent-people"
+                checked={confirmDeleteRecentPeople}
+                onCheckedChange={setConfirmDeleteRecentPeople}
+                data-testid="switch-confirm-delete-recent-people"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsDeleteRecentPeopleDialogOpen(false);
+                setConfirmDeleteRecentPeople(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteRecentPeople}
+              disabled={!confirmDeleteRecentPeople || deleteRecentPeopleMutation.isPending}
+              data-testid="button-delete-recent-people"
+            >
+              {deleteRecentPeopleMutation.isPending ? "Deleting..." : "Delete Recent People"}
             </Button>
           </DialogFooter>
         </DialogContent>

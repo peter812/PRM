@@ -18,6 +18,7 @@ function getTaskLabel(type: string): string {
     case "get_img": return "Image Download";
     case "transfer_images_to_local": return "Transfer Images to Local";
     case "transfer_images_to_s3": return "Transfer Images to S3";
+    case "import_social": return "Social Extraction Import";
     case "import_instagram": return "Instagram Import";
     case "export_xml": return "XML Export";
     case "import_xml": return "XML Import";

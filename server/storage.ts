@@ -136,12 +136,12 @@ import {
 import { computeFamilyLabels } from "./family-relations-helper";
 import { visibleShared, ownedByCurrentUser, currentAccess, actingUserId } from "./access";
 import { db, pool } from "./db";
-import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull } from "drizzle-orm";
+import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { deleteImageLocally, isLocalImageUrl } from "./local-storage";
 import { deleteImageFromS3 } from "./s3";
-import { syncEntityInBackground } from "./vector-universal";
+import { syncEntityInBackground, deleteEntityVector } from "./vector-universal";
 
 const PostgresSessionStore = connectPg(session);
 
@@ -251,6 +251,7 @@ export interface IStorage {
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
   deletePerson(id: string): Promise<void>;
+  deletePeopleCreatedSince(cutoff: Date): Promise<{ deleted: number }>;
   updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }>;
   getRandomPeoplePair(): Promise<Person[]>;
 
@@ -463,6 +464,7 @@ export interface IStorage {
   getNextPendingTask(): Promise<Task | undefined>;
   updateTaskStatus(id: string, status: string, result?: string): Promise<Task | undefined>;
   updateTaskProgress(id: string, progress: number, message?: string): Promise<void>;
+  getCurrentTasks(recentWindowSeconds?: number): Promise<Task[]>;
   getTasksByStatus(status: string): Promise<Task[]>;
   getAllTasks(limit?: number): Promise<Task[]>;
   getTaskById(id: string): Promise<Task | undefined>;
@@ -504,6 +506,7 @@ export interface IStorage {
   getNextPendingImageTask(): Promise<ImageTask | undefined>;
   updateImageTaskStatus(id: string, status: string, result?: string): Promise<void>;
   updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void>;
+  getCurrentImageTasks(recentWindowSeconds?: number, limit?: number): Promise<ImageTask[]>;
   listImageTasks(options?: { type?: string; status?: string; parentTaskId?: string; limit?: number; offset?: number }): Promise<{ items: ImageTask[]; total: number }>;
   cancelImageTask(id: string): Promise<void>;
 
@@ -548,6 +551,7 @@ export interface IStorage {
   getConversationsBySocialAccount(socialAccountId: string, offset: number, limit: number): Promise<{ conversations: ConversationWithParticipants[]; total: number }>;
 
   // Pending social account imports
+  findDuplicatePendingSocialAccountImport(data: Partial<InsertPendingSocialAccountImport>): Promise<PendingSocialAccountImport | undefined>;
   createPendingSocialAccountImport(data: InsertPendingSocialAccountImport): Promise<PendingSocialAccountImport>;
   getPendingSocialAccountImports(options?: { page?: number; limit?: number; status?: "pending" | "imported" | "all"; search?: string }): Promise<{ items: Array<Omit<PendingSocialAccountImport, "accountFollowers" | "accountFollowing"> & { followersCount: number; followingCount: number; hasFollowersCsv: boolean; hasFollowingCsv: boolean }>; total: number; page: number; totalPages: number }>;
   getPendingSocialAccountImportById(id: string): Promise<PendingSocialAccountImport | undefined>;
@@ -557,6 +561,53 @@ export interface IStorage {
 
   // Session store
   sessionStore: session.Store;
+}
+
+/**
+ * Compare two pending import records/payloads for exact equality, excluding timestamps and IDs.
+ */
+export function isDuplicatePendingImport(
+  a: Partial<InsertPendingSocialAccountImport | PendingSocialAccountImport>,
+  b: Partial<InsertPendingSocialAccountImport | PendingSocialAccountImport>,
+): boolean {
+  const normStr = (s?: string | null) => {
+    if (s === undefined || s === null) return null;
+    const trimmed = String(s).trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  const normUser = (s?: string | null) => {
+    if (s === undefined || s === null) return "";
+    return String(s).replace(/^@/, "").trim().toLowerCase();
+  };
+  const normCount = (n?: number | null) => {
+    if (n === undefined || n === null || !Number.isFinite(Number(n))) return null;
+    return Math.round(Number(n));
+  };
+  const normType = (t?: string | null) => {
+    const trimmed = normStr(t);
+    return trimmed ? trimmed.toLowerCase() : "full";
+  };
+
+  const isBulkUsername = (u: string) => /^bulk_import_\d+$/i.test(u);
+  const userA = normUser(a.accountUsername);
+  const userB = normUser(b.accountUsername);
+  const usernamesMatch = (isBulkUsername(userA) && isBulkUsername(userB)) || userA === userB;
+
+  if (!usernamesMatch) return false;
+  if (normStr(a.accountDisplayName) !== normStr(b.accountDisplayName)) return false;
+  if (normStr(a.accountBio) !== normStr(b.accountBio)) return false;
+  if (normStr(a.accountWebsite) !== normStr(b.accountWebsite)) return false;
+  if (normStr(a.accountEmail) !== normStr(b.accountEmail)) return false;
+  if (normStr(a.accountPhone) !== normStr(b.accountPhone)) return false;
+  if (normStr(a.accountLocationArea) !== normStr(b.accountLocationArea)) return false;
+  if (normStr(a.accountFollowers) !== normStr(b.accountFollowers)) return false;
+  if (normStr(a.accountFollowing) !== normStr(b.accountFollowing)) return false;
+  if (normStr(a.accountImageUrl) !== normStr(b.accountImageUrl)) return false;
+  if (normCount(a.accountFollowersCount) !== normCount(b.accountFollowersCount)) return false;
+  if (normCount(a.accountFollowingCount) !== normCount(b.accountFollowingCount)) return false;
+  if (normType(a.importType) !== normType(b.importType)) return false;
+
+  return true;
 }
 
 /**
@@ -1186,6 +1237,64 @@ export class DatabaseStorage implements IStorage {
     
     // Delete person (cascade will handle notes, relationships)
     await db.delete(people).where(eq(people.id, id));
+  }
+
+  async deletePeopleCreatedSince(cutoff: Date): Promise<{ deleted: number }> {
+    // Select people created on or after cutoff, strictly excluding any user's "Me" record
+    const targetPeople = await db
+      .select({ id: people.id, vectorId: people.vectorId })
+      .from(people)
+      .where(and(gte(people.createdAt, cutoff), isNull(people.userId)));
+
+    if (targetPeople.length === 0) {
+      return { deleted: 0 };
+    }
+
+    const targetIds = targetPeople.map((p) => p.id);
+
+    // Unlink any social accounts referencing these people to prevent cascade deletion of social accounts
+    await db
+      .update(socialAccounts)
+      .set({ ownerUuid: null })
+      .where(inArray(socialAccounts.ownerUuid, targetIds));
+
+    // Remove from interactions
+    for (const personId of targetIds) {
+      await this.removePersonFromInteractions(personId);
+    }
+
+    // Remove from all groups
+    const allGroups = await db.select().from(groups);
+    for (const group of allGroups) {
+      if (group.members && group.members.some((m) => targetIds.includes(m))) {
+        const updatedMembers = group.members.filter((m) => !targetIds.includes(m));
+        await db
+          .update(groups)
+          .set({ members: updatedMembers })
+          .where(eq(groups.id, group.id));
+      }
+    }
+
+    // Fetch child note vector IDs
+    const childNotes = await db
+      .select({ vectorId: notes.vectorId })
+      .from(notes)
+      .where(inArray(notes.personId, targetIds));
+
+    // Delete people (DB cascade handles notes, relationships, schooling)
+    await db.delete(people).where(inArray(people.id, targetIds));
+
+    // Async vector cleanup
+    const personVectorIds = targetPeople.map((p) => p.vectorId).filter(Boolean) as string[];
+    if (personVectorIds.length > 0) {
+      void deleteEntityVector("person", personVectorIds);
+    }
+    const noteVectorIds = childNotes.map((n) => n.vectorId).filter(Boolean) as string[];
+    if (noteVectorIds.length > 0) {
+      void deleteEntityVector("note", noteVectorIds);
+    }
+
+    return { deleted: targetIds.length };
   }
 
   async getSchoolingByPersonId(personId: string): Promise<Schooling | undefined> {
@@ -4213,7 +4322,7 @@ export class DatabaseStorage implements IStorage {
     if (status === "in_progress") {
       updates.startedAt = new Date();
     }
-    if (status === "completed" || status === "failed") {
+    if (status === "completed" || status === "failed" || status === "cancelled") {
       updates.completedAt = new Date();
       updates.progress = 100;
     }
@@ -4234,6 +4343,36 @@ export class DatabaseStorage implements IStorage {
       updates.progressMessage = message;
     }
     await db.update(tasks).set(updates).where(eq(tasks.id, id));
+  }
+
+  async getCurrentTasks(recentWindowSeconds: number = 60): Promise<Task[]> {
+    const cutoff = new Date(Date.now() - recentWindowSeconds * 1000);
+    const ownerFilter = ownedByCurrentUser(tasks.userId);
+    const activeOrRecent = or(
+      inArray(tasks.status, ["pending", "in_progress"]),
+      gte(tasks.completedAt, cutoff)
+    );
+    const whereClause = ownerFilter ? and(activeOrRecent, ownerFilter) : activeOrRecent;
+
+    const rows = await db
+      .select({
+        id: tasks.id,
+        userId: tasks.userId,
+        type: tasks.type,
+        status: tasks.status,
+        title: tasks.title,
+        payload: tasks.payload,
+        result: sql<string | null>`LEFT(${tasks.result}, 2000)`,
+        progress: tasks.progress,
+        progressMessage: tasks.progressMessage,
+        createdAt: tasks.createdAt,
+        startedAt: tasks.startedAt,
+        completedAt: tasks.completedAt,
+      })
+      .from(tasks)
+      .where(whereClause)
+      .orderBy(desc(tasks.createdAt));
+    return rows as Task[];
   }
 
   async getTasksByStatus(status: string): Promise<Task[]> {
@@ -4467,6 +4606,24 @@ export class DatabaseStorage implements IStorage {
     const updates: Partial<typeof imageTasks.$inferInsert> = { progress };
     if (message !== undefined) updates.progressMessage = message;
     await db.update(imageTasks).set(updates).where(eq(imageTasks.id, id));
+  }
+
+  async getCurrentImageTasks(recentWindowSeconds: number = 60, limit: number = 50): Promise<ImageTask[]> {
+    const cutoff = new Date(Date.now() - recentWindowSeconds * 1000);
+    const ownerFilter = ownedByCurrentUser(imageTasks.userId);
+    const activeOrRecent = or(
+      inArray(imageTasks.status, ["pending", "in_progress"]),
+      gte(imageTasks.completedAt, cutoff)
+    );
+    const whereClause = ownerFilter ? and(activeOrRecent, ownerFilter) : activeOrRecent;
+
+    const rows = await db
+      .select()
+      .from(imageTasks)
+      .where(whereClause)
+      .orderBy(desc(imageTasks.createdAt))
+      .limit(limit);
+    return rows as ImageTask[];
   }
 
   async listImageTasks(options: { type?: string; status?: string; parentTaskId?: string; limit?: number; offset?: number } = {}): Promise<{ items: ImageTask[]; total: number }> {
@@ -5258,7 +5415,44 @@ export class DatabaseStorage implements IStorage {
     this.settingsCache.set(key, value);
   }
 
+  async findDuplicatePendingSocialAccountImport(
+    data: Partial<InsertPendingSocialAccountImport>,
+  ): Promise<PendingSocialAccountImport | undefined> {
+    const username = (data.accountUsername || "").replace(/^@/, "").trim().toLowerCase();
+    const isBulkUsername = /^bulk_import_\d+$/i.test(username);
+
+    let candidates: PendingSocialAccountImport[] = [];
+    if (isBulkUsername) {
+      candidates = await db
+        .select()
+        .from(pendingSocialAccountImports)
+        .where(
+          or(
+            ilike(pendingSocialAccountImports.accountUsername, "bulk_import_%"),
+            eq(pendingSocialAccountImports.accountDisplayName, "Bulk Scraped Contacts"),
+          ),
+        );
+    } else if (username) {
+      candidates = await db
+        .select()
+        .from(pendingSocialAccountImports)
+        .where(ilike(pendingSocialAccountImports.accountUsername, username));
+    }
+
+    for (const candidate of candidates) {
+      if (isDuplicatePendingImport(candidate, data)) {
+        return candidate;
+      }
+    }
+
+    return undefined;
+  }
+
   async createPendingSocialAccountImport(data: InsertPendingSocialAccountImport): Promise<PendingSocialAccountImport> {
+    const duplicate = await this.findDuplicatePendingSocialAccountImport(data);
+    if (duplicate) {
+      return duplicate;
+    }
     const [row] = await db
       .insert(pendingSocialAccountImports)
       .values(data)

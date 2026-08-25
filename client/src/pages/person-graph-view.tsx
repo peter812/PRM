@@ -105,10 +105,10 @@ export default function PersonGraphView({
   const [hideOrphans, setHideOrphans] = useState(() => initParams.get("hideOrphans") !== "false");
   const [anonymizePeople, setAnonymizePeople] = useState(() => initParams.get("anonymize") === "true");
   const [highlightedPersonId, setHighlightedPersonId] = useState<string | null>(
-    () => initParams.get("highlightPerson")
+    () => initParams.get("highlightPerson") || initParams.get("selected") || initParams.get("highlight")
   );
   const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(
-    () => initParams.get("highlightGroup")
+    () => initParams.get("highlightGroup") || initParams.get("groupId")
   );
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);

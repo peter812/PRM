@@ -398,6 +398,17 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    app.delete("/api/people/created-past-24-hours", requireAuth, async (req, res) => {
+      try {
+        const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const result = await storage.deletePeopleCreatedSince(cutoff);
+        res.json({ success: true, deleted: result.deleted });
+      } catch (error) {
+        console.error("Error deleting people created in past 24 hours:", error);
+        res.status(500).json({ error: "Failed to delete people created in past 24 hours" });
+      }
+    });
+
     app.delete("/api/people/:id", async (req, res) => {
       try {
         const id = req.params.id;

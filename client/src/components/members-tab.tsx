@@ -26,6 +26,8 @@ import { getInitials } from "@/lib/utils";
 import type { Person, SubGroup } from "@shared/schema";
 import { Link } from "wouter";
 import { PersonDialog } from "@/components/person-dialog";
+import { PersonContextMenu, PersonActionButton } from "@/components/person-context-menu";
+import { PersonTagsCell } from "@/components/person-tags-cell";
 
 interface MembersTabProps {
   members: Person[];
@@ -464,78 +466,86 @@ export function MembersTab({ members, groupId, subGroups = [] }: MembersTabProps
           ) : viewMode === "list" ? (
             <div className="space-y-3">
               {sortedMembers.map((member) => (
-                <Card
-                  key={member.id}
-                  className="p-4 hover-elevate transition-all"
-                  data-testid={`card-member-${member.id}`}
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <Link
-                      href={`/person/${member.id}?from=group&groupId=${groupId}`}
-                      className="flex items-center gap-4 min-w-0 shrink-0 max-w-full sm:max-w-[45%]"
-                    >
-                      <Avatar className="w-12 h-12 shrink-0">
-                        {member.imageUrl && (
-                          <AvatarImage
-                            src={member.imageUrl}
-                            alt={`${member.firstName} ${member.lastName}`}
-                          />
-                        )}
-                        <AvatarFallback>
-                          {getInitials(member.firstName, member.lastName)}
-                        </AvatarFallback>
-                      </Avatar>
-
-                      <div className="min-w-0">
-                        <h3
-                          className="text-lg font-medium hover:underline cursor-pointer truncate"
-                          data-testid={`text-member-name-${member.id}`}
-                        >
-                          {member.firstName} {member.lastName}
-                        </h3>
-                        {(member.company || member.title) && (
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground truncate">
-                            {member.title && <span>{member.title}</span>}
-                            {member.title && member.company && <span>•</span>}
-                            {member.company && <span>{member.company}</span>}
-                          </div>
-                        )}
-                      </div>
-                    </Link>
-
-                    <div className="flex-1 flex items-center justify-start sm:justify-end gap-1.5 flex-wrap min-w-0">
-                      {memberSubGroupsMap[member.id]?.map((sg) => (
-                        <Link
-                          key={sg.id}
-                          href={`/group/${groupId}/subgroup/${sg.id}`}
-                        >
-                          <Badge
-                            variant="outline"
-                            className="text-xs hover:bg-accent cursor-pointer flex items-center gap-1.5 py-0.5 px-2 font-normal"
-                            data-testid={`badge-subgroup-chip-${member.id}-${sg.id}`}
-                          >
-                            <span
-                              className="w-2 h-2 rounded-full shrink-0"
-                              style={{ backgroundColor: sg.color }}
+                <PersonContextMenu key={member.id} person={member} groupId={groupId}>
+                  <Card
+                    className="p-4 hover-elevate transition-all cursor-pointer"
+                    data-testid={`card-member-${member.id}`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <Link
+                        href={`/person/${member.id}?from=group&groupId=${groupId}`}
+                        className="flex items-center gap-4 min-w-0 shrink-0 max-w-full sm:max-w-[45%]"
+                      >
+                        <Avatar className="w-12 h-12 shrink-0">
+                          {member.imageUrl && (
+                            <AvatarImage
+                              src={member.imageUrl}
+                              alt={`${member.firstName} ${member.lastName}`}
                             />
-                            {sg.name}
-                          </Badge>
-                        </Link>
-                      ))}
-                    </div>
+                          )}
+                          <AvatarFallback>
+                            {getInitials(member.firstName, member.lastName)}
+                          </AvatarFallback>
+                        </Avatar>
 
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => removeMemberMutation.mutate(member.id)}
-                      disabled={removeMemberMutation.isPending}
-                      className="text-destructive hover:text-destructive shrink-0 self-end sm:self-center"
-                      data-testid={`button-remove-member-${member.id}`}
-                    >
-                      <X className="h-5 w-5" />
-                    </Button>
-                  </div>
-                </Card>
+                        <div className="min-w-0">
+                          <h3
+                            className="text-lg font-medium hover:underline cursor-pointer truncate"
+                            data-testid={`text-member-name-${member.id}`}
+                          >
+                            {member.firstName} {member.lastName}
+                          </h3>
+                          {(member.company || member.title) && (
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground truncate">
+                              {member.title && <span>{member.title}</span>}
+                              {member.title && member.company && <span>•</span>}
+                              {member.company && <span>{member.company}</span>}
+                            </div>
+                          )}
+                        </div>
+                      </Link>
+
+                      <div className="flex-1 flex items-center justify-start sm:justify-end gap-1.5 flex-wrap min-w-0">
+                        {memberSubGroupsMap[member.id]?.map((sg) => (
+                          <Link
+                            key={sg.id}
+                            href={`/group/${groupId}/subgroup/${sg.id}`}
+                          >
+                            <Badge
+                              variant="outline"
+                              className="text-xs hover:bg-accent cursor-pointer flex items-center gap-1.5 py-0.5 px-2 font-normal"
+                              data-testid={`badge-subgroup-chip-${member.id}-${sg.id}`}
+                            >
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: sg.color }}
+                              />
+                              {sg.name}
+                            </Badge>
+                          </Link>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0 self-end sm:self-center">
+                        <PersonActionButton person={member} groupId={groupId} />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            removeMemberMutation.mutate(member.id);
+                          }}
+                          disabled={removeMemberMutation.isPending}
+                          className="text-destructive hover:text-destructive"
+                          data-testid={`button-remove-member-${member.id}`}
+                        >
+                          <X className="h-5 w-5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                </PersonContextMenu>
               ))}
             </div>
           ) : (
@@ -767,120 +777,122 @@ export function MembersTab({ members, groupId, subGroups = [] }: MembersTabProps
                   {sortedMembers.map((member) => {
                     const starredVal = starredStates[member.id] ?? (member.isStarred || 0);
                     return (
-                      <tr
-                        key={member.id}
-                        className="border-b hover:bg-muted/50 transition-colors"
-                        data-testid={`row-member-${member.id}`}
-                      >
-                        <td className="py-2 px-3">
-                          <Link
-                            href={`/person/${member.id}?from=group&groupId=${groupId}`}
-                            className="font-medium hover:underline"
-                            data-testid={`text-member-name-${member.id}`}
-                          >
-                            {member.firstName} {member.lastName}
-                          </Link>
-                        </td>
-                        <td className="py-2 px-3 text-muted-foreground">
-                          {(member.title || member.company) && (
-                            <div className="flex items-center gap-1">
-                              {member.title && <span>{member.title}</span>}
-                              {member.title && member.company && <span>•</span>}
-                              {member.company && <span>{member.company}</span>}
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-2 px-3">
-                          <div className="flex flex-wrap gap-1">
-                            {member.tags && member.tags.map((tag, idx) => (
-                              <Badge key={idx} variant="secondary" className="text-xs">
-                                {tag}
-                              </Badge>
-                            ))}
-                          </div>
-                        </td>
-                        <td className="py-2 px-3">
-                          <div className="flex flex-wrap gap-1">
-                            {memberSubGroupsMap[member.id]?.map((sg) => (
-                              <Link
-                                key={sg.id}
-                                href={`/group/${groupId}/subgroup/${sg.id}`}
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <Badge
-                                  variant="outline"
-                                  className="text-xs hover:bg-accent cursor-pointer flex items-center gap-1.5 py-0.5 px-2 font-normal"
-                                  data-testid={`table-chip-subgroup-${member.id}-${sg.id}`}
+                      <PersonContextMenu key={member.id} person={member} groupId={groupId} asChild>
+                        <tr
+                          className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
+                          data-testid={`row-member-${member.id}`}
+                        >
+                          <td className="py-2 px-3">
+                            <Link
+                              href={`/person/${member.id}?from=group&groupId=${groupId}`}
+                              className="font-medium hover:underline"
+                              data-testid={`text-member-name-${member.id}`}
+                            >
+                              {member.firstName} {member.lastName}
+                            </Link>
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {(member.title || member.company) && (
+                              <div className="flex items-center gap-1">
+                                {member.title && <span>{member.title}</span>}
+                                {member.title && member.company && <span>•</span>}
+                                {member.company && <span>{member.company}</span>}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            <PersonTagsCell personId={member.id} tags={member.tags || []} />
+                          </td>
+                          <td className="py-2 px-3">
+                            <div className="flex flex-wrap gap-1">
+                              {memberSubGroupsMap[member.id]?.map((sg) => (
+                                <Link
+                                  key={sg.id}
+                                  href={`/group/${groupId}/subgroup/${sg.id}`}
+                                  onClick={(e) => e.stopPropagation()}
                                 >
-                                  <span
-                                    className="w-2 h-2 rounded-full shrink-0"
-                                    style={{ backgroundColor: sg.color }}
-                                  />
-                                  {sg.name}
+                                  <Badge
+                                    variant="outline"
+                                    className="text-xs hover:bg-accent cursor-pointer flex items-center gap-1.5 py-0.5 px-2 font-normal"
+                                    data-testid={`table-chip-subgroup-${member.id}-${sg.id}`}
+                                  >
+                                    <span
+                                      className="w-2 h-2 rounded-full shrink-0"
+                                      style={{ backgroundColor: sg.color }}
+                                    />
+                                    {sg.name}
+                                  </Badge>
+                                </Link>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-2 px-3">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleStarClick(member);
+                              }}
+                              data-testid={`button-star-${member.id}`}
+                            >
+                              <Star className={`h-4 w-4 ${starredVal === 1 ? "fill-current" : ""}`} />
+                            </Button>
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {member.phone && (
+                              <span className="flex items-center gap-1" data-testid={`text-phone-${member.id}`}>
+                                <Phone className="h-3 w-3" />
+                                {member.phone}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground">
+                            {member.email && (
+                              <a
+                                href={`mailto:${member.email}`}
+                                className="flex items-center gap-1 hover:underline"
+                                onClick={(e) => e.stopPropagation()}
+                                data-testid={`text-email-${member.id}`}
+                              >
+                                <Mail className="h-3 w-3" />
+                                {member.email}
+                              </a>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            {member.socialAccountUuids && member.socialAccountUuids.length > 0 && (
+                              <Link href={`/person/${member.id}?from=group&groupId=${groupId}`}>
+                                <Badge variant="outline" className="text-xs cursor-pointer" data-testid={`badge-social-${member.id}`}>
+                                  <ExternalLink className="h-3 w-3 mr-1" />
+                                  {member.socialAccountUuids.length}
                                 </Badge>
                               </Link>
-                            ))}
-                          </div>
-                        </td>
-                        <td className="py-2 px-3">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleStarClick(member);
-                            }}
-                            data-testid={`button-star-${member.id}`}
-                          >
-                            <Star className={`h-4 w-4 ${starredVal === 1 ? "fill-current" : ""}`} />
-                          </Button>
-                        </td>
-                        <td className="py-2 px-3 text-muted-foreground">
-                          {member.phone && (
-                            <span className="flex items-center gap-1" data-testid={`text-phone-${member.id}`}>
-                              <Phone className="h-3 w-3" />
-                              {member.phone}
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2 px-3 text-muted-foreground">
-                          {member.email && (
-                            <a
-                              href={`mailto:${member.email}`}
-                              className="flex items-center gap-1 hover:underline"
-                              onClick={(e) => e.stopPropagation()}
-                              data-testid={`text-email-${member.id}`}
-                            >
-                              <Mail className="h-3 w-3" />
-                              {member.email}
-                            </a>
-                          )}
-                        </td>
-                        <td className="py-2 px-3">
-                          {member.socialAccountUuids && member.socialAccountUuids.length > 0 && (
-                            <Link href={`/person/${member.id}?from=group&groupId=${groupId}`}>
-                              <Badge variant="outline" className="text-xs cursor-pointer" data-testid={`badge-social-${member.id}`}>
-                                <ExternalLink className="h-3 w-3 mr-1" />
-                                {member.socialAccountUuids.length}
-                              </Badge>
-                            </Link>
-                          )}
-                        </td>
-                        <td className="py-2 px-3">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => removeMemberMutation.mutate(member.id)}
-                            disabled={removeMemberMutation.isPending}
-                            className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
-                            data-testid={`button-remove-member-${member.id}`}
-                          >
-                            <X className="h-3 w-3" />
-                          </Button>
-                        </td>
-                      </tr>
+                            )}
+                          </td>
+                          <td className="py-2 px-3">
+                            <div className="flex items-center gap-1">
+                              <PersonActionButton person={member} groupId={groupId} />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  removeMemberMutation.mutate(member.id);
+                                }}
+                                disabled={removeMemberMutation.isPending}
+                                className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                data-testid={`button-remove-member-${member.id}`}
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      </PersonContextMenu>
                     );
                   })}
                 </tbody>

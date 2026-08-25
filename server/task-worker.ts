@@ -12,7 +12,8 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, isNotNull } from "drizzle-orm";
+import { eq, and, isNotNull } from "drizzle-orm";
+import Papa from "papaparse";
 
 interface MessageMetadata {
   reactions?: any[];
@@ -2412,6 +2413,211 @@ async function importOneDmThread(
   return summary;
 }
 
+async function queueSocialProfileImage(
+  socialAccountId: string,
+  imageUrl: string | null | undefined,
+  userId: number,
+  parentTaskId?: string,
+) {
+  if (!imageUrl || !imageUrl.trim()) return;
+
+  const current = await storage.getCurrentProfileVersion(socialAccountId);
+  const profileVersion = current
+    ? (await storage.updateProfileVersion(current.id, { externalImageUrl: imageUrl }), current)
+    : await storage.createProfileVersion({
+        socialAccountId,
+        isCurrent: true,
+        externalImageUrl: imageUrl,
+      });
+
+  await storage.createImageTask({
+    userId,
+    type: "download_img_instagram",
+    status: "pending",
+    parentTaskId: parentTaskId || null,
+    payload: JSON.stringify({
+      socialAccountId,
+      imageUrl,
+      profileVersionId: profileVersion.id,
+    }),
+  });
+}
+
+/**
+ * Ingests a pending social account extraction (scraped via extension) in the background.
+ */
+export async function processImportSocial(
+  taskId: string,
+  payload: {
+    pendingImportId: string;
+    includeGraphImages?: boolean;
+  },
+): Promise<string> {
+  const { pendingImportId, includeGraphImages = false } = payload;
+  const record = await storage.getPendingSocialAccountImportById(pendingImportId);
+  if (!record) {
+    throw new Error(`Pending social account import ${pendingImportId} not found`);
+  }
+
+  if (record.alreadyAdded) {
+    return JSON.stringify({ alreadyAdded: true, accountUsername: record.accountUsername });
+  }
+
+  const userId = actingUserId() || 1;
+  const instagramType = await storage.getSocialAccountTypeByName("instagram");
+  const typeId = instagramType?.id || null;
+
+  await storage.updateTaskProgress(taskId, 5, `Setting up profile @${record.accountUsername}...`);
+
+  // 1. Resolve or create main social account
+  const mainUsername = record.accountUsername.trim().toLowerCase();
+  let [mainAccount] = await db.select().from(socialAccounts).where(eq(socialAccounts.username, mainUsername)).limit(1);
+
+  if (!mainAccount) {
+    mainAccount = await storage.createSocialAccount({
+      username: mainUsername,
+      typeId: typeId || undefined,
+      ownerUuid: null,
+      internalAccountCreationType: "PRM-chrome import",
+    });
+  }
+
+  await storage.updateSocialAccount(mainAccount.id, { isSimple: false, lastScrapedAt: new Date() });
+
+  const profileFields: Record<string, any> = {
+    accountUrl: `https://instagram.com/${mainUsername}`,
+  };
+  if (record.accountDisplayName) profileFields.nickname = record.accountDisplayName;
+  if (record.accountBio) profileFields.bio = record.accountBio;
+
+  const currentProfile = await storage.getCurrentProfileVersion(mainAccount.id);
+  if (currentProfile) {
+    await storage.updateProfileVersion(currentProfile.id, profileFields);
+  } else {
+    await storage.createProfileVersion({
+      socialAccountId: mainAccount.id,
+      isCurrent: true,
+      ...profileFields,
+    });
+  }
+
+  // The selected account always gets its picture
+  await queueSocialProfileImage(mainAccount.id, record.accountImageUrl, userId, taskId);
+
+  let totalFollowersIngested = 0;
+  let totalFollowingIngested = 0;
+
+  const parseCsvRows = (csvText: string | null | undefined): any[] => {
+    if (!csvText || !csvText.trim()) return [];
+    const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+    const firstLine = lines[0].toLowerCase();
+    const hasHeaders = firstLine.includes("username") || firstLine.includes("handle") || firstLine.includes(",") || firstLine.includes("account");
+    if (hasHeaders) {
+      const parseResult = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+      return (parseResult.data || []) as any[];
+    }
+    return lines.map(line => ({ username: line.replace(/^@/, "").trim() }));
+  };
+
+  const processRows = async (
+    rows: any[],
+    isFollower: boolean,
+    startProgress: number,
+    endProgress: number,
+  ): Promise<number> => {
+    if (rows.length === 0) return 0;
+    let count = 0;
+    const total = rows.length;
+    const label = isFollower ? "followers" : "following";
+
+    for (let i = 0; i < total; i++) {
+      if (i % 25 === 0) {
+        if (await isTaskCancelled(taskId)) {
+          return count;
+        }
+        const pct = Math.round(startProgress + ((i / total) * (endProgress - startProgress)));
+        await storage.updateTaskProgress(taskId, pct, `Ingesting ${label}: ${i}/${total}`);
+      }
+
+      const row = rows[i];
+      const handle = (row.username || row.handle || row.Account || row.Username || "").toString().trim().replace(/^@/, "").toLowerCase();
+      if (!handle) continue;
+
+      let [subAccount] = await db.select().from(socialAccounts).where(eq(socialAccounts.username, handle)).limit(1);
+      if (!subAccount) {
+        subAccount = await storage.createSocialAccount({
+          username: handle,
+          typeId: typeId || undefined,
+          ownerUuid: null,
+          internalAccountCreationType: "PRM-chrome import",
+        });
+
+        const curProfile = await storage.getCurrentProfileVersion(subAccount.id);
+        if (curProfile) {
+          await storage.updateProfileVersion(curProfile.id, {
+            nickname: row.full_name || row.displayName || null,
+            accountUrl: `https://instagram.com/${handle}`,
+          });
+        }
+      }
+
+      if (includeGraphImages) {
+        await queueSocialProfileImage(subAccount.id, row.profile_pic_url || row.profilePicUrl, userId, taskId);
+      }
+
+      const followerId = isFollower ? subAccount.id : mainAccount.id;
+      const followedId = isFollower ? mainAccount.id : subAccount.id;
+
+      const [existingFollow] = await db.select().from(socialFollows).where(
+        and(
+          eq(socialFollows.followerId, followerId),
+          eq(socialFollows.followedId, followedId),
+        ),
+      ).limit(1);
+
+      if (!existingFollow) {
+        await db.insert(socialFollows).values({
+          followerId,
+          followedId,
+          source: "extension-pending-import",
+        });
+      }
+      count++;
+    }
+    return count;
+  };
+
+  if (record.importType !== "account") {
+    const followerRows = parseCsvRows(record.accountFollowers);
+    const followingRows = parseCsvRows(record.accountFollowing);
+
+    totalFollowersIngested = await processRows(followerRows, true, 10, 50);
+    if (await isTaskCancelled(taskId)) {
+      return JSON.stringify({ cancelled: true, followers: totalFollowersIngested, following: 0 });
+    }
+
+    totalFollowingIngested = await processRows(followingRows, false, 50, 90);
+    if (await isTaskCancelled(taskId)) {
+      return JSON.stringify({ cancelled: true, followers: totalFollowersIngested, following: totalFollowingIngested });
+    }
+  }
+
+  await storage.updateTaskProgress(taskId, 95, "Finalizing import...");
+  await storage.markPendingImportAsImported(record.id);
+
+  triggerImageTaskWorker();
+
+  await storage.updateTaskProgress(taskId, 100, "Import completed");
+
+  return JSON.stringify({
+    success: true,
+    accountUsername: mainUsername,
+    followers: totalFollowersIngested,
+    following: totalFollowingIngested,
+  });
+}
+
 /**
  * Import a full Instagram account backup: the whole Meta export zip
  * (instagram-<username>-<date>-<id>.zip) containing every DM thread under
@@ -3084,6 +3290,11 @@ async function processNextTask(): Promise<boolean> {
         }
         case "transfer_images_to_s3": {
           result = await processTransferImagesToS3(task.id);
+          break;
+        }
+        case "import_social": {
+          const payload = JSON.parse(task.payload);
+          result = await processImportSocial(task.id, payload);
           break;
         }
         case "import_instagram": {

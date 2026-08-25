@@ -40,6 +40,8 @@ function getTaskLabel(type: string): string {
       return "Transfer Images to Local";
     case "transfer_images_to_s3":
       return "Transfer Images to S3";
+    case "import_social":
+      return "Social Extraction Import";
     case "import_instagram":
       return "Instagram Import";
     case "export_xml":
@@ -86,7 +88,7 @@ export function TaskTrackerModal() {
 
   // Query general background tasks
   const { data: tasks = EMPTY_TASKS } = useQuery<Task[]>({
-    queryKey: ["/api/tasks"],
+    queryKey: ["/api/tasks/current"],
     refetchInterval: (query) => {
       const data = query.state.data as Task[] | undefined;
       const hasActive = data?.some((t) => t.status === "pending" || t.status === "in_progress");
@@ -96,9 +98,9 @@ export function TaskTrackerModal() {
 
   // Query image background tasks
   const { data: imageTasksData } = useQuery<{ items: ImageTask[] }>({
-    queryKey: ["/api/image-tasks", "active-tracker"],
+    queryKey: ["/api/image-tasks/current"],
     queryFn: async () => {
-      const res = await fetch("/api/image-tasks?limit=25");
+      const res = await fetch("/api/image-tasks/current");
       if (!res.ok) throw new Error("Failed to fetch image tasks");
       return res.json();
     },

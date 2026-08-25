@@ -78,7 +78,7 @@ function useExportNotifier() {
   }, []);
 
   const { data: tasks } = useQuery<{ id: string; type: string; status: string; result?: string }[]>({
-    queryKey: ["/api/tasks"],
+    queryKey: ["/api/tasks/current"],
     enabled: !!user,
     refetchInterval: 4000,
     select: (data) => data.map(t => ({ id: t.id, type: t.type, status: t.status, result: (t as any).result })),

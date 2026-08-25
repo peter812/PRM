@@ -136,15 +136,13 @@ export default function ExtensionImportsSettingsPage() {
       const res = await apiRequest("POST", `/api/v1/pending-imports/${id}/import`);
       return res.json();
     },
+    onMutate: () => {
+      if (previewItem) setPreviewItem(null);
+    },
     onSuccess: () => {
-      toast({ title: "Imported Successfully", description: "Record ingested into PRM." });
+      toast({ title: "Import Task Started", description: "Social extraction import queued in the background." });
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
-      if (previewItem) {
-        setPreviewItem(prev => prev ? { ...prev, alreadyAdded: true, timestampImported: new Date().toISOString() } : null);
-      }
     },
     onError: (err: Error) => {
       toast({ title: "Import Failed", description: err.message, variant: "destructive" });
@@ -167,13 +165,13 @@ export default function ExtensionImportsSettingsPage() {
       const res = await apiRequest("POST", "/api/v1/pending-imports/bulk-import", { ids });
       return res.json();
     },
-    onSuccess: (resData) => {
-      toast({ title: "Bulk Import Finished", description: `Ingested ${resData.count} records into PRM.` });
+    onMutate: () => {
       setSelectedIds(new Set());
+    },
+    onSuccess: (resData) => {
+      toast({ title: "Bulk Import Started", description: `Queued ${resData.count} import task${resData.count === 1 ? "" : "s"} in the background.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/people"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/contacts"] });
     },
   });
 

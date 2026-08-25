@@ -1282,6 +1282,9 @@ export async function initializeDatabase(): Promise<void> {
 
     // Migrate family relationships to highly normalized tables
     await migrateFamilyToNormalizedSchema();
+
+    // Migrate old pending-import creation types to PRM-chrome import
+    await migratePendingImportCreationType();
   } catch (error) {
     log(`Database initialization failed: ${error}`);
     throw error;
@@ -1539,4 +1542,41 @@ async function migrateUnassignedDailyNotesToSuperAdmin(): Promise<void> {
     log(`Error assigning unassigned daily notes to super admin: ${error}`);
   }
 }
+
+/**
+ * Migrates existing 'pending-import-ingest' and 'pending-import-contact' creation types
+ * on social_accounts to 'PRM-chrome import'.
+ */
+async function migratePendingImportCreationType(): Promise<void> {
+  try {
+    if (await tableExists("social_accounts")) {
+      const res = await pool.query(`
+        UPDATE social_accounts
+        SET internal_account_creation_type = 'PRM-chrome import'
+        WHERE internal_account_creation_type IN ('pending-import-ingest', 'pending-import-contact')
+      `);
+      if (res.rowCount && res.rowCount > 0) {
+        log(`Updated ${res.rowCount} social account(s) creation type to 'PRM-chrome import'`);
+      }
+    }
+
+    if (await tableExists("social_profile_versions") && await tableExists("social_accounts")) {
+      const resUrl = await pool.query(`
+        UPDATE social_profile_versions spv
+        SET account_url = 'https://instagram.com/' || sa.username
+        FROM social_accounts sa
+        WHERE spv.social_account_id = sa.id
+          AND spv.is_current = true
+          AND sa.internal_account_creation_type = 'PRM-chrome import'
+          AND (spv.account_url IS NULL OR spv.account_url = '' OR spv.account_url NOT LIKE '%instagram.com%')
+      `);
+      if (resUrl.rowCount && resUrl.rowCount > 0) {
+        log(`Populated account_url for ${resUrl.rowCount} PRM-chrome imported profile version(s)`);
+      }
+    }
+  } catch (error) {
+    log(`Note: could not update pending import creation type or account url: ${error}`);
+  }
+}
+
 

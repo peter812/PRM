@@ -589,6 +589,24 @@ export default function ApiDocs() {
       description: "Manage background asynchronous tasks (image scraping, follower count syncing, bulk data processing).",
       endpoints: [
         {
+          id: "get-current-tasks",
+          method: "GET",
+          path: "/api/tasks/current",
+          summary: "List current / active tasks",
+          description: "Get active (pending, in_progress) and recently completed tasks for real-time tracking.",
+          response: `[
+  {
+    "id": "task-uuid-1",
+    "type": "scrape-profile-pics",
+    "status": "in_progress",
+    "progress": 45,
+    "createdAt": "2026-06-28T09:00:00Z"
+  }
+]`,
+          example: `fetch('${baseUrl}/api/tasks/current')
+  .then(res => res.json());`
+        },
+        {
           id: "get-tasks",
           method: "GET",
           path: "/api/tasks",

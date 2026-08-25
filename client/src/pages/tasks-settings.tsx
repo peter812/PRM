@@ -39,6 +39,8 @@ function getTaskLabel(type: string): string {
       return "Transfer Images to Local";
     case "transfer_images_to_s3":
       return "Transfer Images to S3";
+    case "import_social":
+      return "Social Extraction Import";
     case "import_instagram":
       return "Instagram Import";
     case "export_xml":
@@ -118,6 +120,14 @@ function TaskResultDisplay({ task }: { task: Task }) {
         </span>
       );
     }
+    if (task.type === "import_social") {
+      return (
+        <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
+          Followers: {result.followers ?? 0}, Following: {result.following ?? 0}
+          {result.cancelled && " (cancelled)"}
+        </span>
+      );
+    }
     if (task.type === "import_instagram") {
       return (
         <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
@@ -145,16 +155,27 @@ export default function TasksSettingsPage() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const { data: tasks = [], isLoading: tasksLoading } = useQuery<Task[]>({
-    queryKey: ["/api/tasks"],
+  const { data: currentTasks = [] } = useQuery<Task[]>({
+    queryKey: ["/api/tasks/current"],
     refetchInterval: (query) => {
       const data = query.state.data as Task[] | undefined;
-      if (data?.some(t => t.status === "pending" || t.status === "in_progress")) {
-        return 3000;
-      }
-      return false;
+      return data?.some(t => t.status === "pending" || t.status === "in_progress") ? 2500 : false;
     },
   });
+
+  const { data: allTasks = [], isLoading: tasksLoading } = useQuery<Task[]>({
+    queryKey: ["/api/tasks"],
+  });
+
+  // Merge current task state into history list for real-time progress display
+  const currentTasksMap = new Map(currentTasks.map(t => [t.id, t]));
+  const tasks = allTasks.map(t => currentTasksMap.get(t.id) ?? t);
+  const allTaskIds = new Set(allTasks.map(t => t.id));
+  for (const ct of currentTasks) {
+    if (!allTaskIds.has(ct.id)) {
+      tasks.unshift(ct);
+    }
+  }
 
   const { data: briefAccounts = [] } = useQuery<BriefAccount[]>({
     queryKey: ["/api/tasks", "social-accounts-brief"],
@@ -166,7 +187,7 @@ export default function TasksSettingsPage() {
   });
 
   const isPaused = workerStatus?.paused ?? false;
-  const hasActiveTasks = tasks.some(t => t.status === "pending" || t.status === "in_progress");
+  const hasActiveTasks = currentTasks.some(t => t.status === "pending" || t.status === "in_progress");
 
   const selectedAccount = selectedAccountId
     ? briefAccounts.find(a => a.id === selectedAccountId)

@@ -562,7 +562,6 @@ export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
   action: text("action").notNull(), // 'created' | 'edited'
   timestamp: timestamp("timestamp").notNull().defaultNow(),
   pinUsed: boolean("pin_used").notNull().default(false), // whether PIN authorization was required for this edit
-  createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("daily_note_audit_logs_daily_note_id_idx").on(t.dailyNoteId),
 ]);
@@ -583,6 +582,8 @@ export const tasks = pgTable("tasks", {
   completedAt: timestamp("completed_at"),
 }, (t) => [
   index("tasks_user_id_idx").on(t.userId),
+  index("tasks_status_idx").on(t.status),
+  index("tasks_user_id_status_idx").on(t.userId, t.status),
 ]);
 
 // Image tasks table - specialized operations performed on images
@@ -604,6 +605,8 @@ export const imageTasks = pgTable("image_tasks", {
   index("image_tasks_parent_task_id_idx").on(t.parentTaskId),
   index("image_tasks_user_id_idx").on(t.userId),
   index("image_tasks_photo_id_idx").on(t.photoId),
+  index("image_tasks_status_idx").on(t.status),
+  index("image_tasks_user_id_status_idx").on(t.userId, t.status),
 ]);
 
 // Image questions table - tracks unrecognized face assignments needed from the user

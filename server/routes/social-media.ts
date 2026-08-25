@@ -1296,7 +1296,41 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    function sanitizeTasksForUser(taskList: any[], userId: number) {
+      return taskList.map(t => {
+        let payloadObj: Record<string, unknown> = {};
+        try { payloadObj = JSON.parse(t.payload || "{}"); } catch {}
+        // Skip tasks belonging to another user
+        if (payloadObj.userId !== undefined && payloadObj.userId !== userId) return null;
+        // Strip raw XML from import payloads; expose result on completed/failed/cancelled
+        if (t.type === "import_xml") {
+          const { xml: _dropped, ...rest } = payloadObj as { xml?: string };
+          const exposeResult = t.status === "completed" || t.status === "failed" || t.status === "cancelled";
+          return { ...t, payload: JSON.stringify(rest), result: exposeResult ? t.result : null };
+        }
+        // Export: never send large XML in list; expose result on failure for error display
+        if (t.type === "export_xml") {
+          const exposeResult = t.status === "failed" || t.status === "cancelled";
+          return { ...t, result: exposeResult ? t.result : null };
+        }
+        return t;
+      }).filter(Boolean);
+    }
+
     // Task management routes
+    app.get("/api/tasks/current", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const taskList = await storage.getCurrentTasks();
+        res.json(sanitizeTasksForUser(taskList, req.user.id));
+      } catch (error) {
+        console.error("Error fetching current tasks:", error);
+        res.status(500).json({ error: "Failed to fetch current tasks" });
+      }
+    });
+
     app.get("/api/tasks", async (req, res) => {
       if (!req.isAuthenticated() || !req.user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -1310,26 +1344,7 @@ export function registerRoutes(app: Express) {
         } else {
           taskList = await storage.getAllTasks(limit);
         }
-        // Sanitize sensitive fields and filter by ownership for tasks that carry userId in payload
-        const sanitized = taskList.map(t => {
-          let payloadObj: Record<string, unknown> = {};
-          try { payloadObj = JSON.parse(t.payload || "{}"); } catch {}
-          // Skip tasks belonging to another user
-          if (payloadObj.userId !== undefined && payloadObj.userId !== req.user!.id) return null;
-          // Strip raw XML from import payloads; expose result on completed/failed/cancelled
-          if (t.type === "import_xml") {
-            const { xml: _dropped, ...rest } = payloadObj as { xml?: string };
-            const exposeResult = t.status === "completed" || t.status === "failed" || t.status === "cancelled";
-            return { ...t, payload: JSON.stringify(rest), result: exposeResult ? t.result : null };
-          }
-          // Export: never send large XML in list; expose result on failure for error display
-          if (t.type === "export_xml") {
-            const exposeResult = t.status === "failed" || t.status === "cancelled";
-            return { ...t, result: exposeResult ? t.result : null };
-          }
-          return t;
-        }).filter(Boolean);
-        res.json(sanitized);
+        res.json(sanitizeTasksForUser(taskList, req.user.id));
       } catch (error) {
         console.error("Error fetching tasks:", error);
         res.status(500).json({ error: "Failed to fetch tasks" });
@@ -1678,6 +1693,20 @@ export function registerRoutes(app: Express) {
   
     // ── Image task endpoints ──────────────────────────────────────────────────
   
+    // GET /api/image-tasks/current — list active/recent image tasks
+    app.get("/api/image-tasks/current", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const items = await storage.getCurrentImageTasks();
+        res.json({ items });
+      } catch (error) {
+        console.error("Error fetching current image tasks:", error);
+        res.status(500).json({ error: "Failed to fetch current image tasks" });
+      }
+    });
+
     // GET /api/image-tasks — list image tasks with optional type/status filter and pagination
     app.get("/api/image-tasks", async (req, res) => {
       if (!req.isAuthenticated() || !req.user) {

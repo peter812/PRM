@@ -30,6 +30,8 @@ import { PersonDialog } from "@/components/person-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { PersonContextMenu, PersonActionButton } from "@/components/person-context-menu";
+import { PersonTagsCell } from "@/components/person-tags-cell";
 
 type SortOption = "relationship" | "added" | "starred" | "elo_high" | "elo_low";
 type ViewMode = "details" | "snug" | "expanded";
@@ -529,110 +531,108 @@ export default function PeopleList() {
                       const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
                       const starredVal = starredStates[person.id] ?? (person.isStarred || 0);
                       return (
-                        <tr
-                          key={person.id}
-                          className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
-                          style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
-                          data-testid={`row-person-${person.id}`}
-                        >
-                          <td className="py-2 px-3">
-                            <Link href={`/person/${person.id}`} className="font-medium hover:underline" data-testid={`text-name-${person.id}`}>
-                              {person.firstName} {person.lastName}
-                            </Link>
-                          </td>
-                          <td className="py-2 px-3">
-                            {person.relationshipTypeName && (
-                              <Badge
-                                variant="secondary"
-                                className="text-xs"
-                                style={{
-                                  backgroundColor: person.relationshipTypeColor || undefined,
-                                  color: 'white',
-                                }}
-                                data-testid={`badge-relationship-${person.id}`}
-                              >
-                                {person.relationshipTypeName}
-                              </Badge>
-                            )}
-                          </td>
-                          <td className="py-2 px-3">
-                            <div className="flex flex-wrap gap-1">
-                              {person.tags && person.tags.map((tag, idx) => (
-                                <Badge key={idx} variant="secondary" className="text-xs">
-                                  {tag}
-                                </Badge>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="py-2 px-3">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleStarClick(person);
-                              }}
-                              data-testid={`button-star-${person.id}`}
-                            >
-                              <Star className={`h-4 w-4 ${starredVal === 1 ? "fill-current" : ""}`} />
-                            </Button>
-                          </td>
-                          <td className="py-2 px-3 text-muted-foreground">
-                            {person.phone && (
-                              <a
-                                href={getTruePeopleSearchUrl(person.phone)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center gap-1 hover:underline text-muted-foreground"
-                                onClick={(e) => e.stopPropagation()}
-                                data-testid={`text-phone-${person.id}`}
-                              >
-                                <Phone className="h-3 w-3" />
-                                {formatPhoneNumberForDisplay(person.phone)}
-                              </a>
-                            )}
-                          </td>
-                          <td className="py-2 px-3 text-muted-foreground">
-                            {person.email && (
-                              <a
-                                href={`mailto:${person.email}`}
-                                className="flex items-center gap-1 hover:underline"
-                                onClick={(e) => e.stopPropagation()}
-                                data-testid={`text-email-${person.id}`}
-                              >
-                                <Mail className="h-3 w-3" />
-                                {person.email}
-                              </a>
-                            )}
-                          </td>
-                          <td className="py-2 px-3">
-                            {person.socialAccountUuids && person.socialAccountUuids.length > 0 && (
-                              <Link href={`/person/${person.id}`}>
-                                <Badge variant="outline" className="text-xs cursor-pointer" data-testid={`badge-social-${person.id}`}>
-                                  <ExternalLink className="h-3 w-3 mr-1" />
-                                  {person.socialAccountUuids.length}
-                                </Badge>
+                        <PersonContextMenu key={person.id} person={person} asChild>
+                          <tr
+                            className="border-b hover:bg-muted/50 transition-colors cursor-pointer"
+                            style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
+                            data-testid={`row-person-${person.id}`}
+                          >
+                            <td className="py-2 px-3">
+                              <Link href={`/person/${person.id}`} className="font-medium hover:underline" data-testid={`text-name-${person.id}`}>
+                                {person.firstName} {person.lastName}
                               </Link>
-                            )}
-                          </td>
-                          <td className="py-2 px-3">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setPersonToDelete(person);
-                              }}
-                              data-testid={`button-delete-${person.id}`}
-                            >
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </td>
-                        </tr>
+                            </td>
+                            <td className="py-2 px-3">
+                              {person.relationshipTypeName && (
+                                <Badge
+                                  variant="secondary"
+                                  className="text-xs"
+                                  style={{
+                                    backgroundColor: person.relationshipTypeColor || undefined,
+                                    color: 'white',
+                                  }}
+                                  data-testid={`badge-relationship-${person.id}`}
+                                >
+                                  {person.relationshipTypeName}
+                                </Badge>
+                              )}
+                            </td>
+                            <td className="py-2 px-3">
+                              <PersonTagsCell personId={person.id} tags={person.tags || []} />
+                            </td>
+                            <td className="py-2 px-3">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleStarClick(person);
+                                }}
+                                data-testid={`button-star-${person.id}`}
+                              >
+                                <Star className={`h-4 w-4 ${starredVal === 1 ? "fill-current" : ""}`} />
+                              </Button>
+                            </td>
+                            <td className="py-2 px-3 text-muted-foreground">
+                              {person.phone && (
+                                <a
+                                  href={getTruePeopleSearchUrl(person.phone)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 hover:underline text-muted-foreground"
+                                  onClick={(e) => e.stopPropagation()}
+                                  data-testid={`text-phone-${person.id}`}
+                                >
+                                  <Phone className="h-3 w-3" />
+                                  {formatPhoneNumberForDisplay(person.phone)}
+                                </a>
+                              )}
+                            </td>
+                            <td className="py-2 px-3 text-muted-foreground">
+                              {person.email && (
+                                <a
+                                  href={`mailto:${person.email}`}
+                                  className="flex items-center gap-1 hover:underline"
+                                  onClick={(e) => e.stopPropagation()}
+                                  data-testid={`text-email-${person.id}`}
+                                >
+                                  <Mail className="h-3 w-3" />
+                                  {person.email}
+                                </a>
+                              )}
+                            </td>
+                            <td className="py-2 px-3">
+                              {person.socialAccountUuids && person.socialAccountUuids.length > 0 && (
+                                <Link href={`/person/${person.id}`}>
+                                  <Badge variant="outline" className="text-xs cursor-pointer" data-testid={`badge-social-${person.id}`}>
+                                    <ExternalLink className="h-3 w-3 mr-1" />
+                                    {person.socialAccountUuids.length}
+                                  </Badge>
+                                </Link>
+                              )}
+                            </td>
+                            <td className="py-2 px-3">
+                              <div className="flex items-center gap-1">
+                                <PersonActionButton person={person} />
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-6 w-6 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setPersonToDelete(person);
+                                  }}
+                                  data-testid={`button-delete-${person.id}`}
+                                >
+                                  <X className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        </PersonContextMenu>
                       );
                     })}
                   </tbody>
@@ -646,111 +646,116 @@ export default function PeopleList() {
                 {people.map((person) => {
                   const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
                   return (
-                  <Link key={person.id} href={`/person/${person.id}`}>
-                    <Card
-                      className="p-2 hover-elevate transition-all cursor-pointer"
-                      style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
-                      data-testid={`card-person-${person.id}`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Avatar className="w-12 h-12">
-                          {person.imageUrl && (
-                            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
-                          )}
-                          <AvatarFallback>
-                            {getInitials(person.firstName, person.lastName)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-sm md:text-lg font-medium" data-testid={`text-name-${person.id}`}>
-                              {person.firstName} {person.lastName}
-                            </h3>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleStarClick(person);
-                              }}
-                              data-testid={`button-star-${person.id}`}
-                            >
-                              <Star className={`h-4 w-4 ${(starredStates[person.id] ?? (person.isStarred || 0)) === 1 ? "fill-current" : ""}`} />
-                            </Button>
-                          </div>
-                          <div className="flex items-center gap-1 text-xs md:text-sm text-muted-foreground">
-                            {person.company && (
-                              <span data-testid={`text-company-${person.id}`}>
-                                {person.company}
-                              </span>
-                            )}
-                            {person.title && person.company && <span>•</span>}
-                            {person.title && (
-                              <span data-testid={`text-title-${person.id}`}>
-                                {person.title}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {showEloBadge && (
-                              <Badge
-                                variant="secondary"
-                                className="text-[0.65rem] md:text-xs"
-                                data-testid={`badge-elo-${person.id}`}
-                              >
-                                <Trophy className="h-3 w-3 mr-1" />
-                                {person.eloScore}
-                              </Badge>
-                            )}
-                            {sortBy === "added" && person.createdAt && (
-                              <Badge
-                                variant="secondary"
-                                className="text-[0.65rem] md:text-xs"
-                                data-testid={`badge-added-${person.id}`}
-                              >
-                                <CalendarDays className="h-3 w-3 mr-1" />
-                                {new Date(person.createdAt).toLocaleDateString()}
-                              </Badge>
-                            )}
-                            {person.relationshipTypeName && (
-                              <Badge
-                                variant="secondary"
-                                className="text-[0.65rem] md:text-xs"
-                                style={{
-                                  backgroundColor: person.relationshipTypeColor || undefined,
-                                  color: 'white',
-                                }}
-                                data-testid={`badge-relationship-${person.id}`}
-                              >
-                                {person.relationshipTypeName}
-                              </Badge>
-                            )}
-                            {person.tags && person.tags.map((tag, idx) => (
-                              <Badge key={idx} variant="secondary" className="text-[0.65rem] md:text-xs">
-                                {tag}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setPersonToDelete(person);
-                          }}
-                          data-testid={`button-delete-${person.id}`}
+                    <PersonContextMenu key={person.id} person={person}>
+                      <Link href={`/person/${person.id}`}>
+                        <Card
+                          className="p-2 hover-elevate transition-all cursor-pointer"
+                          style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
+                          data-testid={`card-person-${person.id}`}
                         >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </Card>
-                  </Link>
-                );
+                          <div className="flex items-center gap-2">
+                            <Avatar className="w-12 h-12">
+                              {person.imageUrl && (
+                                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                              )}
+                              <AvatarFallback>
+                                {getInitials(person.firstName, person.lastName)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <h3 className="text-sm md:text-lg font-medium" data-testid={`text-name-${person.id}`}>
+                                  {person.firstName} {person.lastName}
+                                </h3>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-5 w-5 text-yellow-500 hover:text-yellow-600 p-0"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleStarClick(person);
+                                  }}
+                                  data-testid={`button-star-${person.id}`}
+                                >
+                                  <Star className={`h-4 w-4 ${(starredStates[person.id] ?? (person.isStarred || 0)) === 1 ? "fill-current" : ""}`} />
+                                </Button>
+                              </div>
+                              <div className="flex items-center gap-1 text-xs md:text-sm text-muted-foreground">
+                                {person.company && (
+                                  <span data-testid={`text-company-${person.id}`}>
+                                    {person.company}
+                                  </span>
+                                )}
+                                {person.title && person.company && <span>•</span>}
+                                {person.title && (
+                                  <span data-testid={`text-title-${person.id}`}>
+                                    {person.title}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {showEloBadge && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-[0.65rem] md:text-xs"
+                                    data-testid={`badge-elo-${person.id}`}
+                                  >
+                                    <Trophy className="h-3 w-3 mr-1" />
+                                    {person.eloScore}
+                                  </Badge>
+                                )}
+                                {sortBy === "added" && person.createdAt && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-[0.65rem] md:text-xs"
+                                    data-testid={`badge-added-${person.id}`}
+                                  >
+                                    <CalendarDays className="h-3 w-3 mr-1" />
+                                    {new Date(person.createdAt).toLocaleDateString()}
+                                  </Badge>
+                                )}
+                                {person.relationshipTypeName && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-[0.65rem] md:text-xs"
+                                    style={{
+                                      backgroundColor: person.relationshipTypeColor || undefined,
+                                      color: 'white',
+                                    }}
+                                    data-testid={`badge-relationship-${person.id}`}
+                                  >
+                                    {person.relationshipTypeName}
+                                  </Badge>
+                                )}
+                                {person.tags && person.tags.map((tag, idx) => (
+                                  <Badge key={idx} variant="secondary" className="text-[0.65rem] md:text-xs">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <PersonActionButton person={person} />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setPersonToDelete(person);
+                                }}
+                                data-testid={`button-delete-${person.id}`}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        </Card>
+                      </Link>
+                    </PersonContextMenu>
+                  );
                 })}
               </div>
             )}
@@ -762,101 +767,106 @@ export default function PeopleList() {
                   const isIsolated = !person.relationshipTypeName && person.groupCount === 0;
                   const starredVal = starredStates[person.id] ?? (person.isStarred || 0);
                   return (
-                  <Link key={person.id} href={`/person/${person.id}`}>
-                    <Card
-                      className="p-4 hover-elevate transition-all cursor-pointer"
-                      style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
-                      data-testid={`card-person-${person.id}`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <Avatar className="w-20 h-20">
-                          {person.imageUrl && (
-                            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
-                          )}
-                          <AvatarFallback className="text-xl">
-                            {getInitials(person.firstName, person.lastName)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-3">
-                            <h3 className="text-xl md:text-2xl font-semibold" data-testid={`text-name-${person.id}`}>
-                              {person.firstName} {person.lastName}
-                            </h3>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-yellow-500 hover:text-yellow-600 p-0"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleStarClick(person);
-                              }}
-                              data-testid={`button-star-${person.id}`}
-                            >
-                              <Star className={`h-6 w-6 ${starredVal === 1 ? "fill-current" : ""}`} />
-                            </Button>
-                          </div>
-                          {person.relationshipTypeName && (
-                            <Badge
-                              variant="secondary"
-                              className="text-sm mt-1"
-                              style={{
-                                backgroundColor: person.relationshipTypeColor || undefined,
-                                color: 'white',
-                              }}
-                              data-testid={`badge-relationship-${person.id}`}
-                            >
-                              {person.relationshipTypeName}
-                            </Badge>
-                          )}
-                          <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
-                            {person.company && (
-                              <span data-testid={`text-company-${person.id}`}>
-                                {person.company}
-                              </span>
-                            )}
-                            {person.title && person.company && <span>•</span>}
-                            {person.title && (
-                              <span data-testid={`text-title-${person.id}`}>
-                                {person.title}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap gap-1 mt-2">
-                            {showEloBadge && (
-                              <Badge
-                                variant="secondary"
-                                className="text-xs"
-                                data-testid={`badge-elo-${person.id}`}
-                              >
-                                <Trophy className="h-3 w-3 mr-1" />
-                                {person.eloScore}
-                              </Badge>
-                            )}
-                            {person.tags && person.tags.map((tag, idx) => (
-                              <Badge key={idx} variant="secondary" className="text-xs">
-                                {tag}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setPersonToDelete(person);
-                          }}
-                          data-testid={`button-delete-${person.id}`}
+                    <PersonContextMenu key={person.id} person={person}>
+                      <Link href={`/person/${person.id}`}>
+                        <Card
+                          className="p-4 hover-elevate transition-all cursor-pointer"
+                          style={isIsolated ? { backgroundColor: 'var(--isolated-bg)' } : undefined}
+                          data-testid={`card-person-${person.id}`}
                         >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </Card>
-                  </Link>
-                );
+                          <div className="flex items-center gap-4">
+                            <Avatar className="w-20 h-20">
+                              {person.imageUrl && (
+                                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                              )}
+                              <AvatarFallback className="text-xl">
+                                {getInitials(person.firstName, person.lastName)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-3">
+                                <h3 className="text-xl md:text-2xl font-semibold" data-testid={`text-name-${person.id}`}>
+                                  {person.firstName} {person.lastName}
+                                </h3>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-yellow-500 hover:text-yellow-600 p-0"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleStarClick(person);
+                                  }}
+                                  data-testid={`button-star-${person.id}`}
+                                >
+                                  <Star className={`h-6 w-6 ${starredVal === 1 ? "fill-current" : ""}`} />
+                                </Button>
+                              </div>
+                              {person.relationshipTypeName && (
+                                <Badge
+                                  variant="secondary"
+                                  className="text-sm mt-1"
+                                  style={{
+                                    backgroundColor: person.relationshipTypeColor || undefined,
+                                    color: 'white',
+                                  }}
+                                  data-testid={`badge-relationship-${person.id}`}
+                                >
+                                  {person.relationshipTypeName}
+                                </Badge>
+                              )}
+                              <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
+                                {person.company && (
+                                  <span data-testid={`text-company-${person.id}`}>
+                                    {person.company}
+                                  </span>
+                                )}
+                                {person.title && person.company && <span>•</span>}
+                                {person.title && (
+                                  <span data-testid={`text-title-${person.id}`}>
+                                    {person.title}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap gap-1 mt-2">
+                                {showEloBadge && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-xs"
+                                    data-testid={`badge-elo-${person.id}`}
+                                  >
+                                    <Trophy className="h-3 w-3 mr-1" />
+                                    {person.eloScore}
+                                  </Badge>
+                                )}
+                                {person.tags && person.tags.map((tag, idx) => (
+                                  <Badge key={idx} variant="secondary" className="text-xs">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <PersonActionButton person={person} />
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setPersonToDelete(person);
+                                }}
+                                data-testid={`button-delete-${person.id}`}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        </Card>
+                      </Link>
+                    </PersonContextMenu>
+                  );
                 })}
               </div>
             )}
