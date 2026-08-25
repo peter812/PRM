@@ -1,37 +1,43 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, Share2, Database, ChevronRight, ImageIcon, Camera, Archive } from "lucide-react";
+import { Users, Share2, Database, ChevronRight, ImageIcon, Camera, Archive, Chrome } from "lucide-react";
 
 const importExportSections = [
   {
     title: "Backups",
     description: "View past backups, create new backups, restore from backups, upload backup files, and rename or delete backups.",
     icon: Archive,
-    url: "/import-export/backups",
+    url: "/settings/import-export/backups",
   },
   {
     title: "Contacts",
     description: "Import people from a Google Contacts CSV export. Names, emails, phone numbers, and tags are automatically parsed and added to your contact list.",
     icon: Users,
-    url: "/import-export/contacts",
+    url: "/settings/import-export/contacts",
   },
   {
     title: "Social Media",
     description: "Import follower and following data from social media platforms like Instagram. Connect imported accounts to your existing social profiles.",
     icon: Share2,
-    url: "/import-export/social-media",
+    url: "/settings/import-export/social-media",
+  },
+  {
+    title: "Extension Imports",
+    description: "Searchable history of browser extension scraped payloads, CSV downloads, and ingested social accounts.",
+    icon: Chrome,
+    url: "/settings/import-export/extension-imports",
   },
   {
     title: "Instagram XML Transfer",
     description: "Export and import Instagram accounts via XML files for internal data transfer between CRM instances.",
     icon: Camera,
-    url: "/import-export/instagram-xml",
+    url: "/settings/import-export/instagram-xml",
   },
   {
     title: "Image Pass In",
     description: "Automatically fill in missing profile images by pulling them from linked social accounts. People without a profile picture will inherit an image from their first social account that has one.",
     icon: ImageIcon,
-    url: "/import-export/image-pass-in",
+    url: "/settings/import-export/image-pass-in",
   },
 ];
 

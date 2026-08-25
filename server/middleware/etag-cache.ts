@@ -2,12 +2,26 @@ import type { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
 
 /**
- * ETag caching middleware for specific API endpoints.
- * Generates an ETag from the response body and supports If-None-Match
- * for conditional requests, returning 304 Not Modified when appropriate.
+ * ETag caching for the handful of read-mostly API endpoints that benefit from
+ * it. Generates an ETag from the response body and honours If-None-Match,
+ * returning 304 Not Modified when the client already has the current body.
+ *
+ * Deliberately an ALLOWLIST, not "every GET under /api/v1/". A blanket rule
+ * swept in mutable list endpoints such as /api/v1/pending-imports, where a
+ * conditional revalidation that reaches application code surfaces as a bare
+ * 304 — and the client's apiRequest() treats any non-2xx as a failure, so the
+ * page throws instead of rendering. Only add a path here if its response is
+ * safe to serve from a cache the server cannot invalidate.
  */
+
+/** Exact paths that may be conditionally cached, by method (GET / HEAD only). */
+const ETAG_GET_PATHS: ReadonlySet<string> = new Set([
+  "/api/v1/ping",
+  "/api/v1/url-list",
+]);
+
 export function etagMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Only apply to routes that benefit from caching
+  // Only apply to safe, idempotent GET/HEAD routes that benefit from caching
   if (!shouldApplyEtag(req)) {
     next();
     return;
@@ -22,6 +36,8 @@ export function etagMiddleware(req: Request, res: Response, next: NextFunction):
     const etag = `"${hash}"`;
 
     res.setHeader("ETag", etag);
+    res.setHeader("Vary", "Cookie, Authorization");
+    res.setHeader("Cache-Control", "private, no-cache");
 
     // Check If-None-Match header
     const ifNoneMatch = req.headers["if-none-match"];
@@ -37,21 +53,6 @@ export function etagMiddleware(req: Request, res: Response, next: NextFunction):
 }
 
 function shouldApplyEtag(req: Request): boolean {
-  // Apply to GET and POST requests on specific v1 endpoints
-  const etagPaths = [
-    "/api/v1/social-accounts/search",
-    "/api/v1/ping",
-  ];
-
-  // Also apply to any GET request on /api/v1/
-  if (req.method === "GET" && req.path.startsWith("/api/v1/")) {
-    return true;
-  }
-
-  // Apply to specific POST endpoints
-  if (req.method === "POST" && etagPaths.includes(req.path)) {
-    return true;
-  }
-
-  return false;
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  return ETAG_GET_PATHS.has(req.path);
 }

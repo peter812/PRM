@@ -177,7 +177,13 @@ function Router() {
         <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
         <ProtectedRoute path="/super-search" component={SuperSearchPage} />
         <ProtectedRoute path="/backups" component={() => <Redirect to="/settings/import-export/backups" />} />
+        <ProtectedRoute path="/import-export" component={() => <Redirect to="/settings/import-export" />} />
         <ProtectedRoute path="/import-export/backups" component={() => <Redirect to="/settings/import-export/backups" />} />
+        <ProtectedRoute path="/import-export/contacts" component={() => <Redirect to="/settings/import-export/contacts" />} />
+        <ProtectedRoute path="/import-export/social-media" component={() => <Redirect to="/settings/import-export/social-media" />} />
+        <ProtectedRoute path="/import-export/extension-imports" component={() => <Redirect to="/settings/import-export/extension-imports" />} />
+        <ProtectedRoute path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export/instagram-xml" />} />
+        <ProtectedRoute path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export/image-pass-in" />} />
         <ProtectedRoute path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
         <ProtectedRoute path="/settings" nest component={SettingsLayout} />
         <Route component={NotFound} />

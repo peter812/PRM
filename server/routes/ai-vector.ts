@@ -158,11 +158,6 @@ export function registerRoutes(app: Express) {
         const params = new URLSearchParams();
         params.append("setup_code", setupCode);
         params.append("label", label || "prm-app");
-        params.append("database_url", process.env.DATABASE_URL || "");
-        params.append("s3_endpoint", process.env.S3_ENDPOINT || "");
-        params.append("s3_bucket", process.env.S3_BUCKET || "");
-        params.append("s3_access_key", process.env.S3_ACCESS_KEY || "");
-        params.append("s3_secret_key", process.env.S3_SECRET_KEY || "");
   
         const response = await fetch(`${prmBase(apiUrl)}/api/get-api-key`, {
           method: "POST",

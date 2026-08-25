@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { DailyNoteModal } from "@/components/daily-note-modal";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
-import { format, parseISO } from "date-fns";
+import { format, parseISO, subDays } from "date-fns";
 import { ArrowLeft, Edit2, Lock, List, Users, Trash2, CalendarDays, KeyRound, Clock } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -146,6 +146,7 @@ export default function DailyNoteDetail() {
 
   const resolvedParties = resolveParties();
   const today = format(new Date(), "yyyy-MM-dd");
+  const yesterday = format(subDays(new Date(), 1), "yyyy-MM-dd");
 
   return (
     <div className="h-full overflow-y-auto">
@@ -231,6 +232,7 @@ export default function DailyNoteDetail() {
               </Badge>
             )}
             {note.date === today && <Badge>Today</Badge>}
+            {note.date === yesterday && <Badge variant="secondary">Yesterday</Badge>}
             {note.status === "unfinished" && (
               <Badge variant="outline" data-testid="badge-unfinished">Unfinished</Badge>
             )}

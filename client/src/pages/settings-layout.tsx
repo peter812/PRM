@@ -137,7 +137,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Contacts", url: "/settings/import-export/contacts", icon: Users },
       { title: "Social Media", url: "/settings/import-export/social-media", icon: Share2 },
-      { title: "Ext Imports", url: "/settings/import-export/extension-imports", icon: Chrome },
+      { title: "Extension Imports", url: "/settings/import-export/extension-imports", icon: Chrome },
       { title: "Backups", url: "/settings/import-export/backups", icon: Archive },
       { title: "Image Pass In", url: "/settings/import-export/image-pass-in", icon: ImageIcon },
       { title: "Instagram XML Transfer", url: "/settings/import-export/instagram-xml", icon: Camera },

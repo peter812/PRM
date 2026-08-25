@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, lineage, partnerships, photos, dailyNoteEvents, dailyNoteInvolvedParties, dailyNoteAuditLogs, sexGuessQueue, appSettings, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { users, interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, lineage, partnerships, photos, dailyNoteEvents, dailyNoteInvolvedParties, dailyNoteAuditLogs, sexGuessQueue, appSettings, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -87,17 +87,21 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/v1/tps/add",
   "/v1/tps/extract",
   "/v1/pending-imports",
+  "/v1/scrape-results",
+  "/v1/account-status",
 ]);
 
-
-
-
-
-
+function isPublicApiPath(path: string): boolean {
+  if (PUBLIC_API_PATHS.has(path)) return true;
+  if (path.startsWith("/v1/pending-imports")) return true;
+  if (path.startsWith("/v1/scrape-results")) return true;
+  if (path.startsWith("/v1/account-status")) return true;
+  return false;
+}
 
 export function registerRoutes(app: Express) {
     app.use("/api", (req, res, next) => {
-      if (PUBLIC_API_PATHS.has(req.path)) return next();
+      if (isPublicApiPath(req.path)) return next();
       return requireAuth(req, res, next);
     });
   
@@ -651,11 +655,8 @@ export function registerRoutes(app: Express) {
     });
   
     // XML Export endpoint
-    app.get("/api/export-xml", async (req, res) => {
+    app.get("/api/export-xml", requireAdmin, async (req, res) => {
       try {
-        if (!req.user) {
-          return res.status(401).json({ error: "Not authenticated" });
-        }
 
         const includeHistory = req.query.includeHistory === "true";
 
@@ -1093,7 +1094,7 @@ export function registerRoutes(app: Express) {
         // Export AI chats (new)
         xml += '  <ai_chats>\n';
         for (const chat of allAiChats) {
-          if (chat.userId !== req.user.id) continue;
+          if (chat.userId !== req.user!.id) continue;
           xml += '    <ai_chat_entry>\n';
           xml += `      <id>${escapeXml(chat.id)}</id>\n`;
           xml += `      <title>${escapeXml(chat.title)}</title>\n`;
@@ -2095,12 +2096,13 @@ export function registerRoutes(app: Express) {
     });
   
     // Database reset endpoint
-    app.post("/api/reset-database", async (req, res) => {
+    app.post("/api/reset-database", requireAdmin, async (req, res) => {
       try {
-        if (!req.isAuthenticated()) {
-          return res.status(401).json({ error: "Unauthorized" });
+        const callerRole = (req.user!.role ?? "user") as UserRole;
+        if (callerRole !== "super_admin") {
+          return res.status(403).json({ error: "Only super_admin can reset the database" });
         }
-  
+
         const { includeExamples } = req.body;
   
         // Import the resetDatabase function
@@ -2479,6 +2481,13 @@ export function registerRoutes(app: Express) {
           const newRole = role as UserRole;
           if (!canAssignRole(callerRole, newRole)) {
             return res.status(403).json({ error: `Cannot assign role '${newRole}'` });
+          }
+          if (targetRole === "super_admin" && newRole !== "super_admin") {
+            const superAdmins = await db.select({ count: sql<number>`count(*)::int` }).from(users).where(eq(users.role, "super_admin"));
+            const superAdminCount = superAdmins[0]?.count ?? 0;
+            if (superAdminCount <= 1) {
+              return res.status(400).json({ error: "Cannot demote the last remaining super_admin" });
+            }
           }
           updateData.role = newRole;
         }
@@ -3140,7 +3149,12 @@ export function registerRoutes(app: Express) {
         if (!req.user) {
           return res.status(401).json({ error: "Not authenticated" });
         }
-        const keys = ["experimental_demos_enabled", "images_tab_enabled"];
+        const keys = [
+          "experimental_demos_enabled",
+          "images_tab_enabled",
+          "chrome_extension_id",
+          "chrome_extension_max_records",
+        ];
         const settings: Record<string, string | null> = {};
         for (const key of keys) {
           settings[key] = await storage.getAppSetting(key);
@@ -3152,11 +3166,8 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/settings", async (req, res) => {
+    app.post("/api/settings", requireAdmin, async (req, res) => {
       try {
-        if (!req.user) {
-          return res.status(401).json({ error: "Not authenticated" });
-        }
         const { key, value } = req.body;
         if (!key || typeof value !== "string") {
           return res.status(400).json({ error: "Invalid key or value" });

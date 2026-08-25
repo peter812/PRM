@@ -134,20 +134,22 @@ app.use((req, res, next) => {
     const message = err.message || "Internal Server Error";
     const requestId = (_req as any).requestId || `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-    // Use structured error format for API requests
-    if (_req.path.startsWith("/api")) {
-      res.status(status).json({
-        error: {
-          code: status === 404 ? "NOT_FOUND" : status === 401 ? "UNAUTHORIZED" : "INTERNAL_ERROR",
-          message,
-          details: {},
-          request_id: requestId,
-        },
-      });
-    } else {
-      res.status(status).json({ message });
+    console.error(`[Error] ${requestId} -`, err);
+
+    if (!res.headersSent) {
+      if (_req.path.startsWith("/api")) {
+        res.status(status).json({
+          error: {
+            code: status === 404 ? "NOT_FOUND" : status === 401 ? "UNAUTHORIZED" : "INTERNAL_ERROR",
+            message,
+            details: {},
+            request_id: requestId,
+          },
+        });
+      } else {
+        res.status(status).json({ message });
+      }
     }
-    throw err;
   });
 
   // importantly only setup vite in development and after

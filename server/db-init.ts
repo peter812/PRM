@@ -473,6 +473,7 @@ async function validateAndSyncSchema(): Promise<void> {
       social_accounts: {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
+        is_simple: "BOOLEAN NOT NULL DEFAULT TRUE",
       },
       ai_chats: {
         vector_id: "TEXT",
@@ -508,7 +509,53 @@ async function validateAndSyncSchema(): Promise<void> {
         import_date: "TIMESTAMP",
         import_uuid: "VARCHAR",
       },
+      // Chrome-extension scrape staging area. Columns added after the table's
+      // original migration land here so existing databases pick them up on boot.
+      pending_social_account_imports: {
+        import_type: "TEXT NOT NULL DEFAULT 'full'",
+        account_followers_count: "INTEGER",
+        account_following_count: "INTEGER",
+        account_image_url: "TEXT",
+      },
     };
+
+    // The pending-imports table is written by the Chrome extension over
+    // X-Extension-Token, so a database that predates it 500s on every
+    // POST /api/v1/pending-imports and on the settings page that reads it.
+    // The loop below only ever ADDs columns to tables that already exist, so
+    // the table itself has to be created here for already-seeded databases —
+    // db:push only runs on a full reset, and migrations/*.sql are never applied.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pending_social_account_imports (
+        id VARCHAR(36) PRIMARY KEY DEFAULT gen_random_uuid(),
+        timestamp_added TIMESTAMP WITH TIME ZONE NOT NULL,
+        timestamp_imported TIMESTAMP WITH TIME ZONE,
+        already_added BOOLEAN NOT NULL DEFAULT false,
+        account_username VARCHAR(255) NOT NULL,
+        account_display_name VARCHAR(255),
+        account_bio TEXT,
+        account_website VARCHAR(500),
+        account_email VARCHAR(255),
+        account_phone VARCHAR(100),
+        account_location_area VARCHAR(255),
+        account_followers TEXT,
+        account_following TEXT,
+        account_image_url TEXT,
+        account_followers_count INTEGER,
+        account_following_count INTEGER,
+        import_type TEXT NOT NULL DEFAULT 'full',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+      )
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_pending_imports_username
+      ON pending_social_account_imports (account_username)
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_pending_imports_already_added
+      ON pending_social_account_imports (already_added)
+    `);
 
     // Check and add missing columns
     for (const [tableName, columns] of Object.entries(schemaDefinitions)) {

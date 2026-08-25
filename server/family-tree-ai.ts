@@ -562,8 +562,14 @@ export async function applyFamilyTreeChanges(
         if (targetId === change.fromPersonId) throw new Error("Cannot relate a person to themselves");
 
         const type = change.familyRelationshipType.toLowerCase();
-        const parentRoles = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
-        const childRoles = ["child", "son", "daughter", "stepchild", "stepson", "stepdaughter"];
+        const parentRoles = [
+          "father", "mother", "parent", "stepfather", "stepmother", "stepparent",
+          "adoptive_father", "adoptive_mother", "adoptive_parent"
+        ];
+        const childRoles = [
+          "child", "son", "daughter", "stepchild", "stepson", "stepdaughter",
+          "adoptive_child", "adoptive_son", "adoptive_daughter"
+        ];
         const partnerRoles = ["spouse", "partner", "ex_spouse", "ex_partner"];
         const siblingRoles = ["sibling", "brother", "sister", "half_brother", "half_sister", "half_sibling"];
 
@@ -577,11 +583,13 @@ export async function applyFamilyTreeChanges(
             parentId = change.fromPersonId;
             childId = targetId;
           }
+          const isAdoptive = type.startsWith("adoptive");
           const isStep = type.startsWith("step");
+          const lineageType = isAdoptive ? "adoptive" : isStep ? "step" : "biological";
           await storage.createLineage({
             parentId,
             childId,
-            lineageType: isStep ? "step" : "biological",
+            lineageType,
           });
         } else if (partnerRoles.includes(type)) {
           let status = "partner";
@@ -635,13 +643,30 @@ export async function applyFamilyTreeChanges(
         const lin = lineages.find(l => l.id === change.relationshipId);
         if (lin) {
           const type = change.familyRelationshipType.toLowerCase();
-          const parentRoles = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
-          const childRoles = ["child", "son", "daughter", "stepchild", "stepson", "stepdaughter"];
+          const parentRoles = [
+            "father", "mother", "parent", "stepfather", "stepmother", "stepparent",
+            "adoptive_father", "adoptive_mother", "adoptive_parent"
+          ];
+          const childRoles = [
+            "child", "son", "daughter", "stepchild", "stepson", "stepdaughter",
+            "adoptive_child", "adoptive_son", "adoptive_daughter"
+          ];
 
           if (parentRoles.includes(type) || childRoles.includes(type)) {
+            const isAdoptive = type.startsWith("adoptive");
             const isStep = type.startsWith("step");
-            const lineageType = isStep ? "step" : "biological";
-            await storage.updateLineage(lin.id, { lineageType });
+            const lineageType = isAdoptive ? "adoptive" : isStep ? "step" : "biological";
+            
+            const wasParent = parentRoles.includes(change.currentType?.toLowerCase() || "");
+            const isNowParent = parentRoles.includes(type);
+            let parentId = lin.parentId;
+            let childId = lin.childId;
+            if (wasParent !== isNowParent) {
+              parentId = lin.childId;
+              childId = lin.parentId;
+            }
+
+            await storage.updateLineage(lin.id, { parentId, childId, lineageType });
           } else {
             // Changed from lineage to partnership
             await storage.deleteLineage(lin.id);

@@ -3156,10 +3156,25 @@ function schedulePoll() {
   }, POLL_INTERVAL_MS);
 }
 
+async function recoverStaleTasksOnStartup(): Promise<void> {
+  try {
+    await db.update(tasks)
+      .set({ status: "failed", result: "Interrupted by server restart" })
+      .where(eq(tasks.status, "in_progress"));
+    await db.update(imageTasks)
+      .set({ status: "failed", result: "Interrupted by server restart" })
+      .where(eq(imageTasks.status, "in_progress"));
+  } catch (err) {
+    log(`[TaskWorker] Stale task recovery error: ${err}`);
+  }
+}
+
 export function startTaskWorker() {
   log("[TaskWorker] Starting background task worker");
-  runWorkerLoop();
-  runImageTaskWorkerLoop();
+  void recoverStaleTasksOnStartup().finally(() => {
+    runWorkerLoop();
+    runImageTaskWorkerLoop();
+  });
 }
 
 export function triggerTaskWorker() {

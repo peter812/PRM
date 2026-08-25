@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { storage } from "../storage";
+import { requireAdmin, requireAuth } from "../auth";
 import { z } from "zod";
 import {
   FAMILY_RELATIONSHIP_TYPES,
@@ -207,9 +208,12 @@ export function registerRoutes(app: Express) {
     }
   });
 
-  // Delete all family relationships and connections
-  app.delete("/api/family/relationships/all", async (_req, res) => {
+  // Delete all family relationships and connections (super_admin only)
+  app.delete("/api/family/relationships/all", requireAdmin, async (req, res) => {
     try {
+      if (req.user?.role !== "super_admin") {
+        return res.status(403).json({ error: "Only super_admin can delete all family relationships" });
+      }
       const count = await storage.deleteAllFamilyRelationships();
       res.json({ success: true, count });
     } catch (error) {

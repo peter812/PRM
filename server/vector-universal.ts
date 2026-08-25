@@ -80,7 +80,11 @@ function buildClient(cfg: VectorConfig): QdrantClient {
 
 async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
   try {
-    await client.getCollection(name);
+    const info = await client.getCollection(name);
+    const existingSize = (info.config?.params?.vectors as any)?.size;
+    if (existingSize && existingSize !== vectorSize) {
+      console.warn(`[vector-universal] Dimension mismatch in collection '${name}': existing size is ${existingSize}, model outputs ${vectorSize}.`);
+    }
   } catch {
     await client.createCollection(name, {
       vectors: { size: vectorSize, distance: "Cosine" },
@@ -271,6 +275,7 @@ async function upsertEntityVector(
         payload: {
           type,
           entity_id: entityId,
+          user_id: data.userId || data.createdByUserId || null,
           title,
           snippet,
           created_at: data.createdAt ? new Date(data.createdAt).toISOString() : new Date().toISOString(),
@@ -333,7 +338,8 @@ export async function deleteEntityVector(
 export async function searchUniversal(
   query: string,
   limit = 20,
-  typeFilter?: UniversalEntityType[]
+  typeFilter?: UniversalEntityType[],
+  userId?: number
 ): Promise<UniversalSearchResult[]> {
   const cfg = await loadUniversalVectorConfig();
   if (!cfg.universalEnabled) throw new Error("Universal vector storage is disabled.");
@@ -342,15 +348,22 @@ export async function searchUniversal(
   const client = buildClient(cfg);
   await ensureCollection(client, cfg.universalCollection, vector.length);
 
-  const filter = typeFilter && typeFilter.length > 0
-    ? { must: [{ key: "type", match: { any: typeFilter } }] }
-    : undefined;
+  const mustConditions: any[] = [];
+  if (typeFilter && typeFilter.length > 0) {
+    mustConditions.push({ key: "type", match: { any: typeFilter } });
+  }
+  if (userId !== undefined && userId !== null) {
+    mustConditions.push({ key: "user_id", match: { value: userId } });
+  }
+
+  const filter = mustConditions.length > 0 ? { must: mustConditions } : undefined;
 
   const result = await client.search(cfg.universalCollection, {
     vector,
     limit,
     with_payload: true,
     filter,
+    score_threshold: 0.55,
   });
 
   return result.map((r) => ({

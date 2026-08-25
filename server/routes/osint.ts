@@ -9,6 +9,7 @@
 // req.isAuthenticated() checks here mirror the PRM-Face integration.
 import type { Express } from "express";
 import { storage } from "../storage";
+import { requireAdmin } from "../auth";
 
 const OSINT_ENABLED_KEY = "osint_enabled";
 const OSINT_API_URL_KEY = "osint_api_url";
@@ -104,8 +105,7 @@ export function registerRoutes(app: Express) {
     }
   });
 
-  app.post("/api/osint/settings", async (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+  app.post("/api/osint/settings", requireAdmin, async (req, res) => {
     const { enabled, apiUrl, apiKey } = req.body ?? {};
     try {
       if (typeof enabled === "boolean") {
@@ -153,8 +153,7 @@ export function registerRoutes(app: Express) {
 
   // Test connectivity. Uses values from the request body when provided (so the
   // user can test before saving), otherwise falls back to stored settings.
-  app.post("/api/osint/test", async (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+  app.post("/api/osint/test", requireAdmin, async (req, res) => {
     const stored = await loadConfig();
     // Stored address is already normalized; an unsaved one from the form is not.
     const apiUrl = (typeof req.body?.apiUrl === "string" && req.body.apiUrl.trim())

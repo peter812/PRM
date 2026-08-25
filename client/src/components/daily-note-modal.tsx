@@ -69,7 +69,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
   const isReadOnly = isEditing && !note.isEditable && !pinOverride;
 
   const today = defaultDate || format(new Date(), "yyyy-MM-dd");
-  const [date] = useState(note?.date || today);
+  const [date, setDate] = useState(note?.date || today);
   const [userTitle, setUserTitle] = useState(note?.userTitle || "");
   const [body, setBody] = useState(note?.body || "");
   const [events, setEvents] = useState<EventRow[]>(() =>
@@ -111,6 +111,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
 
   useEffect(() => {
     if (!open) return;
+    setDate(note?.date || defaultDate || format(new Date(), "yyyy-MM-dd"));
     setUserTitle(note?.userTitle || "");
     setBody(note?.body || "");
     setEvents((note?.events || []).map(e => ({ id: generateId(), text: e.text })));
@@ -145,7 +146,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     } else {
       setParties([]);
     }
-  }, [open, note]);
+  }, [open, note, defaultDate]);
 
   // Build the request payload from the latest field values, tagged with the
   // given status ("unfinished" for autosaves, "finished" for explicit saves).

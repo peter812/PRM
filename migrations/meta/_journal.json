@@ -29,6 +29,13 @@
       "when": 1783000000000,
       "tag": "0003_assign_unassigned_daily_notes_to_super_admin",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787560178081,
+      "tag": "0004_create_pending_social_account_imports_table",
+      "breakpoints": true
     }
   ]
 }

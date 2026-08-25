@@ -38,13 +38,12 @@ const upload = multer({
 });
 
 export function registerRoutes(app: Express) {
+  // All backup operations require admin privileges
+  app.use("/api/backups", requireAdmin);
+
   // GET /api/backups - List all past backups
   app.get("/api/backups", async (req: Request, res: Response) => {
     try {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
       ensureBackupsDir();
       const files = fs.readdirSync(BACKUPS_DIR);
       const backupList = files

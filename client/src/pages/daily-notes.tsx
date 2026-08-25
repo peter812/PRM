@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { DailyNoteModal } from "@/components/daily-note-modal";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
-import { format, parseISO } from "date-fns";
+import { format, parseISO, subDays } from "date-fns";
 import { Plus, Lock, CalendarDays, List, KeyRound, Settings } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -36,6 +36,10 @@ function getTodayDate(): string {
   return format(new Date(), "yyyy-MM-dd");
 }
 
+function getYesterdayDate(): string {
+  return format(subDays(new Date(), 1), "yyyy-MM-dd");
+}
+
 const PARTY_TYPE_LABEL: Record<string, string> = {
   person: "Person",
   group: "Group",
@@ -46,12 +50,14 @@ export default function DailyNotesList() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createDate, setCreateDate] = useState<string>(getTodayDate());
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
   const [newPin, setNewPin] = useState("");
   const [currentPin, setCurrentPin] = useState("");
   const [pinError, setPinError] = useState("");
 
   const today = getTodayDate();
+  const yesterday = getYesterdayDate();
 
   const { data: notes = [], isLoading } = useQuery<DailyNoteWithDetails[]>({
     queryKey: ["/api/daily-notes"],
@@ -67,6 +73,7 @@ export default function DailyNotesList() {
   });
 
   const todayNote = notes.find(n => n.date === today);
+  const yesterdayNote = notes.find(n => n.date === yesterday);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiRequest("DELETE", `/api/daily-notes/${id}`),
@@ -109,6 +116,16 @@ export default function DailyNotesList() {
     if (todayNote) {
       navigate(`/daily-notes/${todayNote.id}`);
     } else {
+      setCreateDate(today);
+      setCreateModalOpen(true);
+    }
+  };
+
+  const handleOpenYesterday = () => {
+    if (yesterdayNote) {
+      navigate(`/daily-notes/${yesterdayNote.id}`);
+    } else {
+      setCreateDate(yesterday);
       setCreateModalOpen(true);
     }
   };
@@ -124,7 +141,7 @@ export default function DailyNotesList() {
               Date-anchored journal entries. Editable for 2 days, then requires PIN.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Button
               variant="outline"
               size="sm"
@@ -138,6 +155,14 @@ export default function DailyNotesList() {
             >
               <KeyRound className="h-4 w-4 mr-1.5" />
               {pinStatus?.pinSet ? "Change PIN" : "Set PIN"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleOpenYesterday}
+              data-testid="button-open-yesterday"
+            >
+              <CalendarDays className="h-4 w-4 mr-2" />
+              {yesterdayNote ? "Open Yesterday's Note" : "New Note for Yesterday"}
             </Button>
             <Button onClick={handleOpenToday} data-testid="button-open-today">
               <CalendarDays className="h-4 w-4 mr-2" />
@@ -177,10 +202,16 @@ export default function DailyNotesList() {
             <p className="text-sm text-muted-foreground mb-5 max-w-xs">
               Start capturing your day. Each note is editable for two days, then locked.
             </p>
-            <Button onClick={handleOpenToday} data-testid="button-create-first-note">
-              <Plus className="h-4 w-4 mr-2" />
-              Create today's note
-            </Button>
+            <div className="flex items-center justify-center gap-3 flex-wrap">
+              <Button variant="outline" onClick={handleOpenYesterday} data-testid="button-create-yesterday-note">
+                <Plus className="h-4 w-4 mr-2" />
+                Create yesterday's note
+              </Button>
+              <Button onClick={handleOpenToday} data-testid="button-create-first-note">
+                <Plus className="h-4 w-4 mr-2" />
+                Create today's note
+              </Button>
+            </div>
           </div>
         ) : (
           <div className="space-y-3">
@@ -218,6 +249,9 @@ export default function DailyNotesList() {
                           )}
                           {note.date === today && (
                             <Badge className="text-xs py-0">Today</Badge>
+                          )}
+                          {note.date === yesterday && (
+                            <Badge variant="secondary" className="text-xs py-0">Yesterday</Badge>
                           )}
                           {note.status === "unfinished" && (
                             <Badge variant="outline" className="text-xs py-0" data-testid={`badge-unfinished-${note.id}`}>
@@ -324,7 +358,7 @@ export default function DailyNotesList() {
         open={createModalOpen}
         onOpenChange={open => setCreateModalOpen(open)}
         note={null}
-        defaultDate={today}
+        defaultDate={createDate}
       />
 
       {/* PIN Setup Dialog */}

@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
   Inbox,
+  User,
   UserCheck,
   Users,
   ExternalLink,
@@ -25,6 +26,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
@@ -55,6 +67,7 @@ interface PendingImportItem {
   accountEmail: string | null;
   accountPhone: string | null;
   accountLocationArea: string | null;
+  importType: string;
   followersCount: number;
   followingCount: number;
   createdAt: string;
@@ -77,6 +90,8 @@ export default function PendingSocialImportsPage() {
   const [statusFilter, setStatusFilter] = useState<"pending" | "imported" | "all">("all");
   const [page, setPage] = useState(1);
   const [previewRecord, setPreviewRecord] = useState<any | null>(null);
+  const [isDeleteAllOpen, setIsDeleteAllOpen] = useState(false);
+  const [includeGraphImages, setIncludeGraphImages] = useState(false);
   const { toast } = useToast();
 
   const { data, isLoading, refetch } = useQuery<PendingImportResponse>({
@@ -88,15 +103,16 @@ export default function PendingSocialImportsPage() {
   });
 
   const importMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await apiRequest("POST", `/api/v1/pending-imports/${id}/import`);
+    mutationFn: async ({ id, includeGraphImages }: { id: string; includeGraphImages: boolean }) => {
+      const res = await apiRequest("POST", `/api/v1/pending-imports/${id}/import`, { includeGraphImages });
       return res.json();
     },
-    onSuccess: (resData) => {
+    onSuccess: () => {
       toast({
         title: "Import Successful",
         description: `Imported followers & following into PRM contact list.`,
       });
+      setPreviewRecord(null);
       queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
@@ -134,6 +150,7 @@ export default function PendingSocialImportsPage() {
     try {
       const res = await apiRequest("GET", `/api/v1/pending-imports/${id}`);
       const fullRecord = await res.json();
+      setIncludeGraphImages(false);
       setPreviewRecord(fullRecord);
     } catch (err: any) {
       toast({
@@ -144,7 +161,43 @@ export default function PendingSocialImportsPage() {
     }
   };
 
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest(
+        "DELETE",
+        `/api/v1/pending-imports?status=${statusFilter}&search=${encodeURIComponent(search)}`,
+      );
+      return res.json();
+    },
+    onSuccess: (resData) => {
+      toast({
+        title: "Records Deleted",
+        description: `Removed ${resData.deletedCount} pending import${resData.deletedCount === 1 ? "" : "s"}.`,
+      });
+      setIsDeleteAllOpen(false);
+      setPage(1);
+      queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Delete Failed",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const metrics = data?.metrics || { totalPending: 0, totalImported: 0, totalFollowersCaptured: 0 };
+  const total = data?.total ?? 0;
+
+  // The button deletes whatever the current filters match, so say which that is.
+  const deleteAllScope =
+    statusFilter === "pending" ? "pending" : statusFilter === "imported" ? "imported" : "";
+  const deleteAllDescription = [
+    `This permanently deletes ${total} ${deleteAllScope} record${total === 1 ? "" : "s"}`.replace("  ", " "),
+    search.trim() ? ` matching "${search.trim()}"` : "",
+    ". Social accounts and people already ingested into PRM are not affected.",
+  ].join("");
 
   return (
     <div className="flex-1 space-y-6 p-6 overflow-y-auto">
@@ -161,9 +214,21 @@ export default function PendingSocialImportsPage() {
             Review and ingest social profiles & CSV networks scraped by the Chrome extension.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2 shrink-0">
-          <RefreshCw className="h-4 w-4" /> Refresh
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2">
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setIsDeleteAllOpen(true)}
+            disabled={total === 0 || deleteAllMutation.isPending}
+            className="gap-2"
+            data-testid="button-delete-all"
+          >
+            <Trash2 className="h-4 w-4" /> Delete All{total > 0 ? ` (${total})` : ""}
+          </Button>
+        </div>
       </div>
 
       {/* Metric Cards */}
@@ -197,7 +262,7 @@ export default function PendingSocialImportsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{metrics.totalFollowersCaptured.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">Parsed network connections</p>
+            <p className="text-xs text-muted-foreground">Parsed network connections (latest pull per account)</p>
           </CardContent>
         </Card>
       </div>
@@ -247,6 +312,7 @@ export default function PendingSocialImportsPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Account Profile</TableHead>
+              <TableHead>Extraction</TableHead>
               <TableHead>Bio Snippet</TableHead>
               <TableHead>Contact / Location</TableHead>
               <TableHead className="text-center">Followers / Following</TableHead>
@@ -258,13 +324,13 @@ export default function PendingSocialImportsPage() {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                   Loading pending imports...
                 </TableCell>
               </TableRow>
             ) : !data?.items || data.items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                   No pending social account imports found.
                 </TableCell>
               </TableRow>
@@ -293,6 +359,26 @@ export default function PendingSocialImportsPage() {
                         <span className="text-xs text-muted-foreground truncate">@{item.accountUsername}</span>
                       </div>
                     </div>
+                  </TableCell>
+
+                  <TableCell>
+                    {item.importType === "account" ? (
+                      <Badge
+                        variant="outline"
+                        className="gap-1 text-xs font-normal bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/30"
+                        data-testid={`badge-import-type-${item.id}`}
+                      >
+                        <User className="h-3 w-3" /> Account only
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className="gap-1 text-xs font-normal bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/30"
+                        data-testid={`badge-import-type-${item.id}`}
+                      >
+                        <Users className="h-3 w-3" /> Account + followers
+                      </Badge>
+                    )}
                   </TableCell>
 
                   <TableCell className="max-w-[200px]">
@@ -361,7 +447,7 @@ export default function PendingSocialImportsPage() {
                       <DropdownMenuContent align="end">
                         {!item.alreadyAdded && (
                           <DropdownMenuItem
-                            onClick={() => importMutation.mutate(item.id)}
+                            onClick={() => importMutation.mutate({ id: item.id, includeGraphImages: false })}
                             className="cursor-pointer gap-2"
                           >
                             <Download className="h-4 w-4 text-emerald-600" /> Import to PRM
@@ -450,10 +536,67 @@ export default function PendingSocialImportsPage() {
                   value={previewRecord.accountFollowing || "No following CSV payload."}
                 />
               </div>
+
+              <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+                {previewRecord.hasFollowersCsv || previewRecord.hasFollowingCsv ? (
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <Checkbox
+                      checked={includeGraphImages}
+                      onCheckedChange={(checked) => setIncludeGraphImages(!!checked)}
+                      className="mt-0.5"
+                      data-testid="checkbox-include-graph-images"
+                    />
+                    <span className="text-xs text-muted-foreground">
+                      Also fetch profile pictures for every follower and following account.
+                      <span className="block">
+                        Up to {(previewRecord.followersCount + previewRecord.followingCount).toLocaleString()} downloads — the selected account's own picture is always fetched.
+                      </span>
+                    </span>
+                  </label>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    This account's profile picture will be fetched on import.
+                  </span>
+                )}
+
+                <Button
+                  size="sm"
+                  onClick={() => importMutation.mutate({ id: previewRecord.id, includeGraphImages })}
+                  disabled={importMutation.isPending || previewRecord.alreadyAdded}
+                  className="gap-1.5 shrink-0"
+                  data-testid="button-import-from-preview"
+                >
+                  <Download className="h-4 w-4" />
+                  {previewRecord.alreadyAdded ? "Already Imported" : "Import into PRM"}
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={isDeleteAllOpen} onOpenChange={setIsDeleteAllOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete all pending imports?</AlertDialogTitle>
+            <AlertDialogDescription>{deleteAllDescription}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteAllMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                deleteAllMutation.mutate();
+              }}
+              disabled={deleteAllMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-delete-all"
+            >
+              {deleteAllMutation.isPending ? "Deleting..." : `Delete ${total}`}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

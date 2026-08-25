@@ -82,17 +82,22 @@ interface RawThreadFile {
 // ── String decoding ──
 
 /**
- * Meta exports store UTF-8 bytes as latin-1 code points ("ð"
+ * Meta exports store UTF-8 bytes as latin-1 code points ("ðŸ ž"
  * is really 🐞). Re-decode, but leave strings alone when they are plain ASCII,
  * already contain non-latin-1 characters, or would not survive the round trip.
  */
 export function decodeMetaString(s: string): string {
-  if (!/[-ÿ]/.test(s)) return s;
-  for (const ch of s) {
-    if (ch.codePointAt(0)! > 0xff) return s; // already properly decoded
+  if (!s || typeof s !== "string") return s;
+  try {
+    const bytes = Buffer.from(s, "latin1");
+    const utf8 = bytes.toString("utf8");
+    if (!utf8.includes("\uFFFD") && utf8 !== s) {
+      return utf8;
+    }
+  } catch {
+    // Return original string on decoding failure
   }
-  const decoded = Buffer.from(s, "latin1").toString("utf8");
-  return decoded.includes("�") ? s : decoded;
+  return s;
 }
 
 // ── Folder name ──
@@ -159,8 +164,10 @@ function normalizeMedia(kind: ParsedMedia["kind"], items: RawMediaItem[] | undef
 }
 
 function senderSlug(name: string): string {
+  if (!name) return "unknown";
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
-  return slug || "unknown";
+  if (slug) return slug;
+  return crypto.createHash("md5").update(name).digest("hex").slice(0, 8);
 }
 
 /**

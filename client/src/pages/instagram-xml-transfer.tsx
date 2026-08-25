@@ -218,7 +218,7 @@ export default function InstagramXmlTransferPage() {
 
           // Determine status
           let status: "new" | "exists" | "invalid" = "new";
-          if (instagramAccounts.some((a) => a.id === id || (a.username.toLowerCase() === username.toLowerCase()))) {
+          if (instagramAccounts.some((a) => a.id === id || ((a.username || "").toLowerCase() === (username || "").toLowerCase()))) {
             status = "exists";
           }
 

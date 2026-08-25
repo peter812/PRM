@@ -1,6 +1,6 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, StickyNote } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,15 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { isValidHexColor } from "@/lib/utils";
+import {
+  requestExtraction,
+  ExtensionUnavailableError,
+  EXTENSION_ID_SETTING,
+  EXTENSION_MAX_RECORDS_SETTING,
+  DEFAULT_MAX_RECORDS,
+  type ExtractAction,
+} from "@/lib/extension-bridge";
+import { isValidHexColor, getInitials } from "@/lib/utils";
 import { useMutation } from "@tanstack/react-query";
 import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialProfileVersion } from "@shared/schema";
 import { Link } from "wouter";
@@ -40,6 +48,7 @@ export default function SocialAccountProfile() {
   const { uuid } = useParams<{ uuid: string }>();
   const [location, navigate] = useLocation();
   const { toast } = useToast();
+  const [activeTab, setActiveTab] = useState("account");
   const [notes, setNotes] = useState("");
   const [isEditingNotes, setIsEditingNotes] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -77,6 +86,41 @@ export default function SocialAccountProfile() {
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
   });
+
+  const { data: appSettings } = useQuery<Record<string, string | null>>({
+    queryKey: ["/api/settings"],
+  });
+
+  /**
+   * Hand an extraction to the Chrome extension. It opens the profile in a
+   * background tab, scrapes it, and posts the result to the Extension Imports
+   * page for review — none of which we wait on here.
+   */
+  const handleExtract = async (action: ExtractAction) => {
+    const username = account?.username;
+    if (!username) return;
+
+    try {
+      await requestExtraction(
+        appSettings?.[EXTENSION_ID_SETTING] ?? "",
+        action,
+        username,
+        Number(appSettings?.[EXTENSION_MAX_RECORDS_SETTING]) || DEFAULT_MAX_RECORDS,
+      );
+      toast({
+        title: "Extraction Started",
+        description: `The extension is extracting @${username}. The result will appear under Extension Imports.`,
+      });
+    } catch (err) {
+      const unavailable = err instanceof ExtensionUnavailableError;
+      toast({
+        title: unavailable ? "Extension Unavailable" : "Extraction Refused",
+        description: (err as Error).message,
+        variant: "destructive",
+      });
+      if (unavailable) navigate("/settings/chrome-extension");
+    }
+  };
 
   type PaginatedAccounts = { items: SocialAccountWithCurrentProfile[]; total: number; page: number; limit: number };
 
@@ -368,12 +412,6 @@ export default function SocialAccountProfile() {
     ? socialAccountTypes?.find(t => t.id === account.typeId) 
     : null;
 
-  const getInitials = (username: string) => {
-    if (username.length >= 2) {
-      return username.slice(0, 2).toUpperCase();
-    }
-    return username.slice(0, 1).toUpperCase();
-  };
 
   const formatDateTime = (dateInput: Date | string | null | undefined): string => {
     if (!dateInput) return "—";
@@ -449,14 +487,16 @@ export default function SocialAccountProfile() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
 
-          <Avatar className="w-9 h-9 shrink-0">
-            {account.currentProfile?.imageUrl && (
-              <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
-            )}
-            <AvatarFallback className="text-xs">
-              {getInitials(account.username)}
-            </AvatarFallback>
-          </Avatar>
+          {activeTab !== "account" && (
+            <Avatar className="w-9 h-9 shrink-0">
+              {account.currentProfile?.imageUrl && (
+                <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
+              )}
+              <AvatarFallback className="text-xs">
+                {getInitials(account.username)}
+              </AvatarFallback>
+            </Avatar>
+          )}
 
           <div className="min-w-0">
             <h1 className="text-sm font-bold truncate leading-none flex items-center gap-1.5" data-testid="text-account-username">
@@ -516,10 +556,20 @@ export default function SocialAccountProfile() {
                 Open in Graph
               </DropdownMenuItem>
               {accountType?.name?.toLowerCase() === "instagram" && (
-                <DropdownMenuItem onClick={() => setIsImportDialogOpen(true)} data-testid="button-import-instagram">
-                  <Upload className="h-4 w-4 mr-2" />
-                  Import Instagram CSV
-                </DropdownMenuItem>
+                <>
+                  <DropdownMenuItem onClick={() => setIsImportDialogOpen(true)} data-testid="button-import-instagram">
+                    <Upload className="h-4 w-4 mr-2" />
+                    Import Instagram CSV
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExtract("account")} data-testid="button-extract-account">
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Extract Updated Account Info
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExtract("graph")} data-testid="button-extract-graph">
+                    <Users className="h-4 w-4 mr-2" />
+                    Extract Followers &amp; Following
+                  </DropdownMenuItem>
+                </>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem 
@@ -541,11 +591,18 @@ export default function SocialAccountProfile() {
       </div>
 
       {/* Main Content Area with Left Sidebar Tabs */}
-      <Tabs defaultValue="follow" className="flex-1 flex flex-col md:flex-row overflow-hidden">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Left Side Navigation Menu */}
         <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-y-auto">
           <div className="p-3">
             <TabsList className="flex flex-col items-stretch justify-start h-auto bg-transparent p-0 gap-1" data-testid="tabs-social-account">
+              <TabsTrigger
+                value="account"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-account"
+              >
+                Account
+              </TabsTrigger>
               <TabsTrigger
                 value="follow"
                 className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
@@ -624,6 +681,502 @@ export default function SocialAccountProfile() {
 
         {/* Selected Tab Content Pane */}
         <div className="flex-1 flex flex-col min-h-0 bg-background overflow-hidden">
+          {/* Account Tab Dashboard */}
+          <TabsContent value="account" className="mt-0 flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex flex-col lg:flex-row gap-6 items-start">
+              {/* Left/Main Column: Overview Summary Panels */}
+              <div className="flex-1 space-y-6 w-full min-w-0">
+                {/* Profile Brief */}
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-2xl font-bold" data-testid="text-account-title">
+                      {account.currentProfile?.nickname || account.username}
+                    </h2>
+                    {accountType && (
+                      <Link href={`/social-accounts?type=${accountType.id}`}>
+                        <Badge 
+                          variant="outline" 
+                          className="cursor-pointer text-xs px-2 py-0.5"
+                          style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                          data-testid="badge-account-main-type"
+                        >
+                          {accountType.name}
+                        </Badge>
+                      </Link>
+                    )}
+                    {isFollowingYou && (
+                      <Badge variant="secondary" className="text-xs" data-testid="badge-account-main-follows-you">
+                        Follows you
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    @{account.username}
+                  </p>
+                  {account.currentProfile?.bio && (
+                    <p className="text-sm text-foreground/80 whitespace-pre-wrap pt-1" data-testid="text-account-bio-summary">
+                      {account.currentProfile.bio}
+                    </p>
+                  )}
+                </div>
+
+                {/* Quick Actions Action Areas */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <Button 
+                    variant="outline" 
+                    className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" 
+                    onClick={() => setIsEditDialogOpen(true)}
+                    data-testid="action-btn-edit-account"
+                  >
+                    <Edit2 className="h-4 w-4 text-primary" />
+                    Edit Account
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" 
+                    onClick={() => setIsAddPostOpen(true)}
+                    data-testid="action-btn-add-post"
+                  >
+                    <Plus className="h-4 w-4 text-primary" />
+                    Add Post
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" 
+                    onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)}
+                    data-testid="action-btn-open-graph"
+                  >
+                    <GraphTriangleIcon className="h-4 w-4 text-primary" />
+                    Open in Graph
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" 
+                    onClick={() => setIsInfoDialogOpen(true)}
+                    data-testid="action-btn-account-info"
+                  >
+                    <Info className="h-4 w-4 text-primary" />
+                    Account Info
+                  </Button>
+                </div>
+
+                {/* Summaries: Followers & Following Overview */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Followers Overview */}
+                  <Card className="p-4 space-y-3 shadow-none">
+                    <h3 className="font-semibold text-sm flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <Users className="h-4 w-4 text-muted-foreground" />
+                        Followers ({account.latestState?.followerCount || followersTotal || 0})
+                      </span>
+                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                    </h3>
+                    {followers.length > 0 ? (
+                      <div className="space-y-2 text-xs">
+                        {followers.slice(0, 3).map((f) => (
+                          <div key={f.id} className="flex items-center justify-between border-b pb-1.5 last:border-0 last:pb-0">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Avatar className="w-6 h-6 shrink-0">
+                                {f.currentProfile?.imageUrl && (
+                                  <AvatarImage src={f.currentProfile.imageUrl} alt={f.username} />
+                                )}
+                                <AvatarFallback className="text-[9px]">
+                                  {getInitials(f.username)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <Link href={`/social-accounts/${f.id}`} className="font-medium hover:underline truncate">
+                                {f.username}
+                              </Link>
+                            </div>
+                            {f.currentProfile?.nickname && (
+                              <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
+                                {f.currentProfile.nickname}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic">No followers recorded.</p>
+                    )}
+                  </Card>
+
+                  {/* Following Overview */}
+                  <Card className="p-4 space-y-3 shadow-none">
+                    <h3 className="font-semibold text-sm flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <Users className="h-4 w-4 text-muted-foreground" />
+                        Following ({account.latestState?.followingCount || followingTotal || 0})
+                      </span>
+                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                    </h3>
+                    {followingList.length > 0 ? (
+                      <div className="space-y-2 text-xs">
+                        {followingList.slice(0, 3).map((f) => (
+                          <div key={f.id} className="flex items-center justify-between border-b pb-1.5 last:border-0 last:pb-0">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Avatar className="w-6 h-6 shrink-0">
+                                {f.currentProfile?.imageUrl && (
+                                  <AvatarImage src={f.currentProfile.imageUrl} alt={f.username} />
+                                )}
+                                <AvatarFallback className="text-[9px]">
+                                  {getInitials(f.username)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <Link href={`/social-accounts/${f.id}`} className="font-medium hover:underline truncate">
+                                {f.username}
+                              </Link>
+                            </div>
+                            {f.currentProfile?.nickname && (
+                              <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
+                                {f.currentProfile.nickname}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground italic">Not following anyone yet.</p>
+                    )}
+                  </Card>
+                </div>
+
+                {/* Summaries: Posts Overview */}
+                <Card className="p-4 space-y-3 shadow-none">
+                  <h3 className="font-semibold text-sm flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <ImageIcon className="h-4 w-4 text-muted-foreground" />
+                      Posts ({posts?.length || 0})
+                    </span>
+                    <Button variant="ghost" size="sm" onClick={() => setActiveTab("posts")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                  </h3>
+                  {posts && posts.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {posts.slice(0, 4).map((post) => {
+                        let images: string[] = [];
+                        try {
+                          images = post.content ? JSON.parse(post.content) : [];
+                        } catch {
+                          images = [];
+                        }
+                        const firstImage = images[0] || null;
+
+                        return (
+                          <div
+                            key={post.id}
+                            className="aspect-square rounded-md border bg-muted overflow-hidden relative cursor-pointer hover:opacity-90 transition-opacity"
+                            onClick={() => {
+                              setSelectedPost(post);
+                              setIsPostDetailOpen(true);
+                            }}
+                          >
+                            {firstImage ? (
+                              <img src={firstImage} alt="Post thumbnail" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <ImageIcon className="h-6 w-6 text-muted-foreground/40" />
+                              </div>
+                            )}
+                            {post.description && (
+                              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1.5 text-[10px] text-white truncate">
+                                {post.description}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground italic">No posts recorded.</p>
+                  )}
+                </Card>
+
+                {/* Summaries: Notes & Bio */}
+                <Card className="p-4 space-y-3 shadow-none">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-sm flex items-center gap-1.5">
+                      <StickyNote className="h-4 w-4 text-muted-foreground" />
+                      Notes &amp; Bio
+                    </h3>
+                    {!isEditingNotes && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setNotes(account.currentProfile?.bio || "");
+                          setIsEditingNotes(true);
+                        }}
+                        className="text-[11px] h-6 px-2 text-primary hover:text-primary"
+                      >
+                        Edit
+                      </Button>
+                    )}
+                  </div>
+                  {isEditingNotes ? (
+                    <div className="space-y-3 pt-1">
+                      <Textarea
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        placeholder="Add notes about this social account..."
+                        className="min-h-24 text-xs"
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => updateNotesMutation.mutate(notes)}
+                          disabled={updateNotesMutation.isPending}
+                          size="sm"
+                          className="text-xs h-7 px-3"
+                        >
+                          {updateNotesMutation.isPending && (
+                            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                          )}
+                          Save
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => setIsEditingNotes(false)}
+                          size="sm"
+                          className="text-xs h-7 px-3"
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">
+                      {account.currentProfile?.bio ? (
+                        <p className="whitespace-pre-wrap leading-relaxed">{account.currentProfile.bio}</p>
+                      ) : (
+                        <p className="italic">No notes or bio added yet.</p>
+                      )}
+                    </div>
+                  )}
+                </Card>
+
+                {/* Summaries: Activity & Import Info */}
+                <Card className="p-4 space-y-3 shadow-none">
+                  <h3 className="font-semibold text-sm flex items-center justify-between">
+                    <span>Activity &amp; Import History</span>
+                    <Button variant="ghost" size="sm" onClick={() => setIsInfoDialogOpen(true)} className="text-[11px] h-6 px-2 text-primary hover:text-primary">Details</Button>
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <span className="text-muted-foreground block mb-0.5 text-[10px] uppercase font-bold tracking-wider">Account Creation</span>
+                      <p className="font-medium">{formatYearMonth(account.internalAccountCreationDate)}</p>
+                      <p className="text-[11px] text-muted-foreground">Type: {account.internalAccountCreationType || "User"}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground block mb-0.5 text-[10px] uppercase font-bold tracking-wider">Latest Import</span>
+                      <p className="font-medium">{formatDateTime(getMostRecentImportDate())}</p>
+                      <p className="text-[11px] text-muted-foreground">Scraped: {formatDateTime(account.lastScrapedAt)}</p>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+
+              {/* Right Column: Large Profile Picture & Details */}
+              <div className="w-full lg:w-80 shrink-0 space-y-4">
+                {/* Large Profile Image */}
+                <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden group shadow-sm">
+                  {account.currentProfile?.imageUrl ? (
+                    <img
+                      src={account.currentProfile.imageUrl}
+                      alt={account.username}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-4xl font-bold bg-primary/10 text-primary">
+                      {getInitials(account.username)}
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <Button variant="secondary" size="sm" onClick={() => setIsEditDialogOpen(true)}>
+                      Edit Account
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Account Details Card */}
+                <Card className="p-4 space-y-3 text-xs shadow-none">
+                  <h3 className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block">Account Details</h3>
+                  <div className="space-y-2">
+                    {/* Username */}
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-foreground">@{account.username}</span>
+                      {accountType && (
+                        <Badge
+                          variant="outline"
+                          className="text-[10px] px-1 py-0 h-4 leading-none"
+                          style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                        >
+                          {accountType.name}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {/* Nickname / Display Name */}
+                    {account.currentProfile?.nickname && (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <span>Display: {account.currentProfile.nickname}</span>
+                      </div>
+                    )}
+
+                    {/* External Profile Link */}
+                    {account.currentProfile?.accountUrl && (
+                      <div className="flex items-center gap-2 truncate">
+                        <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <a
+                          href={account.currentProfile.accountUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline truncate text-primary font-medium"
+                          data-testid="link-external-account"
+                        >
+                          {account.currentProfile.accountUrl.replace(/^https?:\/\/(www\.)?/, '')}
+                        </a>
+                      </div>
+                    )}
+
+                    {/* Location (from linked owner address or profile) */}
+                    {owner?.address && (
+                      <div className="flex items-start gap-2">
+                        <MapPin className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                        <span className="break-words">{owner.address}</span>
+                      </div>
+                    )}
+
+                    {/* Joined / Imported Date */}
+                    {account.internalAccountCreationDate && (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span>Imported {formatYearMonth(account.internalAccountCreationDate)}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Linked Owner Section */}
+                  <div className="border-t pt-3 space-y-2">
+                    <span className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block">Linked Person</span>
+                    {account.ownerUuid ? (
+                      owner ? (
+                        <div className="flex items-center gap-2.5 p-2 rounded-md bg-muted/40 border">
+                          <Avatar className="w-8 h-8 shrink-0">
+                            {owner.imageUrl && (
+                              <AvatarImage src={owner.imageUrl} alt={`${owner.firstName} ${owner.lastName}`} />
+                            )}
+                            <AvatarFallback className="text-xs">
+                              {getInitials(owner.firstName, owner.lastName)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0 flex-1">
+                            <Link href={`/person/${owner.id}`}>
+                              <a className="text-primary font-medium hover:underline block truncate text-xs">
+                                {owner.firstName} {owner.lastName}
+                              </a>
+                            </Link>
+                            {(owner.title || owner.company) && (
+                              <p className="text-[11px] text-muted-foreground truncate">
+                                {owner.title} {owner.title && owner.company && "•"} {owner.company}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground italic">Loading owner...</span>
+                      )
+                    ) : (
+                      <div className="pt-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full text-xs h-8"
+                          onClick={() => setIsCreatePersonOpen(true)}
+                          data-testid="button-create-person-details"
+                        >
+                          <UserPlus className="h-3.5 w-3.5 mr-1" />
+                          Create Person
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Action Links Section */}
+                  <div className="border-t pt-3 space-y-1.5">
+                    <span className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block mb-1">Action Links</span>
+                    {account.currentProfile?.accountUrl && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-start text-xs h-8 gap-2"
+                        onClick={() => window.open(account.currentProfile?.accountUrl ?? undefined, "_blank")}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5 text-primary" />
+                        View Original Profile
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start text-xs h-8 gap-2"
+                      onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)}
+                    >
+                      <GraphTriangleIcon className="h-3.5 w-3.5 text-primary" />
+                      Open in Graph
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start text-xs h-8 gap-2"
+                      onClick={() => setIsLinkFollowingOpen(true)}
+                    >
+                      <Plus className="h-3.5 w-3.5 text-primary" />
+                      Link Following Accounts
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start text-xs h-8 gap-2"
+                      onClick={() => setIsCompareOpen(true)}
+                    >
+                      <GitCompare className="h-3.5 w-3.5 text-primary" />
+                      Compare Differences
+                    </Button>
+                    {accountType?.name?.toLowerCase() === "instagram" && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full justify-start text-xs h-8 gap-2"
+                          onClick={() => setIsImportDialogOpen(true)}
+                        >
+                          <Upload className="h-3.5 w-3.5 text-primary" />
+                          Import Instagram CSV
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full justify-start text-xs h-8 gap-2"
+                          onClick={() => handleExtract("account")}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5 text-primary" />
+                          Extract Account Info
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full justify-start text-xs h-8 gap-2"
+                          onClick={() => handleExtract("graph")}
+                        >
+                          <Users className="h-3.5 w-3.5 text-primary" />
+                          Extract Followers &amp; Following
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </Card>
+              </div>
+            </div>
+          </TabsContent>
 
           {/* Follow Tab */}
           <TabsContent value="follow" className="mt-0 flex-1 min-h-0 overflow-y-auto">

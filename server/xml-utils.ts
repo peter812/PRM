@@ -12,6 +12,7 @@
 export function escapeXml(str: any): string {
   if (str === null || str === undefined) return "";
   return String(str)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

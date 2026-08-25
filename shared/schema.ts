@@ -388,6 +388,7 @@ export const socialAccounts = pgTable("social_accounts", {
   lastScrapedAt: timestamp("last_scraped_at"),
   currentPosts: text("current_posts"), // JSON array of post UUIDs currently visible on the account, e.g. '["uuid1","uuid2"]'
   deletedPosts: text("deleted_posts"), // JSON array of post UUIDs that were previously seen but are now deleted, e.g. '["uuid3"]'
+  isSimple: boolean("is_simple").notNull().default(true),
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -720,6 +721,15 @@ export const pendingSocialAccountImports = pgTable("pending_social_account_impor
   accountLocationArea: varchar("account_location_area", { length: 255 }),
   accountFollowers: text("account_followers"), // Raw CSV string
   accountFollowing: text("account_following"), // Raw CSV string
+  // Instagram CDN URL for the profile picture. Signed and short-lived, so it is
+  // only a lead for the image worker to follow at ingest, never a display source.
+  accountImageUrl: text("account_image_url"),
+  // Reported totals from the profile itself. A profile-only ("account") import
+  // has no follower/following CSV to count rows from, so the scraped counts are
+  // kept here instead of being thrown away.
+  accountFollowersCount: integer("account_followers_count"),
+  accountFollowingCount: integer("account_following_count"),
+  importType: text("import_type").notNull().default("full"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 }, (t) => [

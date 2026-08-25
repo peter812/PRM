@@ -549,13 +549,69 @@ export interface IStorage {
 
   // Pending social account imports
   createPendingSocialAccountImport(data: InsertPendingSocialAccountImport): Promise<PendingSocialAccountImport>;
-  getPendingSocialAccountImports(options?: { page?: number; limit?: number; status?: "pending" | "imported" | "all"; search?: string }): Promise<{ items: Array<Omit<PendingSocialAccountImport, "accountFollowers" | "accountFollowing"> & { followersCount: number; followingCount: number }>; total: number; page: number; totalPages: number }>;
+  getPendingSocialAccountImports(options?: { page?: number; limit?: number; status?: "pending" | "imported" | "all"; search?: string }): Promise<{ items: Array<Omit<PendingSocialAccountImport, "accountFollowers" | "accountFollowing"> & { followersCount: number; followingCount: number; hasFollowersCsv: boolean; hasFollowingCsv: boolean }>; total: number; page: number; totalPages: number }>;
   getPendingSocialAccountImportById(id: string): Promise<PendingSocialAccountImport | undefined>;
   markPendingImportAsImported(id: string): Promise<PendingSocialAccountImport | undefined>;
   deletePendingSocialAccountImport(id: string): Promise<boolean>;
+  deleteAllPendingSocialAccountImports(options?: PendingImportFilter): Promise<number>;
 
   // Session store
   sessionStore: session.Store;
+}
+
+/**
+ * How many accounts a pending import actually captured.
+ *
+ * A "full" import carries a CSV (header row + one row per account); a
+ * profile-only ("account") import carries no CSV at all, just the totals the
+ * profile page reported, which are stored in the *_count columns. Falls back to
+ * the stored count whenever there is no CSV to measure.
+ */
+export function countPendingImportEntries(
+  csv: string | null | undefined,
+  storedCount: number | null | undefined,
+): number {
+  if (csv && csv.trim()) {
+    const lines = csv.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+    // arrayToCsv() writes a header row — don't count it as an account.
+    const firstField = (lines[0] || "").split(",")[0].replace(/"/g, "").toLowerCase();
+    const hasHeader = firstField === "id" || firstField === "username";
+    return Math.max(0, lines.length - (hasHeader ? 1 : 0));
+  }
+  return typeof storedCount === "number" && Number.isFinite(storedCount) ? storedCount : 0;
+}
+
+export interface PendingImportFilter {
+  status?: "pending" | "imported" | "all";
+  search?: string;
+}
+
+/**
+ * The WHERE clause behind the pending-imports list.
+ *
+ * Shared with the bulk delete so "delete everything shown" means exactly the
+ * rows the list would show, rather than a second filter that has to be kept in
+ * step by hand. `undefined` means no restriction — every row.
+ */
+function pendingImportFilter(options: PendingImportFilter) {
+  const conditions: any[] = [];
+
+  if (options.status === "pending") {
+    conditions.push(eq(pendingSocialAccountImports.alreadyAdded, false));
+  } else if (options.status === "imported") {
+    conditions.push(eq(pendingSocialAccountImports.alreadyAdded, true));
+  }
+
+  if (options.search && options.search.trim()) {
+    const q = `%${options.search.trim()}%`;
+    conditions.push(or(
+      ilike(pendingSocialAccountImports.accountUsername, q),
+      ilike(pendingSocialAccountImports.accountDisplayName, q),
+      ilike(pendingSocialAccountImports.accountBio, q)
+    ));
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -3228,7 +3284,7 @@ export class DatabaseStorage implements IStorage {
     id: string,
     accountData: Partial<InsertSocialAccount>
   ): Promise<SocialAccount | undefined> {
-    const { username, ownerUuid, groupId, typeId, internalAccountCreationType, lastScrapedAt } = accountData as any;
+    const { username, ownerUuid, groupId, typeId, internalAccountCreationType, lastScrapedAt, isSimple } = accountData as any;
     const updateFields: Record<string, any> = {};
     if (username !== undefined) updateFields.username = username;
     if (ownerUuid !== undefined) updateFields.ownerUuid = ownerUuid;
@@ -3236,6 +3292,7 @@ export class DatabaseStorage implements IStorage {
     if (typeId !== undefined) updateFields.typeId = typeId;
     if (internalAccountCreationType !== undefined) updateFields.internalAccountCreationType = internalAccountCreationType;
     if (lastScrapedAt !== undefined) updateFields.lastScrapedAt = lastScrapedAt;
+    if (isSimple !== undefined) updateFields.isSimple = isSimple;
 
     if (Object.keys(updateFields).length === 0) return undefined;
 
@@ -5209,28 +5266,20 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
+  async deleteAllPendingSocialAccountImports(options: PendingImportFilter = {}): Promise<number> {
+    const deleted = await db
+      .delete(pendingSocialAccountImports)
+      .where(pendingImportFilter(options))
+      .returning({ id: pendingSocialAccountImports.id });
+    return deleted.length;
+  }
+
   async getPendingSocialAccountImports(options: { page?: number; limit?: number; status?: "pending" | "imported" | "all"; search?: string } = {}) {
     const page = Math.max(1, options.page || 1);
     const limit = Math.min(100, Math.max(1, options.limit || 20));
     const offset = (page - 1) * limit;
 
-    const conditions: any[] = [];
-    if (options.status === "pending") {
-      conditions.push(eq(pendingSocialAccountImports.alreadyAdded, false));
-    } else if (options.status === "imported") {
-      conditions.push(eq(pendingSocialAccountImports.alreadyAdded, true));
-    }
-
-    if (options.search && options.search.trim()) {
-      const q = `%${options.search.trim()}%`;
-      conditions.push(or(
-        ilike(pendingSocialAccountImports.accountUsername, q),
-        ilike(pendingSocialAccountImports.accountDisplayName, q),
-        ilike(pendingSocialAccountImports.accountBio, q)
-      ));
-    }
-
-    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    const whereClause = pendingImportFilter(options);
 
     const [countResult] = await db
       .select({ count: sql<number>`count(*)` })
@@ -5254,6 +5303,10 @@ export class DatabaseStorage implements IStorage {
         accountLocationArea: pendingSocialAccountImports.accountLocationArea,
         accountFollowers: pendingSocialAccountImports.accountFollowers,
         accountFollowing: pendingSocialAccountImports.accountFollowing,
+        accountImageUrl: pendingSocialAccountImports.accountImageUrl,
+        accountFollowersCount: pendingSocialAccountImports.accountFollowersCount,
+        accountFollowingCount: pendingSocialAccountImports.accountFollowingCount,
+        importType: pendingSocialAccountImports.importType,
         createdAt: pendingSocialAccountImports.createdAt,
         updatedAt: pendingSocialAccountImports.updatedAt,
       })
@@ -5264,13 +5317,18 @@ export class DatabaseStorage implements IStorage {
       .offset(offset);
 
     const items = rows.map(row => {
-      const followersCount = row.accountFollowers ? row.accountFollowers.split("\n").filter(l => l.trim().length > 0).length : 0;
-      const followingCount = row.accountFollowing ? row.accountFollowing.split("\n").filter(l => l.trim().length > 0).length : 0;
+      const followersCount = countPendingImportEntries(row.accountFollowers, row.accountFollowersCount);
+      const followingCount = countPendingImportEntries(row.accountFollowing, row.accountFollowingCount);
       const { accountFollowers, accountFollowing, ...rest } = row;
       return {
         ...rest,
         followersCount,
         followingCount,
+        // A count can now come from the profile's reported totals, so it no
+        // longer implies there is a CSV to download. Callers gate the export
+        // affordances on these instead.
+        hasFollowersCsv: Boolean(accountFollowers && accountFollowers.trim()),
+        hasFollowingCsv: Boolean(accountFollowing && accountFollowing.trim()),
       };
     });
 

@@ -48,6 +48,7 @@ const PATH_MAP: Record<string, KinshipTerm> = {
   "spouse": { neutral: "Spouse", male: "Husband", female: "Wife" },
 
   // 2-steps
+  "parent,child": { neutral: "Sibling", male: "Brother", female: "Sister" },
   "parent,parent": { neutral: "Grandparent", male: "Grandfather", female: "Grandmother" },
   "parent,sibling": { neutral: "Uncle/Aunt", male: "Uncle", female: "Aunt" },
   "sibling,child": { neutral: "Nephew/Niece", male: "Nephew", female: "Niece" },
@@ -60,6 +61,8 @@ const PATH_MAP: Record<string, KinshipTerm> = {
   "spouse,child": { neutral: "Stepchild", male: "Stepson", female: "Stepdaughter" },
 
   // 3-steps
+  "parent,parent,child": { neutral: "Uncle/Aunt", male: "Uncle", female: "Aunt" },
+  "parent,child,child": { neutral: "Nephew/Niece", male: "Nephew", female: "Niece" },
   "parent,parent,parent": { neutral: "Great-Grandparent", male: "Great-Grandfather", female: "Great-Grandmother" },
   "child,child,child": { neutral: "Great-Grandchild", male: "Great-Grandson", female: "Great-Granddaughter" },
   "parent,sibling,child": { neutral: "Cousin", male: "Cousin", female: "Cousin" },
@@ -67,6 +70,8 @@ const PATH_MAP: Record<string, KinshipTerm> = {
   "sibling,child,child": { neutral: "Grandnephew/Niece", male: "Grandnephew", female: "Grandniece" },
 
   // 4-steps
+  "parent,parent,child,child": { neutral: "Cousin", male: "Cousin", female: "Cousin" },
+  "parent,parent,parent,child": { neutral: "Great-Uncle/Aunt", male: "Great-Uncle", female: "Great-Aunt" },
   "parent,parent,parent,parent": { neutral: "Great-Great-Grandparent", male: "Great-Great-Grandfather", female: "Great-Great-Grandmother" },
   "child,child,child,child": { neutral: "Great-Great-Grandchild", male: "Great-Great-Grandson", female: "Great-Great-Granddaughter" },
   "parent,parent,sibling,child": { neutral: "First Cousin Once Removed", male: "First Cousin Once Removed", female: "First Cousin Once Removed" },
@@ -104,8 +109,8 @@ function applyModifiers(title: string, rawPath: string[]): string {
   }
 
   // 3. Detect adoptive relationships
-  const isAdoptive = rawPath.some(step => step.toLowerCase().includes("adopt"));
-  if (isAdoptive && !result.toLowerCase().startsWith("adopt")) {
+  const isAdoptive = rawPath.some(step => step.toLowerCase().includes("adoptive"));
+  if (isAdoptive && !result.toLowerCase().startsWith("adoptive")) {
     result = "Adoptive " + result;
   }
 
@@ -140,20 +145,20 @@ function translateRelationshipPath(path: string[], sex: string | null | undefine
     if (allParent) {
       const g = normPath.length; // e.g. 4 parents
       if (sex === "male") {
-        resolvedTitle = "Great-".repeat(g - 2) + "Grandfather";
+        resolvedTitle = "Great-".repeat(Math.max(0, g - 2)) + "Grandfather";
       } else if (sex === "female") {
-        resolvedTitle = "Great-".repeat(g - 2) + "Grandmother";
+        resolvedTitle = "Great-".repeat(Math.max(0, g - 2)) + "Grandmother";
       } else {
-        resolvedTitle = "Great-".repeat(g - 2) + "Grandparent";
+        resolvedTitle = "Great-".repeat(Math.max(0, g - 2)) + "Grandparent";
       }
     } else if (allChild) {
       const g = normPath.length;
       if (sex === "male") {
-        resolvedTitle = "Great-".repeat(g - 2) + "Grandson";
+        resolvedTitle = "Great-".repeat(Math.max(0, g - 2)) + "Grandson";
       } else if (sex === "female") {
-        resolvedTitle = "Great-".repeat(g - 2) + "Granddaughter";
+        resolvedTitle = "Great-".repeat(Math.max(0, g - 2)) + "Granddaughter";
       } else {
-        resolvedTitle = "Great-".repeat(g - 2) + "Grandchild";
+        resolvedTitle = "Great-".repeat(Math.max(0, g - 2)) + "Grandchild";
       }
     } else {
       // Default fallback for very distant/complex relations

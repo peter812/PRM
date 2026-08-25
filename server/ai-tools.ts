@@ -645,10 +645,16 @@ export const AI_TOOLS: AiToolDefinition[] = [
           conditions.push(eq(messages.conversationId, conversationId));
         }
         if (startDateStr) {
-          conditions.push(sql`${messages.sentAt} >= ${new Date(startDateStr).toISOString()}`);
+          const d = new Date(startDateStr);
+          if (!isNaN(d.getTime())) {
+            conditions.push(sql`${messages.sentAt} >= ${d.toISOString()}`);
+          }
         }
         if (endDateStr) {
-          conditions.push(sql`${messages.sentAt} <= ${new Date(endDateStr).toISOString()}`);
+          const d = new Date(endDateStr);
+          if (!isNaN(d.getTime())) {
+            conditions.push(sql`${messages.sentAt} <= ${d.toISOString()}`);
+          }
         }
         if (textQuery) {
           if (useRegex) {
@@ -659,11 +665,14 @@ export const AI_TOOLS: AiToolDefinition[] = [
         }
 
         if (refDateStr && direction) {
-          const refIso = new Date(refDateStr).toISOString();
-          if (direction === "backwards") {
-            conditions.push(sql`${messages.sentAt} <= ${refIso}`);
-          } else {
-            conditions.push(sql`${messages.sentAt} >= ${refIso}`);
+          const d = new Date(refDateStr);
+          if (!isNaN(d.getTime())) {
+            const refIso = d.toISOString();
+            if (direction === "backwards") {
+              conditions.push(sql`${messages.sentAt} <= ${refIso}`);
+            } else {
+              conditions.push(sql`${messages.sentAt} >= ${refIso}`);
+            }
           }
         }
 

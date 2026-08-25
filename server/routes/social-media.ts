@@ -33,7 +33,7 @@ import {
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { hashPassword, requireAuth, authenticateExtensionToken } from "../auth";
+import { hashPassword, requireAuth, requireAdmin, authenticateExtensionToken } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -568,7 +568,11 @@ export function registerRoutes(app: Express) {
         if (body.typeId !== undefined) registryFields.typeId = body.typeId;
         if (body.internalAccountCreationType !== undefined) registryFields.internalAccountCreationType = body.internalAccountCreationType;
         if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;
-  
+
+        if (body.bio !== undefined || body.nickname !== undefined || body.accountUrl !== undefined || body.imageUrl !== undefined) {
+          registryFields.isSimple = false;
+        }
+
         if (Object.keys(registryFields).length > 0) {
           await storage.updateSocialAccount(id, registryFields);
         }
@@ -608,7 +612,7 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.delete("/api/social-accounts/delete-all", async (req, res) => {
+    app.delete("/api/social-accounts/delete-all", requireAdmin, async (req, res) => {
       try {
         const count = await storage.deleteAllSocialAccounts();
         res.json({ success: true, deleted: count });
@@ -2079,10 +2083,7 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/image-storage/delete-instagram-urls", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/delete-instagram-urls", requireAdmin, async (req, res) => {
       try {
         const result = await storage.deleteInstagramImageUrls();
         const vectorIds = result.deletedPhotos?.map((p) => p.vectorId).filter(Boolean) as string[];
@@ -2096,10 +2097,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/delete-orphans", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/delete-orphans", requireAdmin, async (req, res) => {
       try {
         const result = await storage.deleteOrphanPhotos();
         const vectorIds = result.deletedPhotos?.map((p) => p.vectorId).filter(Boolean) as string[];

@@ -14,6 +14,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  EXTENSION_ID_SETTING,
+  EXTENSION_MAX_RECORDS_SETTING,
+  DEFAULT_MAX_RECORDS,
+} from "@/lib/extension-bridge";
 import { useToast } from "@/hooks/use-toast";
 import { Chrome, RefreshCw, Trash2, Wifi, WifiOff } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -49,6 +56,35 @@ export default function ChromeExtensionSettingsPage() {
   const { data: sessions = [], isLoading: sessionsLoading } = useQuery<ExtensionSession[]>({
     queryKey: ["/api/extension-sessions"],
   });
+
+  const { data: appSettings } = useQuery<Record<string, string | null>>({
+    queryKey: ["/api/settings"],
+  });
+
+  // Both fields are free text that saves on blur, so they hold local state and
+  // adopt the stored value once it arrives.
+  const [extensionId, setExtensionId] = useState("");
+  const [maxRecords, setMaxRecords] = useState(String(DEFAULT_MAX_RECORDS));
+
+  useEffect(() => {
+    if (!appSettings) return;
+    setExtensionId(appSettings[EXTENSION_ID_SETTING] ?? "");
+    setMaxRecords(appSettings[EXTENSION_MAX_RECORDS_SETTING] ?? String(DEFAULT_MAX_RECORDS));
+  }, [appSettings]);
+
+  const saveSetting = async (key: string, value: string) => {
+    if ((appSettings?.[key] ?? "") === value) return;
+    try {
+      await apiRequest("POST", "/api/settings", { key, value });
+      queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Failed to save setting",
+        description: (error as Error).message,
+      });
+    }
+  };
 
   const fetchCode = useCallback(async () => {
     try {
@@ -188,6 +224,53 @@ export default function ChromeExtensionSettingsPage() {
               <li>Enter the 4-digit code shown above</li>
               <li>The extension will be connected to your PRM</li>
             </ol>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Extension Identity & Limits */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Extraction Settings</CardTitle>
+          <CardDescription>
+            Needed for PRM to hand extraction jobs to the extension from a social account page.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="extension-id">Extension ID</Label>
+            <Input
+              id="extension-id"
+              value={extensionId}
+              onChange={(e) => setExtensionId(e.target.value)}
+              onBlur={() => saveSetting(EXTENSION_ID_SETTING, extensionId.trim())}
+              placeholder="e.g. abcdefghijklmnopabcdefghijklmnop"
+              className="font-mono"
+              data-testid="input-extension-id"
+            />
+            <p className="text-sm text-muted-foreground">
+              Open <span className="font-mono">chrome://extensions</span>, enable Developer mode, and copy the
+              ID shown under PRM. An unpacked extension gets a new ID each time it is reinstalled, so re-paste
+              it if extraction stops working.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="extension-max-records">Max records per graph extraction</Label>
+            <Input
+              id="extension-max-records"
+              type="number"
+              min={1}
+              value={maxRecords}
+              onChange={(e) => setMaxRecords(e.target.value)}
+              onBlur={() => saveSetting(EXTENSION_MAX_RECORDS_SETTING, maxRecords.trim())}
+              className="max-w-[200px]"
+              data-testid="input-extension-max-records"
+            />
+            <p className="text-sm text-muted-foreground">
+              Applied to followers and following separately. Instagram is walked about 50 accounts every six
+              seconds, so {DEFAULT_MAX_RECORDS.toLocaleString()} takes roughly six minutes per side.
+            </p>
           </div>
         </CardContent>
       </Card>
