@@ -332,8 +332,10 @@ export const groups = pgTable("groups", {
   members: text("members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs
   imageUrl: text("image_url"),
   centerAccountId: varchar("center_account_id").references((): AnyPgColumn => socialAccounts.id, { onDelete: "set null" }),
-  crowdMembers: text("crowd_members").array().default(sql`ARRAY[]::text[]`), // list of person UUIDs in the crowd
+  crowdMembers: text("crowd_members").array().default(sql`ARRAY[]::text[]`), // list of UUIDs in the crowd (social account or person profile IDs based on crowdMode)
   crowdLastCalculatedAt: timestamp("crowd_last_calculated_at"),
+  crowdMode: text("crowd_mode").default("social_accounts"), // "social_accounts" (new feature) | "person_profiles" (legacy)
+  crowdFollowThreshold: integer("crowd_follow_threshold").default(5), // min center account followers to qualify (1-6, default 5)
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -1719,6 +1721,8 @@ export type PersonGraphData = {
     centerAccountId?: string | null;
     crowdMembers?: string[] | null;
     crowdLastCalculatedAt?: string | null;
+    crowdMode?: string | null;
+    crowdFollowThreshold?: number | null;
   }>;
 };
 

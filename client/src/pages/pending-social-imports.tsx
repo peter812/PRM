@@ -127,6 +127,8 @@ export default function PendingSocialImportsPage() {
   const [statusFilter, setStatusFilter] = useState<"pending" | "imported" | "all">("all");
   const [page, setPage] = useState(1);
   const [previewRecord, setPreviewRecord] = useState<PendingImportItem | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleteOpen, setIsBulkDeleteOpen] = useState(false);
   const [isDeleteAllOpen, setIsDeleteAllOpen] = useState(false);
   const [includeGraphImages, setIncludeGraphImages] = useState(false);
   const { toast } = useToast();
@@ -136,6 +138,82 @@ export default function PendingSocialImportsPage() {
     queryFn: async () => {
       const res = await apiRequest("GET", `/api/v1/pending-imports?page=${page}&limit=20&status=${statusFilter}&search=${encodeURIComponent(search)}`);
       return res.json();
+    },
+  });
+
+  const pageItemIds = data?.items?.map((item) => item.id) || [];
+  const isAllPageSelected = pageItemIds.length > 0 && pageItemIds.every((id) => selectedIds.has(id));
+
+  const handleSelectAll = (checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        pageItemIds.forEach((id) => next.add(id));
+      } else {
+        pageItemIds.forEach((id) => next.delete(id));
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const bulkImportMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const res = await apiRequest("POST", "/api/v1/pending-imports/bulk-import", { ids });
+      return res.json();
+    },
+    onMutate: () => {
+      setSelectedIds(new Set());
+    },
+    onSuccess: (resData) => {
+      toast({
+        title: "Bulk Import Started",
+        description: `Queued ${resData.count} import task${resData.count === 1 ? "" : "s"} in the background.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Bulk Import Failed",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const res = await apiRequest("POST", "/api/v1/pending-imports/bulk-delete", { ids });
+      return res.json();
+    },
+    onSuccess: (resData) => {
+      toast({
+        title: "Records Deleted",
+        description: `Removed ${resData.deletedCount} pending import${resData.deletedCount === 1 ? "" : "s"}.`,
+      });
+      setIsBulkDeleteOpen(false);
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Bulk Delete Failed",
+        description: err.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -154,6 +232,7 @@ export default function PendingSocialImportsPage() {
       });
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
     },
     onError: (err: Error) => {
       toast({
@@ -258,7 +337,7 @@ export default function PendingSocialImportsPage() {
   );
 
   return (
-    <div className="flex-1 space-y-6 p-6 overflow-y-auto">
+    <div className="h-full overflow-y-auto p-6 space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -335,6 +414,7 @@ export default function PendingSocialImportsPage() {
             onChange={(e) => {
               setSearch(e.target.value);
               setPage(1);
+              setSelectedIds(new Set());
             }}
             className="pl-9"
           />
@@ -343,203 +423,294 @@ export default function PendingSocialImportsPage() {
           <Button
             variant={statusFilter === "all" ? "default" : "outline"}
             size="sm"
-            onClick={() => { setStatusFilter("all"); setPage(1); }}
+            onClick={() => { setStatusFilter("all"); setPage(1); setSelectedIds(new Set()); }}
           >
             All
           </Button>
           <Button
             variant={statusFilter === "pending" ? "default" : "outline"}
             size="sm"
-            onClick={() => { setStatusFilter("pending"); setPage(1); }}
+            onClick={() => { setStatusFilter("pending"); setPage(1); setSelectedIds(new Set()); }}
           >
             Pending
           </Button>
           <Button
             variant={statusFilter === "imported" ? "default" : "outline"}
             size="sm"
-            onClick={() => { setStatusFilter("imported"); setPage(1); }}
+            onClick={() => { setStatusFilter("imported"); setPage(1); setSelectedIds(new Set()); }}
           >
             Imported
           </Button>
         </div>
       </div>
 
+      {/* Bulk Action Toolbar */}
+      {selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-primary/10 border border-primary/20 p-3 rounded-lg text-sm animate-in fade-in">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-primary">
+              {selectedIds.size} record{selectedIds.size > 1 ? "s" : ""} selected
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSelectedIds(new Set())}
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear selection
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => bulkImportMutation.mutate(Array.from(selectedIds))}
+              disabled={bulkImportMutation.isPending}
+              className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+              data-testid="button-bulk-import"
+            >
+              <Download className="h-4 w-4" /> Import Selected ({selectedIds.size})
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => setIsBulkDeleteOpen(true)}
+              disabled={bulkDeleteMutation.isPending}
+              className="gap-1.5"
+              data-testid="button-bulk-delete"
+            >
+              <Trash2 className="h-4 w-4" /> Delete Selected ({selectedIds.size})
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Table */}
       <Card className="shadow-sm overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Account Profile</TableHead>
-              <TableHead>Extraction</TableHead>
-              <TableHead>Bio Snippet</TableHead>
-              <TableHead>Contact / Location</TableHead>
-              <TableHead className="text-center">Followers / Following</TableHead>
-              <TableHead>Time Added</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
-                  Loading pending imports...
-                </TableCell>
+                <TableHead className="w-12 text-center">
+                  <Checkbox
+                    checked={isAllPageSelected}
+                    onCheckedChange={(checked) => handleSelectAll(!!checked)}
+                    aria-label="Select all"
+                    data-testid="checkbox-select-all"
+                  />
+                </TableHead>
+                <TableHead>Account Profile</TableHead>
+                <TableHead>Extraction</TableHead>
+                <TableHead>Bio Snippet</TableHead>
+                <TableHead>Contact / Location</TableHead>
+                <TableHead className="text-center">Followers / Following</TableHead>
+                <TableHead>Time Added</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
-            ) : !data?.items || data.items.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
-                  No pending social account imports found.
-                </TableCell>
-              </TableRow>
-            ) : (
-              data.items.map((item) => (
-                <TableRow
-                  key={item.id}
-                  className="cursor-pointer hover:bg-muted/50 transition-colors"
-                  onClick={() => handleFetchPreview(item.id)}
-                  data-testid={`row-pending-import-${item.id}`}
-                >
-                  <TableCell>
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-9 w-9">
-                        {item.accountImageUrl && <AvatarImage src={item.accountImageUrl} alt={item.accountUsername} />}
-                        <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
-                          {getInitials(item.accountDisplayName || item.accountUsername)}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="flex flex-col min-w-0">
-                        <div className="flex items-center gap-1.5 font-medium text-sm">
-                          <span className="truncate">{item.accountDisplayName || item.accountUsername}</span>
-                          <a
-                            href={`https://instagram.com/${item.accountUsername}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-muted-foreground hover:text-primary shrink-0"
-                            title="Open Instagram Profile"
-                          >
-                            <ExternalLink className="h-3.5 w-3.5" />
-                          </a>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                    Loading pending imports...
+                  </TableCell>
+                </TableRow>
+              ) : !data?.items || data.items.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                    No pending social account imports found.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                data.items.map((item) => (
+                  <TableRow
+                    key={item.id}
+                    className={`cursor-pointer transition-colors ${
+                      selectedIds.has(item.id) ? "bg-muted/70" : "hover:bg-muted/50"
+                    }`}
+                    onClick={() => handleFetchPreview(item.id)}
+                    data-testid={`row-pending-import-${item.id}`}
+                  >
+                    <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selectedIds.has(item.id)}
+                        onCheckedChange={() => handleToggleSelect(item.id)}
+                        aria-label={`Select ${item.accountUsername}`}
+                        data-testid={`checkbox-select-${item.id}`}
+                      />
+                    </TableCell>
+
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-9 w-9">
+                          {item.accountImageUrl && <AvatarImage src={item.accountImageUrl} alt={item.accountUsername} />}
+                          <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
+                            {getInitials(item.accountDisplayName || item.accountUsername)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex flex-col min-w-0">
+                          <div className="flex items-center gap-1.5 font-medium text-sm">
+                            <span className="truncate">{item.accountDisplayName || item.accountUsername}</span>
+                            <a
+                              href={`https://instagram.com/${item.accountUsername}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-muted-foreground hover:text-primary shrink-0"
+                              title="Open Instagram Profile"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          </div>
+                          <span className="text-xs text-muted-foreground truncate">@{item.accountUsername}</span>
                         </div>
-                        <span className="text-xs text-muted-foreground truncate">@{item.accountUsername}</span>
                       </div>
-                    </div>
-                  </TableCell>
+                    </TableCell>
 
-                  <TableCell>
-                    {item.importType === "account" ? (
-                      <Badge
-                        variant="outline"
-                        className="gap-1 text-xs font-normal bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/30"
-                        data-testid={`badge-import-type-${item.id}`}
-                      >
-                        <User className="h-3 w-3" /> Account only
-                      </Badge>
-                    ) : (
-                      <Badge
-                        variant="outline"
-                        className="gap-1 text-xs font-normal bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/30"
-                        data-testid={`badge-import-type-${item.id}`}
-                      >
-                        <Users className="h-3 w-3" /> Account + followers
-                      </Badge>
-                    )}
-                  </TableCell>
-
-                  <TableCell className="max-w-[200px]">
-                    <p className="text-xs text-muted-foreground line-clamp-2">
-                      {item.accountBio || "No bio"}
-                    </p>
-                  </TableCell>
-
-                  <TableCell>
-                    <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
-                      {item.accountEmail && (
-                        <div className="flex items-center gap-1">
-                          <Mail className="h-3 w-3 text-muted-foreground" /> {item.accountEmail}
-                        </div>
-                      )}
-                      {item.accountPhone && (
-                        <div className="flex items-center gap-1">
-                          <Phone className="h-3 w-3 text-muted-foreground" /> {item.accountPhone}
-                        </div>
-                      )}
-                      {item.accountLocationArea && (
-                        <div className="flex items-center gap-1">
-                          <MapPin className="h-3 w-3 text-muted-foreground" /> {item.accountLocationArea}
-                        </div>
-                      )}
-                      {!item.accountEmail && !item.accountPhone && !item.accountLocationArea && (
-                        <span className="text-muted-foreground/60">—</span>
-                      )}
-                    </div>
-                  </TableCell>
-
-                  <TableCell className="text-center">
-                    <div className="flex items-center justify-center gap-2">
-                      <Badge variant="outline" className="text-xs font-normal">
-                        {item.followersCount.toLocaleString()} followers
-                      </Badge>
-                      <Badge variant="outline" className="text-xs font-normal">
-                        {item.followingCount.toLocaleString()} following
-                      </Badge>
-                    </div>
-                  </TableCell>
-
-                  <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                    {new Date(item.timestampAdded).toLocaleDateString()} {new Date(item.timestampAdded).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </TableCell>
-
-                  <TableCell>
-                    {item.alreadyAdded ? (
-                      <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 gap-1 border-0">
-                        <CheckCircle2 className="h-3 w-3" /> Already Added
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="bg-amber-500/10 text-amber-700 dark:text-amber-400 gap-1 border-amber-500/30">
-                        <Clock className="h-3 w-3" /> Pending
-                      </Badge>
-                    )}
-                  </TableCell>
-
-                  <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => handleFetchPreview(item.id)}
-                          className="cursor-pointer gap-2"
+                    <TableCell>
+                      {item.importType === "account" ? (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 text-xs font-normal bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/30"
+                          data-testid={`badge-import-type-${item.id}`}
                         >
-                          <Eye className="h-4 w-4" /> View Details
-                        </DropdownMenuItem>
-                        {!item.alreadyAdded && (
+                          <User className="h-3 w-3" /> Account only
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 text-xs font-normal bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/30"
+                          data-testid={`badge-import-type-${item.id}`}
+                        >
+                          <Users className="h-3 w-3" /> Account + followers
+                        </Badge>
+                      )}
+                    </TableCell>
+
+                    <TableCell className="max-w-[200px]">
+                      <p className="text-xs text-muted-foreground line-clamp-2">
+                        {item.accountBio || "No bio"}
+                      </p>
+                    </TableCell>
+
+                    <TableCell>
+                      <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                        {item.accountEmail && (
+                          <div className="flex items-center gap-1">
+                            <Mail className="h-3 w-3 text-muted-foreground" /> {item.accountEmail}
+                          </div>
+                        )}
+                        {item.accountPhone && (
+                          <div className="flex items-center gap-1">
+                            <Phone className="h-3 w-3 text-muted-foreground" /> {item.accountPhone}
+                          </div>
+                        )}
+                        {item.accountLocationArea && (
+                          <div className="flex items-center gap-1">
+                            <MapPin className="h-3 w-3 text-muted-foreground" /> {item.accountLocationArea}
+                          </div>
+                        )}
+                        {!item.accountEmail && !item.accountPhone && !item.accountLocationArea && (
+                          <span className="text-muted-foreground/60">—</span>
+                        )}
+                      </div>
+                    </TableCell>
+
+                    <TableCell className="text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <Badge variant="outline" className="text-xs font-normal">
+                          {item.followersCount.toLocaleString()} followers
+                        </Badge>
+                        <Badge variant="outline" className="text-xs font-normal">
+                          {item.followingCount.toLocaleString()} following
+                        </Badge>
+                      </div>
+                    </TableCell>
+
+                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(item.timestampAdded).toLocaleDateString()} {new Date(item.timestampAdded).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </TableCell>
+
+                    <TableCell>
+                      {item.alreadyAdded ? (
+                        <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 gap-1 border-0">
+                          <CheckCircle2 className="h-3 w-3" /> Already Added
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="bg-amber-500/10 text-amber-700 dark:text-amber-400 gap-1 border-amber-500/30">
+                          <Clock className="h-3 w-3" /> Pending
+                        </Badge>
+                      )}
+                    </TableCell>
+
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => handleFetchPreview(item.id)}
+                            className="cursor-pointer gap-2"
+                          >
+                            <Eye className="h-4 w-4" /> View Details
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => importMutation.mutate({ id: item.id, includeGraphImages: false })}
                             className="cursor-pointer gap-2"
                           >
-                            <Download className="h-4 w-4 text-emerald-600" /> Import to PRM
+                            <Download className="h-4 w-4 text-emerald-600" /> {item.alreadyAdded ? "Reimport to PRM" : "Import to PRM"}
                           </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem
-                          onClick={() => deleteMutation.mutate(item.id)}
-                          className="cursor-pointer text-destructive focus:text-destructive gap-2"
-                        >
-                          <Trash2 className="h-4 w-4" /> Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+                          <DropdownMenuItem
+                            onClick={() => deleteMutation.mutate(item.id)}
+                            className="cursor-pointer text-destructive focus:text-destructive gap-2"
+                          >
+                            <Trash2 className="h-4 w-4" /> Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
       </Card>
+
+      {/* Pagination */}
+      {data && data.totalPages > 1 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-muted-foreground px-1">
+          <div>
+            Showing {((page - 1) * 20) + 1} to {Math.min(page * 20, data.total)} of {data.total} records
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { setPage((p) => Math.max(1, p - 1)); setSelectedIds(new Set()); }}
+              disabled={page <= 1}
+              data-testid="button-prev-page"
+            >
+              Previous
+            </Button>
+            <span className="text-xs font-medium">
+              Page {page} of {data.totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { setPage((p) => Math.min(data.totalPages, p + 1)); setSelectedIds(new Set()); }}
+              disabled={page >= data.totalPages}
+              data-testid="button-next-page"
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Detailed Import Preview Modal */}
       <Dialog open={!!previewRecord} onOpenChange={(open) => !open && setPreviewRecord(null)}>
@@ -885,7 +1056,7 @@ export default function PendingSocialImportsPage() {
                 </div>
 
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                  {(previewRecord.hasFollowersCsv || previewRecord.hasFollowingCsv) && !previewRecord.alreadyAdded && (
+                  {(previewRecord.hasFollowersCsv || previewRecord.hasFollowingCsv) && (
                     <label className="flex items-start gap-2 cursor-pointer max-w-xs text-left">
                       <Checkbox
                         checked={includeGraphImages}
@@ -910,12 +1081,12 @@ export default function PendingSocialImportsPage() {
                     <Button
                       size="sm"
                       onClick={() => importMutation.mutate({ id: previewRecord.id, includeGraphImages })}
-                      disabled={importMutation.isPending || previewRecord.alreadyAdded}
+                      disabled={importMutation.isPending}
                       className="gap-1.5 shrink-0"
                       data-testid="button-import-from-preview"
                     >
                       <Download className="h-4 w-4" />
-                      {previewRecord.alreadyAdded ? "Already Ingested" : "Import into PRM"}
+                      {previewRecord.alreadyAdded ? "Reimport into PRM" : "Import into PRM"}
                     </Button>
                   </div>
                 </div>
@@ -944,6 +1115,32 @@ export default function PendingSocialImportsPage() {
               data-testid="button-confirm-delete-all"
             >
               {deleteAllMutation.isPending ? "Deleting..." : `Delete ${total}`}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Delete Confirmation Dialog */}
+      <AlertDialog open={isBulkDeleteOpen} onOpenChange={setIsBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedIds.size} pending import{selectedIds.size === 1 ? "" : "s"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the {selectedIds.size} selected pending import record{selectedIds.size === 1 ? "" : "s"}. Ingested social accounts and people in PRM are not affected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                bulkDeleteMutation.mutate(Array.from(selectedIds));
+              }}
+              disabled={bulkDeleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-confirm-bulk-delete"
+            >
+              {bulkDeleteMutation.isPending ? "Deleting..." : `Delete ${selectedIds.size}`}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

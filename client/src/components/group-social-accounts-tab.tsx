@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Plus, X, Search, Trash, Star, StarOff, AlertTriangle } from "lucide-react";
+import { Plus, Search, Trash, Star, StarOff, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -11,7 +11,6 @@ import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getInitials, isValidHexColor } from "@/lib/utils";
 import type { SocialAccountWithCurrentProfile, Group, SocialAccountType } from "@shared/schema";
-import { SocialAccountDialog } from "./social-account-dialog";
 import {
   Dialog,
   DialogContent,
@@ -31,13 +30,10 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
   const { toast } = useToast();
   const [, navigate] = useLocation();
   
-  // State for Add (Create) Social Account Dialog
+  // State for Add Social Account Search Dialog
   const [isAddOpen, setIsAddOpen] = useState(false);
-  
-  // State for Link Existing Social Account Dialog
-  const [isLinkOpen, setIsLinkOpen] = useState(false);
-  const [linkSearchQuery, setLinkSearchQuery] = useState("");
-  const debouncedSearch = useDebounce(linkSearchQuery, 300);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedSearch = useDebounce(searchQuery, 300);
 
   // State for Delete Confirmation Dialog
   const [accountToDelete, setAccountToDelete] = useState<SocialAccountWithCurrentProfile | null>(null);
@@ -72,7 +68,7 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
       if (!res.ok) throw new Error("Failed to search accounts");
       return res.json();
     },
-    enabled: isLinkOpen && debouncedSearch.trim().length >= 2,
+    enabled: isAddOpen && debouncedSearch.trim().length >= 2,
   });
 
   // Mutate group centerAccountId
@@ -111,13 +107,13 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
       toast({
         title: "Success",
-        description: "Social account linked to group",
+        description: "Social account added to group",
       });
     },
     onError: () => {
       toast({
         title: "Error",
-        description: "Failed to link social account",
+        description: "Failed to add social account",
         variant: "destructive",
       });
     },
@@ -126,10 +122,6 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
   // Mutate social account groupId to null to unlink
   const unlinkAccountMutation = useMutation({
     mutationFn: async (accountId: string) => {
-      const payload: { groupId: string | null; centerAccountId?: string | null } = {
-        groupId: null,
-      };
-      
       // If this account was the center account, we should also clear centerAccountId
       if (group?.centerAccountId === accountId) {
         await apiRequest("PATCH", `/api/groups/${groupId}`, {
@@ -193,8 +185,8 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
 
   const handleLinkSelect = (accountId: string) => {
     linkAccountMutation.mutate(accountId);
-    setIsLinkOpen(false);
-    setLinkSearchQuery("");
+    setIsAddOpen(false);
+    setSearchQuery("");
   };
 
   const handleSetCenter = (accountId: string, isCenter: boolean) => {
@@ -206,28 +198,39 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
     (sa) => sa.groupId !== groupId
   );
 
+  // Sort so Center Account is always first, followed by alphabetical Aux accounts
+  const sortedAccounts = [...groupAccounts].sort((a, b) => {
+    if (a.id === group?.centerAccountId) return -1;
+    if (b.id === group?.centerAccountId) return 1;
+    return a.username.localeCompare(b.username);
+  });
+
   return (
     <div className="p-6 h-full flex flex-col">
-      <div className="flex items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => setIsAddOpen(true)}
-            size="sm"
-            data-testid="button-add-group-social-account"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Add Social Account
-          </Button>
-          <Button
-            onClick={() => setIsLinkOpen(true)}
-            variant="outline"
-            size="sm"
-            data-testid="button-link-group-social-account"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Link Existing
-          </Button>
+      {/* Informational Header on Center Account vs Aux Accounts */}
+      <div className="mb-6 p-4 rounded-lg bg-primary/5 border border-primary/15 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 mt-0.5 sm:mt-0">
+            <Star className="h-4 w-4 fill-current" />
+          </div>
+          <div>
+            <h4 className="text-sm font-medium text-foreground">Group Social Accounts</h4>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Add as many accounts as you want. <strong>1 account is designated as the Center Account</strong> (used as the focal point for Crowd calculations), while all other accounts serve as <strong>Auxiliary (Aux) Accounts</strong>.
+            </p>
+          </div>
         </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 mb-6">
+        <Button
+          onClick={() => setIsAddOpen(true)}
+          size="sm"
+          data-testid="button-add-group-social-account"
+        >
+          <Plus className="h-4 w-4 mr-2" />
+          Add Social Account
+        </Button>
       </div>
 
       {isLoading ? (
@@ -236,9 +239,9 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
             <Card key={n} className="p-4 h-32 animate-pulse bg-muted/40" />
           ))}
         </div>
-      ) : groupAccounts.length > 0 ? (
+      ) : sortedAccounts.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {groupAccounts.map((account) => {
+          {sortedAccounts.map((account) => {
             const isCenter = group?.centerAccountId === account.id;
             const accountType = account.typeId
               ? socialAccountTypes.find((t) => t.id === account.typeId)
@@ -247,7 +250,7 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
               <Card
                 key={account.id}
                 className={`p-5 hover-elevate transition-all border flex flex-col justify-between h-44 relative ${
-                  isCenter ? "border-primary/55 ring-1 ring-primary/20" : ""
+                  isCenter ? "border-amber-500/50 bg-amber-500/5 ring-1 ring-amber-500/20" : ""
                 }`}
                 data-testid={`card-group-social-account-${account.id}`}
               >
@@ -267,9 +270,14 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
                       >
                         @{account.username}
                       </span>
-                      {isCenter && (
-                        <Badge variant="default" className="text-[10px] py-0 px-1.5 shrink-0 bg-primary/90">
+                      {isCenter ? (
+                        <Badge className="text-[10px] py-0 px-1.5 shrink-0 bg-amber-500 hover:bg-amber-600 text-white font-medium flex items-center gap-1">
+                          <Star className="h-2.5 w-2.5 fill-current" />
                           Center
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px] py-0 px-1.5 shrink-0 text-muted-foreground font-normal">
+                          Aux
                         </Badge>
                       )}
                     </div>
@@ -305,7 +313,7 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
                     variant="ghost"
                     size="sm"
                     className={`h-8 px-2.5 text-xs ${
-                      isCenter ? "text-primary hover:text-primary/80" : "text-muted-foreground"
+                      isCenter ? "text-amber-600 dark:text-amber-400 hover:bg-amber-500/10" : "text-muted-foreground hover:text-amber-500"
                     }`}
                     onClick={() => handleSetCenter(account.id, isCenter)}
                     title={isCenter ? "Remove as center account" : "Set as center account"}
@@ -314,7 +322,7 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
                     {isCenter ? (
                       <>
                         <Star className="h-3.5 w-3.5 mr-1.5 fill-current" />
-                        Center
+                        Center Account
                       </>
                     ) : (
                       <>
@@ -360,36 +368,26 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
           <p className="text-sm text-muted-foreground text-center max-w-sm mb-6">
             Associate social media accounts with this group to calculate crowds and visualize networks.
           </p>
-          <div className="flex gap-2">
-            <Button onClick={() => setIsAddOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Social Account
-            </Button>
-            <Button variant="outline" onClick={() => setIsLinkOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              Link Existing
-            </Button>
-          </div>
+          <Button onClick={() => setIsAddOpen(true)} data-testid="button-add-group-social-account-empty">
+            <Plus className="h-4 w-4 mr-2" />
+            Add Social Account
+          </Button>
         </Card>
       )}
 
-      {/* Dialog for adding/creating a new social account */}
-      <SocialAccountDialog
-        open={isAddOpen}
-        onOpenChange={setIsAddOpen}
-        groupId={groupId}
-        onAccountCreated={() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId, "social-accounts"] });
+      {/* Dialog for adding an existing social account via search */}
+      <Dialog 
+        open={isAddOpen} 
+        onOpenChange={(open) => {
+          setIsAddOpen(open);
+          if (!open) setSearchQuery("");
         }}
-      />
-
-      {/* Dialog for linking an existing social account */}
-      <Dialog open={isLinkOpen} onOpenChange={setIsLinkOpen}>
+      >
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
-            <DialogTitle>Link Existing Social Account</DialogTitle>
+            <DialogTitle>Add Social Account</DialogTitle>
             <DialogDescription>
-              Search for an existing social account to link it to this group.
+              Search for a social account to add to this group.
             </DialogDescription>
           </DialogHeader>
 
@@ -398,14 +396,15 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
             <Input
               placeholder="Search by username..."
               className="pl-9"
-              value={linkSearchQuery}
-              onChange={(e) => setLinkSearchQuery(e.target.value)}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               data-testid="input-search-link-candidates"
+              autoFocus
             />
           </div>
 
           <ScrollArea className="h-60 border rounded-md p-2">
-            {linkSearchQuery.trim().length < 2 ? (
+            {searchQuery.trim().length < 2 ? (
               <div className="h-full flex items-center justify-center text-sm text-muted-foreground py-10">
                 Type at least 2 characters to search...
               </div>
@@ -465,7 +464,7 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
           </ScrollArea>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsLinkOpen(false)}>
+            <Button variant="outline" onClick={() => setIsAddOpen(false)}>
               Cancel
             </Button>
           </DialogFooter>

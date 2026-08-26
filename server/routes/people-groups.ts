@@ -1378,6 +1378,65 @@ export function registerRoutes(app: Express) {
 
         const F_center = new Set(await storage.getFollowerIds(group.centerAccountId));
 
+        const crowdMode = group.crowdMode || "social_accounts";
+
+        if (crowdMode === "social_accounts") {
+          const accounts = await storage.getSocialAccountsByIds(crowdMembers);
+          if (accounts.length === 0) {
+            return res.json([]);
+          }
+
+          const memberSaIds = accounts.map(a => a.id);
+          const followingMap = new Map<string, Set<string>>();
+          const groupFollows = await db
+            .select({ followerId: socialFollows.followerId, followedId: socialFollows.followedId })
+            .from(socialFollows)
+            .where(inArray(socialFollows.followerId, memberSaIds));
+          for (const edge of groupFollows) {
+            let followed = followingMap.get(edge.followerId);
+            if (!followed) { followed = new Set(); followingMap.set(edge.followerId, followed); }
+            followed.add(edge.followedId);
+          }
+
+          // Fetch owner people if linked
+          const ownerIds = accounts.map(a => a.ownerUuid).filter(Boolean) as string[];
+          const ownerPeopleMap = new Map<string, { id: string; firstName: string; lastName: string }>();
+          if (ownerIds.length > 0) {
+            const ownerPeople = await db.select().from(people).where(inArray(people.id, ownerIds));
+            for (const op of ownerPeople) {
+              ownerPeopleMap.set(op.id, { id: op.id, firstName: op.firstName, lastName: op.lastName });
+            }
+          }
+
+          const results = accounts.map(a => {
+            const followed = followingMap.get(a.id) || new Set<string>();
+            let intersectionCount = 0;
+            for (const f of F_center) {
+              if (followed.has(f)) {
+                intersectionCount++;
+              }
+            }
+
+            const owner = a.ownerUuid ? ownerPeopleMap.get(a.ownerUuid) : null;
+
+            return {
+              id: a.id,
+              entityType: "social_account" as const,
+              username: a.username,
+              platform: a.typeId || "Instagram",
+              nickname: a.currentProfile?.nickname || null,
+              imageUrl: a.currentProfile?.imageUrl || null,
+              connectionStrength: intersectionCount,
+              ownerPersonId: owner ? owner.id : null,
+              ownerPersonName: owner ? `${owner.firstName} ${owner.lastName}` : null
+            };
+          });
+
+          results.sort((a, b) => b.connectionStrength - a.connectionStrength);
+          return res.json(results);
+        }
+
+        // Mode: person_profiles (legacy)
         const peopleList = await db.select().from(people).where(inArray(people.id, crowdMembers));
         const allSocialAccounts = await db.select().from(socialAccounts).where(inArray(socialAccounts.ownerUuid, crowdMembers));
         const memberSaIds = allSocialAccounts.map(sa => sa.id);
@@ -1425,6 +1484,7 @@ export function registerRoutes(app: Express) {
 
           return {
             id: p.id,
+            entityType: "person" as const,
             firstName: p.firstName,
             lastName: p.lastName,
             imageUrl: p.imageUrl,

@@ -262,6 +262,9 @@ export default function GroupProfile() {
               groupId={group.id}
               centerAccountId={group.centerAccountId || null}
               crowdLastCalculatedAt={group.crowdLastCalculatedAt ? new Date(group.crowdLastCalculatedAt).toISOString() : null}
+              crowdMode={group.crowdMode || "social_accounts"}
+              crowdFollowThreshold={group.crowdFollowThreshold ?? 5}
+              onNavigateToSocialTab={() => setActiveTab("social")}
             />
           </TabsContent>
         </div>

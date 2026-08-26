@@ -110,12 +110,27 @@ export default function PersonGraphView({
   const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(
     () => initParams.get("highlightGroup") || initParams.get("groupId")
   );
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (highlightedGroupId) {
+      params.set("highlightGroup", highlightedGroupId);
+    } else {
+      params.delete("highlightGroup");
+      params.delete("groupId");
+    }
+    const newQs = params.toString();
+    const newUrl = `${window.location.pathname}${newQs ? `?${newQs}` : ""}`;
+    if (window.location.pathname + window.location.search !== newUrl) {
+      window.history.replaceState(null, "", newUrl);
+    }
+  }, [highlightedGroupId]);
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [showCrowds, setShowCrowds] = useState(true);
-  const [minFollowIntersection, setMinFollowIntersection] = useState(5);
   const [crowdColorScheme, setCrowdColorScheme] = useState<"pastel" | "emerald" | "amber" | "sky">("pastel");
-  const crowdSphereMeshRef = useRef<THREE.Mesh | null>(null);
+  const [crowdSphereOpacity, setCrowdSphereOpacity] = useState(0.15);
+  const crowdSphereMeshesMapRef = useRef<Map<string, THREE.Mesh>>(new Map());
 
   const { data: graphData } = useQuery<PersonGraphData>({
     queryKey: ["/api/social-graph", "person"],
@@ -152,10 +167,18 @@ export default function PersonGraphView({
     if (!graphRef.current) return;
     if (!people.length) return;
 
-    const group = highlightedGroupId ? groups.find((g) => g.id === highlightedGroupId) : null;
-    const centerOwnerId = group?.centerAccountId
-      ? allPeople.find(p => p.socialAccountBriefs?.some(sa => sa.id === group.centerAccountId))?.id
-      : null;
+    const isAllCrowds = highlightedGroupId === "all";
+    const activeGroups = isAllCrowds
+      ? groups
+      : (highlightedGroupId ? groups.filter((g) => g.id === highlightedGroupId) : []);
+
+    const centerOwnerIds = new Set<string>();
+    activeGroups.forEach((g) => {
+      if (g.centerAccountId) {
+        const ownerId = allPeople.find((p) => p.socialAccountBriefs?.some((sa) => sa.id === g.centerAccountId))?.id;
+        if (ownerId) centerOwnerIds.add(ownerId);
+      }
+    });
 
     const crowdColorMap = {
       pastel: "#a7f3d0",
@@ -167,18 +190,26 @@ export default function PersonGraphView({
 
     let nodes: GraphNode[] = [
       ...people.map((p) => {
-        const isCenter = p.id === centerOwnerId;
-        const isCrowd = group?.crowdMembers?.includes(p.id) || false;
-        const isMember = group?.members?.includes(p.id) || false;
+        const isCenter = centerOwnerIds.has(p.id);
+        const matchingMemberGroup = activeGroups.find((g) => g.members?.includes(p.id));
+        const isMember = !!matchingMemberGroup;
+
+        const matchingCrowdGroup = activeGroups.find((g) => {
+          const isPersonMode = g.crowdMode === "person_profiles";
+          return isPersonMode
+            ? (g.crowdMembers?.includes(p.id) || false)
+            : (p.socialAccountBriefs?.some((sa) => g.crowdMembers?.includes(sa.id)) || false);
+        });
+        const isCrowd = !!matchingCrowdGroup;
 
         let color = p.id === selectedPersonId ? "#ef4444" : "#6366f1";
-        if (highlightedGroupId && group) {
+        if (activeGroups.length > 0) {
           if (isMember) {
-            color = group.color || "#8b5cf6";
+            color = matchingMemberGroup?.color || "#8b5cf6";
           } else if (isCenter) {
             color = "#ec4899";
           } else if (isCrowd && showCrowds) {
-            color = crowdColor;
+            color = isAllCrowds ? (matchingCrowdGroup?.color || crowdColor) : crowdColor;
           }
         }
 
@@ -219,7 +250,7 @@ export default function PersonGraphView({
 
     if (showGroups) {
       groups.forEach((g) => {
-        const isHighlight = highlightedGroupId === g.id;
+        const isHighlight = isAllCrowds || highlightedGroupId === g.id;
         
         g.members.forEach((memberId) => {
           if (people.some((p) => p.id === memberId)) {
@@ -233,16 +264,32 @@ export default function PersonGraphView({
         });
 
         if (isHighlight && showCrowds && g.crowdMembers) {
-          g.crowdMembers.forEach((crowdId) => {
-            if (people.some((p) => p.id === crowdId)) {
-              links.push({
-                source: `group-${g.id}`,
-                target: crowdId,
-                type: "group-member" as const,
-                color: crowdColor,
-              });
-            }
-          });
+          const isPersonMode = g.crowdMode === "person_profiles";
+          const linkColor = isAllCrowds ? (g.color || crowdColor) : crowdColor;
+          if (isPersonMode) {
+            g.crowdMembers.forEach((crowdId) => {
+              if (people.some((p) => p.id === crowdId)) {
+                links.push({
+                  source: `group-${g.id}`,
+                  target: crowdId,
+                  type: "group-member" as const,
+                  color: linkColor,
+                });
+              }
+            });
+          } else {
+            people.forEach((p) => {
+              const hasLinkedCrowdAccount = p.socialAccountBriefs?.some((sa) => g.crowdMembers?.includes(sa.id));
+              if (hasLinkedCrowdAccount) {
+                links.push({
+                  source: `group-${g.id}`,
+                  target: p.id,
+                  type: "group-member" as const,
+                  color: linkColor,
+                });
+              }
+            });
+          }
         }
       });
     }
@@ -285,29 +332,55 @@ export default function PersonGraphView({
       });
     }
 
-    if (highlightedGroupId && !highlightedPersonId && group) {
-      const memberIds = new Set<string>(group.members);
-      const crowdIds = new Set<string>(group.crowdMembers || []);
-      const groupNodeId = `group-${group.id}`;
-
-      nodes = nodes.filter((node) => {
-        if (node.type === "group") return node.id === groupNodeId;
-        return memberIds.has(node.id) || (crowdIds.has(node.id) && showCrowds) || node.id === centerOwnerId;
-      });
-
-      links = links.filter((link) => {
-        const sourceId = getLinkEndpointId(link.source);
-        const targetId = getLinkEndpointId(link.target);
-
-        if (link.type === "group-member") {
-          return sourceId === groupNodeId && (memberIds.has(targetId) || (crowdIds.has(targetId) && showCrowds));
+    if (highlightedGroupId && highlightedGroupId !== "all" && !highlightedPersonId) {
+      const group = groups.find((g) => g.id === highlightedGroupId);
+      if (group) {
+        const centerOwnerId = group.centerAccountId
+          ? allPeople.find(p => p.socialAccountBriefs?.some(sa => sa.id === group.centerAccountId))?.id
+          : null;
+        const memberIds = new Set<string>(group.members);
+        const isPersonMode = group.crowdMode === "person_profiles";
+        const crowdPersonIds = new Set<string>();
+        if (group.crowdMembers) {
+          if (isPersonMode) {
+            group.crowdMembers.forEach((id) => crowdPersonIds.add(id));
+          } else {
+            people.forEach((p) => {
+              if (p.socialAccountBriefs?.some((sa) => group.crowdMembers?.includes(sa.id))) {
+                crowdPersonIds.add(p.id);
+              }
+            });
+          }
         }
-        return (memberIds.has(sourceId) || (crowdIds.has(sourceId) && showCrowds) || sourceId === centerOwnerId) &&
-               (memberIds.has(targetId) || (crowdIds.has(targetId) && showCrowds) || targetId === centerOwnerId);
-      });
+        const crowdIds = crowdPersonIds;
+        const groupNodeId = `group-${group.id}`;
+
+        nodes = nodes.filter((node) => {
+          if (node.type === "group") return node.id === groupNodeId;
+          return memberIds.has(node.id) || (crowdIds.has(node.id) && showCrowds) || node.id === centerOwnerId;
+        });
+
+        links = links.filter((link) => {
+          const sourceId = getLinkEndpointId(link.source);
+          const targetId = getLinkEndpointId(link.target);
+
+          if (link.type === "group-member") {
+            return sourceId === groupNodeId && (memberIds.has(targetId) || (crowdIds.has(targetId) && showCrowds));
+          }
+          return (memberIds.has(sourceId) || (crowdIds.has(sourceId) && showCrowds) || sourceId === centerOwnerId) &&
+                 (memberIds.has(targetId) || (crowdIds.has(targetId) && showCrowds) || targetId === centerOwnerId);
+        });
+      }
     }
 
-    const gData = { nodes, links };
+    const validNodeIds = new Set(nodes.map((n) => n.id));
+    const validLinks = links.filter((link) => {
+      const sourceId = getLinkEndpointId(link.source);
+      const targetId = getLinkEndpointId(link.target);
+      return validNodeIds.has(sourceId) && validNodeIds.has(targetId);
+    });
+
+    const gData = { nodes, links: validLinks };
 
     const styles = getComputedStyle(document.documentElement);
     const backgroundHSL = styles.getPropertyValue("--background").trim();
@@ -316,63 +389,93 @@ export default function PersonGraphView({
 
     const updateBoundingSphere = () => {
       const fg = fgRef.current;
-      const crowdMembers = group?.crowdMembers;
-      if (!fg || !showCrowds || !group || !crowdMembers || crowdMembers.length === 0) {
-        if (crowdSphereMeshRef.current && fg) {
-          fg.scene().remove(crowdSphereMeshRef.current);
-          crowdSphereMeshRef.current = null;
-        }
+      if (!fg || !showCrowds || activeGroups.length === 0) {
+        crowdSphereMeshesMapRef.current.forEach((mesh) => {
+          if (fg) fg.scene().remove(mesh);
+        });
+        crowdSphereMeshesMapRef.current.clear();
         return;
       }
 
       const graphNodes = fg.graphData().nodes as any[];
-      const crowdNodes = graphNodes.filter(n => crowdMembers.includes(n.id) && n.x !== undefined);
+      const activeGroupIds = new Set(activeGroups.map((g) => g.id));
 
-      if (crowdNodes.length === 0) {
-        if (crowdSphereMeshRef.current) {
-          fg.scene().remove(crowdSphereMeshRef.current);
-          crowdSphereMeshRef.current = null;
+      // Remove meshes for inactive groups
+      crowdSphereMeshesMapRef.current.forEach((mesh, gId) => {
+        if (!activeGroupIds.has(gId)) {
+          fg.scene().remove(mesh);
+          crowdSphereMeshesMapRef.current.delete(gId);
         }
-        return;
-      }
-
-      let sumX = 0, sumY = 0, sumZ = 0;
-      for (const n of crowdNodes) {
-        sumX += n.x;
-        sumY += n.y;
-        sumZ += n.z;
-      }
-      const centroidX = sumX / crowdNodes.length;
-      const centroidY = sumY / crowdNodes.length;
-      const centroidZ = sumZ / crowdNodes.length;
-
-      const distances = crowdNodes.map(n => {
-        const dx = n.x - centroidX;
-        const dy = n.y - centroidY;
-        const dz = n.z - centroidZ;
-        return Math.sqrt(dx*dx + dy*dy + dz*dz);
       });
-      distances.sort((a, b) => a - b);
-      const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
-      const radius = Math.max(15, distances[percentileIndex] || 15);
 
-      if (!crowdSphereMeshRef.current) {
-        const geom = new THREE.SphereGeometry(1, 32, 32);
-        const mat = new THREE.MeshBasicMaterial({
-          color: crowdColor,
-          transparent: true,
-          opacity: 0.15,
-          wireframe: true,
+      activeGroups.forEach((g) => {
+        const crowdMembers = g.crowdMembers;
+        if (!crowdMembers || crowdMembers.length === 0) {
+          const existing = crowdSphereMeshesMapRef.current.get(g.id);
+          if (existing) {
+            fg.scene().remove(existing);
+            crowdSphereMeshesMapRef.current.delete(g.id);
+          }
+          return;
+        }
+
+        const isPersonMode = g.crowdMode === "person_profiles";
+        const crowdNodes = graphNodes.filter((n) => {
+          if (!n || typeof n.x !== "number" || typeof n.y !== "number" || typeof n.z !== "number") return false;
+          if (isPersonMode) return crowdMembers.includes(n.id);
+          const person = people.find((p) => p.id === n.id);
+          return person?.socialAccountBriefs?.some((sa) => crowdMembers.includes(sa.id));
         });
-        const mesh = new THREE.Mesh(geom, mat);
-        fg.scene().add(mesh);
-        crowdSphereMeshRef.current = mesh;
-      }
 
-      const mesh = crowdSphereMeshRef.current;
-      mesh.position.set(centroidX, centroidY, centroidZ);
-      mesh.scale.set(radius, radius, radius);
-      (mesh.material as THREE.MeshBasicMaterial).color.set(crowdColor);
+        if (crowdNodes.length === 0) {
+          const existing = crowdSphereMeshesMapRef.current.get(g.id);
+          if (existing) {
+            fg.scene().remove(existing);
+            crowdSphereMeshesMapRef.current.delete(g.id);
+          }
+          return;
+        }
+
+        let sumX = 0, sumY = 0, sumZ = 0;
+        for (const n of crowdNodes) {
+          sumX += n.x;
+          sumY += n.y;
+          sumZ += n.z;
+        }
+        const centroidX = sumX / crowdNodes.length;
+        const centroidY = sumY / crowdNodes.length;
+        const centroidZ = sumZ / crowdNodes.length;
+
+        const distances = crowdNodes.map((n) => {
+          const dx = n.x - centroidX;
+          const dy = n.y - centroidY;
+          const dz = n.z - centroidZ;
+          return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        });
+        distances.sort((a, b) => a - b);
+        const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
+        const radius = Math.max(15, distances[percentileIndex] || 15);
+        const sphereColor = isAllCrowds ? (g.color || crowdColor) : crowdColor;
+
+        let mesh = crowdSphereMeshesMapRef.current.get(g.id);
+        if (!mesh) {
+          const geom = new THREE.SphereGeometry(1, 32, 32);
+          const mat = new THREE.MeshBasicMaterial({
+            color: sphereColor,
+            transparent: true,
+            opacity: crowdSphereOpacity,
+            wireframe: true,
+          });
+          mesh = new THREE.Mesh(geom, mat);
+          fg.scene().add(mesh);
+          crowdSphereMeshesMapRef.current.set(g.id, mesh);
+        }
+
+        mesh.position.set(centroidX, centroidY, centroidZ);
+        mesh.scale.set(radius, radius, radius);
+        (mesh.material as THREE.MeshBasicMaterial).color.set(sphereColor);
+        (mesh.material as THREE.MeshBasicMaterial).opacity = crowdSphereOpacity;
+      });
     };
 
     if (!fgRef.current) {
@@ -389,6 +492,7 @@ export default function PersonGraphView({
         .backgroundColor(bgColor)
         .nodeLabel("name")
         .nodeThreeObject((node: any) => {
+          if (!node) return new THREE.Object3D();
           if (node.isCenter) {
             const groupMesh = new THREE.Group();
             const sphereMat = new THREE.MeshBasicMaterial({
@@ -451,10 +555,10 @@ export default function PersonGraphView({
 
     return () => {
       if (fgRef.current) {
-        if (crowdSphereMeshRef.current) {
-          fgRef.current.scene().remove(crowdSphereMeshRef.current);
-          crowdSphereMeshRef.current = null;
-        }
+        crowdSphereMeshesMapRef.current.forEach((mesh) => {
+          fgRef.current?.scene().remove(mesh);
+        });
+        crowdSphereMeshesMapRef.current.clear();
         fgRef.current._destructor();
         fgRef.current = null;
       }
@@ -473,7 +577,16 @@ export default function PersonGraphView({
     setSelectedPersonId,
     showCrowds,
     crowdColorScheme,
+    crowdSphereOpacity,
   ]);
+
+  useEffect(() => {
+    crowdSphereMeshesMapRef.current.forEach((mesh) => {
+      if (mesh.material) {
+        (mesh.material as THREE.MeshBasicMaterial).opacity = crowdSphereOpacity;
+      }
+    });
+  }, [crowdSphereOpacity]);
 
   // Re-center camera on the currently selected person whenever it changes
   // (e.g. via cross-view chip navigation, URL deep-links, or popstate).
@@ -486,14 +599,14 @@ export default function PersonGraphView({
     const tryFocus = () => {
       if (cancelled || !fgRef.current) return;
       const nodes = fgRef.current.graphData().nodes;
-      const target = nodes.find((n) => n.id === selectedPersonId);
-      if (!target || typeof target.x !== 'number' || typeof target.y !== 'number') {
+      const target = nodes.find((n) => n && n.id === selectedPersonId);
+      if (!target || typeof target.x !== 'number' || typeof target.y !== 'number' || typeof target.z !== 'number' || Number.isNaN(target.x) || Number.isNaN(target.y) || Number.isNaN(target.z)) {
         if (attempts++ < 30) setTimeout(tryFocus, 100);
         return;
       }
       const tx = target.x;
       const ty = target.y;
-      const tz = target.z ?? 0;
+      const tz = target.z;
       const dist = 220;
       const distRatio = 1 + dist / Math.hypot(tx, ty, tz || 0.001);
       fgRef.current.cameraPosition(
@@ -766,6 +879,73 @@ export default function PersonGraphView({
                   <Users className="w-3.5 h-3.5" />
                   Crowds Settings
                 </h4>
+                <div className="space-y-2">
+                  <Label htmlFor="person-crowd-group-select" className="text-xs">Active Group</Label>
+                  <Select
+                    value={highlightedGroupId || "none"}
+                    onValueChange={(val) => setHighlightedGroupId(val === "none" ? null : val)}
+                  >
+                    <SelectTrigger id="person-crowd-group-select" className="h-8" data-testid="select-crowd-group">
+                      <SelectValue placeholder="Select group to visualize crowd..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No group (Crowds inactive)</SelectItem>
+                      <SelectItem value="all" className="font-semibold text-primary">All Groups (Show all crowds)</SelectItem>
+                      {groups.map((g) => (
+                        <SelectItem key={g.id} value={g.id}>
+                          {g.name} {g.crowdMembers && g.crowdMembers.length > 0 ? `(${g.crowdMembers.length} in crowd)` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {highlightedGroupId === "all" ? (() => {
+                  const groupsWithCrowds = groups.filter((g) => g.crowdMembers && g.crowdMembers.length > 0);
+                  const totalCrowdMembers = groupsWithCrowds.reduce((sum, g) => sum + (g.crowdMembers?.length || 0), 0);
+                  return (
+                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                      <span>Active crowds: <strong>{groupsWithCrowds.length} groups</strong></span>
+                      <span>Total members: <strong>{totalCrowdMembers}</strong></span>
+                    </div>
+                  );
+                })() : highlightedGroupId ? (() => {
+                  const selectedGroup = groups.find((g) => g.id === highlightedGroupId);
+                  if (!selectedGroup) return null;
+                  if (!selectedGroup.centerAccountId) {
+                    return (
+                      <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 p-2 rounded">
+                        This group has no Center Account configured.
+                      </div>
+                    );
+                  }
+                  if (!selectedGroup.crowdMembers || selectedGroup.crowdMembers.length === 0) {
+                    return (
+                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex flex-col gap-1">
+                        <span>No crowd members found for this group.</span>
+                        <a
+                          href={`/group/${selectedGroup.id}`}
+                          className="text-primary hover:underline font-medium inline-block"
+                        >
+                          Configure or calculate on group page &rarr;
+                        </a>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                      <span>Crowd members: <strong>{selectedGroup.crowdMembers.length}</strong></span>
+                      {selectedGroup.crowdLastCalculatedAt && (
+                        <span>{new Date(selectedGroup.crowdLastCalculatedAt).toLocaleDateString()}</span>
+                      )}
+                    </div>
+                  );
+                })() : (
+                  <p className="text-xs text-muted-foreground">
+                    Select a group or &quot;All Groups&quot; to display crowd members and 3D bounding clouds.
+                  </p>
+                )}
+
                 <div className="flex items-center justify-between">
                   <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
                   <Switch
@@ -777,20 +957,6 @@ export default function PersonGraphView({
                 </div>
                 {showCrowds && (
                   <>
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-xs">
-                        <Label>Min Follows</Label>
-                        <span className="font-mono">{minFollowIntersection}</span>
-                      </div>
-                      <Slider
-                        min={1}
-                        max={15}
-                        step={1}
-                        value={[minFollowIntersection]}
-                        onValueChange={(val) => setMinFollowIntersection(val[0])}
-                        data-testid="slider-min-follow"
-                      />
-                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
                       <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
@@ -804,6 +970,20 @@ export default function PersonGraphView({
                           <SelectItem value="sky">Sky Blue</SelectItem>
                         </SelectContent>
                       </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs">
+                        <Label>Crowd Sphere Opacity</Label>
+                        <span className="font-mono">{Math.round(crowdSphereOpacity * 100)}%</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={[Math.round(crowdSphereOpacity * 100)]}
+                        onValueChange={(val) => setCrowdSphereOpacity(val[0] / 100)}
+                        data-testid="slider-crowd-sphere-opacity"
+                      />
                     </div>
                   </>
                 )}

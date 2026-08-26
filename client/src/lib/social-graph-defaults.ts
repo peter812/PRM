@@ -42,6 +42,12 @@ export interface SocialGraphDefaults {
   multiFollowsAllColor: string;
   multiFollowsOneColor: string;
 
+  // Animation
+  autoRotate: boolean;
+
+  // Crowd settings
+  crowdSphereOpacity: number;
+
   // Blob mode
   blobMergeMultiplier: number;
   blobForceMultiplier: number;
@@ -54,6 +60,8 @@ export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
   minConnections: 3,
   limitExtras: true,
   maxExtras: 20,
+
+  autoRotate: false,
 
   colorScheme: 'type',
   colorSchemeAccountId: null,
@@ -77,6 +85,8 @@ export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
   multiHighlightColor: '#ef4444',
   multiFollowsAllColor: '#ffffff',
   multiFollowsOneColor: '#eab308',
+
+  crowdSphereOpacity: 0.15,
 
   blobMergeMultiplier: 0.5,
   blobForceMultiplier: 2,

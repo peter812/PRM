@@ -339,6 +339,34 @@ export default function SocialGraphSettingsPage() {
             <ColorField id="link-mutual" label="Mutual link" value={settings.linkMutualColor} onChange={(v) => update('linkMutualColor', v)} />
             <ColorField id="link-default" label="Default link" value={settings.linkDefaultColor} onChange={(v) => update('linkDefaultColor', v)} />
           </div>
+
+          <div className="space-y-2 pt-2 border-t">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="crowd-sphere-opacity">Crowd sphere opacity</Label>
+              <span className="text-sm font-medium" data-testid="text-crowd-sphere-opacity-value">
+                {Math.round((settings.crowdSphereOpacity ?? 0.15) * 100)}%
+              </span>
+            </div>
+            <Slider
+              id="crowd-sphere-opacity"
+              value={[Math.round((settings.crowdSphereOpacity ?? 0.15) * 100)]}
+              min={0}
+              max={100}
+              step={1}
+              onValueChange={(v) => update('crowdSphereOpacity', v[0] / 100)}
+              data-testid="slider-crowd-sphere-opacity"
+            />
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t">
+            <Label htmlFor="auto-rotate">Auto rotate</Label>
+            <Switch
+              id="auto-rotate"
+              checked={settings.autoRotate}
+              onCheckedChange={(v) => update('autoRotate', v)}
+              data-testid="switch-auto-rotate"
+            />
+          </div>
         </CardContent>
       </Card>
 

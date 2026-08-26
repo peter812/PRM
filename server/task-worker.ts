@@ -14,6 +14,7 @@ import os from "os";
 import crypto from "crypto";
 import { eq, and, isNotNull } from "drizzle-orm";
 import Papa from "papaparse";
+import { sseManager } from "./middleware/sse";
 
 interface MessageMetadata {
   reactions?: any[];
@@ -2459,10 +2460,6 @@ export async function processImportSocial(
     throw new Error(`Pending social account import ${pendingImportId} not found`);
   }
 
-  if (record.alreadyAdded) {
-    return JSON.stringify({ alreadyAdded: true, accountUsername: record.accountUsername });
-  }
-
   const userId = actingUserId() || 1;
   const instagramType = await storage.getSocialAccountTypeByName("instagram");
   const typeId = instagramType?.id || null;
@@ -2605,6 +2602,8 @@ export async function processImportSocial(
 
   await storage.updateTaskProgress(taskId, 95, "Finalizing import...");
   await storage.markPendingImportAsImported(record.id);
+
+  sseManager.broadcast("social_account.updated", { id: mainAccount.id });
 
   triggerImageTaskWorker();
 
@@ -2862,36 +2861,24 @@ async function processCalculateCrowd(taskId: string, payload: { groupId: string 
     throw new Error("No center account associated with this group.");
   }
 
+  const crowdMode = group.crowdMode || "social_accounts";
+  const threshold = typeof group.crowdFollowThreshold === "number" ? group.crowdFollowThreshold : 5;
+
   await storage.updateTaskProgress(taskId, 20, "Fetching center account followers...");
   const F_center = new Set(await storage.getFollowerIds(group.centerAccountId));
 
   if (F_center.size === 0) {
     await storage.updateGroup(groupId, { crowdMembers: [], crowdLastCalculatedAt: new Date() });
     return JSON.stringify({
+      accountsCheckedCount: 0,
       peopleCheckedCount: 0,
       crowdMembersFound: 0,
       message: "Center account has no followers. Crowd is empty."
     });
   }
 
-  await storage.updateTaskProgress(taskId, 30, "Retrieving all people and social connections...");
-  const allPeople = await storage.getAllPeople();
   const allSocialAccounts = await db.select().from(socialAccounts);
   const allFollows = await storage.getAllFollows();
-
-  // Map each person to their social account IDs
-  const personSocialAccountsMap = new Map<string, Set<string>>();
-  for (const p of allPeople) {
-    personSocialAccountsMap.set(p.id, new Set(p.socialAccountUuids || []));
-  }
-  for (const sa of allSocialAccounts) {
-    if (sa.ownerUuid) {
-      if (!personSocialAccountsMap.has(sa.ownerUuid)) {
-        personSocialAccountsMap.set(sa.ownerUuid, new Set());
-      }
-      personSocialAccountsMap.get(sa.ownerUuid)!.add(sa.id);
-    }
-  }
 
   // Map each social account ID to their followed accounts
   const followingMap = new Map<string, Set<string>>();
@@ -2901,54 +2888,117 @@ async function processCalculateCrowd(taskId: string, payload: { groupId: string 
     followed.add(edge.followedId);
   }
 
-  await storage.updateTaskProgress(taskId, 40, "Scanning follower networks...");
-  const crowdPersonIds: string[] = [];
-  const totalPeople = allPeople.length;
+  if (crowdMode === "social_accounts") {
+    // Mode: Social Account Only (New Feature)
+    await storage.updateTaskProgress(taskId, 35, "Scanning social account followers...");
+    const candidateAccounts = allSocialAccounts.filter(sa => sa.id !== group.centerAccountId);
+    const totalAccounts = candidateAccounts.length;
+    const crowdAccountIds: string[] = [];
 
-  for (let i = 0; i < totalPeople; i++) {
-    const person = allPeople[i];
-    const S_P = personSocialAccountsMap.get(person.id) || new Set<string>();
-    
-    // Union of all accounts followed by person P
-    const Following_P = new Set<string>();
-    for (const saId of S_P) {
-      const followed = followingMap.get(saId);
-      if (followed) {
-        for (const f of followed) {
-          Following_P.add(f);
+    for (let i = 0; i < totalAccounts; i++) {
+      const sa = candidateAccounts[i];
+      const followed = followingMap.get(sa.id) || new Set<string>();
+
+      let intersectionCount = 0;
+      for (const f of F_center) {
+        if (followed.has(f)) {
+          intersectionCount++;
         }
       }
-    }
 
-    // Intersection with center account followers
-    let intersectionCount = 0;
-    for (const f of F_center) {
-      if (Following_P.has(f)) {
-        intersectionCount++;
+      if (intersectionCount >= threshold) {
+        crowdAccountIds.push(sa.id);
+      }
+
+      if (totalAccounts > 10 && i % Math.ceil(totalAccounts / 10) === 0) {
+        const progressPercent = 35 + Math.round((i / totalAccounts) * 55);
+        await storage.updateTaskProgress(taskId, progressPercent, `Scanning social accounts: processed ${i}/${totalAccounts}...`);
       }
     }
 
-    if (intersectionCount > 5) {
-      crowdPersonIds.push(person.id);
+    await storage.updateTaskProgress(taskId, 95, "Updating group crowd list...");
+    await storage.updateGroup(groupId, {
+      crowdMembers: crowdAccountIds,
+      crowdLastCalculatedAt: new Date()
+    });
+
+    return JSON.stringify({
+      accountsCheckedCount: totalAccounts,
+      crowdMembersFound: crowdAccountIds.length,
+      threshold,
+      mode: "social_accounts",
+      message: `Successfully calculated crowd (social accounts, threshold >= ${threshold}): ${crowdAccountIds.length} members found.`
+    });
+  } else {
+    // Mode: Person Profiles (Legacy)
+    await storage.updateTaskProgress(taskId, 30, "Retrieving all people and social connections...");
+    const allPeople = await storage.getAllPeople();
+
+    // Map each person to their social account IDs
+    const personSocialAccountsMap = new Map<string, Set<string>>();
+    for (const p of allPeople) {
+      personSocialAccountsMap.set(p.id, new Set(p.socialAccountUuids || []));
+    }
+    for (const sa of allSocialAccounts) {
+      if (sa.ownerUuid) {
+        if (!personSocialAccountsMap.has(sa.ownerUuid)) {
+          personSocialAccountsMap.set(sa.ownerUuid, new Set());
+        }
+        personSocialAccountsMap.get(sa.ownerUuid)!.add(sa.id);
+      }
     }
 
-    if (totalPeople > 10 && i % Math.ceil(totalPeople / 10) === 0) {
-      const progressPercent = 40 + Math.round((i / totalPeople) * 50);
-      await storage.updateTaskProgress(taskId, progressPercent, `Scanning follower networks: processed ${i}/${totalPeople} people...`);
+    await storage.updateTaskProgress(taskId, 40, "Scanning follower networks...");
+    const crowdPersonIds: string[] = [];
+    const totalPeople = allPeople.length;
+
+    for (let i = 0; i < totalPeople; i++) {
+      const person = allPeople[i];
+      const S_P = personSocialAccountsMap.get(person.id) || new Set<string>();
+      
+      // Union of all accounts followed by person P
+      const Following_P = new Set<string>();
+      for (const saId of S_P) {
+        const followed = followingMap.get(saId);
+        if (followed) {
+          for (const f of followed) {
+            Following_P.add(f);
+          }
+        }
+      }
+
+      // Intersection with center account followers
+      let intersectionCount = 0;
+      for (const f of F_center) {
+        if (Following_P.has(f)) {
+          intersectionCount++;
+        }
+      }
+
+      if (intersectionCount >= threshold) {
+        crowdPersonIds.push(person.id);
+      }
+
+      if (totalPeople > 10 && i % Math.ceil(totalPeople / 10) === 0) {
+        const progressPercent = 40 + Math.round((i / totalPeople) * 50);
+        await storage.updateTaskProgress(taskId, progressPercent, `Scanning follower networks: processed ${i}/${totalPeople} people...`);
+      }
     }
+
+    await storage.updateTaskProgress(taskId, 95, "Updating group crowd list...");
+    await storage.updateGroup(groupId, {
+      crowdMembers: crowdPersonIds,
+      crowdLastCalculatedAt: new Date()
+    });
+
+    return JSON.stringify({
+      peopleCheckedCount: totalPeople,
+      crowdMembersFound: crowdPersonIds.length,
+      threshold,
+      mode: "person_profiles",
+      message: `Successfully calculated crowd (person profiles, threshold >= ${threshold}): ${crowdPersonIds.length} members found.`
+    });
   }
-
-  await storage.updateTaskProgress(taskId, 95, "Updating group crowd list...");
-  await storage.updateGroup(groupId, {
-    crowdMembers: crowdPersonIds,
-    crowdLastCalculatedAt: new Date()
-  });
-
-  return JSON.stringify({
-    peopleCheckedCount: totalPeople,
-    crowdMembersFound: crowdPersonIds.length,
-    message: `Successfully calculated crowd for group: ${crowdPersonIds.length} members found.`
-  });
 }
 
 async function processFindPotentialGroups(taskId: string, payload: {

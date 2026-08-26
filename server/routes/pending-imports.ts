@@ -456,7 +456,7 @@ export function registerPendingImportsRoutes(app: Express) {
         const taskIds: string[] = [];
         for (const id of ids) {
           const record = await storage.getPendingSocialAccountImportById(id);
-          if (record && !record.alreadyAdded) {
+          if (record) {
             const task = await storage.createTask({
               userId: auth.userId,
               type: "import_social",

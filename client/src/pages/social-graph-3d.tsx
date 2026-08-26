@@ -9,6 +9,7 @@ import { Settings, X, Filter, Palette, Users } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -46,10 +47,11 @@ function parseGraphUrl() {
   return {
     view,
     selected: params.get('selected'),
+    highlightGroup: params.get('highlightGroup') || params.get('groupId'),
   };
 }
 
-function buildGraphUrl(view: ViewMode, selected: string | null): string {
+function buildGraphUrl(view: ViewMode, selected: string | null, highlightGroup?: string | null): string {
   const params = new URLSearchParams(window.location.search);
   params.set('view', view);
   if (selected) {
@@ -57,12 +59,20 @@ function buildGraphUrl(view: ViewMode, selected: string | null): string {
   } else {
     params.delete('selected');
   }
+  if (highlightGroup !== undefined) {
+    if (highlightGroup) {
+      params.set('highlightGroup', highlightGroup);
+    } else {
+      params.delete('highlightGroup');
+      params.delete('groupId');
+    }
+  }
   const qs = params.toString();
   return `/social-graph-3d${qs ? `?${qs}` : ''}`;
 }
 
-function syncGraphUrl(view: ViewMode, selected: string | null, mode: 'push' | 'replace' = 'replace') {
-  const newUrl = buildGraphUrl(view, selected);
+function syncGraphUrl(view: ViewMode, selected: string | null, highlightGroup?: string | null, mode: 'push' | 'replace' = 'replace') {
+  const newUrl = buildGraphUrl(view, selected, highlightGroup);
   if (window.location.pathname + window.location.search !== newUrl) {
     if (mode === 'push') {
       window.history.pushState(null, '', newUrl);
@@ -295,12 +305,28 @@ function SocialGraphContent({
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(initialDefaults.blobForceMultiplier);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
   const [showCrowds, setShowCrowds] = useState(true);
-  const [minFollowIntersection, setMinFollowIntersection] = useState(5);
   const [crowdColorScheme, setCrowdColorScheme] = useState<'pastel' | 'emerald' | 'amber' | 'sky'>('pastel');
-  const crowdSphereMeshRef = useRef<THREE.Mesh | null>(null);
+  const [crowdSphereOpacity, setCrowdSphereOpacity] = useState(initialDefaults.crowdSphereOpacity ?? 0.15);
+  const [autoRotate, setAutoRotate] = useState(initialDefaults.autoRotate ?? false);
+  const crowdSphereMeshesMapRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(
-    () => new URLSearchParams(window.location.search).get('highlightGroup')
+    () => new URLSearchParams(window.location.search).get('highlightGroup') || new URLSearchParams(window.location.search).get('groupId')
   );
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (highlightedGroupId) {
+      params.set('highlightGroup', highlightedGroupId);
+    } else {
+      params.delete('highlightGroup');
+      params.delete('groupId');
+    }
+    const newQs = params.toString();
+    const newUrl = `${window.location.pathname}${newQs ? `?${newQs}` : ''}`;
+    if (window.location.pathname + window.location.search !== newUrl) {
+      window.history.replaceState(null, '', newUrl);
+    }
+  }, [highlightedGroupId]);
 
   const { data: groupsList } = useQuery<Group[]>({
     queryKey: ['/api/groups'],
@@ -523,8 +549,15 @@ function SocialGraphContent({
   useEffect(() => {
     if (!graphRef.current || !graphData || !graphData.nodes.length) return;
 
-    const group = highlightedGroupId ? groupsList?.find((g) => g.id === highlightedGroupId) : null;
-    const centerAccountId = group?.centerAccountId;
+    const isAllCrowds = highlightedGroupId === 'all';
+    const activeGroups: Group[] = isAllCrowds
+      ? (groupsList || [])
+      : (highlightedGroupId ? (groupsList?.filter(g => g.id === highlightedGroupId) || []) : []);
+
+    const centerAccountIds = new Set<string>();
+    activeGroups.forEach(g => {
+      if (g.centerAccountId) centerAccountIds.add(g.centerAccountId);
+    });
 
     const crowdColorMap = {
       pastel: "#a7f3d0",
@@ -535,11 +568,11 @@ function SocialGraphContent({
     const crowdColor = crowdColorMap[crowdColorScheme];
 
     const centerFollowers = new Set<string>();
-    if (centerAccountId) {
+    if (centerAccountIds.size > 0) {
       graphData.links.forEach(l => {
         const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
         const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-        if (tgt === centerAccountId) {
+        if (centerAccountIds.has(tgt)) {
           centerFollowers.add(src);
         }
       });
@@ -554,18 +587,26 @@ function SocialGraphContent({
         label = `${n.name} (+${n.mergedNames.length} merged)`;
       }
 
-      const isCenter = n.id === centerAccountId;
-      const isMember = n.ownerPersonId && group?.members?.includes(n.ownerPersonId) || false;
-      const isCrowd = n.ownerPersonId && group?.crowdMembers?.includes(n.ownerPersonId) || false;
+      const isCenter = centerAccountIds.has(n.id);
+      const matchingMemberGroup = activeGroups.find(g => n.ownerPersonId && g.members?.includes(n.ownerPersonId));
+      const isMember = !!matchingMemberGroup;
+
+      const matchingCrowdGroup = activeGroups.find(g => {
+        const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
+        return isSocialMode
+          ? (g.crowdMembers?.includes(n.id) || false)
+          : (n.ownerPersonId && g.crowdMembers?.includes(n.ownerPersonId) || false);
+      });
+      const isCrowd = !!matchingCrowdGroup;
 
       let color = colorMap.get(n.id) || n.typeColor;
-      if (highlightedGroupId && group) {
+      if (activeGroups.length > 0) {
         if (isMember) {
-          color = group.color || "#8b5cf6";
+          color = matchingMemberGroup?.color || "#8b5cf6";
         } else if (isCenter) {
           color = "#ec4899";
         } else if (isCrowd && showCrowds) {
-          color = crowdColor;
+          color = isAllCrowds ? (matchingCrowdGroup?.color || crowdColor) : crowdColor;
         }
       }
 
@@ -588,14 +629,20 @@ function SocialGraphContent({
       const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
 
       const srcNode = graphData.nodes.find(n => n.id === src);
-      const isSrcCrowd = (srcNode?.ownerPersonId && group?.crowdMembers?.includes(srcNode.ownerPersonId)) || false;
+      const matchingCrowdGroup = activeGroups.find(g => {
+        const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
+        return isSocialMode
+          ? (g.crowdMembers?.includes(src) || false)
+          : (srcNode?.ownerPersonId && g.crowdMembers?.includes(srcNode.ownerPersonId) || false);
+      });
+      const isSrcCrowd = !!matchingCrowdGroup;
       const isTgtCenterFollower = centerFollowers.has(tgt);
       
-      const isCrowdLink = highlightedGroupId && showCrowds && isSrcCrowd && isTgtCenterFollower;
+      const isCrowdLink = activeGroups.length > 0 && showCrowds && isSrcCrowd && isTgtCenterFollower;
 
       let color: string;
       if (isCrowdLink) {
-        color = crowdColor;
+        color = isAllCrowds ? (matchingCrowdGroup?.color || crowdColor) : crowdColor;
       } else if (isSingleMode && (src === targetId || tgt === targetId)) {
         if (l.mutual) {
           color = singleLinkMutualColor;
@@ -617,7 +664,14 @@ function SocialGraphContent({
       filteredLinks = links.filter(l => l.source === targetId || l.target === targetId);
     }
 
-    const gData = { nodes, links: filteredLinks };
+    const validNodeIds = new Set(nodes.map(n => n.id));
+    const validLinks = filteredLinks.filter((l) => {
+      const s = typeof l.source === 'string' ? l.source : (l.source as any)?.id;
+      const t = typeof l.target === 'string' ? l.target : (l.target as any)?.id;
+      return s && t && validNodeIds.has(s) && validNodeIds.has(t);
+    });
+
+    const gData = { nodes, links: validLinks };
 
     const styles = getComputedStyle(document.documentElement);
     const backgroundHSL = styles.getPropertyValue('--background').trim();
@@ -637,66 +691,95 @@ function SocialGraphContent({
     };
 
     const updateBoundingSphere = () => {
-      if (!fgRef.current || !showCrowds || !group || !group.crowdMembers || group.crowdMembers.length === 0) {
-        if (crowdSphereMeshRef.current) {
-          fgRef.current.scene().remove(crowdSphereMeshRef.current);
-          crowdSphereMeshRef.current = null;
-        }
-        return;
-      }
-
-      const graphNodes = fgRef.current.graphData().nodes as any[];
-      const crowdNodes = graphNodes.filter(n => {
-        if (!n) return false;
-        const ownerId = graphData.nodes.find(dn => dn.id === n.id)?.ownerPersonId;
-        return ownerId && group.crowdMembers?.includes(ownerId) && n.x !== undefined && n.y !== undefined && n.z !== undefined;
-      });
-
-      if (crowdNodes.length === 0) {
-        if (crowdSphereMeshRef.current) {
-          fgRef.current.scene().remove(crowdSphereMeshRef.current);
-          crowdSphereMeshRef.current = null;
-        }
-        return;
-      }
-
-      let sumX = 0, sumY = 0, sumZ = 0;
-      for (const n of crowdNodes) {
-        sumX += n.x;
-        sumY += n.y;
-        sumZ += n.z;
-      }
-      const centroidX = sumX / crowdNodes.length;
-      const centroidY = sumY / crowdNodes.length;
-      const centroidZ = sumZ / crowdNodes.length;
-
-      const distances = crowdNodes.map(n => {
-        const dx = n.x - centroidX;
-        const dy = n.y - centroidY;
-        const dz = n.z - centroidZ;
-        return Math.sqrt(dx*dx + dy*dy + dz*dz);
-      });
-      distances.sort((a, b) => a - b);
-      const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
-      const radius = Math.max(15, distances[percentileIndex] || 15);
-
-      if (!crowdSphereMeshRef.current) {
-        const geom = new THREE.SphereGeometry(1, 32, 32);
-        const mat = new THREE.MeshBasicMaterial({
-          color: crowdColor,
-          transparent: true,
-          opacity: 0.15,
-          wireframe: true,
+      const fg = fgRef.current;
+      if (!fg || !showCrowds || activeGroups.length === 0) {
+        crowdSphereMeshesMapRef.current.forEach(mesh => {
+          if (fg) fg.scene().remove(mesh);
         });
-        const mesh = new THREE.Mesh(geom, mat);
-        fgRef.current.scene().add(mesh);
-        crowdSphereMeshRef.current = mesh;
+        crowdSphereMeshesMapRef.current.clear();
+        return;
       }
 
-      const mesh = crowdSphereMeshRef.current;
-      mesh.position.set(centroidX, centroidY, centroidZ);
-      mesh.scale.set(radius, radius, radius);
-      (mesh.material as THREE.MeshBasicMaterial).color.set(crowdColor);
+      const graphNodes = fg.graphData().nodes as any[];
+      const activeGroupIds = new Set(activeGroups.map(g => g.id));
+
+      // Remove meshes for groups that are no longer active
+      crowdSphereMeshesMapRef.current.forEach((mesh, gId) => {
+        if (!activeGroupIds.has(gId)) {
+          fg.scene().remove(mesh);
+          crowdSphereMeshesMapRef.current.delete(gId);
+        }
+      });
+
+      activeGroups.forEach(g => {
+        if (!g.crowdMembers || g.crowdMembers.length === 0) {
+          const existing = crowdSphereMeshesMapRef.current.get(g.id);
+          if (existing) {
+            fg.scene().remove(existing);
+            crowdSphereMeshesMapRef.current.delete(g.id);
+          }
+          return;
+        }
+
+        const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
+        const crowdNodes = graphNodes.filter(n => {
+          if (!n) return false;
+          if (isSocialMode) {
+            return g.crowdMembers?.includes(n.id) && n.x !== undefined && n.y !== undefined && n.z !== undefined;
+          }
+          const ownerId = graphData.nodes.find(dn => dn.id === n.id)?.ownerPersonId;
+          return ownerId && g.crowdMembers?.includes(ownerId) && n.x !== undefined && n.y !== undefined && n.z !== undefined;
+        });
+
+        if (crowdNodes.length === 0) {
+          const existing = crowdSphereMeshesMapRef.current.get(g.id);
+          if (existing) {
+            fg.scene().remove(existing);
+            crowdSphereMeshesMapRef.current.delete(g.id);
+          }
+          return;
+        }
+
+        let sumX = 0, sumY = 0, sumZ = 0;
+        for (const n of crowdNodes) {
+          sumX += n.x;
+          sumY += n.y;
+          sumZ += n.z;
+        }
+        const centroidX = sumX / crowdNodes.length;
+        const centroidY = sumY / crowdNodes.length;
+        const centroidZ = sumZ / crowdNodes.length;
+
+        const distances = crowdNodes.map(n => {
+          const dx = n.x - centroidX;
+          const dy = n.y - centroidY;
+          const dz = n.z - centroidZ;
+          return Math.sqrt(dx*dx + dy*dy + dz*dz);
+        });
+        distances.sort((a, b) => a - b);
+        const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
+        const radius = Math.max(15, distances[percentileIndex] || 15);
+        const sphereColor = isAllCrowds ? (g.color || crowdColor) : crowdColor;
+
+        let mesh = crowdSphereMeshesMapRef.current.get(g.id);
+        if (!mesh) {
+          const geom = new THREE.SphereGeometry(1, 32, 32);
+          const mat = new THREE.MeshBasicMaterial({
+            color: sphereColor,
+            transparent: true,
+            opacity: crowdSphereOpacity,
+            wireframe: true,
+          });
+          mesh = new THREE.Mesh(geom, mat);
+          fg.scene().add(mesh);
+          crowdSphereMeshesMapRef.current.set(g.id, mesh);
+        }
+
+        mesh.position.set(centroidX, centroidY, centroidZ);
+        mesh.scale.set(radius, radius, radius);
+        (mesh.material as THREE.MeshBasicMaterial).color.set(sphereColor);
+        (mesh.material as THREE.MeshBasicMaterial).opacity = crowdSphereOpacity;
+      });
     };
 
     if (!fgRef.current) {
@@ -708,6 +791,7 @@ function SocialGraphContent({
         .backgroundColor(bgColor)
         .nodeLabel('name')
         .nodeThreeObject((node: any) => {
+          if (!node) return new THREE.Object3D();
           if (node.isCenter) {
             const groupMesh = new THREE.Group();
             const sphereMat = new THREE.MeshBasicMaterial({
@@ -801,10 +885,21 @@ function SocialGraphContent({
       (fg as any).onEngineTick(updateBoundingSphere);
       (fg as any).onEngineStop(updateBoundingSphere);
 
+      const controls = (fg as any).controls?.();
+      if (controls) {
+        controls.autoRotate = autoRotate;
+        controls.autoRotateSpeed = 0.8;
+      }
+
       fgRef.current = fg;
     } else {
       fgRef.current.graphData(gData);
       setTimeout(updateBoundingSphere, 100);
+      const controls = (fgRef.current as any).controls?.();
+      if (controls) {
+        controls.autoRotate = autoRotate;
+        controls.autoRotateSpeed = 0.8;
+      }
       try {
         const chargeForce = fgRef.current.d3Force('charge');
         if (chargeForce && typeof chargeForce.strength === 'function') {
@@ -819,17 +914,34 @@ function SocialGraphContent({
 
     return () => {
       if (fgRef.current) {
-        if (crowdSphereMeshRef.current) {
-          fgRef.current.scene().remove(crowdSphereMeshRef.current);
-          crowdSphereMeshRef.current = null;
-        }
+        crowdSphereMeshesMapRef.current.forEach(mesh => {
+          fgRef.current?.scene().remove(mesh);
+        });
+        crowdSphereMeshesMapRef.current.clear();
         fgRef.current._destructor();
         fgRef.current = null;
       }
       materialCacheRef.current.forEach(m => m.dispose());
       materialCacheRef.current.clear();
     };
-  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, highlightedGroupId, groupsList, showCrowds, crowdColorScheme, minFollowIntersection]);
+  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, highlightedGroupId, groupsList, showCrowds, crowdColorScheme, crowdSphereOpacity]);
+
+  useEffect(() => {
+    crowdSphereMeshesMapRef.current.forEach((mesh) => {
+      if (mesh.material) {
+        (mesh.material as THREE.MeshBasicMaterial).opacity = crowdSphereOpacity;
+      }
+    });
+  }, [crowdSphereOpacity]);
+
+  useEffect(() => {
+    if (!fgRef.current) return;
+    const controls = (fgRef.current as any).controls?.();
+    if (controls) {
+      controls.autoRotate = autoRotate;
+      controls.autoRotateSpeed = 0.8;
+    }
+  }, [autoRotate]);
 
   useEffect(() => {
     if (!fgRef.current || !graphData || !graphData.nodes.length) return;
@@ -1590,6 +1702,37 @@ function SocialGraphContent({
                     </div>
                   </div>
                 </div>
+
+                <div className="space-y-2 pt-3 border-t" data-testid="crowd-sphere-opacity-options">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium">Crowd Sphere Opacity</Label>
+                    <span className="text-sm font-medium font-mono" data-testid="text-crowd-sphere-opacity-value">
+                      {Math.round(crowdSphereOpacity * 100)}%
+                    </span>
+                  </div>
+                  <Slider
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={[Math.round(crowdSphereOpacity * 100)]}
+                    onValueChange={(val) => setCrowdSphereOpacity(val[0] / 100)}
+                    data-testid="slider-crowd-sphere-opacity"
+                  />
+                </div>
+
+                <div className="pt-3 border-t space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="auto-rotate"
+                      checked={autoRotate}
+                      onCheckedChange={(checked) => setAutoRotate(!!checked)}
+                      data-testid="checkbox-auto-rotate"
+                    />
+                    <Label htmlFor="auto-rotate" className="text-sm font-medium cursor-pointer">
+                      Auto Rotate
+                    </Label>
+                  </div>
+                </div>
               </TabsContent>
             </Tabs>
 
@@ -1598,6 +1741,73 @@ function SocialGraphContent({
                 <Users className="w-3.5 h-3.5" />
                 Crowds Settings
               </h4>
+              <div className="space-y-2">
+                  <Label htmlFor="social-crowd-group-select" className="text-xs">Active Group</Label>
+                  <Select
+                    value={highlightedGroupId || "none"}
+                    onValueChange={(val) => setHighlightedGroupId(val === "none" ? null : val)}
+                  >
+                    <SelectTrigger id="social-crowd-group-select" className="h-8" data-testid="select-crowd-group">
+                      <SelectValue placeholder="Select group to visualize crowd..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No group (Crowds inactive)</SelectItem>
+                      <SelectItem value="all" className="font-semibold text-primary">All Groups (Show all crowds)</SelectItem>
+                      {groupsList?.map((g) => (
+                        <SelectItem key={g.id} value={g.id}>
+                          {g.name} {g.crowdMembers && g.crowdMembers.length > 0 ? `(${g.crowdMembers.length} in crowd)` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {highlightedGroupId === "all" ? (() => {
+                  const groupsWithCrowds = groupsList?.filter(g => g.crowdMembers && g.crowdMembers.length > 0) || [];
+                  const totalCrowdMembers = groupsWithCrowds.reduce((sum, g) => sum + (g.crowdMembers?.length || 0), 0);
+                  return (
+                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                      <span>Active crowds: <strong>{groupsWithCrowds.length} groups</strong></span>
+                      <span>Total members: <strong>{totalCrowdMembers}</strong></span>
+                    </div>
+                  );
+                })() : highlightedGroupId ? (() => {
+                  const selectedGroup = groupsList?.find((g) => g.id === highlightedGroupId);
+                  if (!selectedGroup) return null;
+                  if (!selectedGroup.centerAccountId) {
+                    return (
+                      <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 p-2 rounded">
+                        This group has no Center Account configured.
+                      </div>
+                    );
+                  }
+                  if (!selectedGroup.crowdMembers || selectedGroup.crowdMembers.length === 0) {
+                    return (
+                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex flex-col gap-1">
+                        <span>No crowd members found for this group.</span>
+                        <a
+                          href={`/group/${selectedGroup.id}`}
+                          className="text-primary hover:underline font-medium inline-block"
+                        >
+                          Configure or calculate on group page &rarr;
+                        </a>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                      <span>Crowd members: <strong>{selectedGroup.crowdMembers.length}</strong></span>
+                      {selectedGroup.crowdLastCalculatedAt && (
+                        <span>{new Date(selectedGroup.crowdLastCalculatedAt).toLocaleDateString()}</span>
+                      )}
+                    </div>
+                  );
+                })() : (
+                  <p className="text-xs text-muted-foreground">
+                    Select a group or &quot;All Groups&quot; to display crowd members and 3D bounding clouds.
+                  </p>
+                )}
+
               <div className="flex items-center justify-between">
                 <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
                 <Switch
@@ -1608,36 +1818,20 @@ function SocialGraphContent({
                 />
               </div>
               {showCrowds && (
-                <>
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-xs">
-                      <Label>Min Follows</Label>
-                      <span className="font-mono">{minFollowIntersection}</span>
-                    </div>
-                    <Slider
-                      min={1}
-                      max={15}
-                      step={1}
-                      value={[minFollowIntersection]}
-                      onValueChange={(val) => setMinFollowIntersection(val[0])}
-                      data-testid="slider-min-follow"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
-                    <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
-                      <SelectTrigger id="crowd-color-scheme" className="h-8">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="pastel">Pastel Green</SelectItem>
-                        <SelectItem value="emerald">Emerald</SelectItem>
-                        <SelectItem value="amber">Amber</SelectItem>
-                        <SelectItem value="sky">Sky Blue</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </>
+                <div className="space-y-2">
+                  <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
+                  <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
+                    <SelectTrigger id="crowd-color-scheme" className="h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pastel">Pastel Green</SelectItem>
+                      <SelectItem value="emerald">Emerald</SelectItem>
+                      <SelectItem value="amber">Amber</SelectItem>
+                      <SelectItem value="sky">Sky Blue</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               )}
             </div>
 

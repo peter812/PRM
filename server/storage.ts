@@ -706,6 +706,11 @@ export class DatabaseStorage implements IStorage {
           name: groups.name,
           color: groups.color,
           members: groups.members,
+          centerAccountId: groups.centerAccountId,
+          crowdMembers: groups.crowdMembers,
+          crowdLastCalculatedAt: groups.crowdLastCalculatedAt,
+          crowdMode: groups.crowdMode,
+          crowdFollowThreshold: groups.crowdFollowThreshold,
         })
         .from(groups),
       db.select().from(lineage),
@@ -757,6 +762,11 @@ export class DatabaseStorage implements IStorage {
         name: g.name,
         color: g.color,
         members: g.members || [],
+        centerAccountId: g.centerAccountId || null,
+        crowdMembers: g.crowdMembers || [],
+        crowdLastCalculatedAt: g.crowdLastCalculatedAt ? g.crowdLastCalculatedAt.toISOString() : null,
+        crowdMode: g.crowdMode || "social_accounts",
+        crowdFollowThreshold: g.crowdFollowThreshold ?? 5,
       })),
     };
   }

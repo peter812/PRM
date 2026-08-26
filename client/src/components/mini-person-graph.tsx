@@ -101,6 +101,9 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
     const width = el.clientWidth || 320;
     const height = el.clientHeight || 320;
 
+    const validNodeIds = new Set(nodes.map((n) => n.id));
+    const validLinks = links.filter((l) => validNodeIds.has(l.source) && validNodeIds.has(l.target));
+
     if (!fgRef.current) {
       const factory = ForceGraph3D as unknown as (
         opts: { controlType: string; rendererConfig: { antialias: boolean; alpha: boolean } }
@@ -113,7 +116,7 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
       fg
         .width(width)
         .height(height)
-        .graphData({ nodes, links })
+        .graphData({ nodes, links: validLinks })
         .backgroundColor(bgColor)
         .nodeLabel("name")
         .nodeColor("color")
@@ -142,7 +145,7 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
 
       fgRef.current = fg;
     } else {
-      fgRef.current.width(width).height(height).graphData({ nodes, links });
+      fgRef.current.width(width).height(height).graphData({ nodes, links: validLinks });
     }
 
     // Re-fit when the underlying graph changes.

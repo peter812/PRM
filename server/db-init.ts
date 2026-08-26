@@ -469,6 +469,8 @@ async function validateAndSyncSchema(): Promise<void> {
         center_account_id: "VARCHAR(255) REFERENCES social_accounts(id) ON DELETE SET NULL",
         crowd_members: "TEXT[] DEFAULT ARRAY[]::text[]",
         crowd_last_calculated_at: "TIMESTAMP",
+        crowd_mode: "TEXT DEFAULT 'social_accounts'",
+        crowd_follow_threshold: "INTEGER DEFAULT 5",
       },
       social_accounts: {
         vector_id: "TEXT",

@@ -143,6 +143,7 @@ export default function ExtensionImportsSettingsPage() {
       toast({ title: "Import Task Started", description: "Social extraction import queued in the background." });
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
     },
     onError: (err: Error) => {
       toast({ title: "Import Failed", description: err.message, variant: "destructive" });
@@ -172,6 +173,7 @@ export default function ExtensionImportsSettingsPage() {
       toast({ title: "Bulk Import Started", description: `Queued ${resData.count} import task${resData.count === 1 ? "" : "s"} in the background.` });
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/v1/pending-imports"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
     },
   });
 
@@ -424,17 +426,15 @@ export default function ExtensionImportsSettingsPage() {
                         <Eye className="h-3.5 w-3.5" />
                       </Button>
 
-                      {!item.alreadyAdded && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => singleImportMutation.mutate(item.id)}
-                          disabled={singleImportMutation.isPending}
-                          className="h-7 text-xs gap-1"
-                        >
-                          <Download className="h-3.5 w-3.5 text-emerald-600" /> Import
-                        </Button>
-                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => singleImportMutation.mutate(item.id)}
+                        disabled={singleImportMutation.isPending}
+                        className="h-7 text-xs gap-1"
+                      >
+                        <Download className="h-3.5 w-3.5 text-emerald-600" /> {item.alreadyAdded ? "Reimport" : "Import"}
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -577,14 +577,14 @@ export default function ExtensionImportsSettingsPage() {
             </div>
 
             <div className="flex items-center gap-2">
-              {previewItem && !previewItem.alreadyAdded && (
+              {previewItem && (
                 <Button
                   size="sm"
                   onClick={() => singleImportMutation.mutate(previewItem.id)}
                   disabled={singleImportMutation.isPending}
                   className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
                 >
-                  <Download className="h-4 w-4" /> Import into PRM
+                  <Download className="h-4 w-4" /> {previewItem.alreadyAdded ? "Reimport into PRM" : "Import into PRM"}
                 </Button>
               )}
               <Button variant="outline" size="sm" onClick={() => setPreviewItem(null)}>
