@@ -5,7 +5,7 @@ import ForceGraph3D from "3d-force-graph";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Settings, X, Filter, Palette, Users } from "lucide-react";
+import { Settings, X, Filter, Palette, Users, Gauge } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -35,10 +35,25 @@ import PersonGraphView from "./person-graph-view";
 import {
   EXTRAS_STEPS,
   MERGE_MULTIPLIER_STEPS,
+  NODE_SEGMENT_STEPS,
+  DENSE_THRESHOLD_STEPS,
   getInitialGraphSettings,
+  resolveArrowsEnabled,
+  resolveDenseEnabled,
+  type DenseModeSetting,
+  type LinkArrowMode,
 } from "@/lib/social-graph-defaults";
+import { GraphResourceCache, applyRendererPerfSettings } from "@/lib/graph-three-resources";
+import { DenseGraphRenderer } from "@/lib/dense-graph-renderer";
+import GraphLayoutWorker from "@/lib/graph-layout.worker?worker";
+import type { LayoutRequest } from "@/lib/graph-layout.worker";
 
 type ViewMode = 'person' | 'social' | 'hybrid';
+
+/** Link endpoints arrive as ids but are rehydrated into node objects by d3. */
+function linkEndId(endpoint: unknown): string {
+  return typeof endpoint === 'string' ? endpoint : (endpoint as { id: string }).id;
+}
 
 function parseGraphUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -86,16 +101,32 @@ interface GraphNode {
   id: string;
   name: string;
   type: 'social-account';
-  color?: string;
-  val?: number;
+  color: string;
+  val: number;
+  isCenter: boolean;
+  isCrowd: boolean;
+  // Positions are carried across rebuilds so a filter or colour change does
+  // not throw away a settled layout.
+  x?: number;
+  y?: number;
+  z?: number;
+  vx?: number;
+  vy?: number;
+  vz?: number;
+  fx?: number;
+  fy?: number;
+  fz?: number;
 }
 
 interface GraphLink {
   source: string;
   target: string;
   type: 'follows';
-  color?: string;
+  color: string;
   mutual?: boolean;
+  isCrowdLink: boolean;
+  /** Stable handle used to find this link's line object when recolouring. */
+  idx: number;
 }
 
 export default function SocialGraph3D() {
@@ -260,7 +291,22 @@ function SocialGraphContent({
 }: SocialGraphContentProps) {
   const graphRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<any>(null);
-  const materialCacheRef = useRef<Map<string, THREE.LineBasicMaterial>>(new Map());
+  // One shared geometry/material pool for every node and link in the scene.
+  const resourcesRef = useRef<GraphResourceCache | null>(null);
+  // Live three.js objects, so colour changes can swap materials in place
+  // instead of rebuilding the graph and restarting the layout.
+  const nodeObjMapRef = useRef<Map<string, THREE.Object3D>>(new Map());
+  const linkObjMapRef = useRef<Map<number, THREE.Line>>(new Map());
+  // ── Dense path state ──────────────────────────────────────────────────────
+  // Only populated while dense mode is on; the standard path leaves all of it
+  // null. `positions` is kept so a filter change can seed the next layout from
+  // the settled one, and so the crowd spheres have somewhere to read from.
+  const denseRendererRef = useRef<DenseGraphRenderer | null>(null);
+  const layoutWorkerRef = useRef<Worker | null>(null);
+  const denseLayoutRef = useRef<{ indexById: Map<string, number>; positions: Float32Array | null }>({
+    indexById: new Map(),
+    positions: null,
+  });
   const [, navigate] = useLocation();
 
   // Load saved defaults once on first render. URL params (e.g. `?view=...`)
@@ -308,6 +354,14 @@ function SocialGraphContent({
   const [crowdColorScheme, setCrowdColorScheme] = useState<'pastel' | 'emerald' | 'amber' | 'sky'>('pastel');
   const [crowdSphereOpacity, setCrowdSphereOpacity] = useState(initialDefaults.crowdSphereOpacity ?? 0.15);
   const [autoRotate, setAutoRotate] = useState(initialDefaults.autoRotate ?? false);
+  const [antialias, setAntialias] = useState(initialDefaults.antialias);
+  const [maxPixelRatio, setMaxPixelRatio] = useState(initialDefaults.maxPixelRatio);
+  const [nodeSegments, setNodeSegments] = useState(initialDefaults.nodeSegments);
+  const [linkArrowMode, setLinkArrowMode] = useState<LinkArrowMode>(initialDefaults.linkArrows);
+  const [arrowAutoThreshold, setArrowAutoThreshold] = useState(initialDefaults.arrowAutoThreshold);
+  const [denseModeSetting, setDenseModeSetting] = useState<DenseModeSetting>(initialDefaults.denseMode);
+  const [denseModeThreshold, setDenseModeThreshold] = useState(initialDefaults.denseModeThreshold);
+  const [renderedCounts, setRenderedCounts] = useState({ nodes: 0, links: 0 });
   const crowdSphereMeshesMapRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get('highlightGroup') || new URLSearchParams(window.location.search).get('groupId')
@@ -401,6 +455,38 @@ function SocialGraphContent({
       }
     : null;
 
+  // Adjacency and id lookups are built once per payload. Without them the
+  // colour and link passes below degrade into O(nodes x links) scans.
+  const graphIndex = useMemo(() => {
+    const nodeById = new Map<string, SocialGraphData['nodes'][number]>();
+    const adjacency = new Map<string, Set<string>>();
+    if (graphData) {
+      for (const n of graphData.nodes) {
+        nodeById.set(n.id, n);
+        adjacency.set(n.id, new Set<string>());
+      }
+      for (const l of graphData.links) {
+        const src = linkEndId(l.source);
+        const tgt = linkEndId(l.target);
+        adjacency.get(src)?.add(tgt);
+        adjacency.get(tgt)?.add(src);
+      }
+    }
+    return { nodeById, adjacency };
+  }, [graphData]);
+
+  // Decided from the payload rather than `renderedCounts`, which Effect B sets:
+  // feeding a rendered count back into the choice of renderer would loop.
+  const denseEnabled = resolveDenseEnabled(
+    denseModeSetting,
+    graphData?.nodes.length ?? 0,
+    denseModeThreshold,
+  );
+  // The dense renderer draws links as plain segments, so it has nowhere to hang
+  // an arrow head.
+  const arrowsEnabled =
+    !denseEnabled && resolveArrowsEnabled(linkArrowMode, renderedCounts.links, arrowAutoThreshold);
+
   const interpolateColor = useCallback((hex1: string, hex2: string, t: number) => {
     const parse = (hex: string) => {
       const h = hex.replace('#', '');
@@ -416,19 +502,12 @@ function SocialGraphContent({
 
   const distanceCacheRef = useRef<{ targetId: string | null; graphDataRef: any; distances: Map<string, number> }>({ targetId: null, graphDataRef: null, distances: new Map() });
 
-  const computeDistances = useCallback((targetId: string, nodes: SocialGraphData['nodes'], links: SocialGraphData['links']): Map<string, number> => {
+  const computeDistances = useCallback((targetId: string): Map<string, number> => {
     const cache = distanceCacheRef.current;
     if (cache.targetId === targetId && cache.graphDataRef === graphData) {
       return cache.distances;
     }
-    const adjacency = new Map<string, Set<string>>();
-    nodes.forEach(node => adjacency.set(node.id, new Set()));
-    links.forEach(l => {
-      const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
-      const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-      adjacency.get(src)?.add(tgt);
-      adjacency.get(tgt)?.add(src);
-    });
+    const { adjacency } = graphIndex;
     const distances = new Map<string, number>();
     distances.set(targetId, 0);
     const queue = [targetId];
@@ -448,9 +527,7 @@ function SocialGraphContent({
     cache.graphDataRef = graphData;
     cache.distances = distances;
     return distances;
-  }, [graphData]);
-
-  const nodeColorMapRef = useRef<Map<string, string>>(new Map());
+  }, [graphData, graphIndex]);
 
   const computeColorMap = useCallback(() => {
     if (!graphData || !graphData.nodes.length) return new Map<string, string>();
@@ -458,22 +535,23 @@ function SocialGraphContent({
     const colorMap = new Map<string, string>();
 
     if (graphMode === 'multi-highlight' && multiHighlightAccountIds.length >= 2) {
-      const highlightedSet = new Set(multiHighlightAccountIds);
+      // One adjacency lookup per (node, highlight) pair rather than a full
+      // link scan per pair.
+      const highlighted = Array.from(new Set(multiHighlightAccountIds));
+      const highlightedSet = new Set(highlighted);
       graphData.nodes.forEach(n => {
         if (highlightedSet.has(n.id)) {
           colorMap.set(n.id, multiHighlightColor);
           return;
         }
+        const neighbours = graphIndex.adjacency.get(n.id);
         let matchCount = 0;
-        highlightedSet.forEach(hId => {
-          const connected = graphData.links.some(l => {
-            const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
-            const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-            return (src === n.id && tgt === hId) || (src === hId && tgt === n.id);
-          });
-          if (connected) matchCount++;
-        });
-        if (matchCount === highlightedSet.size) {
+        if (neighbours) {
+          for (const hId of highlighted) {
+            if (neighbours.has(hId)) matchCount++;
+          }
+        }
+        if (matchCount === highlighted.length) {
           colorMap.set(n.id, multiFollowsAllColor);
         } else if (matchCount === 1) {
           colorMap.set(n.id, multiFollowsOneColor);
@@ -483,31 +561,39 @@ function SocialGraphContent({
     }
 
     if (graphMode === 'single-highlight' && singleHighlightAccountId && singleNodeColorScheme === 'follow-status') {
+      // Collect the follow relationship for every neighbour of the highlighted
+      // account in a single pass over the links.
+      const relations = new Map<string, { mutual: boolean; outbound: boolean; inbound: boolean }>();
+      for (const l of graphData.links) {
+        const src = linkEndId(l.source);
+        const tgt = linkEndId(l.target);
+        const isOutbound = src === singleHighlightAccountId;
+        const isInbound = tgt === singleHighlightAccountId;
+        if (!isOutbound && !isInbound) continue;
+        const otherId = isOutbound ? tgt : src;
+        let entry = relations.get(otherId);
+        if (!entry) {
+          entry = { mutual: false, outbound: false, inbound: false };
+          relations.set(otherId, entry);
+        }
+        if (l.mutual) {
+          entry.mutual = true;
+          continue;
+        }
+        if (isOutbound) entry.outbound = true;
+        if (isInbound) entry.inbound = true;
+      }
       graphData.nodes.forEach(n => {
         if (n.id === singleHighlightAccountId) {
           colorMap.set(n.id, '#ef4444');
           return;
         }
-        let isMutual = false;
-        let highlightFollowsNode = false;
-        let nodeFollowsHighlight = false;
-        graphData.links.forEach(l => {
-          const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
-          const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-          const involvesHighlight = (src === singleHighlightAccountId && tgt === n.id) || (src === n.id && tgt === singleHighlightAccountId);
-          if (!involvesHighlight) return;
-          if (l.mutual) {
-            isMutual = true;
-            return;
-          }
-          if (src === singleHighlightAccountId && tgt === n.id) highlightFollowsNode = true;
-          if (src === n.id && tgt === singleHighlightAccountId) nodeFollowsHighlight = true;
-        });
-        if (isMutual || (highlightFollowsNode && nodeFollowsHighlight)) {
+        const entry = relations.get(n.id);
+        if (entry && (entry.mutual || (entry.outbound && entry.inbound))) {
           colorMap.set(n.id, singleLinkMutualColor);
-        } else if (nodeFollowsHighlight) {
+        } else if (entry?.inbound) {
           colorMap.set(n.id, singleLinkFollowsYouColor);
-        } else if (highlightFollowsNode) {
+        } else if (entry?.outbound) {
           colorMap.set(n.id, singleLinkYouFollowColor);
         } else {
           colorMap.set(n.id, '#9ca3af');
@@ -519,9 +605,14 @@ function SocialGraphContent({
     if (colorScheme === 'type') {
       graphData.nodes.forEach(n => colorMap.set(n.id, n.typeColor));
     } else if (colorScheme === 'connections') {
-      const counts = graphData.nodes.map(node => node.connectionCount);
-      const maxCount = Math.max(...counts, 1);
-      const minCount = Math.min(...counts, 0);
+      // Spreading a large array into Math.max blows the argument limit, so
+      // fold instead. Seeds match the previous Math.max(..., 1) / min(..., 0).
+      let maxCount = 1;
+      let minCount = 0;
+      for (const node of graphData.nodes) {
+        if (node.connectionCount > maxCount) maxCount = node.connectionCount;
+        if (node.connectionCount < minCount) minCount = node.connectionCount;
+      }
       const range = (maxCount - minCount) || 1;
       graphData.nodes.forEach(n => {
         const linear = (n.connectionCount - minCount) / range;
@@ -530,8 +621,8 @@ function SocialGraphContent({
       });
     } else if (colorScheme === 'distance') {
       const distanceColors: Record<number, string> = { 0: distanceColorSelf, 1: distanceColorDirect, 2: distanceColor2nd };
-      if (colorSchemeAccountId && graphData.nodes.find(n => n.id === colorSchemeAccountId)) {
-        const distancesMap = computeDistances(colorSchemeAccountId, graphData.nodes, graphData.links);
+      if (colorSchemeAccountId && graphIndex.nodeById.has(colorSchemeAccountId)) {
+        const distancesMap = computeDistances(colorSchemeAccountId);
         graphData.nodes.forEach(n => {
           const dist = distancesMap.get(n.id);
           colorMap.set(n.id, (dist !== undefined && dist in distanceColors) ? distanceColors[dist] : distanceColorOther);
@@ -544,42 +635,87 @@ function SocialGraphContent({
     }
 
     return colorMap;
-  }, [graphData, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, multiHighlightAccountIds, multiHighlightColor, multiFollowsAllColor, multiFollowsOneColor]);
+  }, [graphData, graphIndex, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, multiHighlightAccountIds, multiHighlightColor, multiFollowsAllColor, multiFollowsOneColor]);
 
-  useEffect(() => {
-    if (!graphRef.current || !graphData || !graphData.nodes.length) return;
+  const CROWD_SCHEME_COLORS = {
+    pastel: "#a7f3d0",
+    emerald: "#10b981",
+    amber: "#f59e0b",
+    sky: "#0ea5e9",
+  } as const;
+
+  interface GraphVisuals {
+    nodes: GraphNode[];
+    links: GraphLink[];
+    activeGroupIds: string[];
+    crowdNodeIdsByGroup: Map<string, Set<string>>;
+    crowdColorByGroup: Map<string, string>;
+  }
+
+  // Values the render loop must read live rather than through a captured
+  // closure, so tick callbacks stay correct without re-creating the graph.
+  const crowdSphereOpacityRef = useRef(crowdSphereOpacity);
+  crowdSphereOpacityRef.current = crowdSphereOpacity;
+  const showCrowdsRef = useRef(showCrowds);
+  showCrowdsRef.current = showCrowds;
+  const blobForceMultiplierRef = useRef(blobForceMultiplier);
+  blobForceMultiplierRef.current = blobForceMultiplier;
+
+  // The whole scene description, derived in one pass. Held in a ref so it only
+  // runs when explicitly invoked (never on an incidental React re-render), and
+  // so the rebuild and in-place recolour paths share one implementation.
+  const buildVisualsRef = useRef<() => GraphVisuals>(null!);
+  buildVisualsRef.current = (): GraphVisuals => {
+    const empty: GraphVisuals = {
+      nodes: [], links: [], activeGroupIds: [],
+      crowdNodeIdsByGroup: new Map(), crowdColorByGroup: new Map(),
+    };
+    if (!graphData || !graphData.nodes.length) return empty;
 
     const isAllCrowds = highlightedGroupId === 'all';
     const activeGroups: Group[] = isAllCrowds
       ? (groupsList || [])
       : (highlightedGroupId ? (groupsList?.filter(g => g.id === highlightedGroupId) || []) : []);
+    const crowdColor = CROWD_SCHEME_COLORS[crowdColorScheme];
 
+    // Flatten every active group's membership arrays into id -> group lookups.
+    // The previous `activeGroups.find(g => g.members.includes(id))` per node
+    // and per link made this pass O(nodes x groups x members).
+    type GroupHit = { group: Group; order: number };
     const centerAccountIds = new Set<string>();
-    activeGroups.forEach(g => {
+    const memberGroupByPersonId = new Map<string, Group>();
+    const crowdHitByAccountId = new Map<string, GroupHit>();
+    const crowdHitByPersonId = new Map<string, GroupHit>();
+    activeGroups.forEach((g, order) => {
       if (g.centerAccountId) centerAccountIds.add(g.centerAccountId);
+      for (const personId of g.members || []) {
+        if (!memberGroupByPersonId.has(personId)) memberGroupByPersonId.set(personId, g);
+      }
+      const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
+      const target = isSocialMode ? crowdHitByAccountId : crowdHitByPersonId;
+      for (const memberId of g.crowdMembers || []) {
+        if (!target.has(memberId)) target.set(memberId, { group: g, order });
+      }
     });
 
-    const crowdColorMap = {
-      pastel: "#a7f3d0",
-      emerald: "#10b981",
-      amber: "#f59e0b",
-      sky: "#0ea5e9",
+    // `find` returned the earliest matching group; preserve that across the
+    // two lookup maps by comparing their positions in activeGroups.
+    const resolveCrowdGroup = (accountId: string, ownerPersonId?: string | null): Group | null => {
+      const byAccount = crowdHitByAccountId.get(accountId);
+      const byPerson = ownerPersonId ? crowdHitByPersonId.get(ownerPersonId) : undefined;
+      if (!byAccount) return byPerson?.group ?? null;
+      if (!byPerson) return byAccount.group;
+      return (byAccount.order <= byPerson.order ? byAccount : byPerson).group;
     };
-    const crowdColor = crowdColorMap[crowdColorScheme];
 
     const centerFollowers = new Set<string>();
     if (centerAccountIds.size > 0) {
-      graphData.links.forEach(l => {
-        const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
-        const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
-        if (centerAccountIds.has(tgt)) {
-          centerFollowers.add(src);
-        }
-      });
+      for (const l of graphData.links) {
+        if (centerAccountIds.has(linkEndId(l.target))) centerFollowers.add(linkEndId(l.source));
+      }
     }
 
     const colorMap = computeColorMap();
-    nodeColorMapRef.current = colorMap;
 
     const nodes: GraphNode[] = graphData.nodes.map(n => {
       let label = n.name;
@@ -588,15 +724,9 @@ function SocialGraphContent({
       }
 
       const isCenter = centerAccountIds.has(n.id);
-      const matchingMemberGroup = activeGroups.find(g => n.ownerPersonId && g.members?.includes(n.ownerPersonId));
+      const matchingMemberGroup = n.ownerPersonId ? memberGroupByPersonId.get(n.ownerPersonId) : undefined;
       const isMember = !!matchingMemberGroup;
-
-      const matchingCrowdGroup = activeGroups.find(g => {
-        const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
-        return isSocialMode
-          ? (g.crowdMembers?.includes(n.id) || false)
-          : (n.ownerPersonId && g.crowdMembers?.includes(n.ownerPersonId) || false);
-      });
+      const matchingCrowdGroup = resolveCrowdGroup(n.id, n.ownerPersonId);
       const isCrowd = !!matchingCrowdGroup;
 
       let color = colorMap.get(n.id) || n.typeColor;
@@ -624,20 +754,15 @@ function SocialGraphContent({
     const targetId = appliedSettings.singleHighlightAccountId;
     const isSingleMode = appliedSettings.mode === 'single-highlight' && targetId;
 
-    const links: GraphLink[] = graphData.links.map(l => {
-      const src = typeof l.source === 'string' ? l.source : (l.source as any).id;
-      const tgt = typeof l.target === 'string' ? l.target : (l.target as any).id;
+    const links: GraphLink[] = graphData.links.map((l, idx) => {
+      const src = linkEndId(l.source);
+      const tgt = linkEndId(l.target);
 
-      const srcNode = graphData.nodes.find(n => n.id === src);
-      const matchingCrowdGroup = activeGroups.find(g => {
-        const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
-        return isSocialMode
-          ? (g.crowdMembers?.includes(src) || false)
-          : (srcNode?.ownerPersonId && g.crowdMembers?.includes(srcNode.ownerPersonId) || false);
-      });
+      const srcNode = graphIndex.nodeById.get(src);
+      const matchingCrowdGroup = resolveCrowdGroup(src, srcNode?.ownerPersonId);
       const isSrcCrowd = !!matchingCrowdGroup;
       const isTgtCenterFollower = centerFollowers.has(tgt);
-      
+
       const isCrowdLink = activeGroups.length > 0 && showCrowds && isSrcCrowd && isTgtCenterFollower;
 
       let color: string;
@@ -656,7 +781,7 @@ function SocialGraphContent({
       } else {
         color = l.mutual ? linkMutualColor : linkDefaultColor;
       }
-      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual, isCrowdLink };
+      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual, isCrowdLink, idx };
     });
 
     let filteredLinks = links;
@@ -665,266 +790,533 @@ function SocialGraphContent({
     }
 
     const validNodeIds = new Set(nodes.map(n => n.id));
-    const validLinks = filteredLinks.filter((l) => {
-      const s = typeof l.source === 'string' ? l.source : (l.source as any)?.id;
-      const t = typeof l.target === 'string' ? l.target : (l.target as any)?.id;
-      return s && t && validNodeIds.has(s) && validNodeIds.has(t);
-    });
+    const validLinks = filteredLinks.filter(l => validNodeIds.has(l.source) && validNodeIds.has(l.target));
 
-    const gData = { nodes, links: validLinks };
+    // Crowd membership per group, resolved once here instead of re-filtering
+    // every graph node against every group on every simulation tick.
+    const crowdNodeIdsByGroup = new Map<string, Set<string>>();
+    const crowdColorByGroup = new Map<string, string>();
+    for (const g of activeGroups) {
+      crowdColorByGroup.set(g.id, isAllCrowds ? (g.color || crowdColor) : crowdColor);
+      const ids = new Set<string>();
+      const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
+      if (isSocialMode) {
+        for (const memberId of g.crowdMembers || []) {
+          if (validNodeIds.has(memberId)) ids.add(memberId);
+        }
+      } else if (g.crowdMembers?.length) {
+        const memberSet = new Set(g.crowdMembers);
+        for (const n of graphData.nodes) {
+          if (n.ownerPersonId && memberSet.has(n.ownerPersonId)) ids.add(n.id);
+        }
+      }
+      crowdNodeIdsByGroup.set(g.id, ids);
+    }
+
+    return {
+      nodes,
+      links: validLinks,
+      activeGroupIds: activeGroups.map(g => g.id),
+      crowdNodeIdsByGroup,
+      crowdColorByGroup,
+    };
+  };
+
+  // Rebuilt whenever the scene is rebuilt; invoked from the engine tick.
+  const updateCrowdSpheresRef = useRef<() => void>(() => {});
+
+  const applyChargeForce = useCallback(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    try {
+      const chargeForce = fg.d3Force('charge');
+      if (chargeForce && typeof chargeForce.strength === 'function') {
+        chargeForce.strength((node: any) => {
+          const nodeVal = node.val || 10;
+          const scale = 1 + (Math.sqrt(nodeVal / 10) - 1) * blobForceMultiplierRef.current;
+          return -30 * scale;
+        });
+      }
+    } catch (_) { }
+  }, []);
+
+  // ── Effect A: create the renderer once ──────────────────────────────────
+  // Only renderer-level settings force a rebuild here; data, colours, arrows
+  // and forces are all pushed into the live instance by the effects below.
+  //
+  // Creation is gated on data existing. The library assigns its force layout
+  // only on a graphData change but flips `engineRunning` on after every update,
+  // so an instance created ahead of the first payload would start ticking
+  // against an undefined layout as soon as any other effect set an accessor.
+  // Gating here guarantees Effect B pushes real data in the same commit,
+  // before Effects C-E touch the instance.
+  const hasGraphData = !!graphData?.nodes.length;
+
+  useEffect(() => {
+    if (!graphRef.current || !hasGraphData) return;
+
+    const resources = new GraphResourceCache();
+    resourcesRef.current = resources;
+    nodeObjMapRef.current.clear();
+    linkObjMapRef.current.clear();
 
     const styles = getComputedStyle(document.documentElement);
     const backgroundHSL = styles.getPropertyValue('--background').trim();
     const values = backgroundHSL.split(' ').map(v => parseFloat(v));
     const bgColor = `hsl(${values[0]}, ${values[1]}%, ${values[2]}%)`;
 
-    const getMaterial = (color: string, dashed = false) => {
-      const cache = materialCacheRef.current;
-      const key = `${color}-${dashed}`;
-      if (!cache.has(key)) {
-        cache.set(key, dashed
-          ? new THREE.LineDashedMaterial({ color, dashSize: 3, gapSize: 2, transparent: true, opacity: 0.8 })
-          : new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.6 })
-        );
-      }
-      return cache.get(key)!;
-    };
+    const fg = (ForceGraph3D as any)({
+      controlType: 'orbit',
+      rendererConfig: { antialias, alpha: true, powerPreference: 'high-performance' },
+    })(graphRef.current)
+      // Seed with an empty graph so the force layout exists from the start.
+      // The library only assigns `state.layout` on a graphData change, but sets
+      // `engineRunning = true` after *every* update — without this seed, any
+      // accessor set before the first payload arrives starts the render loop
+      // against an undefined layout.
+      .graphData({ nodes: [], links: [] })
+      .backgroundColor(bgColor)
+      .nodeLabel('name')
+      .nodeThreeObject((node: any) => {
+        if (!node) return new THREE.Object3D();
+        let obj: THREE.Object3D;
+        if (node.isCenter) {
+          const groupMesh = new THREE.Group();
+          groupMesh.add(new THREE.Mesh(
+            resources.sphereGeometry(6, nodeSegments),
+            resources.basicMaterial(node.color || "#ec4899", { opacity: 0.5 }),
+          ));
+          groupMesh.add(new THREE.Mesh(
+            resources.ringGeometry(7, 8, 32),
+            resources.basicMaterial(node.color || "#ec4899", { doubleSided: true }),
+          ));
+          obj = groupMesh;
+        } else {
+          obj = new THREE.Mesh(
+            resources.sphereGeometry(4, nodeSegments),
+            resources.nodeMaterial(node.color || "#10b981", !!node.isCrowd),
+          );
+        }
+        obj.userData.isCenter = !!node.isCenter;
+        nodeObjMapRef.current.set(node.id, obj);
+        return obj;
+      })
+      .nodeVal('val')
+      .enableNodeDrag(true)
+      .enableNavigationControls(true)
+      .showNavInfo(false)
+      .linkThreeObject((link: any) => {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+        const material = resources.lineMaterial(link.color || '#6b7280', !!link.isCrowdLink);
+        const line = link.isCrowdLink
+          ? new THREE.LineSegments(geometry, material)
+          : new THREE.Line(geometry, material);
+        // Both endpoints move every tick, so a bounding sphere would have to be
+        // recomputed every frame to stay valid. Opting out of frustum culling
+        // lets us skip that recompute entirely.
+        line.frustumCulled = false;
+        line.userData.dashed = !!link.isCrowdLink;
+        if (typeof link.idx === 'number') linkObjMapRef.current.set(link.idx, line);
+        return line;
+      })
+      .linkPositionUpdate((obj: any, coords: any) => {
+        if (!coords || !coords.start || !coords.end) return false;
+        const { start, end } = coords;
+        if (typeof start.x !== 'number' || typeof end.x !== 'number') return false;
+        const line = obj as THREE.Line;
+        const positions = line?.geometry?.attributes?.position as THREE.BufferAttribute;
+        if (!positions || !positions.array) return false;
+        const arr = positions.array as Float32Array;
+        arr[0] = start.x; arr[1] = start.y; arr[2] = start.z ?? 0;
+        arr[3] = end.x;   arr[4] = end.y;   arr[5] = end.z ?? 0;
+        positions.needsUpdate = true;
+        // Only dashed crowd lines need line distances, and nothing needs a
+        // bounding sphere now that culling is off — both were per-frame waste
+        // paid once per link.
+        if (line.userData.dashed) (line as any).computeLineDistances?.();
+        return true;
+      })
+      .linkDirectionalArrowRelPos(1)
+      .linkDirectionalArrowColor((link: any) => link.color || '#6b7280')
+      .linkCurvature(0)
+      .onNodeClick((node: any) => {
+        setSelectedAccountId(node.id);
+        setContextMenu(null);
+      })
+      .onNodeHover((node: any) => {
+        if (graphRef.current) graphRef.current.style.cursor = node ? 'pointer' : 'default';
+      })
+      .onNodeRightClick((node: any, event: MouseEvent) => {
+        event.preventDefault();
+        setContextMenu({ x: event.clientX, y: event.clientY, accountId: node.id });
+      })
+      .d3AlphaDecay(0.01)
+      .d3VelocityDecay(0.3)
+      .warmupTicks(100)
+      .cooldownTime(15000);
 
-    const updateBoundingSphere = () => {
-      const fg = fgRef.current;
-      if (!fg || !showCrowds || activeGroups.length === 0) {
-        crowdSphereMeshesMapRef.current.forEach(mesh => {
-          if (fg) fg.scene().remove(mesh);
+    applyRendererPerfSettings(fg.renderer?.(), maxPixelRatio);
+
+    // The bounding spheres only need to track the layout loosely, so recompute
+    // them on every third tick and once more when the engine settles.
+    let tick = 0;
+    fg.onEngineTick(() => {
+      if (++tick % 3 === 0) updateCrowdSpheresRef.current();
+    });
+    fg.onEngineStop(() => updateCrowdSpheresRef.current());
+
+    // In dense mode the instance above is kept purely as a viewport: its own
+    // graph stays empty (Effect B pushes nothing into it) so it contributes no
+    // objects and no layout, while its camera, orbit controls, resize handling
+    // and background all keep working. The scene gets our two batched objects
+    // instead, driven by positions from the worker.
+    let disposeDense = () => {};
+    if (denseEnabled) {
+      const denseRenderer = new DenseGraphRenderer(fg.scene(), fg.renderer());
+      denseRendererRef.current = denseRenderer;
+
+      const worker = new GraphLayoutWorker();
+      layoutWorkerRef.current = worker;
+
+      // The worker ticks faster than the display refreshes, so collapse every
+      // message that arrived since the last frame into a single upload.
+      let pending: Float32Array | null = null;
+      let frame = 0;
+      const applyPending = () => {
+        frame = 0;
+        const positions = pending;
+        pending = null;
+        if (!positions) return;
+        denseLayoutRef.current.positions = positions;
+        denseRenderer.applyPositions(positions);
+        updateCrowdSpheresRef.current();
+      };
+      worker.onmessage = (event: MessageEvent<Float32Array>) => {
+        pending = event.data;
+        if (frame === 0) frame = requestAnimationFrame(applyPending);
+      };
+
+      disposeDense = () => {
+        if (frame !== 0) cancelAnimationFrame(frame);
+        worker.terminate();
+        layoutWorkerRef.current = null;
+        denseRenderer.dispose();
+        denseRendererRef.current = null;
+        denseLayoutRef.current = { indexById: new Map(), positions: null };
+      };
+    }
+
+    fgRef.current = fg;
+
+    return () => {
+      disposeDense();
+      crowdSphereMeshesMapRef.current.forEach(mesh => {
+        fg.scene().remove(mesh);
+        mesh.material && (mesh.material as THREE.Material).dispose();
+      });
+      crowdSphereMeshesMapRef.current.clear();
+      nodeObjMapRef.current.clear();
+      linkObjMapRef.current.clear();
+      fg._destructor();
+      fgRef.current = null;
+      resources.dispose();
+      resourcesRef.current = null;
+    };
+  }, [hasGraphData, antialias, maxPixelRatio, nodeSegments, denseEnabled]);
+
+  // ── Effect B: push structural changes ───────────────────────────────────
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg || !graphData || !graphData.nodes.length) return;
+
+    const visuals = buildVisualsRef.current();
+
+    // Carry settled positions across the rebuild so filter and crowd changes
+    // nudge the layout rather than throwing it away and re-simulating.
+    const previous = fg.graphData().nodes as any[];
+    if (previous.length) {
+      const prevById = new Map(previous.map((n: any) => [n.id, n]));
+      for (const node of visuals.nodes) {
+        const prev = prevById.get(node.id);
+        if (!prev) continue;
+        node.x = prev.x; node.y = prev.y; node.z = prev.z;
+        node.vx = prev.vx; node.vy = prev.vy; node.vz = prev.vz;
+        if (prev.fx !== undefined) node.fx = prev.fx;
+        if (prev.fy !== undefined) node.fy = prev.fy;
+        if (prev.fz !== undefined) node.fz = prev.fz;
+      }
+    }
+
+    nodeObjMapRef.current.clear();
+    linkObjMapRef.current.clear();
+
+    // The two renderers keep positions in different places: the standard path
+    // mutates these node objects in place, the dense path writes a flat array.
+    // The crowd spheres only need a lookup, so they are given one either way.
+    const nodeById = new Map(visuals.nodes.map(n => [n.id, n]));
+    const positionOf = (id: string): { x: number; y: number; z: number } | null => {
+      if (denseEnabled) {
+        const { indexById, positions } = denseLayoutRef.current;
+        const index = indexById.get(id);
+        if (index === undefined || !positions) return null;
+        const base = index * 3;
+        return { x: positions[base], y: positions[base + 1], z: positions[base + 2] };
+      }
+      const node = nodeById.get(id) as any;
+      if (!node || node.x === undefined || node.y === undefined || node.z === undefined) return null;
+      return node;
+    };
+    const { activeGroupIds, crowdNodeIdsByGroup, crowdColorByGroup } = visuals;
+
+    updateCrowdSpheresRef.current = () => {
+      const graph = fgRef.current;
+      const resources = resourcesRef.current;
+      if (!graph || !resources) return;
+      const meshes = crowdSphereMeshesMapRef.current;
+
+      if (!showCrowdsRef.current || activeGroupIds.length === 0) {
+        meshes.forEach(mesh => {
+          graph.scene().remove(mesh);
+          (mesh.material as THREE.Material).dispose();
         });
-        crowdSphereMeshesMapRef.current.clear();
+        meshes.clear();
         return;
       }
 
-      const graphNodes = fg.graphData().nodes as any[];
-      const activeGroupIds = new Set(activeGroups.map(g => g.id));
-
-      // Remove meshes for groups that are no longer active
-      crowdSphereMeshesMapRef.current.forEach((mesh, gId) => {
-        if (!activeGroupIds.has(gId)) {
-          fg.scene().remove(mesh);
-          crowdSphereMeshesMapRef.current.delete(gId);
+      const activeSet = new Set(activeGroupIds);
+      meshes.forEach((mesh, gId) => {
+        if (!activeSet.has(gId)) {
+          graph.scene().remove(mesh);
+          (mesh.material as THREE.Material).dispose();
+          meshes.delete(gId);
         }
       });
 
-      activeGroups.forEach(g => {
-        if (!g.crowdMembers || g.crowdMembers.length === 0) {
-          const existing = crowdSphereMeshesMapRef.current.get(g.id);
-          if (existing) {
-            fg.scene().remove(existing);
-            crowdSphereMeshesMapRef.current.delete(g.id);
-          }
-          return;
+      const dropMesh = (gId: string) => {
+        const existing = meshes.get(gId);
+        if (existing) {
+          graph.scene().remove(existing);
+          (existing.material as THREE.Material).dispose();
+          meshes.delete(gId);
+        }
+      };
+
+      for (const gId of activeGroupIds) {
+        const memberIds = crowdNodeIdsByGroup.get(gId);
+        if (!memberIds || memberIds.size === 0) {
+          dropMesh(gId);
+          continue;
         }
 
-        const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
-        const crowdNodes = graphNodes.filter(n => {
-          if (!n) return false;
-          if (isSocialMode) {
-            return g.crowdMembers?.includes(n.id) && n.x !== undefined && n.y !== undefined && n.z !== undefined;
-          }
-          const ownerId = graphData.nodes.find(dn => dn.id === n.id)?.ownerPersonId;
-          return ownerId && g.crowdMembers?.includes(ownerId) && n.x !== undefined && n.y !== undefined && n.z !== undefined;
-        });
-
-        if (crowdNodes.length === 0) {
-          const existing = crowdSphereMeshesMapRef.current.get(g.id);
-          if (existing) {
-            fg.scene().remove(existing);
-            crowdSphereMeshesMapRef.current.delete(g.id);
-          }
-          return;
+        let sumX = 0, sumY = 0, sumZ = 0, count = 0;
+        const positioned: { x: number; y: number; z: number }[] = [];
+        for (const id of Array.from(memberIds)) {
+          const position = positionOf(id);
+          if (!position) continue;
+          positioned.push(position);
+          sumX += position.x; sumY += position.y; sumZ += position.z;
+          count++;
+        }
+        if (count === 0) {
+          dropMesh(gId);
+          continue;
         }
 
-        let sumX = 0, sumY = 0, sumZ = 0;
-        for (const n of crowdNodes) {
-          sumX += n.x;
-          sumY += n.y;
-          sumZ += n.z;
-        }
-        const centroidX = sumX / crowdNodes.length;
-        const centroidY = sumY / crowdNodes.length;
-        const centroidZ = sumZ / crowdNodes.length;
+        const centroidX = sumX / count;
+        const centroidY = sumY / count;
+        const centroidZ = sumZ / count;
 
-        const distances = crowdNodes.map(n => {
+        const distances = positioned.map(n => {
           const dx = n.x - centroidX;
           const dy = n.y - centroidY;
           const dz = n.z - centroidZ;
-          return Math.sqrt(dx*dx + dy*dy + dz*dz);
+          return Math.sqrt(dx * dx + dy * dy + dz * dz);
         });
         distances.sort((a, b) => a - b);
         const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
         const radius = Math.max(15, distances[percentileIndex] || 15);
-        const sphereColor = isAllCrowds ? (g.color || crowdColor) : crowdColor;
+        const sphereColor = crowdColorByGroup.get(gId) || CROWD_SCHEME_COLORS[crowdColorScheme];
 
-        let mesh = crowdSphereMeshesMapRef.current.get(g.id);
+        let mesh = meshes.get(gId);
         if (!mesh) {
-          const geom = new THREE.SphereGeometry(1, 32, 32);
-          const mat = new THREE.MeshBasicMaterial({
-            color: sphereColor,
-            transparent: true,
-            opacity: crowdSphereOpacity,
-            wireframe: true,
-          });
-          mesh = new THREE.Mesh(geom, mat);
-          fg.scene().add(mesh);
-          crowdSphereMeshesMapRef.current.set(g.id, mesh);
+          // The wireframe geometry is shared, but each sphere keeps its own
+          // material because colour and opacity are mutated per group below.
+          mesh = new THREE.Mesh(
+            resources.sphereGeometry(1, 32),
+            new THREE.MeshBasicMaterial({
+              color: sphereColor,
+              transparent: true,
+              opacity: crowdSphereOpacityRef.current,
+              wireframe: true,
+            }),
+          );
+          graph.scene().add(mesh);
+          meshes.set(gId, mesh);
         }
 
         mesh.position.set(centroidX, centroidY, centroidZ);
         mesh.scale.set(radius, radius, radius);
         (mesh.material as THREE.MeshBasicMaterial).color.set(sphereColor);
-        (mesh.material as THREE.MeshBasicMaterial).opacity = crowdSphereOpacity;
-      });
+        (mesh.material as THREE.MeshBasicMaterial).opacity = crowdSphereOpacityRef.current;
+      }
     };
 
-    if (!fgRef.current) {
-      const fg = (ForceGraph3D as any)({
-        controlType: 'orbit',
-        rendererConfig: { antialias: true, alpha: true },
-      })(graphRef.current)
-        .graphData(gData)
-        .backgroundColor(bgColor)
-        .nodeLabel('name')
-        .nodeThreeObject((node: any) => {
-          if (!node) return new THREE.Object3D();
-          if (node.isCenter) {
-            const groupMesh = new THREE.Group();
-            const sphereMat = new THREE.MeshBasicMaterial({
-              color: node.color || "#ec4899",
-              transparent: true,
-              opacity: 0.5,
-            });
-            const sphereMesh = new THREE.Mesh(new THREE.SphereGeometry(6, 16, 16), sphereMat);
-            groupMesh.add(sphereMesh);
+    if (denseEnabled) {
+      const denseRenderer = denseRendererRef.current;
+      const worker = layoutWorkerRef.current;
+      if (denseRenderer && worker) {
+        const previous = denseLayoutRef.current;
+        const index = denseRenderer.setGraph(visuals.nodes, visuals.links);
 
-            const ringMat = new THREE.MeshBasicMaterial({
-              color: node.color || "#ec4899",
-              side: THREE.DoubleSide,
-            });
-            const ringMesh = new THREE.Mesh(new THREE.RingGeometry(7, 8, 32), ringMat);
-            groupMesh.add(ringMesh);
-            return groupMesh;
-          }
-
-          const mat = new THREE.MeshLambertMaterial({
-            color: node.color || "#10b981",
-            transparent: node.isCrowd,
-            opacity: node.isCrowd ? 0.6 : 1.0,
-          });
-          return new THREE.Mesh(new THREE.SphereGeometry(4, 16, 16), mat);
-        })
-        .nodeVal('val')
-        .enableNodeDrag(true)
-        .enableNavigationControls(true)
-        .showNavInfo(false)
-        .linkThreeObject((link: any) => {
-          const positions = new Float32Array(6);
-          const geometry = new THREE.BufferGeometry();
-          geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          const material = getMaterial(link.color || '#6b7280', link.isCrowdLink);
-          return link.isCrowdLink 
-            ? new THREE.LineSegments(geometry, material)
-            : new THREE.Line(geometry, material);
-        })
-        .linkPositionUpdate((obj: any, coords: any) => {
-          if (!coords || !coords.start || !coords.end) return false;
-          const { start, end } = coords;
-          if (typeof start.x !== 'number' || typeof end.x !== 'number') return false;
-          const line = obj as THREE.Line;
-          const positions = line?.geometry?.attributes?.position as THREE.BufferAttribute;
-          if (!positions || !positions.array) return false;
-          positions.array[0] = start.x;
-          positions.array[1] = start.y;
-          positions.array[2] = start.z;
-          positions.array[3] = end.x;
-          positions.array[4] = end.y;
-          positions.array[5] = end.z;
-          positions.needsUpdate = true;
-          line.geometry.computeBoundingSphere();
-          if ((line as any).computeLineDistances) {
-            (line as any).computeLineDistances();
-          }
-          return true;
-        })
-        .linkDirectionalArrowLength((link: any) => link.mutual ? 0 : 4)
-        .linkDirectionalArrowRelPos(1)
-        .linkDirectionalArrowColor((link: any) => link.color || '#6b7280')
-        .linkCurvature(0)
-        .onNodeClick((node: any) => {
-          setSelectedAccountId(node.id);
-          setContextMenu(null);
-        })
-        .onNodeHover((node: any) => {
-          graphRef.current!.style.cursor = node ? 'pointer' : 'default';
-        })
-        .onNodeRightClick((node: any, event: MouseEvent) => {
-          event.preventDefault();
-          setContextMenu({ x: event.clientX, y: event.clientY, accountId: node.id });
-        })
-        .d3AlphaDecay(0.01)
-        .d3VelocityDecay(0.3)
-        .warmupTicks(100)
-        .cooldownTime(15000);
-
-      try {
-        const chargeForce = fg.d3Force('charge');
-        if (chargeForce && typeof chargeForce.strength === 'function') {
-          chargeForce.strength((node: any) => {
-            const nodeVal = node.val || 10;
-            const scale = 1 + (Math.sqrt(nodeVal / 10) - 1) * blobForceMultiplier;
-            return -30 * scale;
+        // Carry settled positions over by id. Nodes the previous layout never
+        // had stay NaN, which the worker reads as "place this one yourself".
+        let seed: Float32Array | null = null;
+        if (previous.positions && previous.indexById.size > 0) {
+          seed = new Float32Array(index.nodeCount * 3).fill(NaN);
+          index.indexById.forEach((nextIndex, id) => {
+            const prevIndex = previous.indexById.get(id);
+            if (prevIndex === undefined) return;
+            const from = prevIndex * 3;
+            const to = nextIndex * 3;
+            seed![to] = previous.positions![from];
+            seed![to + 1] = previous.positions![from + 1];
+            seed![to + 2] = previous.positions![from + 2];
           });
         }
-      } catch (_) { }
 
-      (fg as any).onEngineTick(updateBoundingSphere);
-      (fg as any).onEngineStop(updateBoundingSphere);
-
-      const controls = (fg as any).controls?.();
-      if (controls) {
-        controls.autoRotate = autoRotate;
-        controls.autoRotateSpeed = 0.8;
+        denseLayoutRef.current = { indexById: index.indexById, positions: seed };
+        const request: LayoutRequest = {
+          type: 'init',
+          nodeCount: index.nodeCount,
+          links: index.linkPairs,
+          vals: index.vals,
+          chargeMultiplier: blobForceMultiplierRef.current,
+          positions: seed,
+        };
+        worker.postMessage(request);
       }
-
-      fgRef.current = fg;
     } else {
-      fgRef.current.graphData(gData);
-      setTimeout(updateBoundingSphere, 100);
-      const controls = (fgRef.current as any).controls?.();
-      if (controls) {
-        controls.autoRotate = autoRotate;
-        controls.autoRotateSpeed = 0.8;
-      }
-      try {
-        const chargeForce = fgRef.current.d3Force('charge');
-        if (chargeForce && typeof chargeForce.strength === 'function') {
-          chargeForce.strength((node: any) => {
-            const nodeVal = node.val || 10;
-            const scale = 1 + (Math.sqrt(nodeVal / 10) - 1) * blobForceMultiplier;
-            return -30 * scale;
-          });
-        }
-      } catch (_) { }
+      fg.graphData({ nodes: visuals.nodes, links: visuals.links });
+      applyChargeForce();
+    }
+    setRenderedCounts(prev =>
+      prev.nodes === visuals.nodes.length && prev.links === visuals.links.length
+        ? prev
+        : { nodes: visuals.nodes.length, links: visuals.links.length }
+    );
+    updateCrowdSpheresRef.current();
+  }, [
+    graphData,
+    graphIndex,
+    graphMode,
+    appliedSettings,
+    highlightedGroupId,
+    groupsList,
+    showCrowds,
+    applyChargeForce,
+    // Renderer rebuilds clear the object maps, so re-push the data afterwards.
+    hasGraphData,
+    antialias,
+    maxPixelRatio,
+    nodeSegments,
+    denseEnabled,
+  ]);
+
+  // ── Effect C: recolour in place ─────────────────────────────────────────
+  // Swapping cached materials on the existing objects avoids re-pushing
+  // graphData, which would restart the force simulation for a colour tweak.
+  useEffect(() => {
+    const fg = fgRef.current;
+    const resources = resourcesRef.current;
+    if (!fg || !resources || !graphData || !graphData.nodes.length) return;
+
+    if (denseEnabled) {
+      const visuals = buildVisualsRef.current();
+      denseRendererRef.current?.setColors(visuals.nodes, visuals.links);
+      return;
     }
 
-    return () => {
-      if (fgRef.current) {
-        crowdSphereMeshesMapRef.current.forEach(mesh => {
-          fgRef.current?.scene().remove(mesh);
-        });
-        crowdSphereMeshesMapRef.current.clear();
-        fgRef.current._destructor();
-        fgRef.current = null;
+    if (nodeObjMapRef.current.size === 0) return;
+
+    const visuals = buildVisualsRef.current();
+
+    const liveNodes = fg.graphData().nodes as any[];
+    const liveNodeById = new Map(liveNodes.map((n: any) => [n.id, n]));
+    for (const node of visuals.nodes) {
+      const live = liveNodeById.get(node.id);
+      if (live) live.color = node.color;
+      const obj = nodeObjMapRef.current.get(node.id);
+      if (!obj) continue;
+      // A changed isCenter means the object's shape changed too; that only
+      // happens on structural updates, which Effect B already handled.
+      if (obj.userData.isCenter !== node.isCenter) continue;
+      if (node.isCenter) {
+        const [sphere, ring] = obj.children as THREE.Mesh[];
+        if (sphere) sphere.material = resources.basicMaterial(node.color, { opacity: 0.5 });
+        if (ring) ring.material = resources.basicMaterial(node.color, { doubleSided: true });
+      } else {
+        (obj as THREE.Mesh).material = resources.nodeMaterial(node.color, node.isCrowd);
       }
-      materialCacheRef.current.forEach(m => m.dispose());
-      materialCacheRef.current.clear();
-    };
-  }, [graphData, navigate, graphMode, blobForceMultiplier, linkMutualColor, linkDefaultColor, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, highlightedGroupId, groupsList, showCrowds, crowdColorScheme, crowdSphereOpacity]);
+    }
+
+    const linkVisualByIdx = new Map(visuals.links.map(l => [l.idx, l]));
+    for (const link of visuals.links) {
+      const line = linkObjMapRef.current.get(link.idx);
+      if (line) line.material = resources.lineMaterial(link.color, link.isCrowdLink);
+    }
+    const liveLinks = fg.graphData().links as any[];
+    for (const live of liveLinks) {
+      const visual = linkVisualByIdx.get(live.idx);
+      if (visual) live.color = visual.color;
+    }
+
+    // Arrow meshes cache their colour internally, so nudge the accessor to make
+    // the library re-read it. Custom link objects are left untouched by that
+    // digest, so the lines above keep the materials just assigned.
+    if (arrowsEnabled) {
+      fg.linkDirectionalArrowColor((l: any) => l.color || '#6b7280');
+    }
+  }, [
+    graphData,
+    denseEnabled,
+    computeColorMap,
+    arrowsEnabled,
+    crowdColorScheme,
+    linkMutualColor,
+    linkDefaultColor,
+    singleLinkMutualColor,
+    singleLinkFollowsYouColor,
+    singleLinkYouFollowColor,
+  ]);
+
+  // ── Effect D: arrows ────────────────────────────────────────────────────
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    fg.linkDirectionalArrowLength(
+      arrowsEnabled ? (link: any) => (link.mutual ? 0 : 4) : () => 0
+    );
+  }, [arrowsEnabled, renderedCounts]);
+
+  // ── Effect E: charge force ──────────────────────────────────────────────
+  // Effect B already applies the force on every data push, so this only needs
+  // to handle later slider changes. Skipping the initial run avoids an extra
+  // library update, each of which tears down and rebuilds the drag controls.
+  const chargeAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!chargeAppliedRef.current) {
+      chargeAppliedRef.current = true;
+      return;
+    }
+    if (denseEnabled) {
+      const request: LayoutRequest = { type: 'charge', chargeMultiplier: blobForceMultiplier };
+      layoutWorkerRef.current?.postMessage(request);
+      return;
+    }
+    applyChargeForce();
+    fgRef.current?.d3ReheatSimulation?.();
+  }, [blobForceMultiplier, applyChargeForce, denseEnabled]);
 
   useEffect(() => {
     crowdSphereMeshesMapRef.current.forEach((mesh) => {
@@ -944,14 +1336,6 @@ function SocialGraphContent({
   }, [autoRotate]);
 
   useEffect(() => {
-    if (!fgRef.current || !graphData || !graphData.nodes.length) return;
-    const colorMap = computeColorMap();
-    nodeColorMapRef.current = colorMap;
-    fgRef.current.nodeColor((node: any) => nodeColorMapRef.current.get(node.id) || '#10b981');
-  }, [colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, computeColorMap, graphData]);
-
-
-  useEffect(() => {
     const handleClickOutside = () => setContextMenu(null);
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
@@ -968,9 +1352,24 @@ function SocialGraphContent({
   };
 
   const handleZoomToFit = () => {
-    if (fgRef.current) {
-      fgRef.current.zoomToFit(1000, 50);
+    const fg = fgRef.current;
+    if (!fg) return;
+    if (!denseEnabled) {
+      fg.zoomToFit(1000, 50);
+      return;
     }
+    // The library's zoomToFit measures its own graph data, which dense mode
+    // leaves empty on purpose, so frame the batched geometry's bounds instead.
+    const bounds = denseRendererRef.current?.bounds();
+    if (!bounds) return;
+    const camera = fg.camera();
+    const fov = ((camera?.fov ?? 75) * Math.PI) / 180;
+    // The 1.1 leaves roughly the margin zoomToFit's padding argument gives.
+    const distance = (bounds.radius * 1.1) / Math.tan(fov / 2);
+    const direction = new THREE.Vector3().subVectors(camera.position, bounds.center).normalize();
+    // Keep the current viewing angle unless the camera sits exactly on centre.
+    if (direction.lengthSq() === 0) direction.set(0, 0, 1);
+    fg.cameraPosition(direction.multiplyScalar(distance).add(bounds.center), bounds.center, 1000);
   };
 
   return (
@@ -985,6 +1384,22 @@ function SocialGraphContent({
           </h1>
         </div>
         <div className="flex items-center gap-2">
+          {denseEnabled && (
+            // Selection is the visible casualty of dense mode, so say so here
+            // rather than leaving clicks to silently do nothing.
+            <div className="flex items-center gap-1.5" data-testid="badge-dense-mode">
+              <Badge variant="secondary">Dense mode &middot; selection off</Badge>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setDenseModeSetting('off')}
+                data-testid="button-leave-dense-mode"
+              >
+                Use standard
+              </Button>
+            </div>
+          )}
           {isGraphLoading && (
             <span className="text-xs text-muted-foreground" data-testid="text-graph-loading">Loading...</span>
           )}
@@ -1133,6 +1548,10 @@ function SocialGraphContent({
                 <TabsTrigger value="color" className="flex-1 gap-1" data-testid="tab-color">
                   <Palette className="h-3.5 w-3.5" />
                   Color
+                </TabsTrigger>
+                <TabsTrigger value="perf" className="flex-1 gap-1" data-testid="tab-perf">
+                  <Gauge className="h-3.5 w-3.5" />
+                  Perf
                 </TabsTrigger>
               </TabsList>
 
@@ -1732,6 +2151,166 @@ function SocialGraphContent({
                       Auto Rotate
                     </Label>
                   </div>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="perf" className="space-y-4" data-testid="tab-content-perf">
+                <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center" data-testid="text-perf-counts">
+                  <span>Nodes: <strong>{renderedCounts.nodes}</strong></span>
+                  <span>Links: <strong>{renderedCounts.links}</strong></span>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Dense Mode</Label>
+                  <Select value={denseModeSetting} onValueChange={(v: DenseModeSetting) => setDenseModeSetting(v)}>
+                    <SelectTrigger data-testid="select-dense-mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto" data-testid="option-dense-auto">Auto</SelectItem>
+                      <SelectItem value="on" data-testid="option-dense-on">Always on</SelectItem>
+                      <SelectItem value="off" data-testid="option-dense-off">Always off</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Draws the whole graph in two batched passes and moves the layout onto a
+                    background thread, which keeps very large scenes smooth. Nothing is clickable
+                    while it is on &mdash; no hover labels, selection, context menu or dragging.{' '}
+                    {denseModeSetting === 'auto'
+                      ? (denseEnabled
+                        ? `Currently on (${renderedCounts.nodes} nodes, at or over the ${denseModeThreshold} threshold).`
+                        : `Currently off (${renderedCounts.nodes} nodes, under the ${denseModeThreshold} threshold).`)
+                      : (denseEnabled ? 'Currently on.' : 'Currently off.')}
+                  </p>
+                </div>
+
+                {denseModeSetting === 'auto' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Auto-on At</Label>
+                      <span className="text-sm font-medium" data-testid="text-dense-threshold-value">{denseModeThreshold} nodes</span>
+                    </div>
+                    <Slider
+                      value={[Math.max(0, DENSE_THRESHOLD_STEPS.indexOf(denseModeThreshold))]}
+                      min={0}
+                      max={DENSE_THRESHOLD_STEPS.length - 1}
+                      step={1}
+                      onValueChange={(v) => setDenseModeThreshold(DENSE_THRESHOLD_STEPS[v[0]])}
+                      data-testid="slider-dense-threshold"
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      {DENSE_THRESHOLD_STEPS.map(step => (
+                        <span key={step}>{step}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2 pt-3 border-t">
+                  <Label>Direction Arrows</Label>
+                  <Select value={linkArrowMode} onValueChange={(v: LinkArrowMode) => setLinkArrowMode(v)}>
+                    <SelectTrigger data-testid="select-link-arrows">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto" data-testid="option-arrows-auto">Auto</SelectItem>
+                      <SelectItem value="on" data-testid="option-arrows-on">Always on</SelectItem>
+                      <SelectItem value="off" data-testid="option-arrows-off">Always off</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Each one-way arrow is its own cone mesh and is re-aimed every frame &mdash; the
+                    single most expensive thing in a dense graph.{' '}
+                    {linkArrowMode === 'auto'
+                      ? (arrowsEnabled
+                        ? `Currently on (${renderedCounts.links} links, under the ${arrowAutoThreshold} threshold).`
+                        : `Currently off (${renderedCounts.links} links, over the ${arrowAutoThreshold} threshold).`)
+                      : (arrowsEnabled ? 'Currently on.' : 'Currently off.')}
+                  </p>
+                </div>
+
+                {linkArrowMode === 'auto' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm text-muted-foreground">Auto-off Above</Label>
+                      <span className="text-sm font-medium" data-testid="text-arrow-threshold-value">{arrowAutoThreshold} links</span>
+                    </div>
+                    <Slider
+                      value={[arrowAutoThreshold]}
+                      min={250}
+                      max={10000}
+                      step={250}
+                      onValueChange={(v) => setArrowAutoThreshold(v[0])}
+                      data-testid="slider-arrow-threshold"
+                    />
+                  </div>
+                )}
+
+                <div className="space-y-2 pt-3 border-t">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="perf-antialias">Antialiasing</Label>
+                    <Switch
+                      id="perf-antialias"
+                      checked={antialias}
+                      onCheckedChange={setAntialias}
+                      data-testid="switch-antialias"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Smooths sphere and line edges. Turning it off helps most when the view is
+                    filled with overlapping nodes. Changing this rebuilds the renderer.
+                  </p>
+                </div>
+
+                <div className="space-y-2 pt-3 border-t">
+                  <div className="flex items-center justify-between">
+                    <Label>Max Pixel Ratio</Label>
+                    <span className="text-sm font-medium" data-testid="text-pixel-ratio-value">{maxPixelRatio.toFixed(2)}x</span>
+                  </div>
+                  <Slider
+                    value={[Math.round(maxPixelRatio * 100)]}
+                    min={100}
+                    max={200}
+                    step={25}
+                    onValueChange={(v) => setMaxPixelRatio(v[0] / 100)}
+                    data-testid="slider-pixel-ratio"
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>1x</span>
+                    <span>1.25x</span>
+                    <span>1.5x</span>
+                    <span>1.75x</span>
+                    <span>2x</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    2x matches the default. On a hi-DPI screen, dropping to 1x quarters the pixels
+                    the GPU has to shade &mdash; usually a bigger win than antialiasing, at the cost
+                    of a softer image.
+                  </p>
+                </div>
+
+                <div className="space-y-2 pt-3 border-t">
+                  <div className="flex items-center justify-between">
+                    <Label>Node Detail</Label>
+                    <span className="text-sm font-medium" data-testid="text-node-segments-value">{nodeSegments} segments</span>
+                  </div>
+                  <Slider
+                    value={[Math.max(0, NODE_SEGMENT_STEPS.indexOf(nodeSegments))]}
+                    min={0}
+                    max={NODE_SEGMENT_STEPS.length - 1}
+                    step={1}
+                    onValueChange={(v) => setNodeSegments(NODE_SEGMENT_STEPS[v[0]])}
+                    data-testid="slider-node-segments"
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    {NODE_SEGMENT_STEPS.map(step => (
+                      <span key={step}>{step}</span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Sphere subdivision for every node. 16 is the default; coarser spheres are hard
+                    to tell apart at normal zoom and cut vertex count sharply.
+                  </p>
                 </div>
               </TabsContent>
             </Tabs>

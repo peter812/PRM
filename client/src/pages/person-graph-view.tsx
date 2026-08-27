@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "3d-force-graph";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,8 @@ import type { PersonGraphData } from "@shared/schema";
 import * as THREE from "three";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { getInitialGraphSettings } from "@/lib/social-graph-defaults";
+import { GraphResourceCache, applyRendererPerfSettings } from "@/lib/graph-three-resources";
 
 interface GraphNode {
   id: string;
@@ -131,6 +133,12 @@ export default function PersonGraphView({
   const [crowdColorScheme, setCrowdColorScheme] = useState<"pastel" | "emerald" | "amber" | "sky">("pastel");
   const [crowdSphereOpacity, setCrowdSphereOpacity] = useState(0.15);
   const crowdSphereMeshesMapRef = useRef<Map<string, THREE.Mesh>>(new Map());
+  // Shared geometry/material pool — see graph-three-resources for why a fresh
+  // geometry and material per node is what caps these scenes.
+  const resourcesRef = useRef<GraphResourceCache | null>(null);
+  // Rendering quality comes from the persisted Social Graph defaults so both
+  // 3D views honour one set of performance settings.
+  const perfSettings = useRef(getInitialGraphSettings()).current;
 
   const { data: graphData } = useQuery<PersonGraphData>({
     queryKey: ["/api/social-graph", "person"],
@@ -149,15 +157,37 @@ export default function PersonGraphView({
   const groups = graphData?.groups || [];
   const relationships = graphData?.relationships || [];
 
-  const people = hideOrphans
-    ? allPeople.filter((person) => {
-        const hasRelationship = relationships.some(
-          (rel) => rel.fromPersonId === person.id || rel.toPersonId === person.id
-        );
-        const isInGroup = groups.some((group) => group.members.includes(person.id));
-        return hasRelationship || isInGroup;
-      })
-    : allPeople;
+  // Index membership once instead of scanning every relationship and every
+  // group's member array for each person. Keyed on graphData because the
+  // destructured arrays above are fresh objects on every render.
+  const attachedPersonIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const rel of relationships) {
+      ids.add(rel.fromPersonId);
+      ids.add(rel.toPersonId);
+    }
+    for (const group of groups) {
+      for (const memberId of group.members) ids.add(memberId);
+    }
+    return ids;
+  }, [graphData]);
+
+  const people = useMemo(
+    () => (hideOrphans ? allPeople.filter((person) => attachedPersonIds.has(person.id)) : allPeople),
+    [hideOrphans, graphData, attachedPersonIds],
+  );
+
+  const visiblePersonIds = useMemo(() => new Set(people.map((p) => p.id)), [people]);
+
+  // Person id -> the social account ids they own, so crowd membership tests
+  // stop being a linear scan over every person on every simulation tick.
+  const crowdAccountOwnerIds = useMemo(() => {
+    const byAccountId = new Map<string, string>();
+    for (const p of allPeople) {
+      for (const brief of p.socialAccountBriefs || []) byAccountId.set(brief.id, p.id);
+    }
+    return byAccountId;
+  }, [graphData]);
 
   const selectedPerson = selectedPersonId
     ? allPeople.find((p) => p.id === selectedPersonId)
@@ -166,6 +196,8 @@ export default function PersonGraphView({
   useEffect(() => {
     if (!graphRef.current) return;
     if (!people.length) return;
+
+    if (!resourcesRef.current) resourcesRef.current = new GraphResourceCache();
 
     const isAllCrowds = highlightedGroupId === "all";
     const activeGroups = isAllCrowds
@@ -253,7 +285,7 @@ export default function PersonGraphView({
         const isHighlight = isAllCrowds || highlightedGroupId === g.id;
         
         g.members.forEach((memberId) => {
-          if (people.some((p) => p.id === memberId)) {
+          if (visiblePersonIds.has(memberId)) {
             links.push({
               source: `group-${g.id}`,
               target: memberId,
@@ -268,7 +300,7 @@ export default function PersonGraphView({
           const linkColor = isAllCrowds ? (g.color || crowdColor) : crowdColor;
           if (isPersonMode) {
             g.crowdMembers.forEach((crowdId) => {
-              if (people.some((p) => p.id === crowdId)) {
+              if (visiblePersonIds.has(crowdId)) {
                 links.push({
                   source: `group-${g.id}`,
                   target: crowdId,
@@ -387,6 +419,19 @@ export default function PersonGraphView({
     const values = backgroundHSL.split(" ").map((v) => parseFloat(v));
     const bgColor = `hsl(${values[0]}, ${values[1]}%, ${values[2]}%)`;
 
+    // Crowd membership per group, resolved once per rebuild rather than
+    // re-derived on every simulation tick.
+    const crowdPersonIdsByGroup = new Map<string, Set<string>>();
+    for (const g of activeGroups) {
+      const ids = new Set<string>();
+      const isPersonMode = g.crowdMode === "person_profiles";
+      for (const memberId of g.crowdMembers || []) {
+        const personId = isPersonMode ? memberId : crowdAccountOwnerIds.get(memberId);
+        if (personId && visiblePersonIds.has(personId)) ids.add(personId);
+      }
+      crowdPersonIdsByGroup.set(g.id, ids);
+    }
+
     const updateBoundingSphere = () => {
       const fg = fgRef.current;
       if (!fg || !showCrowds || activeGroups.length === 0) {
@@ -419,12 +464,13 @@ export default function PersonGraphView({
           return;
         }
 
-        const isPersonMode = g.crowdMode === "person_profiles";
+        // Resolve crowd membership through prebuilt sets: the previous version
+        // ran a linear `people.find` plus an `includes` per node, per group,
+        // per tick.
+        const crowdPersonIds = crowdPersonIdsByGroup.get(g.id);
         const crowdNodes = graphNodes.filter((n) => {
           if (!n || typeof n.x !== "number" || typeof n.y !== "number" || typeof n.z !== "number") return false;
-          if (isPersonMode) return crowdMembers.includes(n.id);
-          const person = people.find((p) => p.id === n.id);
-          return person?.socialAccountBriefs?.some((sa) => crowdMembers.includes(sa.id));
+          return crowdPersonIds?.has(n.id) ?? false;
         });
 
         if (crowdNodes.length === 0) {
@@ -459,7 +505,9 @@ export default function PersonGraphView({
 
         let mesh = crowdSphereMeshesMapRef.current.get(g.id);
         if (!mesh) {
-          const geom = new THREE.SphereGeometry(1, 32, 32);
+          // Geometry is shared; the material stays per-group because colour and
+          // opacity are mutated below.
+          const geom = resourcesRef.current!.sphereGeometry(1, 32);
           const mat = new THREE.MeshBasicMaterial({
             color: sphereColor,
             transparent: true,
@@ -480,44 +528,44 @@ export default function PersonGraphView({
 
     if (!fgRef.current) {
       const factory = ForceGraph3D as unknown as (
-        opts: { controlType: string; rendererConfig: { antialias: boolean; alpha: boolean } }
+        opts: { controlType: string; rendererConfig: Record<string, unknown> }
       ) => (el: HTMLElement) => ForceGraphInstance;
       const fg = factory({
         controlType: "orbit",
-        rendererConfig: { antialias: true, alpha: true },
+        rendererConfig: {
+          antialias: perfSettings.antialias,
+          alpha: true,
+          powerPreference: "high-performance",
+        },
       })(graphRef.current);
+
+      applyRendererPerfSettings((fg as any).renderer?.(), perfSettings.maxPixelRatio);
 
       fg
         .graphData(gData)
         .backgroundColor(bgColor)
         .nodeLabel("name")
         .nodeThreeObject((node: any) => {
-          if (!node) return new THREE.Object3D();
+          const resources = resourcesRef.current;
+          if (!node || !resources) return new THREE.Object3D();
+          const segments = perfSettings.nodeSegments;
           if (node.isCenter) {
             const groupMesh = new THREE.Group();
-            const sphereMat = new THREE.MeshBasicMaterial({
-              color: node.color || "#ec4899",
-              transparent: true,
-              opacity: 0.5,
-            });
-            const sphereMesh = new THREE.Mesh(new THREE.SphereGeometry(6, 16, 16), sphereMat);
-            groupMesh.add(sphereMesh);
-
-            const ringMat = new THREE.MeshBasicMaterial({
-              color: node.color || "#ec4899",
-              side: THREE.DoubleSide,
-            });
-            const ringMesh = new THREE.Mesh(new THREE.RingGeometry(7, 8, 32), ringMat);
-            groupMesh.add(ringMesh);
+            groupMesh.add(new THREE.Mesh(
+              resources.sphereGeometry(6, segments),
+              resources.basicMaterial(node.color || "#ec4899", { opacity: 0.5 }),
+            ));
+            groupMesh.add(new THREE.Mesh(
+              resources.ringGeometry(7, 8, 32),
+              resources.basicMaterial(node.color || "#ec4899", { doubleSided: true }),
+            ));
             return groupMesh;
           }
 
-          const mat = new THREE.MeshLambertMaterial({
-            color: node.color || "#6366f1",
-            transparent: node.isCrowd,
-            opacity: node.isCrowd ? 0.6 : 1.0,
-          });
-          return new THREE.Mesh(new THREE.SphereGeometry(node.type === "group" ? 8 : 4, 16, 16), mat);
+          return new THREE.Mesh(
+            resources.sphereGeometry(node.type === "group" ? 8 : 4, segments),
+            resources.nodeMaterial(node.color || "#6366f1", !!node.isCrowd),
+          );
         })
         .nodeVal("val")
         .linkColor((link: any) => link.color || "#6b7280")
@@ -544,7 +592,12 @@ export default function PersonGraphView({
         .warmupTicks(100)
         .cooldownTime(15000);
 
-      (fg as any).onEngineTick(updateBoundingSphere);
+      // The spheres only need to track the layout loosely, so recompute on
+      // every third tick and once more when the engine settles.
+      let tick = 0;
+      (fg as any).onEngineTick(() => {
+        if (++tick % 3 === 0) updateBoundingSphere();
+      });
       (fg as any).onEngineStop(updateBoundingSphere);
 
       fgRef.current = fg;
@@ -557,14 +610,19 @@ export default function PersonGraphView({
       if (fgRef.current) {
         crowdSphereMeshesMapRef.current.forEach((mesh) => {
           fgRef.current?.scene().remove(mesh);
+          (mesh.material as THREE.Material)?.dispose();
         });
         crowdSphereMeshesMapRef.current.clear();
         fgRef.current._destructor();
         fgRef.current = null;
       }
+      resourcesRef.current?.dispose();
+      resourcesRef.current = null;
     };
   }, [
     people,
+    visiblePersonIds,
+    crowdAccountOwnerIds,
     groups,
     relationships,
     navigate,

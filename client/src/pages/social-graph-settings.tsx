@@ -12,11 +12,15 @@ import { Command, CommandInput, CommandItem, CommandList } from "@/components/ui
 import { X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
+  DENSE_THRESHOLD_STEPS,
   EXTRAS_STEPS,
   MERGE_MULTIPLIER_STEPS,
+  NODE_SEGMENT_STEPS,
   SOCIAL_GRAPH_DEFAULTS,
+  type DenseModeSetting,
   type GraphMode,
   type ColorScheme,
+  type LinkArrowMode,
   type SingleNodeColorScheme,
   type SocialGraphDefaults,
   loadSocialGraphDefaults,
@@ -493,6 +497,150 @@ export default function SocialGraphSettingsPage() {
               onValueChange={(v) => update('blobForceMultiplier', v[0] / 10)}
               data-testid="slider-blob-force"
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Performance */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Performance</CardTitle>
+          <CardDescription>
+            Rendering quality for both 3D graph views. Lower settings trade image quality for
+            frame rate on dense graphs.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="dense-mode">Dense mode</Label>
+            <Select value={settings.denseMode} onValueChange={(v) => update('denseMode', v as DenseModeSetting)}>
+              <SelectTrigger id="dense-mode" data-testid="select-dense-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="on">Always on</SelectItem>
+                <SelectItem value="off">Always off</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-sm text-muted-foreground">
+              Draws the Social Account graph in two batched passes and runs its layout on a
+              background thread, which keeps very large scenes smooth. In exchange nothing in the
+              scene is clickable: no hover labels, selection, context menu or node dragging.
+            </p>
+          </div>
+
+          {settings.denseMode === 'auto' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Auto-on at</Label>
+                <span className="text-sm font-medium" data-testid="text-dense-threshold-value">
+                  {settings.denseModeThreshold} nodes
+                </span>
+              </div>
+              <Slider
+                value={[Math.max(0, DENSE_THRESHOLD_STEPS.indexOf(settings.denseModeThreshold))]}
+                min={0}
+                max={DENSE_THRESHOLD_STEPS.length - 1}
+                step={1}
+                onValueChange={(v) => update('denseModeThreshold', DENSE_THRESHOLD_STEPS[v[0]])}
+                data-testid="slider-dense-threshold"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground">
+                {DENSE_THRESHOLD_STEPS.map(step => (
+                  <span key={step}>{step}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-2 pt-2 border-t">
+            <Label htmlFor="link-arrows">Direction arrows</Label>
+            <Select value={settings.linkArrows} onValueChange={(v) => update('linkArrows', v as LinkArrowMode)}>
+              <SelectTrigger id="link-arrows" data-testid="select-link-arrows">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="on">Always on</SelectItem>
+                <SelectItem value="off">Always off</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-sm text-muted-foreground">
+              Every one-way arrow is a separate cone mesh that gets re-aimed each frame, so this
+              is the most expensive option on a dense graph.
+            </p>
+          </div>
+
+          {settings.linkArrows === 'auto' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Auto-off above</Label>
+                <span className="text-sm font-medium" data-testid="text-arrow-threshold-value">
+                  {settings.arrowAutoThreshold} links
+                </span>
+              </div>
+              <Slider
+                value={[settings.arrowAutoThreshold]}
+                min={250}
+                max={10000}
+                step={250}
+                onValueChange={(v) => update('arrowAutoThreshold', v[0])}
+                data-testid="slider-arrow-threshold"
+              />
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-2 border-t">
+            <Label htmlFor="perf-antialias">Antialiasing</Label>
+            <Switch
+              id="perf-antialias"
+              checked={settings.antialias}
+              onCheckedChange={(v) => update('antialias', v)}
+              data-testid="switch-antialias"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Max pixel ratio</Label>
+              <span className="text-sm font-medium" data-testid="text-pixel-ratio-value">
+                {settings.maxPixelRatio.toFixed(2)}x
+              </span>
+            </div>
+            <Slider
+              value={[Math.round(settings.maxPixelRatio * 100)]}
+              min={100}
+              max={200}
+              step={25}
+              onValueChange={(v) => update('maxPixelRatio', v[0] / 100)}
+              data-testid="slider-pixel-ratio"
+            />
+            <p className="text-sm text-muted-foreground">
+              2x matches the default. On a hi-DPI screen, 1x quarters the pixels the GPU shades.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Node detail</Label>
+              <span className="text-sm font-medium" data-testid="text-node-segments-value">
+                {settings.nodeSegments} segments
+              </span>
+            </div>
+            <Slider
+              value={[Math.max(0, NODE_SEGMENT_STEPS.indexOf(settings.nodeSegments))]}
+              min={0}
+              max={NODE_SEGMENT_STEPS.length - 1}
+              step={1}
+              onValueChange={(v) => update('nodeSegments', NODE_SEGMENT_STEPS[v[0]])}
+              data-testid="slider-node-segments"
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              {NODE_SEGMENT_STEPS.map(step => (
+                <span key={step}>{step}</span>
+              ))}
+            </div>
           </div>
         </CardContent>
       </Card>

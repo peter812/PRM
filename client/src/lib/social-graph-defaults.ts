@@ -6,6 +6,14 @@ export type GraphMode = 'default' | 'blob' | 'single-highlight' | 'multi-highlig
 export type ColorScheme = 'type' | 'distance' | 'connections';
 export type SingleNodeColorScheme = 'follow-status' | 'type';
 
+/**
+ * A setting that is either forced on, forced off, or decided from the size of
+ * the graph being drawn.
+ */
+export type AutoToggleMode = 'auto' | 'on' | 'off';
+export type LinkArrowMode = AutoToggleMode;
+export type DenseModeSetting = AutoToggleMode;
+
 export interface SocialGraphDefaults {
   // Mode
   defaultMode: GraphMode;
@@ -51,6 +59,15 @@ export interface SocialGraphDefaults {
   // Blob mode
   blobMergeMultiplier: number;
   blobForceMultiplier: number;
+
+  // Performance
+  antialias: boolean;
+  maxPixelRatio: number;
+  nodeSegments: number;
+  linkArrows: LinkArrowMode;
+  arrowAutoThreshold: number;
+  denseMode: DenseModeSetting;
+  denseModeThreshold: number;
 }
 
 export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
@@ -90,12 +107,60 @@ export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
 
   blobMergeMultiplier: 0.5,
   blobForceMultiplier: 2,
+
+  antialias: true,
+  maxPixelRatio: 2,
+  nodeSegments: 16,
+  linkArrows: 'auto',
+  arrowAutoThreshold: 1000,
+  denseMode: 'auto',
+  denseModeThreshold: 3500,
 };
 
 const SOCIAL_GRAPH_STORAGE_KEY = 'socialGraphDefaults';
 
 export const EXTRAS_STEPS = [5, 10, 20, 50, 100];
 export const MERGE_MULTIPLIER_STEPS = [0, 0.15, 0.3, 0.5, 0.75, 1];
+
+/** Sphere subdivision options for graph nodes, coarsest first. */
+export const NODE_SEGMENT_STEPS = [6, 8, 12, 16];
+
+/** Node counts at which dense mode becomes available, coarsest first. */
+export const DENSE_THRESHOLD_STEPS = [1000, 2000, 3500, 5000, 10000];
+
+function resolveAutoToggle(mode: AutoToggleMode, autoValue: boolean): boolean {
+  return mode === 'auto' ? autoValue : mode === 'on';
+}
+
+/**
+ * Directional arrows cost a cone geometry, a material and a mesh per one-way
+ * link, plus per-tick trigonometry to orient each one — by far the most
+ * expensive thing in a dense scene. In 'auto' mode they are dropped once the
+ * link count passes `arrowAutoThreshold`.
+ */
+export function resolveArrowsEnabled(
+  mode: LinkArrowMode,
+  linkCount: number,
+  threshold: number,
+): boolean {
+  return resolveAutoToggle(mode, linkCount <= threshold);
+}
+
+/**
+ * Dense mode swaps the per-node meshes for two batched draw calls and moves the
+ * force layout into a worker. That buys a scene that stays interactive at tens
+ * of thousands of nodes, at the cost of everything that needs to pick an
+ * individual node: hover labels, click-to-select, the context menu and dragging
+ * are all unavailable while it is on. In 'auto' mode it engages once the node
+ * count reaches `denseModeThreshold`.
+ */
+export function resolveDenseEnabled(
+  mode: DenseModeSetting,
+  nodeCount: number,
+  threshold: number,
+): boolean {
+  return resolveAutoToggle(mode, nodeCount >= threshold);
+}
 
 /**
  * Load saved defaults, merging with built-in defaults so newly-added fields
