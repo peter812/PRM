@@ -21,6 +21,8 @@ type GroupWithMembers = Group & {
   memberDetails: Person[];
   interactions?: Interaction[];
   subGroups?: SubGroup[];
+  socialAccountCount?: number;
+  socialAccounts?: any[];
 };
 
 export default function GroupProfile() {
@@ -29,13 +31,12 @@ export default function GroupProfile() {
   const subGroupId = params.subGroupId;
   const [location, navigate] = useLocation();
 
-  const [activeTab, setActiveTab] = useState(() => (subGroupId ? "subgroups" : "members"));
+  const searchParams = new URLSearchParams(window.location.search);
+  const defaultTabFromUrl = searchParams.get("tab");
 
-  useEffect(() => {
-    if (subGroupId) {
-      setActiveTab("subgroups");
-    }
-  }, [subGroupId]);
+  const [activeTab, setActiveTab] = useState(() => (
+    subGroupId ? "subgroups" : (defaultTabFromUrl || "members")
+  ));
 
   const [isEditGroupOpen, setIsEditGroupOpen] = useState(false);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
@@ -44,6 +45,25 @@ export default function GroupProfile() {
     queryKey: ["/api/groups", groupId],
     enabled: !!groupId,
   });
+
+  const { data: groupAccounts = [] } = useQuery<any[]>({
+    queryKey: ["/api/groups", groupId, "social-accounts"],
+    enabled: !!groupId,
+  });
+
+  useEffect(() => {
+    if (subGroupId) {
+      setActiveTab("subgroups");
+    } else if (defaultTabFromUrl) {
+      setActiveTab(defaultTabFromUrl);
+    } else if (
+      group &&
+      (!group.members || group.members.length === 0) &&
+      (group.socialAccountCount ? group.socialAccountCount > 0 : groupAccounts.length > 0)
+    ) {
+      setActiveTab("social");
+    }
+  }, [subGroupId, defaultTabFromUrl, group, groupAccounts.length]);
 
   if (isLoading) {
     return (
@@ -95,6 +115,10 @@ export default function GroupProfile() {
     );
   }
 
+  const socialCount = group.socialAccountCount ?? groupAccounts.length ?? 0;
+  const personCount = group.members?.length || 0;
+  const totalCount = personCount + socialCount;
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b px-6 py-6">
@@ -136,8 +160,18 @@ export default function GroupProfile() {
                       style={{ backgroundColor: group.color }}
                       data-testid="color-indicator"
                     />
-                    <span data-testid="text-member-count">
-                      {group.members?.length || 0} members
+                    <span data-testid="text-member-count" className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-semibold text-foreground">{totalCount} members</span>
+                      {personCount > 0 && socialCount > 0 && (
+                        <span className="text-sm text-muted-foreground">
+                          ({personCount} {personCount === 1 ? "person" : "people"}, {socialCount} social {socialCount === 1 ? "account" : "accounts"})
+                        </span>
+                      )}
+                      {personCount === 0 && socialCount > 0 && (
+                        <span className="text-sm text-muted-foreground">
+                          ({socialCount} social {socialCount === 1 ? "account" : "accounts"})
+                        </span>
+                      )}
                     </span>
                   </div>
                 </div>
@@ -191,6 +225,11 @@ export default function GroupProfile() {
               data-testid="tab-members"
             >
               Members
+              {personCount > 0 && (
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  ({personCount})
+                </span>
+              )}
             </TabsTrigger>
             <TabsTrigger
               value="subgroups"
@@ -217,6 +256,11 @@ export default function GroupProfile() {
               data-testid="tab-social-accounts"
             >
               Social Accounts
+              {socialCount > 0 && (
+                <span className="ml-1.5 text-xs text-muted-foreground">
+                  ({socialCount})
+                </span>
+              )}
             </TabsTrigger>
             <TabsTrigger
               value="crowd"

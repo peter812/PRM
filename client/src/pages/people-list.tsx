@@ -276,7 +276,7 @@ export default function PeopleList() {
         </div>
       </div>
 
-      <div className="flex-1 px-3 md:px-6 py-6">
+      <div className={`flex-1 ${viewMode === "details" ? "px-0" : "px-3 md:px-6"} py-6`}>
         {isLoading ? (
           <>
             {/* Details View Skeleton */}

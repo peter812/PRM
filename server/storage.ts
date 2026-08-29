@@ -95,6 +95,13 @@ import {
   type InsertSocialFollow,
   type SocialNetworkChange,
   type InsertSocialNetworkChange,
+  socialAccountHistory,
+  type SocialAccountHistoryKind,
+  type SocialAccountHistoryEntry,
+  type SocialAccountHistoryDetail,
+  type SocialAccountHistorySummary,
+  type SocialAccountHistoryDelta,
+  type HistoryAccountRef,
   type SocialAccountWithCurrentProfile,
   type SocialAccountPost,
   type InsertSocialAccountPost,
@@ -429,6 +436,11 @@ export interface IStorage {
   recordNetworkChanges(changes: InsertSocialNetworkChange[]): Promise<SocialNetworkChange[]>;
   getNetworkChanges(socialAccountId: string, limit?: number): Promise<SocialNetworkChange[]>;
   getAllNetworkChanges(): Promise<SocialNetworkChange[]>;
+
+  // Social account history operations (the reverse-delta journal)
+  getSocialAccountHistory(socialAccountId: string, options?: { kind?: SocialAccountHistoryKind; page?: number; limit?: number }): Promise<{ items: SocialAccountHistoryEntry[]; total: number; page: number; totalPages: number }>;
+  getSocialAccountHistoryEntry(entryId: string, options?: { listLimit?: number; listOffset?: number }): Promise<SocialAccountHistoryDetail | undefined>;
+  getSocialAccountHistorySummary(socialAccountId: string): Promise<SocialAccountHistorySummary>;
 
   // Social account type operations
   getAllSocialAccountTypes(): Promise<SocialAccountType[]>;
@@ -2594,33 +2606,31 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Group operations
-  async getAllGroups(searchQuery?: string): Promise<Group[]> {
+  async getAllGroups(searchQuery?: string): Promise<any[]> {
     const visible = visibleShared(groups.visibility, groups.createdByUserId);
-    if (!searchQuery) {
-      return await db.select().from(groups).where(visible);
+    const groupsList = await (searchQuery
+      ? db.select().from(groups).where(and(or(ilike(groups.name, `%${searchQuery}%`)), visible))
+      : db.select().from(groups).where(visible));
+
+    // Fetch social accounts counts for all groups
+    const saCounts = await db
+      .select({
+        groupId: socialAccounts.groupId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(socialAccounts)
+      .where(and(isNotNull(socialAccounts.groupId), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)))
+      .groupBy(socialAccounts.groupId);
+
+    const countMap = new Map<string, number>();
+    for (const row of saCounts) {
+      if (row.groupId) countMap.set(row.groupId, row.count);
     }
 
-    const query = `%${searchQuery}%`;
-    const startQuery = `${searchQuery}%`;
-    
-    return await db
-      .select()
-      .from(groups)
-      .where(
-        and(
-          or(
-            ilike(groups.name, query),
-          ),
-          visible,
-        )
-      )
-      .orderBy(
-        sql`CASE
-          WHEN ${groups.name} ILIKE ${startQuery} THEN 0
-          ELSE 1
-        END`,
-        groups.name
-      );
+    return groupsList.map(g => ({
+      ...g,
+      socialAccountCount: countMap.get(g.id) || 0,
+    }));
   }
 
   async getGroupById(id: string): Promise<any> {
@@ -2631,7 +2641,7 @@ export class DatabaseStorage implements IStorage {
     if (!group) return undefined;
 
     // Run all independent queries in parallel
-    const [groupNotesList, memberDetails, groupInteractions, groupSubGroups] = await Promise.all([
+    const [groupNotesList, memberDetails, groupInteractions, groupSubGroups, groupSocialAccounts] = await Promise.all([
       db.select().from(groupNotes).where(eq(groupNotes.groupId, id)),
       group.members && group.members.length > 0
         ? db
@@ -2654,6 +2664,7 @@ export class DatabaseStorage implements IStorage {
           )
         ),
       db.select().from(subGroups).where(eq(subGroups.groupId, id)),
+      this.getSocialAccountsByGroup(id),
     ]);
 
     return {
@@ -2662,6 +2673,8 @@ export class DatabaseStorage implements IStorage {
       memberDetails,
       interactions: groupInteractions,
       subGroups: groupSubGroups,
+      socialAccountCount: groupSocialAccounts.length,
+      socialAccounts: groupSocialAccounts,
     };
   }
 
@@ -3900,6 +3913,168 @@ export class DatabaseStorage implements IStorage {
 
   async getAllNetworkChanges(): Promise<SocialNetworkChange[]> {
     return await db.select().from(socialNetworkChanges).orderBy(socialNetworkChanges.detectedAt);
+  }
+
+  // Social account history operations (the reverse-delta journal)
+
+  /**
+   * Resolves account ids to renderable chips, in the order asked for and skipping
+   * anything the caller cannot see. One query, however many ids.
+   */
+  private async hydrateAccountRefs(ids: string[]): Promise<HistoryAccountRef[]> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) return [];
+
+    const rows = await db
+      .select({
+        id: socialAccounts.id,
+        username: socialAccounts.username,
+        nickname: socialAccounts.nickname,
+        imageUrl: socialAccounts.imageUrl,
+      })
+      .from(socialAccounts)
+      .where(and(inArray(socialAccounts.id, unique), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
+
+    const byId = new Map(rows.map(r => [r.id, r]));
+    return ids.map(id => byId.get(id)).filter((r): r is HistoryAccountRef => !!r);
+  }
+
+  async getSocialAccountHistory(
+    socialAccountId: string,
+    options: { kind?: SocialAccountHistoryKind; page?: number; limit?: number } = {}
+  ): Promise<{ items: SocialAccountHistoryEntry[]; total: number; page: number; totalPages: number }> {
+    const page = Math.max(1, options.page || 1);
+    const limit = Math.min(100, Math.max(1, options.limit || 25));
+    const kind = options.kind || "all";
+
+    const whereClause = and(
+      eq(socialAccountHistory.socialAccountId, socialAccountId),
+      kind === "all" ? undefined : eq(socialAccountHistory.entryKind, kind),
+    );
+
+    const [countResult] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(socialAccountHistory)
+      .where(whereClause);
+    const total = Number(countResult?.count || 0);
+
+    // Every column except `delta`, which is TOASTed and holds up to 10,000 ids —
+    // the count columns and profileFieldsChanged exist so the list never reads it.
+    const rows = await db
+      .select({
+        id: socialAccountHistory.id,
+        socialAccountId: socialAccountHistory.socialAccountId,
+        batchId: socialAccountHistory.batchId,
+        entryKind: socialAccountHistory.entryKind,
+        changeSource: socialAccountHistory.changeSource,
+        captureScope: socialAccountHistory.captureScope,
+        isInitialCapture: socialAccountHistory.isInitialCapture,
+        pendingImportId: socialAccountHistory.pendingImportId,
+        observedViaAccountId: socialAccountHistory.observedViaAccountId,
+        detectedAt: socialAccountHistory.detectedAt,
+        followersAfter: socialAccountHistory.followersAfter,
+        followersAdded: socialAccountHistory.followersAdded,
+        followersLost: socialAccountHistory.followersLost,
+        followingAfter: socialAccountHistory.followingAfter,
+        followingAdded: socialAccountHistory.followingAdded,
+        followingLost: socialAccountHistory.followingLost,
+        reportedFollowersAfter: socialAccountHistory.reportedFollowersAfter,
+        reportedFollowingAfter: socialAccountHistory.reportedFollowingAfter,
+        profileFieldsChanged: socialAccountHistory.profileFieldsChanged,
+        previousNickname: socialAccountHistory.previousNickname,
+        previousBio: socialAccountHistory.previousBio,
+        previousLocation: socialAccountHistory.previousLocation,
+        previousImageUrl: socialAccountHistory.previousImageUrl,
+      })
+      .from(socialAccountHistory)
+      .where(whereClause)
+      .orderBy(desc(socialAccountHistory.detectedAt))
+      .limit(limit)
+      .offset((page - 1) * limit);
+
+    return {
+      items: await this.attachObservedVia(rows),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit) || 1,
+    };
+  }
+
+  /** Hydrates observedVia for a page of rows in one lookup, not one per row. */
+  private async attachObservedVia(
+    rows: Omit<SocialAccountHistoryEntry, "observedVia">[]
+  ): Promise<SocialAccountHistoryEntry[]> {
+    const refs = await this.hydrateAccountRefs(
+      rows.map(r => r.observedViaAccountId).filter((id): id is string => !!id)
+    );
+    const byId = new Map(refs.map(r => [r.id, r]));
+    return rows.map(row => ({
+      ...row,
+      observedVia: row.observedViaAccountId ? byId.get(row.observedViaAccountId) ?? null : null,
+    }));
+  }
+
+  async getSocialAccountHistoryEntry(
+    entryId: string,
+    options: { listLimit?: number; listOffset?: number } = {}
+  ): Promise<SocialAccountHistoryDetail | undefined> {
+    const listLimit = Math.min(500, Math.max(1, options.listLimit || 100));
+    const listOffset = Math.max(0, options.listOffset || 0);
+
+    // The one place `delta` is read.
+    const [row] = await db
+      .select()
+      .from(socialAccountHistory)
+      .where(eq(socialAccountHistory.id, entryId));
+    if (!row) return undefined;
+
+    const { delta, ...rest } = row;
+    const [entry] = await this.attachObservedVia([rest]);
+
+    const ids = (delta ?? {}) as SocialAccountHistoryDelta;
+    const list = async (key: keyof SocialAccountHistoryDelta) => {
+      const all = ids[key] ?? [];
+      return { total: all.length, items: await this.hydrateAccountRefs(all.slice(listOffset, listOffset + listLimit)) };
+    };
+
+    return {
+      ...entry,
+      followersAddedList: await list("followersAdded"),
+      followersLostList: await list("followersLost"),
+      followingAddedList: await list("followingAdded"),
+      followingLostList: await list("followingLost"),
+    };
+  }
+
+  async getSocialAccountHistorySummary(socialAccountId: string): Promise<SocialAccountHistorySummary> {
+    const rows = await db
+      .select({
+        entryKind: socialAccountHistory.entryKind,
+        count: sql<number>`count(*)::int`,
+        firstAt: sql<Date | null>`min(${socialAccountHistory.detectedAt})`,
+        lastAt: sql<Date | null>`max(${socialAccountHistory.detectedAt})`,
+      })
+      .from(socialAccountHistory)
+      .where(eq(socialAccountHistory.socialAccountId, socialAccountId))
+      .groupBy(socialAccountHistory.entryKind);
+
+    const summary: SocialAccountHistorySummary = {
+      direct: 0,
+      neighbour: 0,
+      baseline: 0,
+      firstEntryAt: null,
+      lastEntryAt: null,
+    };
+    const ms = (v: Date | string | null) => (v ? new Date(v).getTime() : null);
+    for (const row of rows) {
+      if (row.entryKind === "direct" || row.entryKind === "neighbour" || row.entryKind === "baseline") {
+        summary[row.entryKind] = row.count;
+      }
+      const first = ms(row.firstAt), last = ms(row.lastAt);
+      if (first !== null && (summary.firstEntryAt === null || first < ms(summary.firstEntryAt)!)) summary.firstEntryAt = row.firstAt;
+      if (last !== null && (summary.lastEntryAt === null || last > ms(summary.lastEntryAt)!)) summary.lastEntryAt = row.lastAt;
+    }
+    return summary;
   }
 
   // Social account type operations
@@ -5511,6 +5686,7 @@ export class DatabaseStorage implements IStorage {
         accountFollowersCount: pendingSocialAccountImports.accountFollowersCount,
         accountFollowingCount: pendingSocialAccountImports.accountFollowingCount,
         importType: pendingSocialAccountImports.importType,
+        captureScope: pendingSocialAccountImports.captureScope,
         createdAt: pendingSocialAccountImports.createdAt,
         updatedAt: pendingSocialAccountImports.updatedAt,
       })

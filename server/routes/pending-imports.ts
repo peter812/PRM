@@ -4,8 +4,8 @@ import { db } from "../db";
 import { authenticateExtensionToken } from "../auth";
 import { runAsUser } from "../access";
 import { triggerTaskWorker } from "../task-worker";
-import { socialAccounts } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { socialAccounts, socialAccountHistory } from "@shared/schema";
+import { desc, eq } from "drizzle-orm";
 import crypto from "crypto";
 
 /**
@@ -26,6 +26,24 @@ function parseCount(value: unknown): number | null {
   const magnitude = { k: 1e3, m: 1e6, b: 1e9 }[(match[2] || "").toLowerCase()] ?? 1;
   const n = parseFloat(match[1]) * magnitude;
   return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+/**
+ * Read the extension's declared capture scope off a payload.
+ *
+ * The extension states what it finished collecting; the server needs it because a
+ * scrape is authoritative, so an edge absent from a captured list gets deleted. A
+ * truncated follower scroll and a genuinely short follower list produce the same
+ * CSV, and only the extension can tell them apart.
+ *
+ * Returns null for older builds that do not send it, and for anything unrecognised —
+ * the import path then infers scope from which lists arrived, exactly as before.
+ */
+const CAPTURE_SCOPES = ["both", "followers", "following", "profile"];
+
+function parseCaptureScope(value: unknown): string | null {
+  const scope = String(value ?? "").trim().toLowerCase();
+  return CAPTURE_SCOPES.includes(scope) ? scope : null;
 }
 
 /**
@@ -142,6 +160,8 @@ export function registerPendingImportsRoutes(app: Express) {
           accountFollowersCount: parseCount(data.followers),
           accountFollowingCount: parseCount(data.following),
           importType: "account",
+          // A tab extraction reads the profile header only; it never opens either list.
+          captureScope: "profile",
         };
 
         const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
@@ -198,6 +218,7 @@ export function registerPendingImportsRoutes(app: Express) {
           accountFollowersCount: parseCount(body.account_followers_count ?? body.accountFollowersCount),
           accountFollowingCount: parseCount(body.account_following_count ?? body.accountFollowingCount),
           importType: body.import_type || body.importType || 'full',
+          captureScope: parseCaptureScope(body.capture_scope ?? body.captureScope),
         };
 
         const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
@@ -249,10 +270,26 @@ export function registerPendingImportsRoutes(app: Express) {
           .where(eq(socialAccounts.username, username))
           .limit(1);
 
+        // When PRM last actually recorded a change, as opposed to when it last
+        // looked. The popup uses the gap between the two to show whether a rescrape
+        // is likely to find anything.
+        const [lastChange] = account
+          ? await db
+              .select({ detectedAt: socialAccountHistory.detectedAt })
+              .from(socialAccountHistory)
+              .where(eq(socialAccountHistory.socialAccountId, account.id))
+              .orderBy(desc(socialAccountHistory.detectedAt))
+              .limit(1)
+          : [];
+
         res.json({
           exists: Boolean(account),
           isSimple: account?.isSimple ?? true,
           lastScrapedAt: account?.lastScrapedAt ?? null,
+          lastChangeAt: lastChange?.detectedAt ?? null,
+          // Counts are denormalized onto the account, so this costs nothing.
+          followersCount: account?.followersCount ?? null,
+          followingCount: account?.followingCount ?? null,
         });
       });
     } catch (error) {

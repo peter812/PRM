@@ -274,7 +274,7 @@ export default function SocialAccountsList() {
         </div>
       </div>
 
-      <div className="flex-1 px-4 py-3">
+      <div className={`flex-1 ${viewMode === "details" ? "px-0" : "px-4"} py-3`}>
         {isLoading ? (
           <>
             {/* Details View Skeleton */}

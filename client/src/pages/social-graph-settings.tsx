@@ -193,9 +193,10 @@ export default function SocialGraphSettingsPage() {
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold" data-testid="text-social-graph-settings-title">Social Graph Settings</h1>
         <p className="text-muted-foreground">
-          Configure the default behaviour of the social account graph. These options are applied
-          when the graph is opened with no URL parameters &mdash; URL params (e.g. <code>?view=...</code>,{' '}
-          <code>?selected=...</code>) override these defaults.
+          Configure the default behaviour of the social account graph. These options apply
+          whenever the graph is opened normally. A link that deep-links to something specific
+          &mdash; <code>?selected=...</code> or <code>?highlightGroup=...</code> &mdash; uses the
+          built-in defaults instead, so the link lands on what it points at.
         </p>
       </div>
 
@@ -360,6 +361,24 @@ export default function SocialGraphSettingsPage() {
               onValueChange={(v) => update('crowdSphereOpacity', v[0] / 100)}
               data-testid="slider-crowd-sphere-opacity"
             />
+          </div>
+
+          <div className="space-y-2 pt-2 border-t">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="include-me-accounts">Include me user accounts in crowds</Label>
+              <Switch
+                id="include-me-accounts"
+                checked={settings.includeMeAccounts ?? true}
+                onCheckedChange={(v) => update('includeMeAccounts', v)}
+                data-testid="switch-include-me-accounts"
+              />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Your own accounts follow nearly everyone, so they land in every crowd while the
+              layout parks them in the middle of the graph &mdash; which drags each crowd&apos;s
+              centre inward and inflates its bounding sphere. Turn this off to leave them out of
+              crowd membership; they stay in the graph either way.
+            </p>
           </div>
 
           <div className="flex items-center justify-between pt-2 border-t">

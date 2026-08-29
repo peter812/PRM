@@ -28,6 +28,8 @@ export interface LayoutInitRequest {
   /** Per-node `val`, which scales the charge force as the standard path does. */
   vals: Float32Array;
   chargeMultiplier: number;
+  /** Divides the base charge, so lower values push the layout further apart. */
+  centerPull: number;
   /**
    * Settled positions to resume from (3 floats per node), or null to start cold.
    * A node whose x is NaN has no known position and is left for d3 to place, so
@@ -39,6 +41,7 @@ export interface LayoutInitRequest {
 export interface LayoutChargeRequest {
   type: "charge";
   chargeMultiplier: number;
+  centerPull: number;
 }
 
 export type LayoutRequest = LayoutInitRequest | LayoutChargeRequest;
@@ -65,10 +68,10 @@ let scheduled = 0;
  * Mirrors `applyChargeForce` on the standard path: bigger nodes push harder, so
  * blob mode spreads its clusters out rather than letting them overlap.
  */
-function chargeStrength(multiplier: number) {
+function chargeStrength(multiplier: number, centerPull: number) {
   return (_node: SimulationNode, index: number): number => {
     const val = vals[index] || 10;
-    return -30 * (1 + (Math.sqrt(val / 10) - 1) * multiplier);
+    return (-30 * (1 + (Math.sqrt(val / 10) - 1) * multiplier)) / centerPull;
   };
 }
 
@@ -136,7 +139,7 @@ function init(request: LayoutInitRequest): void {
   // it before it can tick, leaving this file in sole control of the clock.
   simulation = forceSimulation(nodes, 3)
     .force("link", forceLink(links))
-    .force("charge", forceManyBody().strength(chargeStrength(request.chargeMultiplier)))
+    .force("charge", forceManyBody().strength(chargeStrength(request.chargeMultiplier, request.centerPull)))
     .force("center", forceCenter())
     .alphaDecay(ALPHA_DECAY)
     .velocityDecay(VELOCITY_DECAY)
@@ -154,7 +157,7 @@ self.onmessage = (event: MessageEvent<LayoutRequest>) => {
   const sim = simulation;
   if (!sim) return;
   (sim.force("charge") as ReturnType<typeof forceManyBody>).strength(
-    chargeStrength(request.chargeMultiplier),
+    chargeStrength(request.chargeMultiplier, request.centerPull),
   );
   sim.alpha(1);
   schedule();

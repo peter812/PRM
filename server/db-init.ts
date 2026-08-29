@@ -314,109 +314,136 @@ async function migrateToSocialFollows(): Promise<void> {
 }
 
 /**
- * Migrates social_accounts from flat model to historical model.
- * Creates social_profile_versions and social_network_changes tables,
- * copies existing data, then drops old columns.
+ * Flattens the current profile back onto social_accounts and builds the
+ * social_account_history journal (v4).
+ *
+ * This replaces the older migrateSocialAccountsToHistorical(), which moved the
+ * other direction — into social_profile_versions. That function had to be deleted
+ * rather than merely left unused: it keyed off `social_profile_versions exists`
+ * and `social_accounts.nickname exists`, so once this migration re-added nickname
+ * it would have re-created the versions table and then DROPPED the flattened
+ * columns on the very next boot.
+ *
+ * The two legacy tables are intentionally NOT dropped here. ~214 server references
+ * and 21 client files still read them; the drop is a separate guarded step that
+ * runs only once those readers are repointed (see dropLegacyProfileTables below).
  */
-async function migrateSocialAccountsToHistorical(): Promise<void> {
-  const profileVersionsExists = await tableExists("social_profile_versions");
-  const networkChangesExists = await tableExists("social_network_changes");
+async function migrateSocialAccountsToJournal(): Promise<void> {
+  // 1. Current-profile columns on social_accounts.
+  await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
+  await addColumnIfNotExists("social_accounts", "nickname", "TEXT");
+  await addColumnIfNotExists("social_accounts", "bio", "TEXT");
+  await addColumnIfNotExists("social_accounts", "account_url", "TEXT");
+  await addColumnIfNotExists("social_accounts", "image_url", "TEXT");
+  await addColumnIfNotExists("social_accounts", "external_image_url", "TEXT");
+  await addColumnIfNotExists("social_accounts", "location", "TEXT");
+  await addColumnIfNotExists("social_accounts", "followers_count", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfNotExists("social_accounts", "following_count", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfNotExists("social_accounts", "reported_followers_count", "INTEGER");
+  await addColumnIfNotExists("social_accounts", "reported_following_count", "INTEGER");
 
-  if (profileVersionsExists && networkChangesExists) {
-    await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
-    return;
-  }
-
-  log("Migrating social_accounts to historical model...");
-
-  // 1. Create social_profile_versions table
-  if (!profileVersionsExists) {
+  // 2. The journal itself.
+  if (!(await tableExists("social_account_history"))) {
     await pool.query(`
-      CREATE TABLE social_profile_versions (
+      CREATE TABLE social_account_history (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
-        nickname TEXT,
-        bio TEXT,
-        account_url TEXT,
-        image_url TEXT,
-        external_image_url TEXT,
+        batch_id VARCHAR NOT NULL,
+        entry_kind TEXT NOT NULL,
+        change_source TEXT NOT NULL,
+        capture_scope TEXT NOT NULL DEFAULT 'none',
+        is_initial_capture BOOLEAN NOT NULL DEFAULT false,
+        pending_import_id VARCHAR,
+        observed_via_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
         detected_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        is_current BOOLEAN NOT NULL DEFAULT true
+        followers_after INTEGER NOT NULL DEFAULT 0,
+        followers_added INTEGER NOT NULL DEFAULT 0,
+        followers_lost INTEGER NOT NULL DEFAULT 0,
+        following_after INTEGER NOT NULL DEFAULT 0,
+        following_added INTEGER NOT NULL DEFAULT 0,
+        following_lost INTEGER NOT NULL DEFAULT 0,
+        reported_followers_after INTEGER,
+        reported_following_after INTEGER,
+        profile_fields_changed TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+        previous_nickname TEXT,
+        previous_bio TEXT,
+        previous_location TEXT,
+        previous_image_url TEXT,
+        delta JSONB
       )
     `);
-    log("Created social_profile_versions table");
+    await pool.query(`CREATE INDEX social_account_history_account_idx ON social_account_history (social_account_id, detected_at)`);
+    await pool.query(`CREATE INDEX social_account_history_kind_idx ON social_account_history (social_account_id, entry_kind, detected_at)`);
+    log("Created social_account_history table");
   }
 
-  // 2. Create social_network_changes table
-  if (!networkChangesExists) {
+  // 2a. What the extension reports it finished collecting (contract v2). Null on
+  //     payloads from older builds, which the import path still infers scope for.
+  await addColumnIfNotExists("pending_social_account_imports", "capture_scope", "TEXT");
+
+  // 2b. Indexes the ingest path depends on.
+  //
+  // shared/schema.ts declares these, but nothing ever created them: the tables here
+  // are built with raw CREATE TABLE and drizzle-kit push has not run against this
+  // database. `social_accounts` was carrying nothing but its primary key, so every
+  // username lookup was a sequential scan over the whole table — which is what made
+  // the old per-row import (one lookup per CSV row) so expensive.
+  //
+  // Only the two the import and diff engine actually use are created here. The other
+  // declared-but-absent indexes on social_accounts (visibility, owner_uuid, group_id,
+  // type_id) affect other pages and are left alone deliberately.
+  await pool.query(`CREATE INDEX IF NOT EXISTS social_accounts_username_idx ON social_accounts (username)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS social_follows_follower_id_idx ON social_follows (follower_id)`);
+
+  // Everything below backfills from the legacy tables, and is first-run-only: these
+  // are full-table statements that have no business running on every boot. The
+  // baseline count is the marker — it is written at the end of this function and
+  // never removed, so its presence means the backfill has already happened.
+  const { rows: [{ count: baselineCount }] } = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM social_account_history WHERE entry_kind = 'baseline'`
+  );
+  if (baselineCount > 0) return;
+
+  const hasLegacyVersions = await tableExists("social_profile_versions");
+
+  // 3. Copy each account's current profile down onto the account row. Only fills
+  //    columns that are still empty, so re-running can never clobber newer writes.
+  if (hasLegacyVersions) {
     await pool.query(`
-      CREATE TABLE social_network_changes (
-        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
-        change_type VARCHAR NOT NULL,
-        direction VARCHAR NOT NULL,
-        target_account_id VARCHAR NOT NULL,
-        detected_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        batch_id VARCHAR
-      )
+      UPDATE social_accounts sa SET
+        nickname           = COALESCE(sa.nickname, spv.nickname),
+        bio                = COALESCE(sa.bio, spv.bio),
+        account_url        = COALESCE(sa.account_url, spv.account_url),
+        image_url          = COALESCE(sa.image_url, spv.image_url),
+        external_image_url = COALESCE(sa.external_image_url, spv.external_image_url)
+      FROM social_profile_versions spv
+      WHERE spv.social_account_id = sa.id AND spv.is_current = true
     `);
-    log("Created social_network_changes table");
+    log("Flattened current profile versions onto social_accounts");
   }
 
-  // 4. Check if old columns exist on social_accounts (original flat model migration)
-  const hasNickname = await columnExists("social_accounts", "nickname");
-  const hasAccountUrl = await columnExists("social_accounts", "account_url");
-  const hasFollowers = await columnExists("social_accounts", "followers");
+  // 4. Seed the denormalized counts from the live edge table. After this point
+  //    applySnapshot() is the only writer of these two columns.
+  await pool.query(`
+    UPDATE social_accounts sa SET
+      followers_count = (SELECT COUNT(*) FROM social_follows WHERE followed_id = sa.id),
+      following_count = (SELECT COUNT(*) FROM social_follows WHERE follower_id = sa.id)
+  `);
 
-  if (hasNickname || hasAccountUrl || hasFollowers) {
-    log("Copying existing data to new tables...");
-
-    if (hasNickname) {
-      await pool.query(`
-        INSERT INTO social_profile_versions (social_account_id, nickname, account_url, image_url, detected_at, is_current)
-        SELECT id, nickname, account_url, image_url, COALESCE(created_at, NOW()), true
-        FROM social_accounts
-      `);
-      log("Copied profile data to social_profile_versions");
-    }
-
-    if (hasFollowers) {
-      // migrateToSocialFollows() has already created social_follows by this point
-      await pool.query(`
-        INSERT INTO social_follows (follower_id, followed_id, source)
-        SELECT DISTINCT f.fid, sa.id, 'migration'
-        FROM social_accounts sa, unnest(sa.followers) AS f(fid)
-        WHERE EXISTS (SELECT 1 FROM social_accounts x WHERE x.id = f.fid) AND f.fid <> sa.id
-        ON CONFLICT DO NOTHING
-      `);
-      await pool.query(`
-        INSERT INTO social_follows (follower_id, followed_id, source)
-        SELECT DISTINCT sa.id, g.gid, 'migration'
-        FROM social_accounts sa, unnest(sa.following) AS g(gid)
-        WHERE EXISTS (SELECT 1 FROM social_accounts x WHERE x.id = g.gid) AND g.gid <> sa.id
-        ON CONFLICT DO NOTHING
-      `);
-      log("Copied network data to social_follows");
-    }
-
-    // 5. Drop old columns
-    const columnsToDrop = ['nickname', 'account_url', 'image_url', 'notes', 'following', 'followers', 'latest_import_followers', 'latest_import_following'];
-    for (const col of columnsToDrop) {
-      const exists = await columnExists("social_accounts", col);
-      if (exists) {
-        await pool.query(`ALTER TABLE social_accounts DROP COLUMN ${col}`);
-        log(`Dropped column social_accounts.${col}`);
-      }
-    }
-
-    // 7. Add last_scraped_at column
-    await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
-
-    log("Social accounts migration to historical model complete!");
-  } else {
-    log("Social accounts already in historical model format.");
-    await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
-  }
+  // 5. One synthetic baseline per account, so the History tab is not empty on day one
+  //    and the next real scrape has something to diff against. Writing this last is
+  //    what makes the early return at the top of this section correct.
+  await pool.query(`
+    INSERT INTO social_account_history (
+      social_account_id, batch_id, entry_kind, change_source, capture_scope,
+      detected_at, followers_after, following_after
+    )
+    SELECT sa.id, gen_random_uuid(), 'baseline', 'migration', 'none',
+           COALESCE(sa.last_scraped_at, sa.created_at, NOW()),
+           sa.followers_count, sa.following_count
+    FROM social_accounts sa
+  `);
+  log("Seeded edge counts and wrote baseline history entries");
 }
 
 /**
@@ -780,8 +807,8 @@ async function validateAndSyncSchema(): Promise<void> {
     // Migrate follower/following storage to the social_follows edge table (v3)
     await migrateToSocialFollows();
 
-    // Migrate social_accounts to historical model (v2)
-    await migrateSocialAccountsToHistorical();
+    // Flatten the current profile back onto social_accounts and build the history journal (v4)
+    await migrateSocialAccountsToJournal();
 
     // Create conversations table if it doesn't exist
     const conversationsExists = await tableExists("conversations");

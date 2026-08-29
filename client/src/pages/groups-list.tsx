@@ -25,10 +25,14 @@ import type { Group } from "@shared/schema";
 
 type ViewMode = "list" | "wide";
 
+type GroupWithCounts = Group & {
+  socialAccountCount?: number;
+};
+
 export default function GroupsList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
-  const [groupToDelete, setGroupToDelete] = useState<Group | null>(null);
+  const [groupToDelete, setGroupToDelete] = useState<GroupWithCounts | null>(null);
   const { toast } = useToast();
 
   // Set default view based on screen size
@@ -46,37 +50,49 @@ export default function GroupsList() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const { data: groups, isLoading } = useQuery<Group[]>({
+  const { data: groups, isLoading } = useQuery<GroupWithCounts[]>({
     queryKey: ["/api/groups"],
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: async (groupId: string) => {
-      return apiRequest("DELETE", `/api/groups/${groupId}`);
+  const deleteGroupMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/groups/${id}`);
     },
     onSuccess: () => {
-      setGroupToDelete(null);
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
       toast({
         title: "Group deleted",
-        description: "The group and all associated data have been removed.",
+        description: "The group has been deleted successfully",
       });
+      setGroupToDelete(null);
     },
-    onError: (error) => {
+    onError: (error: Error) => {
       toast({
-        title: "Error",
-        description: error.message || "Failed to delete group",
+        title: "Failed to delete group",
+        description: error.message,
         variant: "destructive",
       });
     },
   });
 
+  const handleDeleteConfirm = () => {
+    if (groupToDelete) {
+      deleteGroupMutation.mutate(groupToDelete.id);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full overflow-auto">
-      <div className="border-b px-4 py-3 sticky top-0 z-10 backdrop-blur-xl bg-background/70">
-        <div className="flex items-center justify-between gap-4 mb-4">
-          <h1 className="text-3xl font-semibold" data-testid="text-page-title">
+      <div className="border-b px-6 py-6 bg-background/50 backdrop-blur-xl sticky top-0 z-10">
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-semibold flex items-center gap-3" data-testid="heading-groups">
             Groups
+            {groups && (
+              <span className="text-sm font-normal text-muted-foreground">
+                ({groups.length})
+              </span>
+            )}
           </h1>
           <div className="flex items-center gap-2">
             <div className="hidden md:flex items-center border rounded-md p-1">
@@ -131,131 +147,142 @@ export default function GroupsList() {
         ) : groups && groups.length > 0 ? (
           viewMode === "list" ? (
             <div className="flex flex-col gap-[5px]">
-              {groups.map((group) => (
-                <Link key={group.id} href={`/group/${group.id}`}>
-                  <Card
-                    className="p-4 hover-elevate transition-all cursor-pointer"
-                    data-testid={`card-group-${group.id}`}
-                  >
-                  <div className="flex items-center gap-4">
-                    <Avatar className="w-12 h-12" style={{ borderColor: group.color }}>
-                      {group.imageUrl && (
-                        <AvatarImage src={group.imageUrl} alt={group.name} />
-                      )}
-                      <AvatarFallback style={{ backgroundColor: `${group.color}20` }}>
-                        {getInitials(group.name)}
-                      </AvatarFallback>
-                    </Avatar>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 mb-1">
-                        <h3 className="text-lg font-medium" data-testid={`text-name-${group.id}`}>
-                          {group.name}
-                        </h3>
-                        <div
-                          className="w-3 h-3 rounded-full"
-                          style={{ backgroundColor: group.color }}
-                          data-testid={`color-indicator-${group.id}`}
-                        />
-                      </div>
-                      <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                        <span data-testid={`text-member-count-${group.id}`}>
-                          {group.members?.length || 0} members
-                        </span>
-                        {group.type && group.type.length > 0 && (
-                          <>
-                            <span>•</span>
-                            <div className="flex flex-wrap gap-1">
-                              {group.type.map((type, idx) => (
-                                <Badge key={idx} variant="secondary" className="text-xs">
-                                  {type}
-                                </Badge>
-                              ))}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setGroupToDelete(group);
-                      }}
-                      data-testid={`button-delete-${group.id}`}
+              {groups.map((group) => {
+                const totalCount = (group.members?.length || 0) + (group.socialAccountCount || 0);
+                return (
+                  <Link key={group.id} href={`/group/${group.id}`}>
+                    <Card
+                      className="p-4 hover-elevate transition-all cursor-pointer"
+                      data-testid={`card-group-${group.id}`}
                     >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </Card>
-                </Link>
-              ))}
+                    <div className="flex items-center gap-4">
+                      <Avatar className="w-12 h-12" style={{ borderColor: group.color }}>
+                        {group.imageUrl && (
+                          <AvatarImage src={group.imageUrl} alt={group.name} />
+                        )}
+                        <AvatarFallback style={{ backgroundColor: `${group.color}20` }}>
+                          {getInitials(group.name)}
+                        </AvatarFallback>
+                      </Avatar>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-1">
+                          <h3 className="text-lg font-medium" data-testid={`text-name-${group.id}`}>
+                            {group.name}
+                          </h3>
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: group.color }}
+                            data-testid={`color-indicator-${group.id}`}
+                          />
+                        </div>
+                        <div className="flex items-center gap-3 text-sm text-muted-foreground flex-wrap">
+                          <span data-testid={`text-member-count-${group.id}`}>
+                            {totalCount} members
+                            {group.members && group.members.length > 0 && group.socialAccountCount && group.socialAccountCount > 0 ? (
+                              <span className="text-xs text-muted-foreground ml-1.5 font-normal">
+                                ({group.members.length} people, {group.socialAccountCount} accounts)
+                              </span>
+                            ) : null}
+                          </span>
+                          {group.type && group.type.length > 0 && (
+                            <>
+                              <span>•</span>
+                              <div className="flex flex-wrap gap-1">
+                                {group.type.map((type, idx) => (
+                                  <Badge key={idx} variant="secondary" className="text-xs">
+                                    {type}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setGroupToDelete(group);
+                        }}
+                        data-testid={`button-delete-${group.id}`}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </Card>
+                  </Link>
+                );
+              })}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {groups.map((group) => (
-                <Link key={group.id} href={`/group/${group.id}`}>
-                  <Card
-                    className="p-6 hover-elevate transition-all cursor-pointer"
-                    data-testid={`card-group-${group.id}`}
-                  >
-                  <div className="flex flex-col items-center text-center relative">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10 absolute bottom-0 left-0"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setGroupToDelete(group);
-                      }}
-                      data-testid={`button-delete-${group.id}`}
+              {groups.map((group) => {
+                const totalCount = (group.members?.length || 0) + (group.socialAccountCount || 0);
+                return (
+                  <Link key={group.id} href={`/group/${group.id}`}>
+                    <Card
+                      className="p-6 hover-elevate transition-all cursor-pointer"
+                      data-testid={`card-group-${group.id}`}
                     >
-                      <X className="h-4 w-4" />
-                    </Button>
-                    <Avatar className="w-32 h-32 mb-4" style={{ borderColor: group.color, borderWidth: '3px' }}>
-                      {group.imageUrl && (
-                        <AvatarImage src={group.imageUrl} alt={group.name} />
-                      )}
-                      <AvatarFallback 
-                        style={{ backgroundColor: `${group.color}20` }}
-                        className="text-3xl"
+                    <div className="flex flex-col items-center text-center relative">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10 absolute bottom-0 left-0"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setGroupToDelete(group);
+                        }}
+                        data-testid={`button-delete-${group.id}`}
                       >
-                        {getInitials(group.name)}
-                      </AvatarFallback>
-                    </Avatar>
+                        <X className="h-4 w-4" />
+                      </Button>
+                      <Avatar className="w-32 h-32 mb-4" style={{ borderColor: group.color, borderWidth: '3px' }}>
+                        {group.imageUrl && (
+                          <AvatarImage src={group.imageUrl} alt={group.name} />
+                        )}
+                        <AvatarFallback 
+                          style={{ backgroundColor: `${group.color}20` }}
+                          className="text-3xl"
+                        >
+                          {getInitials(group.name)}
+                        </AvatarFallback>
+                      </Avatar>
 
-                    <h3 className="text-xl font-semibold mb-2" data-testid={`text-name-${group.id}`}>
-                      {group.name}
-                    </h3>
+                      <h3 className="text-xl font-semibold mb-2" data-testid={`text-name-${group.id}`}>
+                        {group.name}
+                      </h3>
 
-                    <div className="flex items-center gap-2 mb-3">
-                      <div
-                        className="w-4 h-4 rounded-full"
-                        style={{ backgroundColor: group.color }}
-                        data-testid={`color-indicator-${group.id}`}
-                      />
-                      <span className="text-sm text-muted-foreground" data-testid={`text-member-count-${group.id}`}>
-                        {group.members?.length || 0} members
-                      </span>
-                    </div>
-
-                    {group.type && group.type.length > 0 && (
-                      <div className="flex flex-wrap gap-1 justify-center">
-                        {group.type.map((type, idx) => (
-                          <Badge key={idx} variant="secondary" className="text-xs">
-                            {type}
-                          </Badge>
-                        ))}
+                      <div className="flex items-center gap-2 mb-3">
+                        <div
+                          className="w-4 h-4 rounded-full"
+                          style={{ backgroundColor: group.color }}
+                          data-testid={`color-indicator-${group.id}`}
+                        />
+                        <span className="text-sm text-muted-foreground" data-testid={`text-member-count-${group.id}`}>
+                          {totalCount} members
+                        </span>
                       </div>
-                    )}
-                  </div>
-                </Card>
-                </Link>
-              ))}
+
+                      {group.type && group.type.length > 0 && (
+                        <div className="flex flex-wrap gap-1 justify-center">
+                          {group.type.map((type, idx) => (
+                            <Badge key={idx} variant="secondary" className="text-xs">
+                              {type}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                  </Link>
+                );
+              })}
             </div>
           )
         ) : (
@@ -290,7 +317,7 @@ export default function GroupsList() {
             <AlertDialogAction
               onClick={() => {
                 if (groupToDelete) {
-                  deleteMutation.mutate(groupToDelete.id);
+                  deleteGroupMutation.mutate(groupToDelete.id);
                 }
               }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"

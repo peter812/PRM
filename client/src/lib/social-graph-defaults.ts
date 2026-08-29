@@ -55,6 +55,7 @@ export interface SocialGraphDefaults {
 
   // Crowd settings
   crowdSphereOpacity: number;
+  includeMeAccounts: boolean;
 
   // Blob mode
   blobMergeMultiplier: number;
@@ -104,6 +105,7 @@ export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
   multiFollowsOneColor: '#eab308',
 
   crowdSphereOpacity: 0.15,
+  includeMeAccounts: true,
 
   blobMergeMultiplier: 0.5,
   blobForceMultiplier: 2,
@@ -186,22 +188,29 @@ export function saveSocialGraphDefaults(defaults: SocialGraphDefaults): void {
 }
 
 /**
- * True when the current page URL has no query params, in which case the
- * saved defaults should be applied to graph state on load. Any URL params
- * (e.g. `?view=person&selected=...`) take precedence over saved defaults.
+ * Params that mean the user deep-linked to something specific, so the saved
+ * defaults should stand aside for the built-in ones.
+ *
+ * `view` is deliberately absent. The graph page writes `?view=...` into the URL
+ * itself on every load as normalisation, so counting it as user intent made the
+ * saved defaults apply on a first visit and then be silently discarded on every
+ * reload afterwards. None of these params overlap a saved default anyway: they
+ * select what to look at, not how to draw it.
  */
+const DEEP_LINK_PARAMS = ['selected', 'highlightGroup', 'groupId'];
+
 function hasNoGraphUrlParams(): boolean {
   if (typeof window === 'undefined') return true;
-  return window.location.search === '' || window.location.search === '?';
+  const params = new URLSearchParams(window.location.search);
+  return !DEEP_LINK_PARAMS.some((name) => params.has(name));
 }
 
 /**
  * Returns the initial graph settings to use on page load.
  *
- * When there are URL params present (e.g. the user navigated to a specific
- * account/view), the URL is the source of truth and the user-configured
- * defaults are skipped in favour of the built-in defaults. Otherwise the
- * saved defaults are used.
+ * When the URL deep-links to a specific account or group, it is the source of
+ * truth and the user-configured defaults are skipped in favour of the built-in
+ * ones. Otherwise the saved defaults are used.
  */
 export function getInitialGraphSettings(): SocialGraphDefaults {
   if (hasNoGraphUrlParams()) {

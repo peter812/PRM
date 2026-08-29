@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/command";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import type { SocialAccount, SocialAccountType, SocialAccountWithCurrentProfile, SocialGraphData, Group } from "@shared/schema";
+import type { SocialAccount, SocialAccountType, SocialAccountWithCurrentProfile, SocialGraphData, Group, Person } from "@shared/schema";
 import PersonGraphView from "./person-graph-view";
 import {
   EXTRAS_STEPS,
@@ -62,11 +62,16 @@ function parseGraphUrl() {
   return {
     view,
     selected: params.get('selected'),
-    highlightGroup: params.get('highlightGroup') || params.get('groupId'),
   };
 }
 
-function buildGraphUrl(view: ViewMode, selected: string | null, highlightGroup?: string | null): string {
+/**
+ * Build this page's URL for a view and selection, preserving every other query
+ * param. `highlightGroup` / `groupId` are deliberately left alone: the crowd
+ * highlight effect owns them, and group-profile and the person context menu
+ * link in with them already set.
+ */
+function buildGraphUrl(view: ViewMode, selected: string | null): string {
   const params = new URLSearchParams(window.location.search);
   params.set('view', view);
   if (selected) {
@@ -74,20 +79,12 @@ function buildGraphUrl(view: ViewMode, selected: string | null, highlightGroup?:
   } else {
     params.delete('selected');
   }
-  if (highlightGroup !== undefined) {
-    if (highlightGroup) {
-      params.set('highlightGroup', highlightGroup);
-    } else {
-      params.delete('highlightGroup');
-      params.delete('groupId');
-    }
-  }
   const qs = params.toString();
   return `/social-graph-3d${qs ? `?${qs}` : ''}`;
 }
 
-function syncGraphUrl(view: ViewMode, selected: string | null, highlightGroup?: string | null, mode: 'push' | 'replace' = 'replace') {
-  const newUrl = buildGraphUrl(view, selected, highlightGroup);
+function syncGraphUrl(view: ViewMode, selected: string | null, mode: 'push' | 'replace' = 'replace') {
+  const newUrl = buildGraphUrl(view, selected);
   if (window.location.pathname + window.location.search !== newUrl) {
     if (mode === 'push') {
       window.history.pushState(null, '', newUrl);
@@ -105,6 +102,8 @@ interface GraphNode {
   val: number;
   isCenter: boolean;
   isCrowd: boolean;
+  /** Kept in the scene and in the simulation, but not drawn. */
+  invisible: boolean;
   // Positions are carried across rebuilds so a filter or colour change does
   // not throw away a settled layout.
   x?: number;
@@ -118,6 +117,64 @@ interface GraphNode {
   fz?: number;
 }
 
+/**
+ * Crowd colours are assigned by position rather than read off the group, so
+ * every crowd on screen gets its own hue; past ten crowds the assignment wraps.
+ *
+ * Each palette covers the colour wheel in ten even steps, but the entries are
+ * listed so that consecutive ones sit on opposite sides of it. Only crowds that
+ * actually drew members are on screen, so the colours in play are usually a
+ * sparse subset of the palette — in wheel order that subset can easily come out
+ * as, say, teal next to cyan. Alternating halves keeps any run of neighbouring
+ * indices far apart.
+ */
+const CROWD_PALETTES = {
+  vivid: {
+    label: 'Vivid Spectrum',
+    colors: ['#e02424', '#14b8a6', '#f97316', '#06b6d4', '#eab308',
+             '#3b82f6', '#84cc16', '#8b5cf6', '#22c55e', '#ec4899'],
+  },
+  pastel: {
+    label: 'Soft Pastel',
+    colors: ['#ff9aa8', '#8fdfe8', '#ffc48c', '#9dc0f5', '#f6e37a',
+             '#b3a8f0', '#bfe884', '#d5a8ef', '#8ee9b8', '#f0a0cd'],
+  },
+  neon: {
+    label: 'Neon Glow',
+    colors: ['#ff1e3c', '#00f0ff', '#ff7a00', '#1f8cff', '#ffe814',
+             '#6b3dff', '#6eff2b', '#c53dff', '#00ff87', '#ff2ea6'],
+  },
+} as const;
+
+type CrowdPalette = keyof typeof CROWD_PALETTES;
+
+const sameCrowdLegend = (a: CrowdLegendEntry[], b: CrowdLegendEntry[]): boolean =>
+  a.length === b.length
+  && a.every((e, i) => e.id === b[i].id && e.color === b[i].color && e.count === b[i].count);
+
+/** The page background, which is also what the renderer clears to. */
+const readBackgroundColor = (): string => {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--background').trim();
+  const [h, sat, l] = raw.split(' ').map(v => parseFloat(v));
+  return `hsl(${h}, ${sat}%, ${l}%)`;
+};
+
+/** Arrow length per link. Mutual links never get one, and nor do undrawn links. */
+const linkArrowLength = (link: any): number => (link.mutual || link.invisible ? 0 : 4);
+
+const crowdColorAt = (palette: CrowdPalette, index: number): string => {
+  const { colors } = CROWD_PALETTES[palette];
+  return colors[index % colors.length];
+};
+
+/** One row of the on-canvas crowd key. */
+interface CrowdLegendEntry {
+  id: string;
+  name: string;
+  color: string;
+  count: number;
+}
+
 interface GraphLink {
   source: string;
   target: string;
@@ -125,6 +182,8 @@ interface GraphLink {
   color: string;
   mutual?: boolean;
   isCrowdLink: boolean;
+  /** Kept in the scene and in the simulation, but not drawn. */
+  invisible: boolean;
   /** Stable handle used to find this link's line object when recolouring. */
   idx: number;
 }
@@ -158,12 +217,18 @@ export default function SocialGraph3D() {
     [selectedPersonId, selectedAccountId]
   );
 
-  // Mirror selection changes from inside views into the URL via push so
-  // the browser back button restores the previous selection.
+  // Mirror selection changes from inside views into the URL via push so the
+  // browser back button restores the previous selection. The first run is the
+  // exception: it only normalises the URL (a bare /social-graph-3d gains
+  // `?view=social`), which is not something the user did, so it replaces
+  // instead — otherwise every visit would open with a spare entry to back out of.
+  const urlNormalisedRef = useRef(false);
   useEffect(() => {
+    const isFirstRun = !urlNormalisedRef.current;
+    urlNormalisedRef.current = true;
     if (viewMode === 'hybrid') return;
     const next = viewMode === 'person' ? selectedPersonId : selectedAccountId;
-    syncGraphUrl(viewMode, next, 'push');
+    syncGraphUrl(viewMode, next, isFirstRun ? 'replace' : 'push');
   }, [viewMode, selectedAccountId, selectedPersonId]);
 
   // React to browser back/forward by re-reading URL into state.
@@ -349,10 +414,18 @@ function SocialGraphContent({
   const [multiFollowsOneColor, setMultiFollowsOneColor] = useState(initialDefaults.multiFollowsOneColor);
   const [blobMergeMultiplier, setBlobMergeMultiplier] = useState(initialDefaults.blobMergeMultiplier);
   const [blobForceMultiplier, setBlobForceMultiplier] = useState(initialDefaults.blobForceMultiplier);
+  const [centerPull, setCenterPull] = useState(1);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
   const [showCrowds, setShowCrowds] = useState(true);
-  const [crowdColorScheme, setCrowdColorScheme] = useState<'pastel' | 'emerald' | 'amber' | 'sky'>('pastel');
+  const [crowdPalette, setCrowdPalette] = useState<CrowdPalette>('vivid');
+  const [recolorNonCrowd, setRecolorNonCrowd] = useState(false);
+  const [nonCrowdColor, setNonCrowdColor] = useState('#d1d5db');
+  const [nonCrowdMode, setNonCrowdMode] = useState<'show' | 'hide' | 'invis'>('show');
+  const hideNonCrowd = nonCrowdMode === 'hide';
+  const invisNonCrowd = nonCrowdMode === 'invis';
+  const [invisAllLinks, setInvisAllLinks] = useState(false);
   const [crowdSphereOpacity, setCrowdSphereOpacity] = useState(initialDefaults.crowdSphereOpacity ?? 0.15);
+  const [includeMeAccounts, setIncludeMeAccounts] = useState(initialDefaults.includeMeAccounts ?? true);
   const [autoRotate, setAutoRotate] = useState(initialDefaults.autoRotate ?? false);
   const [antialias, setAntialias] = useState(initialDefaults.antialias);
   const [maxPixelRatio, setMaxPixelRatio] = useState(initialDefaults.maxPixelRatio);
@@ -362,6 +435,7 @@ function SocialGraphContent({
   const [denseModeSetting, setDenseModeSetting] = useState<DenseModeSetting>(initialDefaults.denseMode);
   const [denseModeThreshold, setDenseModeThreshold] = useState(initialDefaults.denseModeThreshold);
   const [renderedCounts, setRenderedCounts] = useState({ nodes: 0, links: 0 });
+  const [crowdLegend, setCrowdLegend] = useState<CrowdLegendEntry[]>([]);
   const crowdSphereMeshesMapRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get('highlightGroup') || new URLSearchParams(window.location.search).get('groupId')
@@ -386,6 +460,16 @@ function SocialGraphContent({
     queryKey: ['/api/groups'],
   });
 
+  const { data: peopleList } = useQuery<Person[]>({
+    queryKey: ['/api/people'],
+  });
+
+  // A person carrying a `userId` is a "me" person — see the people schema.
+  const mePersonIds = useMemo(
+    () => new Set((peopleList || []).filter(p => p.userId != null).map(p => p.id)),
+    [peopleList],
+  );
+
   const extrasSteps = EXTRAS_STEPS;
   const mergeMultiplierSteps = MERGE_MULTIPLIER_STEPS;
 
@@ -402,7 +486,14 @@ function SocialGraphContent({
     blobMergeMultiplier,
   });
 
-  const { data: graphData, isLoading: isGraphLoading } = useQuery<SocialGraphData>({
+  // Applying settings changes the query key, so without a placeholder the data
+  // would be undefined for a commit — `hasGraphData` would flip false and
+  // Effect A would destroy the renderer, taking the settled layout with it.
+  const {
+    data: graphData,
+    isFetching: isGraphFetching,
+    isPlaceholderData: isGraphPlaceholder,
+  } = useQuery<SocialGraphData>({
     queryKey: ["/api/social-graph", appliedSettings],
     queryFn: async () => {
       const res = await fetch("/api/social-graph", {
@@ -414,6 +505,7 @@ function SocialGraphContent({
       if (!res.ok) throw new Error("Failed to fetch graph data");
       return res.json();
     },
+    placeholderData: (prev) => prev,
   });
 
   const handleUpdateGraph = () => {
@@ -637,29 +729,26 @@ function SocialGraphContent({
     return colorMap;
   }, [graphData, graphIndex, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, multiHighlightAccountIds, multiHighlightColor, multiFollowsAllColor, multiFollowsOneColor]);
 
-  const CROWD_SCHEME_COLORS = {
-    pastel: "#a7f3d0",
-    emerald: "#10b981",
-    amber: "#f59e0b",
-    sky: "#0ea5e9",
-  } as const;
-
   interface GraphVisuals {
     nodes: GraphNode[];
     links: GraphLink[];
     activeGroupIds: string[];
     crowdNodeIdsByGroup: Map<string, Set<string>>;
     crowdColorByGroup: Map<string, string>;
+    crowdLegend: CrowdLegendEntry[];
   }
 
   // Values the render loop must read live rather than through a captured
   // closure, so tick callbacks stay correct without re-creating the graph.
   const crowdSphereOpacityRef = useRef(crowdSphereOpacity);
   crowdSphereOpacityRef.current = crowdSphereOpacity;
+  const crowdColorByGroupRef = useRef<Map<string, string>>(new Map());
   const showCrowdsRef = useRef(showCrowds);
   showCrowdsRef.current = showCrowds;
   const blobForceMultiplierRef = useRef(blobForceMultiplier);
   blobForceMultiplierRef.current = blobForceMultiplier;
+  const centerPullRef = useRef(centerPull);
+  centerPullRef.current = centerPull;
 
   // The whole scene description, derived in one pass. Held in a ref so it only
   // runs when explicitly invoked (never on an incidental React re-render), and
@@ -669,6 +758,7 @@ function SocialGraphContent({
     const empty: GraphVisuals = {
       nodes: [], links: [], activeGroupIds: [],
       crowdNodeIdsByGroup: new Map(), crowdColorByGroup: new Map(),
+      crowdLegend: [],
     };
     if (!graphData || !graphData.nodes.length) return empty;
 
@@ -676,7 +766,13 @@ function SocialGraphContent({
     const activeGroups: Group[] = isAllCrowds
       ? (groupsList || [])
       : (highlightedGroupId ? (groupsList?.filter(g => g.id === highlightedGroupId) || []) : []);
-    const crowdColor = CROWD_SCHEME_COLORS[crowdColorScheme];
+    // Assigned by position so no two crowds on screen share a hue. Built here
+    // rather than at each point of use so the nodes, the links, the bounding
+    // spheres and the legend all read the same map.
+    const crowdColorByGroup = new Map(
+      activeGroups.map((g, index) => [g.id, crowdColorAt(crowdPalette, index)] as const),
+    );
+    crowdColorByGroupRef.current = crowdColorByGroup;
 
     // Flatten every active group's membership arrays into id -> group lookups.
     // The previous `activeGroups.find(g => g.members.includes(id))` per node
@@ -698,9 +794,18 @@ function SocialGraphContent({
       }
     });
 
+    // A "me" person's account follows nearly everyone, so it lands in every
+    // crowd while the layout parks it in the middle of the graph — dragging each
+    // crowd's centroid inward and inflating its radius until the bounding sphere
+    // says nothing about where that crowd actually sits. Excluding it only
+    // changes crowd membership; the account stays in the graph.
+    const isExcludedFromCrowds = (ownerPersonId?: string | null): boolean =>
+      !includeMeAccounts && !!ownerPersonId && mePersonIds.has(ownerPersonId);
+
     // `find` returned the earliest matching group; preserve that across the
     // two lookup maps by comparing their positions in activeGroups.
     const resolveCrowdGroup = (accountId: string, ownerPersonId?: string | null): Group | null => {
+      if (isExcludedFromCrowds(ownerPersonId)) return null;
       const byAccount = crowdHitByAccountId.get(accountId);
       const byPerson = ownerPersonId ? crowdHitByPersonId.get(ownerPersonId) : undefined;
       if (!byAccount) return byPerson?.group ?? null;
@@ -717,6 +822,15 @@ function SocialGraphContent({
 
     const colorMap = computeColorMap();
 
+    /** Accounts no crowd, group or centre claimed — what the options act on. */
+    const nonCrowdNodeIds = new Set<string>();
+
+    // The dense renderer batches every node into one geometry with no per-point
+    // visibility, so there the nearest thing to invisible is the clear colour.
+    const denseInvisibleColor = denseEnabled && (invisNonCrowd || invisAllLinks)
+      ? readBackgroundColor()
+      : '';
+
     const nodes: GraphNode[] = graphData.nodes.map(n => {
       let label = n.name;
       if (n.mergedNames && n.mergedNames.length > 0) {
@@ -730,15 +844,25 @@ function SocialGraphContent({
       const isCrowd = !!matchingCrowdGroup;
 
       let color = colorMap.get(n.id) || n.typeColor;
+      let isNonCrowd = false;
       if (activeGroups.length > 0) {
         if (isMember) {
           color = matchingMemberGroup?.color || "#8b5cf6";
         } else if (isCenter) {
           color = "#ec4899";
-        } else if (isCrowd && showCrowds) {
-          color = isAllCrowds ? (matchingCrowdGroup?.color || crowdColor) : crowdColor;
+        } else if (matchingCrowdGroup && showCrowds) {
+          color = crowdColorByGroup.get(matchingCrowdGroup.id) ?? color;
+        } else {
+          isNonCrowd = true;
+          nonCrowdNodeIds.add(n.id);
+          // Flatten what the crowd visuals did not claim, so the crowds read as
+          // figure against ground rather than as more of the same.
+          if (showCrowds && recolorNonCrowd) color = nonCrowdColor;
         }
       }
+
+      const invisible = isNonCrowd && showCrowds && invisNonCrowd;
+      if (invisible && denseEnabled) color = denseInvisibleColor;
 
       return {
         id: n.id,
@@ -748,6 +872,7 @@ function SocialGraphContent({
         val: graphMode === 'blob' ? (n.size - 50 + 1) * n.val : (isCenter ? 15 : (isMember ? 12 : (isCrowd && showCrowds ? 8 : n.val))),
         isCenter,
         isCrowd: isCrowd && showCrowds,
+        invisible,
       };
     });
 
@@ -765,9 +890,20 @@ function SocialGraphContent({
 
       const isCrowdLink = activeGroups.length > 0 && showCrowds && isSrcCrowd && isTgtCenterFollower;
 
+      // Undrawn beats every colour rule below it, and a link is only as visible
+      // as its ends — hiding an account has to take its connections with it, or
+      // they hang in the air pointing at nothing. Settled before the chain so
+      // an undrawn link never pays for a colour no one will see.
+      const invisible = invisAllLinks
+        || (showCrowds && invisNonCrowd && (nonCrowdNodeIds.has(src) || nonCrowdNodeIds.has(tgt)));
+
       let color: string;
-      if (isCrowdLink) {
-        color = isAllCrowds ? (matchingCrowdGroup?.color || crowdColor) : crowdColor;
+      if (invisible) {
+        // Nothing draws this on the standard path. The dense renderer has no
+        // per-line visibility, so there it takes the clear colour instead.
+        color = denseEnabled ? denseInvisibleColor : linkDefaultColor;
+      } else if (isCrowdLink && matchingCrowdGroup) {
+        color = crowdColorByGroup.get(matchingCrowdGroup.id) ?? linkDefaultColor;
       } else if (isSingleMode && (src === targetId || tgt === targetId)) {
         if (l.mutual) {
           color = singleLinkMutualColor;
@@ -781,7 +917,8 @@ function SocialGraphContent({
       } else {
         color = l.mutual ? linkMutualColor : linkDefaultColor;
       }
-      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual, isCrowdLink, idx };
+
+      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual, isCrowdLink, invisible, idx };
     });
 
     let filteredLinks = links;
@@ -789,36 +926,55 @@ function SocialGraphContent({
       filteredLinks = links.filter(l => l.source === targetId || l.target === targetId);
     }
 
-    const validNodeIds = new Set(nodes.map(n => n.id));
+    // Hiding means leaving them out of the scene entirely. The link filter
+    // below then drops every link with a hidden end, which is what takes the
+    // connections away along with the accounts.
+    const drawnNodes = showCrowds && hideNonCrowd
+      ? nodes.filter(n => !nonCrowdNodeIds.has(n.id))
+      : nodes;
+
+    const validNodeIds = new Set(drawnNodes.map(n => n.id));
     const validLinks = filteredLinks.filter(l => validNodeIds.has(l.source) && validNodeIds.has(l.target));
 
     // Crowd membership per group, resolved once here instead of re-filtering
     // every graph node against every group on every simulation tick.
     const crowdNodeIdsByGroup = new Map<string, Set<string>>();
-    const crowdColorByGroup = new Map<string, string>();
     for (const g of activeGroups) {
-      crowdColorByGroup.set(g.id, isAllCrowds ? (g.color || crowdColor) : crowdColor);
       const ids = new Set<string>();
       const isSocialMode = !g.crowdMode || g.crowdMode === "social_accounts";
       if (isSocialMode) {
         for (const memberId of g.crowdMembers || []) {
-          if (validNodeIds.has(memberId)) ids.add(memberId);
+          if (!validNodeIds.has(memberId)) continue;
+          if (isExcludedFromCrowds(graphIndex.nodeById.get(memberId)?.ownerPersonId)) continue;
+          ids.add(memberId);
         }
       } else if (g.crowdMembers?.length) {
         const memberSet = new Set(g.crowdMembers);
         for (const n of graphData.nodes) {
-          if (n.ownerPersonId && memberSet.has(n.ownerPersonId)) ids.add(n.id);
+          if (!n.ownerPersonId || !memberSet.has(n.ownerPersonId)) continue;
+          if (isExcludedFromCrowds(n.ownerPersonId)) continue;
+          ids.add(n.id);
         }
       }
       crowdNodeIdsByGroup.set(g.id, ids);
     }
 
     return {
-      nodes,
+      nodes: drawnNodes,
       links: validLinks,
       activeGroupIds: activeGroups.map(g => g.id),
       crowdNodeIdsByGroup,
       crowdColorByGroup,
+      // The key only lists crowds that actually drew members, so it never names
+      // a colour the user cannot find on screen.
+      crowdLegend: activeGroups
+        .map(g => ({
+          id: g.id,
+          name: g.name,
+          color: crowdColorByGroup.get(g.id) || '',
+          count: crowdNodeIdsByGroup.get(g.id)?.size ?? 0,
+        }))
+        .filter(entry => entry.count > 0),
     };
   };
 
@@ -834,7 +990,9 @@ function SocialGraphContent({
         chargeForce.strength((node: any) => {
           const nodeVal = node.val || 10;
           const scale = 1 + (Math.sqrt(nodeVal / 10) - 1) * blobForceMultiplierRef.current;
-          return -30 * scale;
+          // Dividing rather than subtracting keeps 1 as the stock layout and
+          // makes each step down a proportional loosening rather than a cliff.
+          return (-30 * scale) / centerPullRef.current;
         });
       }
     } catch (_) { }
@@ -860,10 +1018,7 @@ function SocialGraphContent({
     nodeObjMapRef.current.clear();
     linkObjMapRef.current.clear();
 
-    const styles = getComputedStyle(document.documentElement);
-    const backgroundHSL = styles.getPropertyValue('--background').trim();
-    const values = backgroundHSL.split(' ').map(v => parseFloat(v));
-    const bgColor = `hsl(${values[0]}, ${values[1]}%, ${values[2]}%)`;
+    const bgColor = readBackgroundColor();
 
     const fg = (ForceGraph3D as any)({
       controlType: 'orbit',
@@ -898,6 +1053,7 @@ function SocialGraphContent({
           );
         }
         obj.userData.isCenter = !!node.isCenter;
+        obj.visible = !node.invisible;
         nodeObjMapRef.current.set(node.id, obj);
         return obj;
       })
@@ -917,6 +1073,7 @@ function SocialGraphContent({
         // lets us skip that recompute entirely.
         line.frustumCulled = false;
         line.userData.dashed = !!link.isCrowdLink;
+        line.visible = !link.invisible;
         if (typeof link.idx === 'number') linkObjMapRef.current.set(link.idx, line);
         return line;
       })
@@ -1028,7 +1185,10 @@ function SocialGraphContent({
   // ── Effect B: push structural changes ───────────────────────────────────
   useEffect(() => {
     const fg = fgRef.current;
-    if (!fg || !graphData || !graphData.nodes.length) return;
+    // A placeholder payload predates the settings now driving buildVisuals, so
+    // pushing it would rebuild from stale nodes and re-heat the layout twice
+    // for a single update. Wait for the payload that matches.
+    if (!fg || !graphData || !graphData.nodes.length || isGraphPlaceholder) return;
 
     const visuals = buildVisualsRef.current();
 
@@ -1136,7 +1296,7 @@ function SocialGraphContent({
         distances.sort((a, b) => a - b);
         const percentileIndex = Math.min(distances.length - 1, Math.floor(distances.length * 0.9));
         const radius = Math.max(15, distances[percentileIndex] || 15);
-        const sphereColor = crowdColorByGroup.get(gId) || CROWD_SCHEME_COLORS[crowdColorScheme];
+        const sphereColor = crowdColorByGroupRef.current.get(gId) || crowdColorAt(crowdPalette, 0);
 
         let mesh = meshes.get(gId);
         if (!mesh) {
@@ -1192,6 +1352,7 @@ function SocialGraphContent({
           links: index.linkPairs,
           vals: index.vals,
           chargeMultiplier: blobForceMultiplierRef.current,
+          centerPull: centerPullRef.current,
           positions: seed,
         };
         worker.postMessage(request);
@@ -1205,15 +1366,20 @@ function SocialGraphContent({
         ? prev
         : { nodes: visuals.nodes.length, links: visuals.links.length }
     );
+
+    setCrowdLegend(prev => sameCrowdLegend(prev, visuals.crowdLegend) ? prev : visuals.crowdLegend);
     updateCrowdSpheresRef.current();
   }, [
     graphData,
     graphIndex,
     graphMode,
-    appliedSettings,
+    isGraphPlaceholder,
     highlightedGroupId,
     groupsList,
     showCrowds,
+    hideNonCrowd,
+    includeMeAccounts,
+    mePersonIds,
     applyChargeForce,
     // Renderer rebuilds clear the object maps, so re-push the data afterwards.
     hasGraphData,
@@ -1231,15 +1397,19 @@ function SocialGraphContent({
     const resources = resourcesRef.current;
     if (!fg || !resources || !graphData || !graphData.nodes.length) return;
 
+    // Crowd colours come from the palette, so unlike the other colour settings
+    // this effect also has to reach the bounding spheres and the key. The
+    // rebuild above refreshed the colour map the sphere pass reads.
+    const visuals = buildVisualsRef.current();
+    setCrowdLegend(prev => sameCrowdLegend(prev, visuals.crowdLegend) ? prev : visuals.crowdLegend);
+    updateCrowdSpheresRef.current();
+
     if (denseEnabled) {
-      const visuals = buildVisualsRef.current();
       denseRendererRef.current?.setColors(visuals.nodes, visuals.links);
       return;
     }
 
     if (nodeObjMapRef.current.size === 0) return;
-
-    const visuals = buildVisualsRef.current();
 
     const liveNodes = fg.graphData().nodes as any[];
     const liveNodeById = new Map(liveNodes.map((n: any) => [n.id, n]));
@@ -1248,6 +1418,7 @@ function SocialGraphContent({
       if (live) live.color = node.color;
       const obj = nodeObjMapRef.current.get(node.id);
       if (!obj) continue;
+      obj.visible = !node.invisible;
       // A changed isCenter means the object's shape changed too; that only
       // happens on structural updates, which Effect B already handled.
       if (obj.userData.isCenter !== node.isCenter) continue;
@@ -1263,12 +1434,16 @@ function SocialGraphContent({
     const linkVisualByIdx = new Map(visuals.links.map(l => [l.idx, l]));
     for (const link of visuals.links) {
       const line = linkObjMapRef.current.get(link.idx);
-      if (line) line.material = resources.lineMaterial(link.color, link.isCrowdLink);
+      if (!line) continue;
+      line.material = resources.lineMaterial(link.color, link.isCrowdLink);
+      line.visible = !link.invisible;
     }
     const liveLinks = fg.graphData().links as any[];
     for (const live of liveLinks) {
       const visual = linkVisualByIdx.get(live.idx);
-      if (visual) live.color = visual.color;
+      if (!visual) continue;
+      live.color = visual.color;
+      live.invisible = visual.invisible;
     }
 
     // Arrow meshes cache their colour internally, so nudge the accessor to make
@@ -1276,13 +1451,20 @@ function SocialGraphContent({
     // digest, so the lines above keep the materials just assigned.
     if (arrowsEnabled) {
       fg.linkDirectionalArrowColor((l: any) => l.color || '#6b7280');
+      // An undrawn link must not leave its arrow behind. Arrow meshes cache
+      // both accessors, so re-setting them is what forces the re-read.
+      fg.linkDirectionalArrowLength(linkArrowLength);
     }
   }, [
     graphData,
     denseEnabled,
     computeColorMap,
     arrowsEnabled,
-    crowdColorScheme,
+    crowdPalette,
+    invisNonCrowd,
+    invisAllLinks,
+    recolorNonCrowd,
+    nonCrowdColor,
     linkMutualColor,
     linkDefaultColor,
     singleLinkMutualColor,
@@ -1294,9 +1476,7 @@ function SocialGraphContent({
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg) return;
-    fg.linkDirectionalArrowLength(
-      arrowsEnabled ? (link: any) => (link.mutual ? 0 : 4) : () => 0
-    );
+    fg.linkDirectionalArrowLength(arrowsEnabled ? linkArrowLength : () => 0);
   }, [arrowsEnabled, renderedCounts]);
 
   // ── Effect E: charge force ──────────────────────────────────────────────
@@ -1310,13 +1490,13 @@ function SocialGraphContent({
       return;
     }
     if (denseEnabled) {
-      const request: LayoutRequest = { type: 'charge', chargeMultiplier: blobForceMultiplier };
+      const request: LayoutRequest = { type: 'charge', chargeMultiplier: blobForceMultiplier, centerPull };
       layoutWorkerRef.current?.postMessage(request);
       return;
     }
     applyChargeForce();
     fgRef.current?.d3ReheatSimulation?.();
-  }, [blobForceMultiplier, applyChargeForce, denseEnabled]);
+  }, [blobForceMultiplier, centerPull, applyChargeForce, denseEnabled]);
 
   useEffect(() => {
     crowdSphereMeshesMapRef.current.forEach((mesh) => {
@@ -1400,7 +1580,7 @@ function SocialGraphContent({
               </Button>
             </div>
           )}
-          {isGraphLoading && (
+          {isGraphFetching && (
             <span className="text-xs text-muted-foreground" data-testid="text-graph-loading">Loading...</span>
           )}
           <Button
@@ -1524,6 +1704,32 @@ function SocialGraphContent({
           </div>
         )}
           <div ref={graphRef} className="w-full h-full" data-testid="canvas-social-graph-3d" />
+
+        {/* One crowd needs no key — its colour is not telling the user anything
+            they cannot already see. Two or more do. */}
+        {showCrowds && crowdLegend.length > 1 && (
+          <div
+            className="absolute bottom-4 left-4 z-40 max-w-56 max-h-[45%] overflow-y-auto overscroll-contain bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg px-3 py-2 space-y-1.5"
+            data-testid="crowd-legend"
+          >
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Crowds
+            </p>
+            {crowdLegend.map(entry => (
+              <div
+                key={entry.id}
+                className="flex items-center gap-2 text-xs"
+                data-testid={`crowd-legend-item-${entry.id}`}
+              >
+                <span
+                  className="w-2.5 h-2.5 rounded-full shrink-0"
+                  style={{ backgroundColor: entry.color }}
+                />
+                <span className="truncate" title={`${entry.name} (${entry.count})`}>{entry.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {isOptionsOpen && (
           <div className="absolute top-4 right-4 w-80 max-h-[calc(100%-2rem)] overflow-y-auto overscroll-contain bg-background/80 backdrop-blur-sm border rounded-lg shadow-lg p-4 space-y-3 z-50">
@@ -1895,6 +2101,215 @@ function SocialGraphContent({
                     </div>
                   </div>
                 )}
+
+              <div className="pt-2 border-t space-y-3">
+                <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5" />
+                  Crowds Settings
+                </h4>
+                <div className="space-y-2">
+                    <Label htmlFor="social-crowd-group-select" className="text-xs">Active Group</Label>
+                    <Select
+                      value={highlightedGroupId || "none"}
+                      onValueChange={(val) => setHighlightedGroupId(val === "none" ? null : val)}
+                    >
+                      <SelectTrigger id="social-crowd-group-select" className="h-8" data-testid="select-crowd-group">
+                        <SelectValue placeholder="Select group to visualize crowd..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No group (Crowds inactive)</SelectItem>
+                        <SelectItem value="all" className="font-semibold text-primary">All Groups (Show all crowds)</SelectItem>
+                        {groupsList?.map((g) => (
+                          <SelectItem key={g.id} value={g.id}>
+                            {g.name} {g.crowdMembers && g.crowdMembers.length > 0 ? `(${g.crowdMembers.length} in crowd)` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {highlightedGroupId === "all" ? (() => {
+                    const groupsWithCrowds = groupsList?.filter(g => g.crowdMembers && g.crowdMembers.length > 0) || [];
+                    const totalCrowdMembers = groupsWithCrowds.reduce((sum, g) => sum + (g.crowdMembers?.length || 0), 0);
+                    return (
+                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                        <span>Active crowds: <strong>{groupsWithCrowds.length} groups</strong></span>
+                        <span>Total members: <strong>{totalCrowdMembers}</strong></span>
+                      </div>
+                    );
+                  })() : highlightedGroupId ? (() => {
+                    const selectedGroup = groupsList?.find((g) => g.id === highlightedGroupId);
+                    if (!selectedGroup) return null;
+                    if (!selectedGroup.centerAccountId) {
+                      return (
+                        <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 p-2 rounded">
+                          This group has no Center Account configured.
+                        </div>
+                      );
+                    }
+                    if (!selectedGroup.crowdMembers || selectedGroup.crowdMembers.length === 0) {
+                      return (
+                        <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex flex-col gap-1">
+                          <span>No crowd members found for this group.</span>
+                          <a
+                            href={`/group/${selectedGroup.id}`}
+                            className="text-primary hover:underline font-medium inline-block"
+                          >
+                            Configure or calculate on group page &rarr;
+                          </a>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                        <span>Crowd members: <strong>{selectedGroup.crowdMembers.length}</strong></span>
+                        {selectedGroup.crowdLastCalculatedAt && (
+                          <span>{new Date(selectedGroup.crowdLastCalculatedAt).toLocaleDateString()}</span>
+                        )}
+                      </div>
+                    );
+                  })() : (
+                    <p className="text-xs text-muted-foreground">
+                      Select a group or &quot;All Groups&quot; to display crowd members and 3D bounding clouds.
+                    </p>
+                  )}
+
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
+                  <Switch
+                    id="show-crowds"
+                    checked={showCrowds}
+                    onCheckedChange={setShowCrowds}
+                    data-testid="switch-show-crowds"
+                  />
+                </div>
+                {showCrowds && (
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="include-me-accounts" className="text-sm">
+                      Include me user accounts
+                    </Label>
+                    <Switch
+                      id="include-me-accounts"
+                      checked={includeMeAccounts}
+                      onCheckedChange={setIncludeMeAccounts}
+                      data-testid="switch-include-me-accounts"
+                    />
+                  </div>
+                )}
+                {showCrowds && !includeMeAccounts && (
+                  <p className="text-xs text-muted-foreground" data-testid="text-me-accounts-hint">
+                    Your own accounts are left out of every crowd. They stay in the graph &mdash;
+                    they just no longer pull each crowd&apos;s centre and radius toward the middle.
+                  </p>
+                )}
+                {showCrowds && (
+                  <div className="space-y-2">
+                    <Label htmlFor="crowd-palette" className="text-xs">Crowd Palette</Label>
+                    <Select value={crowdPalette} onValueChange={(val: CrowdPalette) => setCrowdPalette(val)}>
+                      <SelectTrigger id="crowd-palette" className="h-8" data-testid="select-crowd-palette">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(Object.keys(CROWD_PALETTES) as CrowdPalette[]).map(key => (
+                          <SelectItem key={key} value={key} data-testid={`option-crowd-palette-${key}`}>
+                            <span className="flex items-center gap-2">
+                              <span className="flex shrink-0 overflow-hidden rounded-sm">
+                                {CROWD_PALETTES[key].colors.map(color => (
+                                  <span key={color} className="w-1.5 h-3" style={{ backgroundColor: color }} />
+                                ))}
+                              </span>
+                              {CROWD_PALETTES[key].label}
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Each crowd takes the next colour in the palette, so no two crowds on screen
+                      share one. The key in the corner names them.
+                    </p>
+                  </div>
+                )}
+                {showCrowds && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="recolor-non-crowd" className="text-sm">
+                        Recolor non-crowd accounts
+                      </Label>
+                      <Switch
+                        id="recolor-non-crowd"
+                        checked={recolorNonCrowd}
+                        onCheckedChange={setRecolorNonCrowd}
+                        data-testid="switch-recolor-non-crowd"
+                      />
+                    </div>
+                    {recolorNonCrowd && (
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm text-muted-foreground">Non-crowd color</Label>
+                        <input
+                          type="color"
+                          value={nonCrowdColor}
+                          onChange={(e) => setNonCrowdColor(e.target.value)}
+                          className="h-7 w-10 rounded cursor-pointer border"
+                          data-testid="input-non-crowd-color"
+                        />
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="hide-non-crowd" className="text-sm">
+                        Hide non-crowd accounts
+                      </Label>
+                      <Switch
+                        id="hide-non-crowd"
+                        checked={hideNonCrowd}
+                        onCheckedChange={(on) => setNonCrowdMode(on ? 'hide' : 'show')}
+                        data-testid="switch-hide-non-crowd"
+                      />
+                    </div>
+                    {hideNonCrowd && (
+                      <p className="text-xs text-muted-foreground" data-testid="text-hide-non-crowd-hint">
+                        Accounts outside every crowd leave the scene along with their links, so
+                        the layout re-settles around the crowds that remain.
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="invis-non-crowd" className="text-sm">
+                        Invis non-crowd accounts
+                      </Label>
+                      <Switch
+                        id="invis-non-crowd"
+                        checked={invisNonCrowd}
+                        onCheckedChange={(on) => setNonCrowdMode(on ? 'invis' : 'show')}
+                        data-testid="switch-invis-non-crowd"
+                      />
+                    </div>
+                    {invisNonCrowd && (
+                      <p className="text-xs text-muted-foreground" data-testid="text-invis-non-crowd-hint">
+                        Those accounts and their links stay in the graph and keep pulling on the
+                        layout &mdash; they are simply not drawn, so the crowds hold their places.
+                      </p>
+                    )}
+                  </div>
+                )}
+                {showCrowds && (
+                  <div className="space-y-2" data-testid="crowd-sphere-opacity-options">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">Crowd Sphere Opacity</Label>
+                      <span className="text-sm font-medium font-mono" data-testid="text-crowd-sphere-opacity-value">
+                        {Math.round(crowdSphereOpacity * 100)}%
+                      </span>
+                    </div>
+                    <Slider
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={[Math.round(crowdSphereOpacity * 100)]}
+                      onValueChange={(val) => setCrowdSphereOpacity(val[0] / 100)}
+                      data-testid="slider-crowd-sphere-opacity"
+                    />
+                  </div>
+                )}
+                </div>
               </TabsContent>
 
               <TabsContent value="color" className="space-y-4" data-testid="tab-content-color">
@@ -1998,11 +2413,25 @@ function SocialGraphContent({
                               )}
                               {distanceSearchQuery.length >= 3 && (() => {
                                 const query = distanceSearchQuery.toLowerCase();
+                                // Distance is measured by walking this graph's links, so an
+                                // account that was filtered out of the graph has no distance to
+                                // report and would silently leave every node on its type colour.
+                                // Only offer accounts that are actually on screen.
                                 const filtered = allSocialAccounts.filter(a =>
-                                  a.username.toLowerCase().includes(query) ||
-                                  (a.currentProfile?.nickname && a.currentProfile?.nickname.toLowerCase().includes(query))
+                                  graphIndex.nodeById.has(a.id) && (
+                                    a.username.toLowerCase().includes(query) ||
+                                    (a.currentProfile?.nickname && a.currentProfile?.nickname.toLowerCase().includes(query))
+                                  )
                                 ).slice(0, 50);
-                                if (filtered.length === 0) return <CommandEmpty>No account found.</CommandEmpty>;
+                                if (filtered.length === 0) {
+                                  return (
+                                    <CommandEmpty>
+                                      No matching account in the current graph. Only the{' '}
+                                      {renderedCounts.nodes} accounts drawn right now can be used
+                                      &mdash; widen the filters to reach more.
+                                    </CommandEmpty>
+                                  );
+                                }
                                 return (
                                   <CommandGroup>
                                     {filtered.map((account) => (
@@ -2029,6 +2458,14 @@ function SocialGraphContent({
                           </Command>
                         </PopoverContent>
                       </Popover>
+                      {colorSchemeAccountId && !graphIndex.nodeById.has(colorSchemeAccountId) && (
+                        // Reachable when the filters change under a selection, or when a saved
+                        // default names an account this graph no longer draws.
+                        <p className="text-xs text-muted-foreground" data-testid="text-distance-account-missing">
+                          That account is not in the current graph, so every node keeps its type
+                          colour. Pick one that is drawn, or widen the filters.
+                        </p>
+                      )}
                       <div className="space-y-2 pt-1">
                         <div className="flex items-center justify-between">
                           <Label className="text-sm text-muted-foreground">Selected account</Label>
@@ -2098,6 +2535,23 @@ function SocialGraphContent({
 
                 <div className="space-y-3 pt-2 border-t">
                   <Label>Line Colors</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="invis-all-links" className="text-sm">
+                      Invis all links
+                    </Label>
+                    <Switch
+                      id="invis-all-links"
+                      checked={invisAllLinks}
+                      onCheckedChange={setInvisAllLinks}
+                      data-testid="switch-invis-all-links"
+                    />
+                  </div>
+                  {invisAllLinks && (
+                    <p className="text-xs text-muted-foreground" data-testid="text-invis-all-links-hint">
+                      Every link stays in the graph and keeps pulling the layout together &mdash;
+                      none of them are drawn, so the colours below have nothing to tint.
+                    </p>
+                  )}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <Label className="text-sm text-muted-foreground">Mutual</Label>
@@ -2122,23 +2576,6 @@ function SocialGraphContent({
                   </div>
                 </div>
 
-                <div className="space-y-2 pt-3 border-t" data-testid="crowd-sphere-opacity-options">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-sm font-medium">Crowd Sphere Opacity</Label>
-                    <span className="text-sm font-medium font-mono" data-testid="text-crowd-sphere-opacity-value">
-                      {Math.round(crowdSphereOpacity * 100)}%
-                    </span>
-                  </div>
-                  <Slider
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={[Math.round(crowdSphereOpacity * 100)]}
-                    onValueChange={(val) => setCrowdSphereOpacity(val[0] / 100)}
-                    data-testid="slider-crowd-sphere-opacity"
-                  />
-                </div>
-
                 <div className="pt-3 border-t space-y-2">
                   <div className="flex items-center space-x-2">
                     <Checkbox
@@ -2158,6 +2595,32 @@ function SocialGraphContent({
                 <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center" data-testid="text-perf-counts">
                   <span>Nodes: <strong>{renderedCounts.nodes}</strong></span>
                   <span>Links: <strong>{renderedCounts.links}</strong></span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label>Center Pull</Label>
+                    <span className="text-sm font-medium font-mono" data-testid="text-center-pull-value">
+                      {Math.round(centerPull * 100)}%
+                    </span>
+                  </div>
+                  <Slider
+                    min={20}
+                    max={100}
+                    step={5}
+                    value={[Math.round(centerPull * 100)]}
+                    onValueChange={(v) => setCenterPull(v[0] / 100)}
+                    data-testid="slider-center-pull"
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Spread out</span>
+                    <span>Default</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Turning this down pushes the nodes apart, so a graph that settles into one
+                    dense knot opens up enough to read. It only changes how the layout spends its
+                    space &mdash; nothing is added to or removed from the graph.
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -2315,113 +2778,14 @@ function SocialGraphContent({
               </TabsContent>
             </Tabs>
 
-            <div className="pt-2 border-t space-y-3">
-              <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
-                <Users className="w-3.5 h-3.5" />
-                Crowds Settings
-              </h4>
-              <div className="space-y-2">
-                  <Label htmlFor="social-crowd-group-select" className="text-xs">Active Group</Label>
-                  <Select
-                    value={highlightedGroupId || "none"}
-                    onValueChange={(val) => setHighlightedGroupId(val === "none" ? null : val)}
-                  >
-                    <SelectTrigger id="social-crowd-group-select" className="h-8" data-testid="select-crowd-group">
-                      <SelectValue placeholder="Select group to visualize crowd..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No group (Crowds inactive)</SelectItem>
-                      <SelectItem value="all" className="font-semibold text-primary">All Groups (Show all crowds)</SelectItem>
-                      {groupsList?.map((g) => (
-                        <SelectItem key={g.id} value={g.id}>
-                          {g.name} {g.crowdMembers && g.crowdMembers.length > 0 ? `(${g.crowdMembers.length} in crowd)` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {highlightedGroupId === "all" ? (() => {
-                  const groupsWithCrowds = groupsList?.filter(g => g.crowdMembers && g.crowdMembers.length > 0) || [];
-                  const totalCrowdMembers = groupsWithCrowds.reduce((sum, g) => sum + (g.crowdMembers?.length || 0), 0);
-                  return (
-                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
-                      <span>Active crowds: <strong>{groupsWithCrowds.length} groups</strong></span>
-                      <span>Total members: <strong>{totalCrowdMembers}</strong></span>
-                    </div>
-                  );
-                })() : highlightedGroupId ? (() => {
-                  const selectedGroup = groupsList?.find((g) => g.id === highlightedGroupId);
-                  if (!selectedGroup) return null;
-                  if (!selectedGroup.centerAccountId) {
-                    return (
-                      <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 p-2 rounded">
-                        This group has no Center Account configured.
-                      </div>
-                    );
-                  }
-                  if (!selectedGroup.crowdMembers || selectedGroup.crowdMembers.length === 0) {
-                    return (
-                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex flex-col gap-1">
-                        <span>No crowd members found for this group.</span>
-                        <a
-                          href={`/group/${selectedGroup.id}`}
-                          className="text-primary hover:underline font-medium inline-block"
-                        >
-                          Configure or calculate on group page &rarr;
-                        </a>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
-                      <span>Crowd members: <strong>{selectedGroup.crowdMembers.length}</strong></span>
-                      {selectedGroup.crowdLastCalculatedAt && (
-                        <span>{new Date(selectedGroup.crowdLastCalculatedAt).toLocaleDateString()}</span>
-                      )}
-                    </div>
-                  );
-                })() : (
-                  <p className="text-xs text-muted-foreground">
-                    Select a group or &quot;All Groups&quot; to display crowd members and 3D bounding clouds.
-                  </p>
-                )}
-
-              <div className="flex items-center justify-between">
-                <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
-                <Switch
-                  id="show-crowds"
-                  checked={showCrowds}
-                  onCheckedChange={setShowCrowds}
-                  data-testid="switch-show-crowds"
-                />
-              </div>
-              {showCrowds && (
-                <div className="space-y-2">
-                  <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
-                  <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
-                    <SelectTrigger id="crowd-color-scheme" className="h-8">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pastel">Pastel Green</SelectItem>
-                      <SelectItem value="emerald">Emerald</SelectItem>
-                      <SelectItem value="amber">Amber</SelectItem>
-                      <SelectItem value="sky">Sky Blue</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-            </div>
-
             <div className="pt-2 border-t space-y-2">
               <Button
                 className="w-full"
                 onClick={handleUpdateGraph}
-                disabled={isGraphLoading}
+                disabled={isGraphFetching}
                 data-testid="button-update-graph"
               >
-                {isGraphLoading ? "Updating..." : "Update Graph"}
+                {isGraphFetching ? "Updating..." : "Update Graph"}
               </Button>
               <Button
                 variant="outline"

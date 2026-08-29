@@ -68,7 +68,7 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
       if (!res.ok) throw new Error("Failed to search accounts");
       return res.json();
     },
-    enabled: isAddOpen && debouncedSearch.trim().length >= 2,
+    enabled: isAddOpen && debouncedSearch.trim().length >= 3,
   });
 
   // Mutate group centerAccountId
@@ -404,9 +404,9 @@ export function GroupSocialAccountsTab({ groupId }: GroupSocialAccountsTabProps)
           </div>
 
           <ScrollArea className="h-60 border rounded-md p-2">
-            {searchQuery.trim().length < 2 ? (
+            {searchQuery.trim().length < 3 ? (
               <div className="h-full flex items-center justify-center text-sm text-muted-foreground py-10">
-                Type at least 2 characters to search...
+                Type at least 3 characters to search...
               </div>
             ) : isSearching ? (
               <div className="space-y-2">

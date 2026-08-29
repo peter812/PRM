@@ -830,7 +830,7 @@ export function registerRoutes(app: Express) {
         // Export groups (encode ME user UUID as all zeros in members)
         xml += '  <groups>\n';
         for (const group of groups) {
-          const members = (group.members || []).map(memberId => 
+          const members = (group.members || []).map((memberId: string) => 
             memberId === mePersonId ? ZERO_UUID : memberId
           );
           

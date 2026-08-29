@@ -1,6 +1,6 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, StickyNote } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -27,15 +27,18 @@ import {
 } from "@/lib/extension-bridge";
 import { isValidHexColor, getInitials } from "@/lib/utils";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialProfileVersion } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry } from "@shared/schema";
 import { Link } from "wouter";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
 import { PersonDialog } from "@/components/person-dialog";
+import { LinkPersonDialog } from "@/components/link-person-dialog";
 import { PostDialog } from "@/components/post-dialog";
 import { PostDetailDialog } from "@/components/post-detail-dialog";
 import { SiInstagram } from "react-icons/si";
 import { MessagesTab } from "@/components/messages-tab";
+import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
+import { SocialAccountRow } from "@/components/social-account-row";
 import {
   Dialog,
   DialogContent,
@@ -49,12 +52,11 @@ export default function SocialAccountProfile() {
   const [location, navigate] = useLocation();
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState("account");
-  const [notes, setNotes] = useState("");
-  const [isEditingNotes, setIsEditingNotes] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isLinkFollowingOpen, setIsLinkFollowingOpen] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [isCreatePersonOpen, setIsCreatePersonOpen] = useState(false);
+  const [isLinkPersonOpen, setIsLinkPersonOpen] = useState(false);
   const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
   const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
   const [isAddPostOpen, setIsAddPostOpen] = useState(false);
@@ -186,12 +188,12 @@ export default function SocialAccountProfile() {
     enabled: !!uuid,
   });
 
-  // Query profile versions for info dialog
-  const { data: profileVersions } = useQuery<SocialProfileVersion[]>({
-    queryKey: ["/api/social-accounts", uuid, "profile-versions"],
+  // Recent journal entries, for the "profile image updated" line in the info dialog
+  const { data: recentHistory } = useQuery<{ items: SocialAccountHistoryEntry[] }>({
+    queryKey: ["/api/social-accounts", uuid, "history", "recent"],
     queryFn: async () => {
-      const res = await fetch(`/api/social-accounts/${uuid}/profile-versions`);
-      if (!res.ok) throw new Error("Failed to fetch profile versions");
+      const res = await fetch(`/api/social-accounts/${uuid}/history?kind=direct&page=1&limit=100`);
+      if (!res.ok) throw new Error("Failed to fetch history");
       return res.json();
     },
     enabled: !!uuid && isInfoDialogOpen,
@@ -199,8 +201,11 @@ export default function SocialAccountProfile() {
 
   const linkPersonMutation = useMutation({
     mutationFn: async ({ personId, socialAccountId, existingUuids }: { personId: string; socialAccountId: string; existingUuids: string[] }) => {
+      await apiRequest("PATCH", `/api/social-accounts/${socialAccountId}`, {
+        ownerUuid: personId,
+      });
       return await apiRequest("PATCH", `/api/people/${personId}`, {
-        socialAccountUuids: [...existingUuids, socialAccountId],
+        socialAccountUuids: Array.from(new Set([...existingUuids, socialAccountId])),
       });
     },
     onSuccess: () => {
@@ -216,30 +221,6 @@ export default function SocialAccountProfile() {
       toast({
         title: "Error",
         description: "Failed to link person to account",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const updateNotesMutation = useMutation({
-    mutationFn: async (newNotes: string) => {
-      return await apiRequest("PATCH", `/api/social-accounts/${uuid}`, {
-        notes: newNotes,
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
-      toast({
-        title: "Success",
-        description: "Notes updated successfully",
-      });
-      setIsEditingNotes(false);
-    },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to update notes",
         variant: "destructive",
       });
     },
@@ -432,24 +413,40 @@ export default function SocialAccountProfile() {
     return date.toLocaleString([], { year: "numeric", month: "long" });
   };
 
+  // The journal already says which entries changed the image, so this is the
+  // newest of those rather than a walk over every stored version.
   const getImageLastChangedAt = (): Date | null => {
-    if (!profileVersions || profileVersions.length === 0) return null;
-    const sorted = [...profileVersions].sort(
-      (a, b) => new Date(a.detectedAt).getTime() - new Date(b.detectedAt).getTime()
-    );
-    let lastImageChangeDate: Date | null = null;
-    let prevImageUrl: string | null | undefined = undefined;
-    for (const v of sorted) {
-      if (prevImageUrl === undefined) {
-        if (v.imageUrl) lastImageChangeDate = new Date(v.detectedAt);
-        prevImageUrl = v.imageUrl;
-      } else if (v.imageUrl !== prevImageUrl) {
-        lastImageChangeDate = new Date(v.detectedAt);
-        prevImageUrl = v.imageUrl;
-      }
-    }
-    return lastImageChangeDate;
+    const entry = recentHistory?.items.find((e) => e.profileFieldsChanged.includes("image"));
+    return entry ? new Date(entry.detectedAt) : null;
   };
+
+  const isFullImport = Boolean(
+    account.internalAccountCreationType &&
+    /full|backup|meta|archive/i.test(account.internalAccountCreationType)
+  );
+
+  const getMostRecentImport = () => {
+    const imports: { date: Date; type: string }[] = [];
+    if (account.latestImportFollowers) {
+      imports.push({ date: new Date(account.latestImportFollowers), type: "followers" });
+    }
+    if (account.latestImportFollowing) {
+      imports.push({ date: new Date(account.latestImportFollowing), type: "following" });
+    }
+    if (account.lastScrapedAt) {
+      imports.push({ date: new Date(account.lastScrapedAt), type: "scraped" });
+    }
+    if (account.internalAccountCreationDate) {
+      imports.push({
+        date: new Date(account.internalAccountCreationDate),
+        type: account.internalAccountCreationType || "import",
+      });
+    }
+    if (imports.length === 0) return null;
+    return imports.sort((a, b) => b.date.getTime() - a.date.getTime())[0];
+  };
+
+  const mostRecentImport = getMostRecentImport();
 
   const getMostRecentImportDate = (): Date | null => {
     const dates = [account.latestImportFollowers, account.latestImportFollowing]
@@ -624,13 +621,20 @@ export default function SocialAccountProfile() {
               >
                 Messages
               </TabsTrigger>
+              <TabsTrigger
+                value="history"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-history"
+              >
+                History
+              </TabsTrigger>
             </TabsList>
           </div>
 
           {/* Sidebar Bottom Details Panel */}
           <div className="p-4 border-t bg-muted/15 space-y-3 text-xs">
             {account.ownerUuid ? (
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Linked Owner</span>
                 {owner ? (
                   <Link href={`/person/${owner.id}`}>
@@ -641,20 +645,51 @@ export default function SocialAccountProfile() {
                 ) : (
                   <span className="text-muted-foreground" data-testid="text-owner-loading">Loading...</span>
                 )}
+                <div className="flex items-center gap-1.5 pt-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => setIsLinkPersonOpen(true)}
+                    data-testid="button-link-person-sidebar"
+                  >
+                    Link
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => setIsCreatePersonOpen(true)}
+                    data-testid="button-create-person-sidebar"
+                  >
+                    Create
+                  </Button>
+                </div>
               </div>
             ) : (
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Owner</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full text-left justify-start"
-                  onClick={() => setIsCreatePersonOpen(true)}
-                  data-testid="button-create-person"
-                >
-                  <UserPlus className="h-3.5 w-3.5 mr-1" />
-                  Create Person
-                </Button>
+                <p className="text-muted-foreground italic text-xs">No person linked</p>
+                <div className="flex items-center gap-1.5 pt-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => setIsLinkPersonOpen(true)}
+                    data-testid="button-link-person-sidebar"
+                  >
+                    Link
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 text-xs h-7"
+                    onClick={() => setIsCreatePersonOpen(true)}
+                    data-testid="button-create-person-sidebar"
+                  >
+                    Create
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -891,68 +926,6 @@ export default function SocialAccountProfile() {
                   )}
                 </Card>
 
-                {/* Summaries: Notes & Bio */}
-                <Card className="p-4 space-y-3 shadow-none">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-sm flex items-center gap-1.5">
-                      <StickyNote className="h-4 w-4 text-muted-foreground" />
-                      Notes &amp; Bio
-                    </h3>
-                    {!isEditingNotes && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setNotes(account.currentProfile?.bio || "");
-                          setIsEditingNotes(true);
-                        }}
-                        className="text-[11px] h-6 px-2 text-primary hover:text-primary"
-                      >
-                        Edit
-                      </Button>
-                    )}
-                  </div>
-                  {isEditingNotes ? (
-                    <div className="space-y-3 pt-1">
-                      <Textarea
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                        placeholder="Add notes about this social account..."
-                        className="min-h-24 text-xs"
-                      />
-                      <div className="flex gap-2">
-                        <Button
-                          onClick={() => updateNotesMutation.mutate(notes)}
-                          disabled={updateNotesMutation.isPending}
-                          size="sm"
-                          className="text-xs h-7 px-3"
-                        >
-                          {updateNotesMutation.isPending && (
-                            <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                          )}
-                          Save
-                        </Button>
-                        <Button
-                          variant="outline"
-                          onClick={() => setIsEditingNotes(false)}
-                          size="sm"
-                          className="text-xs h-7 px-3"
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-xs text-muted-foreground">
-                      {account.currentProfile?.bio ? (
-                        <p className="whitespace-pre-wrap leading-relaxed">{account.currentProfile.bio}</p>
-                      ) : (
-                        <p className="italic">No notes or bio added yet.</p>
-                      )}
-                    </div>
-                  )}
-                </Card>
-
                 {/* Summaries: Activity & Import Info */}
                 <Card className="p-4 space-y-3 shadow-none">
                   <h3 className="font-semibold text-sm flex items-center justify-between">
@@ -999,62 +972,105 @@ export default function SocialAccountProfile() {
                 {/* Account Details Card */}
                 <Card className="p-4 space-y-3 text-xs shadow-none">
                   <h3 className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block">Account Details</h3>
-                  <div className="space-y-2">
-                    {/* Username */}
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-foreground">@{account.username}</span>
-                      {accountType && (
-                        <Badge
-                          variant="outline"
-                          className="text-[10px] px-1 py-0 h-4 leading-none"
-                          style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                        >
-                          {accountType.name}
-                        </Badge>
-                      )}
+                  <div className="space-y-2.5">
+                    {/* Username (account type) */}
+                    <div>
+                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Username</span>
+                      <div className="flex items-center gap-1.5 font-medium text-foreground">
+                        <span data-testid="text-details-username">@{account.username}</span>
+                        {accountType && (
+                          <span className="text-muted-foreground font-normal" data-testid="text-details-username-type">({accountType.name})</span>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Nickname / Display Name */}
+                    {/* Display name */}
                     {account.currentProfile?.nickname && (
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <span>Display: {account.currentProfile.nickname}</span>
+                      <div>
+                        <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Display Name</span>
+                        <span className="text-foreground" data-testid="text-details-display-name">{account.currentProfile.nickname}</span>
                       </div>
                     )}
+
+                    {/* Account type */}
+                    <div>
+                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Account Type</span>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-foreground" data-testid="text-details-account-type">{accountType?.name || "Unknown"}</span>
+                        {accountType && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] px-1 py-0 h-4 leading-none"
+                            style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                          >
+                            {accountType.name}
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
 
                     {/* External Profile Link */}
                     {account.currentProfile?.accountUrl && (
-                      <div className="flex items-center gap-2 truncate">
-                        <ExternalLink className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <a
-                          href={account.currentProfile.accountUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="hover:underline truncate text-primary font-medium"
-                          data-testid="link-external-account"
-                        >
-                          {account.currentProfile.accountUrl.replace(/^https?:\/\/(www\.)?/, '')}
-                        </a>
+                      <div>
+                        <span className="text-[10px] text-muted-foreground uppercase font-semibold block">External URL</span>
+                        <div className="flex items-center gap-1.5 truncate mt-0.5">
+                          <ExternalLink className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <a
+                            href={account.currentProfile.accountUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="hover:underline truncate text-primary font-medium"
+                            data-testid="link-external-account"
+                          >
+                            {account.currentProfile.accountUrl.replace(/^https?:\/\/(www\.)?/, '')}
+                          </a>
+                        </div>
                       </div>
                     )}
 
-                    {/* Location (from linked owner address or profile) */}
+                    {/* Location */}
                     {owner?.address && (
-                      <div className="flex items-start gap-2">
-                        <MapPin className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                        <span className="break-words">{owner.address}</span>
+                      <div>
+                        <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Location</span>
+                        <div className="flex items-start gap-1.5 mt-0.5">
+                          <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+                          <span className="break-words text-foreground">{owner.address}</span>
+                        </div>
                       </div>
                     )}
 
-                    {/* Joined / Imported Date */}
-                    {account.internalAccountCreationDate && (
-                      <div className="flex items-center gap-2 text-muted-foreground">
-                        <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <span>Imported {formatYearMonth(account.internalAccountCreationDate)}</span>
-                      </div>
-                    )}
+                    {/* Account creation date */}
+                    <div>
+                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Account Creation Date</span>
+                      <span className="text-foreground" data-testid="text-details-creation-date">
+                        {isFullImport && account.internalAccountCreationDate
+                          ? formatDateTime(account.internalAccountCreationDate)
+                          : "Unknown"}
+                      </span>
+                    </div>
+
+                    {/* Last import ({import type}) */}
+                    <div>
+                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Last Import</span>
+                      <span className="text-foreground" data-testid="text-details-last-import">
+                        {account.internalAccountCreationDate
+                          ? `${formatDateTime(account.internalAccountCreationDate)} (${account.internalAccountCreationType || "User"})`
+                          : "—"}
+                      </span>
+                    </div>
+
+                    {/* Most recent import ({import}) */}
+                    <div>
+                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Most Recent Import</span>
+                      <span className="text-foreground" data-testid="text-details-most-recent-import">
+                        {mostRecentImport
+                          ? `${formatDateTime(mostRecentImport.date)} (${mostRecentImport.type})`
+                          : "—"}
+                      </span>
+                    </div>
                   </div>
 
-                  {/* Linked Owner Section */}
+                  {/* Linked Person Section */}
                   <div className="border-t pt-3 space-y-2">
                     <span className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block">Linked Person</span>
                     {account.ownerUuid ? (
@@ -1085,93 +1101,30 @@ export default function SocialAccountProfile() {
                         <span className="text-muted-foreground italic">Loading owner...</span>
                       )
                     ) : (
-                      <div className="pt-1">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full text-xs h-8"
-                          onClick={() => setIsCreatePersonOpen(true)}
-                          data-testid="button-create-person-details"
-                        >
-                          <UserPlus className="h-3.5 w-3.5 mr-1" />
-                          Create Person
-                        </Button>
-                      </div>
+                      <p className="text-muted-foreground italic text-xs">No person linked</p>
                     )}
-                  </div>
 
-                  {/* Action Links Section */}
-                  <div className="border-t pt-3 space-y-1.5">
-                    <span className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block mb-1">Action Links</span>
-                    {account.currentProfile?.accountUrl && (
+                    {/* 2 Buttons: Link and Create */}
+                    <div className="flex items-center gap-2 pt-1">
                       <Button
                         variant="outline"
                         size="sm"
-                        className="w-full justify-start text-xs h-8 gap-2"
-                        onClick={() => window.open(account.currentProfile?.accountUrl ?? undefined, "_blank")}
+                        className="flex-1 text-xs h-8"
+                        onClick={() => setIsLinkPersonOpen(true)}
+                        data-testid="button-link-person-details"
                       >
-                        <ExternalLink className="h-3.5 w-3.5 text-primary" />
-                        View Original Profile
+                        Link
                       </Button>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full justify-start text-xs h-8 gap-2"
-                      onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)}
-                    >
-                      <GraphTriangleIcon className="h-3.5 w-3.5 text-primary" />
-                      Open in Graph
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full justify-start text-xs h-8 gap-2"
-                      onClick={() => setIsLinkFollowingOpen(true)}
-                    >
-                      <Plus className="h-3.5 w-3.5 text-primary" />
-                      Link Following Accounts
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full justify-start text-xs h-8 gap-2"
-                      onClick={() => setIsCompareOpen(true)}
-                    >
-                      <GitCompare className="h-3.5 w-3.5 text-primary" />
-                      Compare Differences
-                    </Button>
-                    {accountType?.name?.toLowerCase() === "instagram" && (
-                      <>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full justify-start text-xs h-8 gap-2"
-                          onClick={() => setIsImportDialogOpen(true)}
-                        >
-                          <Upload className="h-3.5 w-3.5 text-primary" />
-                          Import Instagram CSV
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full justify-start text-xs h-8 gap-2"
-                          onClick={() => handleExtract("account")}
-                        >
-                          <RefreshCw className="h-3.5 w-3.5 text-primary" />
-                          Extract Account Info
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full justify-start text-xs h-8 gap-2"
-                          onClick={() => handleExtract("graph")}
-                        >
-                          <Users className="h-3.5 w-3.5 text-primary" />
-                          Extract Followers &amp; Following
-                        </Button>
-                      </>
-                    )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-xs h-8"
+                        onClick={() => setIsCreatePersonOpen(true)}
+                        data-testid="button-create-person-details"
+                      >
+                        Create
+                      </Button>
+                    </div>
                   </div>
                 </Card>
               </div>
@@ -1200,27 +1153,13 @@ export default function SocialAccountProfile() {
                 {followers.length > 0 ? (
                   <div className="space-y-2">
                     {followers.map((followerAccount) => (
-                      <div
+                      <SocialAccountRow
                         key={followerAccount.id}
-                        className="flex items-center gap-3 p-2 rounded-md hover-elevate"
-                        data-testid={`card-follower-${followerAccount.id}`}
-                      >
-                        <Avatar className="w-8 h-8">
-                          {followerAccount.currentProfile?.imageUrl && (
-                            <AvatarImage src={followerAccount.currentProfile?.imageUrl} alt={followerAccount.username} />
-                          )}
-                          <AvatarFallback className="text-xs">
-                            {getInitials(followerAccount.username)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <Link
-                          href={`/social-accounts/${followerAccount.id}`}
-                          className="text-sm font-medium hover:underline"
-                          data-testid={`link-follower-${followerAccount.id}`}
-                        >
-                          {followerAccount.username}
-                        </Link>
-                      </div>
+                        id={followerAccount.id}
+                        username={followerAccount.username}
+                        imageUrl={followerAccount.imageUrl}
+                        testIdPrefix="follower"
+                      />
                     ))}
                     {hasMoreFollowers && (
                       <div className="pt-2 flex flex-col items-center gap-1">
@@ -1257,36 +1196,24 @@ export default function SocialAccountProfile() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setIsLinkFollowingOpen(true)}
-                    data-testid="button-add-following"
+                    onClick={() => handleExtract("graph")}
+                    data-testid="button-update-following"
+                    className="gap-1.5"
                   >
-                    <Plus className="h-4 w-4" />
+                    <RefreshCw className="h-4 w-4" />
+                    Update
                   </Button>
                 </div>
                 {followingList.length > 0 ? (
                   <div className="space-y-2">
                     {followingList.map((followingAccount) => (
-                      <div
+                      <SocialAccountRow
                         key={followingAccount.id}
-                        className="flex items-center gap-3 p-2 rounded-md hover-elevate"
-                        data-testid={`card-following-${followingAccount.id}`}
-                      >
-                        <Avatar className="w-8 h-8">
-                          {followingAccount.currentProfile?.imageUrl && (
-                            <AvatarImage src={followingAccount.currentProfile?.imageUrl} alt={followingAccount.username} />
-                          )}
-                          <AvatarFallback className="text-xs">
-                            {getInitials(followingAccount.username)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <Link
-                          href={`/social-accounts/${followingAccount.id}`}
-                          className="text-sm font-medium hover:underline"
-                          data-testid={`link-following-${followingAccount.id}`}
-                        >
-                          {followingAccount.username}
-                        </Link>
-                      </div>
+                        id={followingAccount.id}
+                        username={followingAccount.username}
+                        imageUrl={followingAccount.imageUrl}
+                        testIdPrefix="following"
+                      />
                     ))}
                     {hasMoreFollowing && (
                       <div className="pt-2 flex flex-col items-center gap-1">
@@ -1313,71 +1240,6 @@ export default function SocialAccountProfile() {
                   <p className="text-sm text-muted-foreground italic">Not following anyone yet</p>
                 )}
               </Card>
-            </div>
-
-            {/* Notes Section */}
-            <div>
-              <div className="flex items-start justify-between gap-4 mb-3">
-                <h2 className="text-lg font-semibold" data-testid="text-notes-header">
-                  Notes
-                </h2>
-                {!isEditingNotes && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setNotes(account.currentProfile?.bio || "");
-                      setIsEditingNotes(true);
-                    }}
-                    data-testid="button-edit-notes"
-                  >
-                    Edit
-                  </Button>
-                )}
-              </div>
-
-              {isEditingNotes ? (
-                <div className="space-y-3">
-                  <Textarea
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Add notes about this social account..."
-                    className="min-h-32"
-                    data-testid="textarea-notes"
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={() => updateNotesMutation.mutate(notes)}
-                      disabled={updateNotesMutation.isPending}
-                      size="sm"
-                      data-testid="button-save-notes"
-                    >
-                      {updateNotesMutation.isPending && (
-                        <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      )}
-                      Save
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => setIsEditingNotes(false)}
-                      size="sm"
-                      data-testid="button-cancel-notes"
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-sm text-muted-foreground">
-                  {account.currentProfile?.bio ? (
-                    <p data-testid="text-notes-content" className="whitespace-pre-wrap">
-                      {account.currentProfile?.bio}
-                    </p>
-                  ) : (
-                    <p className="italic">No notes added yet</p>
-                  )}
-                </div>
-              )}
             </div>
             </div>
           </TabsContent>
@@ -1479,6 +1341,19 @@ export default function SocialAccountProfile() {
           {/* Messages Tab */}
           <TabsContent value="messages" className="mt-0 flex-1 min-h-0">
             <MessagesTab socialAccountId={account.id} />
+          </TabsContent>
+
+          {/* History Tab */}
+          <TabsContent value="history" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <SocialAccountHistoryTab
+              socialAccountId={account.id}
+              current={{
+                nickname: account.nickname,
+                bio: account.bio,
+                location: account.location,
+                imageUrl: account.imageUrl,
+              }}
+            />
           </TabsContent>
         </div>
       </Tabs>
@@ -1639,6 +1514,13 @@ export default function SocialAccountProfile() {
         }}
       />
 
+      <LinkPersonDialog
+        open={isLinkPersonOpen}
+        onOpenChange={setIsLinkPersonOpen}
+        socialAccountId={account.id}
+        currentPersonId={account.ownerUuid}
+      />
+
       <PostDialog
         open={isAddPostOpen}
         onOpenChange={setIsAddPostOpen}
@@ -1708,7 +1590,7 @@ export default function SocialAccountProfile() {
               <div className="border-t pt-3 flex justify-between gap-4">
                 <span className="text-muted-foreground shrink-0">Profile image updated</span>
                 <span className="text-right font-medium" data-testid="info-image-updated">
-                  {profileVersions
+                  {recentHistory
                     ? formatDateTime(getImageLastChangedAt())
                     : "Loading…"}
                 </span>
@@ -1743,28 +1625,14 @@ export default function SocialAccountProfile() {
                     {followersOnly.length > 0 ? (
                       <div className="space-y-1">
                         {followersOnly.map((a) => (
-                          <div
+                          <SocialAccountRow
                             key={a.id}
-                            className="flex items-center gap-3 p-2 rounded-md hover-elevate"
-                            data-testid={`card-followers-only-${a.id}`}
-                          >
-                            <Avatar className="w-8 h-8">
-                              {a.currentProfile?.imageUrl && (
-                                <AvatarImage src={a.currentProfile.imageUrl} alt={a.username} />
-                              )}
-                              <AvatarFallback className="text-xs">
-                                {getInitials(a.username)}
-                              </AvatarFallback>
-                            </Avatar>
-                            <Link
-                              href={`/social-accounts/${a.id}`}
-                              className="text-sm font-medium hover:underline"
-                              onClick={() => setIsCompareOpen(false)}
-                              data-testid={`link-followers-only-${a.id}`}
-                            >
-                              {a.username}
-                            </Link>
-                          </div>
+                            id={a.id}
+                            username={a.username}
+                            imageUrl={a.imageUrl}
+                            testIdPrefix="followers-only"
+                            onNavigate={() => setIsCompareOpen(false)}
+                          />
                         ))}
                       </div>
                     ) : (
@@ -1780,28 +1648,14 @@ export default function SocialAccountProfile() {
                     {followingOnly.length > 0 ? (
                       <div className="space-y-1">
                         {followingOnly.map((a) => (
-                          <div
+                          <SocialAccountRow
                             key={a.id}
-                            className="flex items-center gap-3 p-2 rounded-md hover-elevate"
-                            data-testid={`card-following-only-${a.id}`}
-                          >
-                            <Avatar className="w-8 h-8">
-                              {a.currentProfile?.imageUrl && (
-                                <AvatarImage src={a.currentProfile.imageUrl} alt={a.username} />
-                              )}
-                              <AvatarFallback className="text-xs">
-                                {getInitials(a.username)}
-                              </AvatarFallback>
-                            </Avatar>
-                            <Link
-                              href={`/social-accounts/${a.id}`}
-                              className="text-sm font-medium hover:underline"
-                              onClick={() => setIsCompareOpen(false)}
-                              data-testid={`link-following-only-${a.id}`}
-                            >
-                              {a.username}
-                            </Link>
-                          </div>
+                            id={a.id}
+                            username={a.username}
+                            imageUrl={a.imageUrl}
+                            testIdPrefix="following-only"
+                            onNavigate={() => setIsCompareOpen(false)}
+                          />
                         ))}
                       </div>
                     ) : (

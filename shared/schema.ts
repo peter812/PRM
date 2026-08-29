@@ -388,6 +388,23 @@ export const socialAccounts = pgTable("social_accounts", {
   internalAccountCreationDate: timestamp("internal_account_creation_date").notNull().defaultNow(),
   internalAccountCreationType: text("internal_account_creation_type").notNull().default("User"),
   lastScrapedAt: timestamp("last_scraped_at"),
+  // ── Current profile, flattened from the retired social_profile_versions ──
+  // This row is the truth. What a field used to be lives in social_account_history.
+  nickname: text("nickname"),
+  bio: text("bio"),
+  accountUrl: text("account_url"),
+  imageUrl: text("image_url"),                        // PRM/S3 url — stable, safe to render
+  externalImageUrl: text("external_image_url"),       // last signed Instagram url: a lead for the
+                                                      // image worker to follow, never a display source
+  location: text("location"),
+  // Edge counts, denormalized off social_follows. applySnapshot() is the only
+  // writer of both these columns and the edges themselves, so they cannot drift.
+  followersCount: integer("followers_count").notNull().default(0),
+  followingCount: integer("following_count").notNull().default(0),
+  // What the profile page itself claims. Diverges from the counts above whenever a
+  // scrape captured less than the whole list, and that gap is the completeness signal.
+  reportedFollowersCount: integer("reported_followers_count"),
+  reportedFollowingCount: integer("reported_following_count"),
   currentPosts: text("current_posts"), // JSON array of post UUIDs currently visible on the account, e.g. '["uuid1","uuid2"]'
   deletedPosts: text("deleted_posts"), // JSON array of post UUIDs that were previously seen but are now deleted, e.g. '["uuid3"]'
   isSimple: boolean("is_simple").notNull().default(true),
@@ -416,6 +433,74 @@ export const socialProfileVersions = pgTable("social_profile_versions", {
 }, (t) => [
   index("social_profile_versions_social_account_id_idx").on(t.socialAccountId),
   index("social_profile_versions_is_current_idx").on(t.isCurrent),
+]);
+
+// Social account history — a reverse-delta journal of every ingest.
+//
+// social_accounts holds the current truth; a row here records only what changed to
+// get there, so entries stay small even for accounts with large networks.
+//
+// Reading a past value: value_at(T) is the previous<Field> of the OLDEST entry after
+// T whose profileFieldsChanged names that field. If no entry after T touched it, the
+// value is the one on social_accounts today. profileFieldsChanged is what resolves a
+// NULL previous value, which is otherwise ambiguous between "unchanged" and "changed
+// to empty".
+export const socialAccountHistory = pgTable("social_account_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+
+  // One id per ingest run, shared by the scraped account's entry and every neighbour
+  // entry that same run produced.
+  batchId: varchar("batch_id").notNull(),
+  // 'direct'    — this account is the one that was scraped
+  // 'neighbour' — this account turned up inside another account's scrape
+  // 'baseline'  — synthetic, written by the migration for state predating the journal
+  entryKind: text("entry_kind").notNull(),
+  changeSource: text("change_source").notNull(),   // 'extension' | 'xml-import' | 'manual' | 'migration'
+  // Which directions the scrape actually captured, and so which ones are authoritative
+  // enough to delete edges from. A profile-only refresh must never read as an unfollow
+  // of everyone.
+  captureScope: text("capture_scope").notNull().default("none"), // 'both'|'followers'|'following'|'profile'|'none'
+  // First real capture of this account. The delta lists are still written — you want to
+  // know who the first five thousand were — but the UI reads them as "5,000 captured"
+  // rather than "+5,000 gained", so growth never opens with a fabricated spike.
+  isInitialCapture: boolean("is_initial_capture").notNull().default(false),
+  // Soft link, deliberately not a foreign key: pending import rows are user-deletable
+  // through the existing bulk-delete, and the journal has to outlive what produced it.
+  pendingImportId: varchar("pending_import_id"),
+  // For entryKind 'neighbour': whose scrape revealed this change.
+  observedViaAccountId: varchar("observed_via_account_id").references((): AnyPgColumn => socialAccounts.id, { onDelete: "set null" }),
+  detectedAt: timestamp("detected_at").notNull().defaultNow(),
+
+  // Counts as of this entry, plus the size of the move. A "before" column is
+  // deliberately absent — it is after - added + lost. These are plain columns so the
+  // list query never has to touch `delta`.
+  followersAfter: integer("followers_after").notNull().default(0),
+  followersAdded: integer("followers_added").notNull().default(0),
+  followersLost: integer("followers_lost").notNull().default(0),
+  followingAfter: integer("following_after").notNull().default(0),
+  followingAdded: integer("following_added").notNull().default(0),
+  followingLost: integer("following_lost").notNull().default(0),
+  reportedFollowersAfter: integer("reported_followers_after"),
+  reportedFollowingAfter: integer("reported_following_after"),
+
+  // Which profile fields changed here. The UI reads this, not the nullness of the
+  // previous* columns below.
+  profileFieldsChanged: text("profile_fields_changed").array().notNull().default(sql`ARRAY[]::text[]`),
+  previousNickname: text("previous_nickname"),
+  previousBio: text("previous_bio"),
+  previousLocation: text("previous_location"),
+  previousImageUrl: text("previous_image_url"),   // a stable PRM/S3 url, so the modal renders it directly
+
+  // The account ids behind the counts above, as
+  // { followersAdded, followersLost, followingAdded, followingLost }.
+  // Null on neighbour entries, whose whole story is already told by
+  // observedViaAccountId plus the count columns — which is what keeps a
+  // 10k-follower import to roughly 2 MB of journal instead of 20 MB.
+  delta: jsonb("delta"),
+}, (t) => [
+  index("social_account_history_account_idx").on(t.socialAccountId, t.detectedAt),
+  index("social_account_history_kind_idx").on(t.socialAccountId, t.entryKind, t.detectedAt),
 ]);
 
 export const socialFollows = pgTable("social_follows", {
@@ -735,6 +820,13 @@ export const pendingSocialAccountImports = pgTable("pending_social_account_impor
   accountFollowersCount: integer("account_followers_count"),
   accountFollowingCount: integer("account_following_count"),
   importType: text("import_type").notNull().default("full"),
+  // What the extension reports it finished collecting: 'both' | 'followers' |
+  // 'following' | 'profile'. Because a scrape is authoritative — an edge missing from
+  // the list is deleted — the server must know the difference between "this list is
+  // complete and short" and "this list was cut off". Only the extension can tell
+  // those apart, so it says so here. Null on older extension builds, and the server
+  // then falls back to inferring scope from which CSVs arrived non-empty.
+  captureScope: text("capture_scope"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
@@ -855,6 +947,19 @@ export const socialAccountsRelations = relations(socialAccounts, ({ one, many })
   conversationParticipants: many(conversationParticipants),
   sentMessages: many(messages),
   receivedMessages: many(messageRecipients),
+}));
+
+export const socialAccountHistoryRelations = relations(socialAccountHistory, ({ one }) => ({
+  socialAccount: one(socialAccounts, {
+    fields: [socialAccountHistory.socialAccountId],
+    references: [socialAccounts.id],
+    relationName: "historyForAccount",
+  }),
+  observedVia: one(socialAccounts, {
+    fields: [socialAccountHistory.observedViaAccountId],
+    references: [socialAccounts.id],
+    relationName: "historyObservedVia",
+  }),
 }));
 
 export const socialProfileVersionsRelations = relations(socialProfileVersions, ({ one }) => ({
@@ -1298,6 +1403,11 @@ export const insertSocialProfileVersionSchema = createInsertSchema(socialProfile
   detectedAt: true,
 });
 
+export const insertSocialAccountHistorySchema = createInsertSchema(socialAccountHistory).omit({
+  id: true,
+  detectedAt: true,
+});
+
 export const insertSocialFollowSchema = createInsertSchema(socialFollows).omit({
   detectedAt: true,
 });
@@ -1474,6 +1584,64 @@ export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSche
 
 export type SocialProfileVersion = typeof socialProfileVersions.$inferSelect;
 export type InsertSocialProfileVersion = z.infer<typeof insertSocialProfileVersionSchema>;
+
+export type SocialAccountHistory = typeof socialAccountHistory.$inferSelect;
+export type InsertSocialAccountHistory = z.infer<typeof insertSocialAccountHistorySchema>;
+
+/** Shape of the socialAccountHistory.delta jsonb column. Null on neighbour entries. */
+export interface SocialAccountHistoryDelta {
+  followersAdded?: string[];
+  followersLost?: string[];
+  followingAdded?: string[];
+  followingLost?: string[];
+}
+
+/** Which profile fields a history entry can report as changed. */
+export type SocialProfileField = "nickname" | "bio" | "location" | "image";
+
+/** Which entries a history listing asks for. Note the British spelling of the kind. */
+export type SocialAccountHistoryKind = "direct" | "neighbour" | "all";
+
+/** Just enough of an account to render it as a chip, avatar and all. */
+export type HistoryAccountRef = {
+  id: string;
+  username: string;
+  nickname: string | null;
+  imageUrl: string | null;
+};
+
+/**
+ * A listed history entry: the journal row without `delta`, which is TOASTed and
+ * holds up to 10,000 ids. The count columns and profileFieldsChanged are what let
+ * the list stay off it.
+ */
+export type SocialAccountHistoryEntry = Omit<SocialAccountHistory, "delta"> & {
+  /** Who revealed this change. Non-null only on 'neighbour' entries. */
+  observedVia: HistoryAccountRef | null;
+};
+
+/** One page of resolved account ids out of an entry's `delta`. */
+export type HistoryAccountList = { total: number; items: HistoryAccountRef[] };
+
+/**
+ * A single entry with its `delta` resolved into accounts. The lists are named
+ * apart from the scalar counts they page through, so one name never carries two
+ * shapes.
+ */
+export type SocialAccountHistoryDetail = SocialAccountHistoryEntry & {
+  followersAddedList: HistoryAccountList;
+  followersLostList: HistoryAccountList;
+  followingAddedList: HistoryAccountList;
+  followingLostList: HistoryAccountList;
+};
+
+export type SocialAccountHistorySummary = {
+  direct: number;
+  neighbour: number;
+  baseline: number;
+  firstEntryAt: Date | string | null;
+  lastEntryAt: Date | string | null;
+};
 
 export type SocialFollow = typeof socialFollows.$inferSelect;
 export type InsertSocialFollow = z.infer<typeof insertSocialFollowSchema>;

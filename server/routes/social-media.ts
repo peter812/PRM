@@ -784,30 +784,59 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    // Profile versions and network snapshots endpoints
-    app.get("/api/social-accounts/:id/profile-versions", async (req, res) => {
+    // Social account history — the reverse-delta journal of every ingest.
+    // Superseded /profile-versions and /network-changes, which read the legacy tables.
+    app.get("/api/social-accounts/:id/history", async (req, res) => {
       try {
         const { id } = req.params;
-        const versions = await storage.getProfileVersions(id);
-        res.json(versions);
+        if (!(await storage.getSocialAccountById(id))) {
+          return res.status(404).json({ error: "Social account not found" });
+        }
+        const kindParam = req.query.kind as string | undefined;
+        const kind = kindParam === "direct" || kindParam === "neighbour" ? kindParam : "all";
+        const history = await storage.getSocialAccountHistory(id, {
+          kind,
+          page: parseInt(req.query.page as string) || 1,
+          limit: parseInt(req.query.limit as string) || 25,
+        });
+        res.json(history);
       } catch (error) {
-        console.error("Error fetching profile versions:", error);
-        res.status(500).json({ error: "Failed to fetch profile versions" });
+        console.error("Error fetching social account history:", error);
+        res.status(500).json({ error: "Failed to fetch social account history" });
       }
     });
-  
-    app.get("/api/social-accounts/:id/network-changes", async (req, res) => {
+
+    app.get("/api/social-accounts/:id/history/summary", async (req, res) => {
       try {
         const { id } = req.params;
-        const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
-        const changes = await storage.getNetworkChanges(id, limit);
-        res.json(changes);
+        if (!(await storage.getSocialAccountById(id))) {
+          return res.status(404).json({ error: "Social account not found" });
+        }
+        res.json(await storage.getSocialAccountHistorySummary(id));
       } catch (error) {
-        console.error("Error fetching network changes:", error);
-        res.status(500).json({ error: "Failed to fetch network changes" });
+        console.error("Error fetching social account history summary:", error);
+        res.status(500).json({ error: "Failed to fetch social account history summary" });
       }
     });
-  
+
+    // The one endpoint that reads `delta`, resolving its id arrays into accounts.
+    app.get("/api/social-accounts/history/:entryId", async (req, res) => {
+      try {
+        const entry = await storage.getSocialAccountHistoryEntry(req.params.entryId, {
+          listLimit: parseInt(req.query.listLimit as string) || 100,
+          listOffset: parseInt(req.query.listOffset as string) || 0,
+        });
+        // The entry is only readable if the account it belongs to is.
+        if (!entry || !(await storage.getSocialAccountById(entry.socialAccountId))) {
+          return res.status(404).json({ error: "History entry not found" });
+        }
+        res.json(entry);
+      } catch (error) {
+        console.error("Error fetching history entry:", error);
+        res.status(500).json({ error: "Failed to fetch history entry" });
+      }
+    });
+
     app.get("/api/social-accounts/:id/network-state", async (req, res) => {
       try {
         const { id } = req.params;

@@ -8,11 +8,26 @@ import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMed
 import { log } from "./vite";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
 import { runAsSystem, runAsUser, actingUserId } from "./access";
+import {
+  INSTAGRAM_USER_AGENT,
+  getImageDimensions,
+  fetchProfileImage,
+  shouldReplaceProfileImage,
+  storeProfileImage,
+  getCurrentProfileImageUrl,
+} from "./profile-image";
+import {
+  applySnapshot,
+  recordProfileImageChange,
+  capturesFollowers,
+  capturesFollowing,
+  type CaptureScope,
+} from "./social-account-history";
 import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, and, isNotNull } from "drizzle-orm";
+import { eq, and, isNotNull, inArray } from "drizzle-orm";
 import Papa from "papaparse";
 import { sseManager } from "./middleware/sse";
 
@@ -61,51 +76,6 @@ import {
 } from "@shared/schema";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
 
-// ── Image dimension helper ────────────────────────────────────────────────────
-
-function getImageDimensions(buffer: Buffer): { width: number; height: number } | null {
-  try {
-    // PNG: signature bytes 0-7, IHDR width at 16, height at 20 (big-endian uint32)
-    if (buffer.length >= 24 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
-      return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
-    }
-    // JPEG: scan for SOF markers
-    if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
-      let offset = 2;
-      while (offset + 9 < buffer.length) {
-        if (buffer[offset] !== 0xff) break;
-        const marker = buffer[offset + 1];
-        if (marker >= 0xc0 && marker <= 0xc3) {
-          return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) };
-        }
-        const segLen = buffer.readUInt16BE(offset + 2);
-        offset += 2 + segLen;
-      }
-      return null;
-    }
-    // WebP: RIFF....WEBP format
-    if (buffer.length >= 30 && buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP") {
-      const fmt = buffer.slice(12, 16).toString("ascii");
-      if (fmt === "VP8 " && buffer.length >= 30) {
-        const w = (buffer.readUInt16LE(26) & 0x3fff) + 1;
-        const h = (buffer.readUInt16LE(28) & 0x3fff) + 1;
-        return { width: w, height: h };
-      }
-      if (fmt === "VP8X" && buffer.length >= 30) {
-        const w = buffer.readUIntLE(24, 3) + 1;
-        const h = buffer.readUIntLE(27, 3) + 1;
-        return { width: w, height: h };
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-const INSTAGRAM_USER_AGENT =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1";
-
 const POLL_INTERVAL_MS = 60_000;
 const IMAGE_DOWNLOAD_DELAY_MS = 1_000;
 const REFRESH_DELAY_MS = 200;
@@ -127,52 +97,13 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
 }): Promise<string> {
   const { socialAccountId, imageUrl, profileVersionId } = payload;
 
-  const response = await fetch(imageUrl, {
-    headers: { "User-Agent": INSTAGRAM_USER_AGENT },
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to download image: HTTP ${response.status} ${response.statusText}`);
-  }
+  const fetched = await fetchProfileImage(imageUrl);
 
-  const contentType = response.headers.get("content-type") || "image/jpeg";
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
-
-  // Capture OpenGraph-style metadata about where this file came from. This is
-  // intentionally lightweight (response headers + source URL) so it can be
-  // recorded for every file added to storage without extra network round-trips.
-  const ogMetadata: Record<string, unknown> = {
-    sourceUrl: imageUrl,
-    contentType,
-    contentLength: response.headers.get("content-length"),
-    lastModified: response.headers.get("last-modified"),
-    etag: response.headers.get("etag"),
-    fetchedAt: new Date().toISOString(),
-  };
-
-  // Compute file hash for deduplication
-  const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
-  const dims = getImageDimensions(buffer);
-
-  // Get current profile version to check existing image for THIS account
-  const currentVersion = await storage.getCurrentProfileVersion(socialAccountId);
-  const targetVersionId = profileVersionId || currentVersion?.id || null;
-  if (currentVersion?.imageUrl) {
-    // Fetch the photo record for THIS account's current image (scoped, not global)
-    const existingPhotoByLocation = await storage.getPhotoByLocation(currentVersion.imageUrl);
-    if (existingPhotoByLocation) {
-      // Same hash → same content, skip entirely
-      if (existingPhotoByLocation.fileHash === fileHash) {
-        log(`[ImageWorker] Skipping download for ${socialAccountId} — same hash as current profile photo`);
-        return JSON.stringify({ skipped: true, reason: "same_hash", socialAccountId });
-      }
-      // Existing photo has equal or better resolution → skip
-      if (existingPhotoByLocation.widthPx && dims && dims.width <= existingPhotoByLocation.widthPx) {
-        log(`[ImageWorker] Skipping download for ${socialAccountId} — existing (${existingPhotoByLocation.widthPx}px) >= new (${dims.width}px)`);
-        return JSON.stringify({ skipped: true, reason: "lower_resolution", socialAccountId });
-      }
-    }
+  const currentImageUrl = await getCurrentProfileImageUrl(socialAccountId);
+  const verdict = await shouldReplaceProfileImage(currentImageUrl, fetched);
+  if (!verdict.replace) {
+    log(`[ImageWorker] Skipping download for ${socialAccountId} — ${verdict.reason}`);
+    return JSON.stringify({ skipped: true, reason: verdict.reason, socialAccountId });
   }
 
   // Re-check cancellation before performing upload (slow I/O)
@@ -182,19 +113,7 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     return JSON.stringify({ skipped: true, reason: "cancelled", socialAccountId });
   }
 
-  // Determine which storage provider to use
-  let cdnUrl: string;
-  try {
-    const user = (await storage.getAllUsers())[0];
-    const storageMode = user ? await storage.getImageStorageMode(user.id) : "s3";
-    if (storageMode === "local") {
-      cdnUrl = await uploadImageLocally(buffer, `instagram_profile.${ext}`, contentType);
-    } else {
-      cdnUrl = await uploadImageToS3(buffer, `instagram_profile.${ext}`, contentType);
-    }
-  } catch {
-    cdnUrl = await uploadImageToS3(buffer, `instagram_profile.${ext}`, contentType);
-  }
+  const { cdnUrl, photoId } = await storeProfileImage(fetched, socialAccountId);
 
   // Re-check cancellation again after upload before persisting changes
   const postUploadTask = await storage.getImageTaskById(imageTaskId);
@@ -203,31 +122,24 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     return JSON.stringify({ skipped: true, reason: "cancelled_post_upload", socialAccountId });
   }
 
-  // Register in photos table with hash and dimensions (let errors propagate to fail the task)
-  const photo = await storage.insertPhoto({
-    location: cdnUrl,
-    prmLocation: `profile_image:${socialAccountId}`,
-    isSubImage: false,
-    fileHash,
-    widthPx: dims?.width ?? null,
-    heightPx: dims?.height ?? null,
-    ogMetadata,
-  });
+  await recordProfileImageChange(socialAccountId, cdnUrl, currentImageUrl);
 
-  syncEntityInBackground("image", photo.id);
-
-  // Update profile version image URL
+  // TRANSITIONAL: social_profile_versions is still read by the routes and the UI.
+  // Remove this write, and the profileVersionId payload field, when those readers
+  // move to social_accounts.image_url and the table is dropped.
+  const targetVersionId =
+    profileVersionId || (await storage.getCurrentProfileVersion(socialAccountId))?.id || null;
   if (targetVersionId) {
     await storage.updateProfileVersion(targetVersionId, { imageUrl: cdnUrl });
   }
 
   // Link the photo to this image task
-  await db.update(imageTasks).set({ photoId: photo.id }).where(eq(imageTasks.id, imageTaskId));
+  await db.update(imageTasks).set({ photoId }).where(eq(imageTasks.id, imageTaskId));
 
   // Automatically pass in the image to any linked person who doesn't have an image
   await autoPassInImageForSocialAccount(socialAccountId);
 
-  return JSON.stringify({ cdnUrl, socialAccountId, photoId: photo.id, widthPx: dims?.width ?? null });
+  return JSON.stringify({ cdnUrl, socialAccountId, photoId, widthPx: fetched.dims?.width ?? null });
 }
 
 async function processAnalyzeImgFull(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
@@ -603,7 +515,7 @@ async function processExportXmlTask(taskId: string, payload: {
 
   xml += '  <groups>\n';
   for (const group of allGroups) {
-    const members = (group.members || []).map(id => id === mePersonId ? ZERO_UUID : id);
+    const members = (group.members || []).map((id: string) => id === mePersonId ? ZERO_UUID : id);
     xml += '    <group>\n';
     xml += `      <id>${escapeXml(group.id)}</id>\n`;
     xml += `      <name>${escapeXml(group.name)}</name>\n`;
@@ -2422,30 +2334,112 @@ async function queueSocialProfileImage(
 ) {
   if (!imageUrl || !imageUrl.trim()) return;
 
-  const current = await storage.getCurrentProfileVersion(socialAccountId);
-  const profileVersion = current
-    ? (await storage.updateProfileVersion(current.id, { externalImageUrl: imageUrl }), current)
-    : await storage.createProfileVersion({
-        socialAccountId,
-        isCurrent: true,
-        externalImageUrl: imageUrl,
-      });
+  // The signed Instagram url is a lead for the image worker to follow, never a
+  // display source, so it goes straight onto the account.
+  //
+  // This used to fetch-or-create a profile version first, purely to put its id in the
+  // payload. The worker resolves that itself when the field is absent, so those one or
+  // two queries per image bought nothing — and on a graph import with includeGraphImages
+  // they were tens of thousands of round trips.
+  await db
+    .update(socialAccounts)
+    .set({ externalImageUrl: imageUrl })
+    .where(eq(socialAccounts.id, socialAccountId));
 
   await storage.createImageTask({
     userId,
     type: "download_img_instagram",
     status: "pending",
     parentTaskId: parentTaskId || null,
-    payload: JSON.stringify({
-      socialAccountId,
-      imageUrl,
-      profileVersionId: profileVersion.id,
-    }),
+    payload: JSON.stringify({ socialAccountId, imageUrl }),
   });
 }
 
 /**
+ * Parses the CSV a "full" extension pull produces.
+ *
+ * Two shapes arrive: a real CSV with headers, and a bare newline-separated list of
+ * handles. The header sniff is deliberately loose because the extension has changed
+ * its column names more than once.
+ */
+function parseCsvRows(csvText: string | null | undefined): any[] {
+  if (!csvText || !csvText.trim()) return [];
+  const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length === 0) return [];
+  const firstLine = lines[0].toLowerCase();
+  const hasHeaders = firstLine.includes("username") || firstLine.includes("handle") || firstLine.includes(",") || firstLine.includes("account");
+  if (hasHeaders) {
+    return (Papa.parse(csvText, { header: true, skipEmptyLines: true }).data || []) as any[];
+  }
+  return lines.map(line => ({ username: line.replace(/^@/, "").trim() }));
+}
+
+const handleOf = (row: any): string =>
+  (row.username || row.handle || row.Account || row.Username || "")
+    .toString().trim().replace(/^@/, "").toLowerCase();
+
+/**
+ * Resolves scraped handles to social account ids, creating the ones PRM has never
+ * seen before.
+ *
+ * The previous implementation ran two queries and up to two writes per CSV row, so a
+ * 10,000-follower pull cost roughly 30,000 round trips. This does it in three
+ * statements regardless of size, which is also what lets the whole ingest sit inside
+ * a single transaction.
+ */
+async function resolveScrapedAccounts(
+  rows: any[],
+  typeId: string | null,
+): Promise<Map<string, string>> {
+  const byHandle = new Map<string, any>();
+  for (const row of rows) {
+    const handle = handleOf(row);
+    // First mention wins: later rows for the same handle carry no extra information.
+    if (handle && !byHandle.has(handle)) byHandle.set(handle, row);
+  }
+  if (byHandle.size === 0) return new Map();
+
+  const handles = [...byHandle.keys()];
+  const resolved = new Map<string, string>();
+
+  const CHUNK = 500;
+  for (let i = 0; i < handles.length; i += CHUNK) {
+    const batch = handles.slice(i, i + CHUNK);
+    const existing = await db
+      .select({ id: socialAccounts.id, username: socialAccounts.username })
+      .from(socialAccounts)
+      .where(inArray(socialAccounts.username, batch));
+    for (const a of existing) resolved.set(a.username, a.id);
+  }
+
+  const missing = handles.filter(h => !resolved.has(h));
+  for (let i = 0; i < missing.length; i += CHUNK) {
+    const batch = missing.slice(i, i + CHUNK);
+    const created = await db
+      .insert(socialAccounts)
+      .values(batch.map(handle => {
+        const row = byHandle.get(handle);
+        return {
+          username: handle,
+          typeId: typeId || undefined,
+          ownerUuid: null,
+          internalAccountCreationType: "PRM-chrome import",
+          nickname: row.full_name || row.displayName || null,
+          accountUrl: `https://instagram.com/${handle}`,
+        };
+      }))
+      .returning({ id: socialAccounts.id, username: socialAccounts.username });
+    for (const a of created) resolved.set(a.username, a.id);
+  }
+
+  return resolved;
+}
+
+/**
  * Ingests a pending social account extraction (scraped via extension) in the background.
+ *
+ * Everything that touches follow edges, denormalized counts, or the history journal
+ * goes through applySnapshot, which is the only writer of all three.
  */
 export async function processImportSocial(
   taskId: string,
@@ -2466,10 +2460,9 @@ export async function processImportSocial(
 
   await storage.updateTaskProgress(taskId, 5, `Setting up profile @${record.accountUsername}...`);
 
-  // 1. Resolve or create main social account
+  // 1. Resolve or create the account this pull is about.
   const mainUsername = record.accountUsername.trim().toLowerCase();
   let [mainAccount] = await db.select().from(socialAccounts).where(eq(socialAccounts.username, mainUsername)).limit(1);
-
   if (!mainAccount) {
     mainAccount = await storage.createSocialAccount({
       username: mainUsername,
@@ -2479,124 +2472,94 @@ export async function processImportSocial(
     });
   }
 
-  await storage.updateSocialAccount(mainAccount.id, { isSimple: false, lastScrapedAt: new Date() });
-
-  const profileFields: Record<string, any> = {
-    accountUrl: `https://instagram.com/${mainUsername}`,
-  };
-  if (record.accountDisplayName) profileFields.nickname = record.accountDisplayName;
-  if (record.accountBio) profileFields.bio = record.accountBio;
-
-  const currentProfile = await storage.getCurrentProfileVersion(mainAccount.id);
-  if (currentProfile) {
-    await storage.updateProfileVersion(currentProfile.id, profileFields);
-  } else {
-    await storage.createProfileVersion({
-      socialAccountId: mainAccount.id,
-      isCurrent: true,
-      ...profileFields,
-    });
+  // 2. The scraped account's own picture is fetched inline, because whether it
+  //    changed is part of what this import records. Instagram's urls are signed and
+  //    rotate every scrape, so only the bytes can answer that.
+  await storage.updateTaskProgress(taskId, 10, "Checking profile image...");
+  let imageUrl: string | undefined;
+  if (record.accountImageUrl?.trim()) {
+    try {
+      const fetched = await fetchProfileImage(record.accountImageUrl);
+      const verdict = await shouldReplaceProfileImage(mainAccount.imageUrl, fetched);
+      if (verdict.replace) {
+        imageUrl = (await storeProfileImage(fetched, mainAccount.id)).cdnUrl;
+      }
+    } catch (e) {
+      // A dead CDN link must not sink the whole import; the rest of the pull is fine.
+      log(`[TaskWorker] Profile image fetch failed for @${mainUsername}: ${e}`);
+    }
   }
 
-  // The selected account always gets its picture
-  await queueSocialProfileImage(mainAccount.id, record.accountImageUrl, userId, taskId);
+  // 3. Resolve the captured graph. Only directions that actually came back are
+  //    passed to applySnapshot — an absent direction must never read as an unfollow.
+  // The extension states what it finished collecting (contract v2). Trust it: only
+  // the extension can distinguish a follower list that is genuinely short from one
+  // whose scroll was cut off, and under authoritative deletion that difference is the
+  // difference between recording no change and inventing hundreds of unfollows.
+  //
+  // Older builds send nothing, so fall back to inferring from which lists arrived.
+  const gotFollowers = Boolean(record.accountFollowers?.trim());
+  const gotFollowing = Boolean(record.accountFollowing?.trim());
+  const scope: CaptureScope =
+    (record.captureScope as CaptureScope | null) ??
+    (record.importType === "account" ? "profile"
+      : gotFollowers && gotFollowing ? "both"
+      : gotFollowers ? "followers"
+      : gotFollowing ? "following"
+      : "profile");
 
-  let totalFollowersIngested = 0;
-  let totalFollowingIngested = 0;
+  let followerIds: string[] | undefined;
+  let followingIds: string[] | undefined;
+  const graphRows: any[] = [];
+  let resolved = new Map<string, string>();
 
-  const parseCsvRows = (csvText: string | null | undefined): any[] => {
-    if (!csvText || !csvText.trim()) return [];
-    const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    if (lines.length === 0) return [];
-    const firstLine = lines[0].toLowerCase();
-    const hasHeaders = firstLine.includes("username") || firstLine.includes("handle") || firstLine.includes(",") || firstLine.includes("account");
-    if (hasHeaders) {
-      const parseResult = Papa.parse(csvText, { header: true, skipEmptyLines: true });
-      return (parseResult.data || []) as any[];
-    }
-    return lines.map(line => ({ username: line.replace(/^@/, "").trim() }));
-  };
+  if (scope !== "profile") {
+    await storage.updateTaskProgress(taskId, 25, "Resolving accounts...");
+    const followerRows = capturesFollowers(scope) ? parseCsvRows(record.accountFollowers) : [];
+    const followingRows = capturesFollowing(scope) ? parseCsvRows(record.accountFollowing) : [];
+    graphRows.push(...followerRows, ...followingRows);
 
-  const processRows = async (
-    rows: any[],
-    isFollower: boolean,
-    startProgress: number,
-    endProgress: number,
-  ): Promise<number> => {
-    if (rows.length === 0) return 0;
-    let count = 0;
-    const total = rows.length;
-    const label = isFollower ? "followers" : "following";
+    resolved = await resolveScrapedAccounts(graphRows, typeId);
+    const idsFor = (rows: any[]) =>
+      rows.map(r => resolved.get(handleOf(r))).filter((id): id is string => Boolean(id));
 
-    for (let i = 0; i < total; i++) {
-      if (i % 25 === 0) {
-        if (await isTaskCancelled(taskId)) {
-          return count;
-        }
-        const pct = Math.round(startProgress + ((i / total) * (endProgress - startProgress)));
-        await storage.updateTaskProgress(taskId, pct, `Ingesting ${label}: ${i}/${total}`);
-      }
+    if (capturesFollowers(scope)) followerIds = idsFor(followerRows);
+    if (capturesFollowing(scope)) followingIds = idsFor(followingRows);
+  }
 
-      const row = rows[i];
-      const handle = (row.username || row.handle || row.Account || row.Username || "").toString().trim().replace(/^@/, "").toLowerCase();
-      if (!handle) continue;
+  if (await isTaskCancelled(taskId)) {
+    return JSON.stringify({ cancelled: true });
+  }
 
-      let [subAccount] = await db.select().from(socialAccounts).where(eq(socialAccounts.username, handle)).limit(1);
-      if (!subAccount) {
-        subAccount = await storage.createSocialAccount({
-          username: handle,
-          typeId: typeId || undefined,
-          ownerUuid: null,
-          internalAccountCreationType: "PRM-chrome import",
-        });
+  // 4. One transaction: diff the edges, update current state, write the journal.
+  await storage.updateTaskProgress(taskId, 60, "Recording changes...");
+  const entry = await applySnapshot({
+    socialAccountId: mainAccount.id,
+    scope,
+    followerIds,
+    followingIds,
+    profile: {
+      nickname: record.accountDisplayName || undefined,
+      bio: record.accountBio || undefined,
+      location: record.accountLocationArea || undefined,
+      accountUrl: `https://instagram.com/${mainUsername}`,
+      imageUrl,
+      externalImageUrl: record.accountImageUrl || undefined,
+      reportedFollowersCount: record.accountFollowersCount ?? undefined,
+      reportedFollowingCount: record.accountFollowingCount ?? undefined,
+    },
+    source: "extension",
+    pendingImportId: record.id,
+  });
 
-        const curProfile = await storage.getCurrentProfileVersion(subAccount.id);
-        if (curProfile) {
-          await storage.updateProfileVersion(curProfile.id, {
-            nickname: row.full_name || row.displayName || null,
-            accountUrl: `https://instagram.com/${handle}`,
-          });
-        }
-      }
-
-      if (includeGraphImages) {
-        await queueSocialProfileImage(subAccount.id, row.profile_pic_url || row.profilePicUrl, userId, taskId);
-      }
-
-      const followerId = isFollower ? subAccount.id : mainAccount.id;
-      const followedId = isFollower ? mainAccount.id : subAccount.id;
-
-      const [existingFollow] = await db.select().from(socialFollows).where(
-        and(
-          eq(socialFollows.followerId, followerId),
-          eq(socialFollows.followedId, followedId),
-        ),
-      ).limit(1);
-
-      if (!existingFollow) {
-        await db.insert(socialFollows).values({
-          followerId,
-          followedId,
-          source: "extension-pending-import",
-        });
-      }
-      count++;
-    }
-    return count;
-  };
-
-  if (record.importType !== "account") {
-    const followerRows = parseCsvRows(record.accountFollowers);
-    const followingRows = parseCsvRows(record.accountFollowing);
-
-    totalFollowersIngested = await processRows(followerRows, true, 10, 50);
-    if (await isTaskCancelled(taskId)) {
-      return JSON.stringify({ cancelled: true, followers: totalFollowersIngested, following: 0 });
-    }
-
-    totalFollowingIngested = await processRows(followingRows, false, 50, 90);
-    if (await isTaskCancelled(taskId)) {
-      return JSON.stringify({ cancelled: true, followers: totalFollowersIngested, following: totalFollowingIngested });
+  // 5. Graph avatars stay on the async queue. Fetching thousands inline would
+  //    serialize the import behind Instagram's CDN, and they play no part in change
+  //    detection.
+  if (includeGraphImages) {
+    await storage.updateTaskProgress(taskId, 85, "Queueing profile images...");
+    for (const row of graphRows) {
+      const id = resolved.get(handleOf(row));
+      if (id) await queueSocialProfileImage(id, row.profile_pic_url || row.profilePicUrl, userId, taskId);
     }
   }
 
@@ -2604,7 +2567,6 @@ export async function processImportSocial(
   await storage.markPendingImportAsImported(record.id);
 
   sseManager.broadcast("social_account.updated", { id: mainAccount.id });
-
   triggerImageTaskWorker();
 
   await storage.updateTaskProgress(taskId, 100, "Import completed");
@@ -2612,8 +2574,13 @@ export async function processImportSocial(
   return JSON.stringify({
     success: true,
     accountUsername: mainUsername,
-    followers: totalFollowersIngested,
-    following: totalFollowingIngested,
+    scope,
+    followersAdded: entry.followersAdded,
+    followersLost: entry.followersLost,
+    followingAdded: entry.followingAdded,
+    followingLost: entry.followingLost,
+    profileFieldsChanged: entry.profileFieldsChanged,
+    initialCapture: entry.isInitialCapture,
   });
 }
 
@@ -3001,285 +2968,657 @@ async function processCalculateCrowd(taskId: string, payload: { groupId: string 
   }
 }
 
-async function processFindPotentialGroups(taskId: string, payload: {
-  entityType: "people" | "social_accounts";
-  minGroupSize?: number;
-  minDensityMultiplier?: number;
-  linkDefinition: "any" | "mutual" | "family";
-}): Promise<string> {
-  const { entityType, linkDefinition } = payload;
-  const minGroupSize = payload.minGroupSize ?? 3;
-  const minDensityMultiplier = payload.minDensityMultiplier ?? 1.5;
+// ── Graph Community Detection & Louvain Algorithm ─────────────────────────────
 
-  await storage.updateTaskProgress(taskId, 15, "Loading graph nodes...");
-  let nodes: string[] = [];
-  const edges: [string, string][] = [];
-
-  if (entityType === "people") {
-    const allPeople = await storage.getAllPeople();
-    nodes = allPeople.map(p => p.id);
-
-    await storage.updateTaskProgress(taskId, 30, "Loading relationship links...");
-    
-    if (linkDefinition === "family") {
-      // 1. Lineage links
-      const allLin = await db.select().from(lineage);
-      for (const l of allLin) {
-        edges.push([l.childId, l.parentId]);
-      }
-      // 2. Partnership links
-      const allParts = await db.select().from(partnerships);
-      for (const p of allParts) {
-        edges.push([p.person1Id, p.person2Id]);
-      }
-      // 3. Family marked relationships
-      const allRels = await storage.getAllRelationships();
-      for (const r of allRels) {
-        if (r.familyRelationshipType) {
-          edges.push([r.fromPersonId, r.toPersonId]);
-        }
-      }
-    } else if (linkDefinition === "mutual") {
-      const allRels = await storage.getAllRelationships();
-      const relKeys = new Set<string>();
-      for (const r of allRels) {
-        relKeys.add(`${r.fromPersonId}->${r.toPersonId}`);
-      }
-      const addedKeys = new Set<string>();
-      for (const r of allRels) {
-        const backKey = `${r.toPersonId}->${r.fromPersonId}`;
-        if (relKeys.has(backKey)) {
-          const key = r.fromPersonId < r.toPersonId ? `${r.fromPersonId}-${r.toPersonId}` : `${r.toPersonId}-${r.fromPersonId}`;
-          if (!addedKeys.has(key)) {
-            edges.push([r.fromPersonId, r.toPersonId]);
-            addedKeys.add(key);
-          }
-        }
-      }
-      const allParts = await db.select().from(partnerships);
-      for (const p of allParts) {
-        const key = p.person1Id < p.person2Id ? `${p.person1Id}-${p.person2Id}` : `${p.person2Id}-${p.person1Id}`;
-        if (!addedKeys.has(key)) {
-          edges.push([p.person1Id, p.person2Id]);
-          addedKeys.add(key);
-        }
-      }
-    } else { // any
-      const allRels = await storage.getAllRelationships();
-      for (const r of allRels) {
-        edges.push([r.fromPersonId, r.toPersonId]);
-      }
-      const allParts = await db.select().from(partnerships);
-      for (const p of allParts) {
-        edges.push([p.person1Id, p.person2Id]);
-      }
-      const allLin = await db.select().from(lineage);
-      for (const l of allLin) {
-        edges.push([l.childId, l.parentId]);
-      }
-    }
-  } else { // social_accounts
-    const allAccounts = await db.select().from(socialAccounts);
-    nodes = allAccounts.map(a => a.id);
-
-    await storage.updateTaskProgress(taskId, 30, "Loading follow networks...");
-    const allFollows = await storage.getAllFollows();
-
-    if (linkDefinition === "mutual") {
-      const followMap = new Set<string>();
-      for (const edge of allFollows) {
-        followMap.add(`${edge.followerId}->${edge.followedId}`);
-      }
-      const addedKeys = new Set<string>();
-      for (const edge of allFollows) {
-        const backKey = `${edge.followedId}->${edge.followerId}`;
-        if (followMap.has(backKey)) {
-          const key = edge.followerId < edge.followedId ? `${edge.followerId}-${edge.followedId}` : `${edge.followedId}-${edge.followerId}`;
-          if (!addedKeys.has(key)) {
-            edges.push([edge.followerId, edge.followedId]);
-            addedKeys.add(key);
-          }
-        }
-      }
-    } else if (linkDefinition === "any") {
-      const addedKeys = new Set<string>();
-      for (const edge of allFollows) {
-        const key = edge.followerId < edge.followedId ? `${edge.followerId}-${edge.followedId}` : `${edge.followedId}-${edge.followerId}`;
-        if (!addedKeys.has(key)) {
-          edges.push([edge.followerId, edge.followedId]);
-          addedKeys.add(key);
-        }
-      }
-    }
-  }
-
-  await storage.updateTaskProgress(taskId, 50, "Running Label Propagation clustering...");
-  
-  const nodeSet = new Set(nodes);
-  const validEdges: [string, string][] = [];
-  const uniqueEdges = new Set<string>();
-
-  for (const [u, v] of edges) {
-    if (nodeSet.has(u) && nodeSet.has(v) && u !== v) {
-      const key = u < v ? `${u}-${v}` : `${v}-${u}`;
-      if (!uniqueEdges.has(key)) {
-        uniqueEdges.add(key);
-        validEdges.push([u, v]);
-      }
-    }
-  }
-
-  const communities = runLabelPropagation(nodes, validEdges);
-
-  await storage.updateTaskProgress(taskId, 80, "Calculating modularity and densities...");
-
-  const E_total = uniqueEdges.size;
-  const V_total = nodes.length;
-  const D_global = V_total > 1 ? (2 * E_total) / (V_total * (V_total - 1)) : 0;
-
-  const allPeople = entityType === "people" ? await storage.getAllPeople() : [];
-  const allAccounts = entityType === "social_accounts" ? await db.select().from(socialAccounts) : [];
-
-  const results: any[] = [];
-  const adjacency = new Map<string, string[]>();
-  for (const node of nodes) {
-    adjacency.set(node, []);
-  }
-  for (const [u, v] of validEdges) {
-    adjacency.get(u)?.push(v);
-    adjacency.get(v)?.push(u);
-  }
-
-  for (const [lbl, communityNodes] of communities.entries()) {
-    const C_size = communityNodes.length;
-    if (C_size < minGroupSize) continue;
-
-    const communitySet = new Set(communityNodes);
-    let E_in = 0;
-    for (const edgeKey of uniqueEdges) {
-      const [u, v] = edgeKey.split('-');
-      if (communitySet.has(u) && communitySet.has(v)) {
-        E_in++;
-      }
-    }
-
-    const D_C = C_size > 1 ? (2 * E_in) / (C_size * (C_size - 1)) : 0;
-
-    if (D_global > 0) {
-      const ratio = D_C / D_global;
-      if (ratio < minDensityMultiplier) continue;
-    } else {
-      if (E_in === 0) continue;
-    }
-
-    const degrees = new Map<string, number>();
-    for (const node of communityNodes) {
-      let deg = 0;
-      const neighbors = adjacency.get(node) || [];
-      for (const nbr of neighbors) {
-        if (communitySet.has(nbr)) deg++;
-      }
-      degrees.set(node, deg);
-    }
-
-    const sortedNodes = [...communityNodes].sort((a, b) => (degrees.get(b) || 0) - (degrees.get(a) || 0));
-    const topNodes = sortedNodes.slice(0, 2);
-
-    let clusteredAround = "";
-    if (entityType === "people") {
-      const names = topNodes.map(id => {
-        const p = allPeople.find(person => person.id === id);
-        return p ? `${p.firstName} ${p.lastName}` : "Unknown";
-      });
-      clusteredAround = names.join(" & ");
-    } else {
-      const names = topNodes.map(id => {
-        const a = allAccounts.find(acc => acc.id === id);
-        return a ? `@${a.username}` : "Unknown";
-      });
-      clusteredAround = names.join(" & ");
-    }
-
-    const suggestedName = `Potential Group (Clustered around ${clusteredAround})`;
-
-    results.push({
-      suggestedName,
-      memberIds: communityNodes,
-      density: D_C,
-      globalDensity: D_global,
-      densityRatio: D_global > 0 ? D_C / D_global : 1.0,
-      internalEdgesCount: E_in,
-    });
-  }
-
-  results.sort((a, b) => b.densityRatio - a.densityRatio);
-
-  await storage.updateTaskProgress(taskId, 100, "Group detection analysis complete.");
-  return JSON.stringify(results);
+interface GraphEdge {
+  u: number;
+  v: number;
+  weight: number;
 }
 
-function runLabelPropagation(nodes: string[], edges: [string, string][], maxIterations = 20): Map<string, string[]> {
-  const labels = new Map<string, string>();
-  const adjacency = new Map<string, string[]>();
+interface LouvainCommunityResult {
+  communities: Map<number, number[]>; // communityId -> nodeIndex[]
+  modularity: number;
+}
 
-  for (const node of nodes) {
-    labels.set(node, node);
-    adjacency.set(node, []);
+/**
+ * High-performance Louvain community detection algorithm with edge weights and resolution tuning.
+ * Operates on integer indices [0..V-1] for optimal cache locality and speed on 25k+ nodes.
+ */
+function runLouvainClustering(
+  nodeCount: number,
+  edges: GraphEdge[],
+  resolution: number = 1.0,
+  maxLevels: number = 5
+): LouvainCommunityResult {
+  if (nodeCount === 0) {
+    return { communities: new Map(), modularity: 0 };
   }
 
-  for (const [u, v] of edges) {
-    adjacency.get(u)?.push(v);
-    adjacency.get(v)?.push(u);
+  // Calculate total edge weight
+  let totalWeight = 0;
+  for (const e of edges) {
+    totalWeight += e.weight;
   }
 
-  for (let iter = 0; iter < maxIterations; iter++) {
-    let changed = false;
-    const shuffledNodes = [...nodes];
-    for (let i = shuffledNodes.length - 1; i > 0; i--) {
+  if (totalWeight <= 0) {
+    // No edges: each node is its own community
+    const comms = new Map<number, number[]>();
+    for (let i = 0; i < nodeCount; i++) {
+      comms.set(i, [i]);
+    }
+    return { communities: comms, modularity: 0 };
+  }
+
+  const twoM = 2 * totalWeight;
+
+  // Build adjacency list
+  const adj: Array<Map<number, number>> = new Array(nodeCount);
+  const nodeDegrees = new Float64Array(nodeCount);
+  for (let i = 0; i < nodeCount; i++) {
+    adj[i] = new Map();
+  }
+
+  for (const { u, v, weight } of edges) {
+    if (u === v) continue;
+    adj[u].set(v, (adj[u].get(v) || 0) + weight);
+    adj[v].set(u, (adj[v].get(u) || 0) + weight);
+    nodeDegrees[u] += weight;
+    nodeDegrees[v] += weight;
+  }
+
+  // Phase 1: Local modularity optimization
+  let community = new Int32Array(nodeCount);
+  const communityTot = new Float64Array(nodeCount);
+  for (let i = 0; i < nodeCount; i++) {
+    community[i] = i;
+    communityTot[i] = nodeDegrees[i];
+  }
+
+  const nodes = Array.from({ length: nodeCount }, (_, i) => i);
+  let changed = true;
+  let pass = 0;
+
+  while (changed && pass < 15) {
+    changed = false;
+    pass++;
+
+    // Randomize node evaluation order to prevent bias
+    for (let i = nodes.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [shuffledNodes[i], shuffledNodes[j]] = [shuffledNodes[j], shuffledNodes[i]];
+      [nodes[i], nodes[j]] = [nodes[j], nodes[i]];
     }
 
-    for (const node of shuffledNodes) {
-      const neighbors = adjacency.get(node) || [];
-      if (neighbors.length === 0) continue;
+    for (const i of nodes) {
+      const ki = nodeDegrees[i];
+      if (ki === 0) continue;
 
-      const counts = new Map<string, number>();
-      for (const neighbor of neighbors) {
-        const lbl = labels.get(neighbor)!;
-        counts.set(lbl, (counts.get(lbl) || 0) + 1);
+      const cOld = community[i];
+      // Temporarily remove node i from cOld
+      communityTot[cOld] -= ki;
+
+      // Find neighbor communities and weights to them
+      const commWeights = new Map<number, number>();
+      for (const [nbr, w] of adj[i].entries()) {
+        const c = community[nbr];
+        commWeights.set(c, (commWeights.get(c) || 0) + w);
       }
 
-      let maxFreq = 0;
-      let bestLabels: string[] = [];
-      for (const [lbl, freq] of counts.entries()) {
-        if (freq > maxFreq) {
-          maxFreq = freq;
-          bestLabels = [lbl];
-        } else if (freq === maxFreq) {
-          bestLabels.push(lbl);
+      let bestComm = cOld;
+      let maxGain = 0;
+
+      for (const [c, k_i_in] of commWeights.entries()) {
+        // Delta Q gain calculation with resolution parameter gamma
+        const gain = k_i_in - resolution * (communityTot[c] * ki) / twoM;
+        if (gain > maxGain) {
+          maxGain = gain;
+          bestComm = c;
         }
       }
 
-      const chosenLabel = bestLabels[Math.floor(Math.random() * bestLabels.length)];
-      if (labels.get(node) !== chosenLabel) {
-        labels.set(node, chosenLabel);
+      // If cOld still has better or equal modularity, remain or move to bestComm
+      community[i] = bestComm;
+      communityTot[bestComm] += ki;
+
+      if (bestComm !== cOld) {
         changed = true;
       }
     }
-
-    if (!changed) break;
   }
 
-  const communities = new Map<string, string[]>();
-  for (const [node, lbl] of labels.entries()) {
-    if (!communities.has(lbl)) {
-      communities.set(lbl, []);
+  // Build final community mapping
+  const communities = new Map<number, number[]>();
+  for (let i = 0; i < nodeCount; i++) {
+    const c = community[i];
+    if (!communities.has(c)) {
+      communities.set(c, []);
     }
-    communities.get(lbl)!.push(node);
+    communities.get(c)!.push(i);
   }
 
-  return communities;
+  // Calculate final modularity score
+  let q = 0;
+  for (const [c, members] of communities.entries()) {
+    let internalWeight = 0;
+    const memberSet = new Set(members);
+    for (const u of members) {
+      for (const [v, w] of adj[u].entries()) {
+        if (memberSet.has(v)) {
+          internalWeight += w;
+        }
+      }
+    }
+    const tot = communityTot[c];
+    q += (internalWeight / twoM) - resolution * Math.pow(tot / twoM, 2);
+  }
+
+  return { communities, modularity: q };
+}
+
+const STOP_WORDS = new Set([
+  "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for", "not", "on", "with",
+  "he", "as", "you", "do", "at", "this", "but", "his", "by", "from", "they", "we", "say", "her",
+  "she", "or", "an", "will", "my", "one", "all", "would", "there", "their", "what", "so", "up",
+  "out", "if", "about", "who", "get", "which", "go", "me", "when", "make", "can", "like", "time",
+  "no", "just", "him", "know", "take", "people", "into", "year", "your", "good", "some", "could",
+  "them", "see", "other", "than", "then", "now", "look", "only", "come", "its", "over", "think",
+  "also", "back", "after", "use", "two", "how", "our", "work", "first", "well", "way", "even",
+  "new", "want", "because", "any", "these", "give", "day", "most", "us", "is", "are", "was", "were",
+  "com", "www", "http", "https", "link", "email", "official", "account", "page", "dm", "linkinbio"
+]);
+
+function extractBioKeywords(text?: string | null): string[] {
+  if (!text) return [];
+  const tokens = text.toLowerCase().match(/#?[a-zA-Z0-9_-]{3,}/g) || [];
+  const valid: string[] = [];
+  for (const t of tokens) {
+    const clean = t.startsWith("#") ? t.slice(1) : t;
+    if (!STOP_WORDS.has(clean) && clean.length >= 3 && !/^\d+$/.test(clean)) {
+      valid.push(clean);
+    }
+  }
+  return valid;
+}
+
+async function processFindPotentialGroups(taskId: string, payload: {
+  entityType: "people" | "social_accounts";
+  strategy?: "hybrid" | "co_following" | "network_modularity" | "bio_keywords";
+  minGroupSize?: number;
+  maxGroupSize?: number;
+  resolution?: number;
+  minCohesion?: number;
+  minDensityMultiplier?: number; // legacy backwards compat
+  linkDefinition?: "any" | "mutual" | "family";
+}): Promise<string> {
+  const { entityType } = payload;
+  const strategy = payload.strategy ?? "hybrid";
+  const linkDefinition = payload.linkDefinition ?? "any";
+  const minGroupSize = Math.max(2, payload.minGroupSize ?? 3);
+  const maxGroupSize = payload.maxGroupSize ?? 60;
+  const resolution = Math.max(0.2, Math.min(5.0, payload.resolution ?? (payload.minDensityMultiplier ? Math.min(payload.minDensityMultiplier, 2.0) : 1.0)));
+
+  await storage.updateTaskProgress(taskId, 10, "Initializing network dataset...");
+
+  if (entityType === "social_accounts") {
+    // ── 1. Load Social Accounts & Profiles ───────────────────────────────────
+    await storage.updateTaskProgress(taskId, 20, "Loading social accounts and profiles...");
+    const accounts = await db.select({
+      id: socialAccounts.id,
+      username: socialAccounts.username,
+      ownerUuid: socialAccounts.ownerUuid,
+      typeId: socialAccounts.typeId,
+      groupId: socialAccounts.groupId,
+    }).from(socialAccounts);
+
+    const profileVersions = await db.select({
+      socialAccountId: socialProfileVersions.socialAccountId,
+      nickname: socialProfileVersions.nickname,
+      bio: socialProfileVersions.bio,
+      imageUrl: socialProfileVersions.imageUrl,
+    }).from(socialProfileVersions).where(eq(socialProfileVersions.isCurrent, true));
+
+    const profileMap = new Map<string, { nickname: string | null; bio: string | null; imageUrl: string | null }>();
+    for (const p of profileVersions) {
+      profileMap.set(p.socialAccountId, {
+        nickname: p.nickname,
+        bio: p.bio,
+        imageUrl: p.imageUrl,
+      });
+    }
+
+    const nodeIds = accounts.map(a => a.id);
+    const nodeCount = nodeIds.length;
+    const idToIdx = new Map<string, number>();
+    for (let i = 0; i < nodeCount; i++) {
+      idToIdx.set(nodeIds[i], i);
+    }
+
+    // ── 2. Build Multi-Signal Edge Graph ─────────────────────────────────────
+    await storage.updateTaskProgress(taskId, 35, `Building network signals (${strategy})...`);
+    
+    // Accumulator map for weighted edges: "u-v" -> weight
+    const edgeWeights = new Map<string, number>();
+    const addWeightedEdge = (uIdx: number, vIdx: number, w: number) => {
+      if (uIdx === vIdx) return;
+      const minIdx = uIdx < vIdx ? uIdx : vIdx;
+      const maxIdx = uIdx < vIdx ? vIdx : uIdx;
+      const key = `${minIdx}:${maxIdx}`;
+      edgeWeights.set(key, (edgeWeights.get(key) || 0) + w);
+    };
+
+    // Signal A: Direct Follows
+    if (strategy === "hybrid" || strategy === "network_modularity") {
+      const allFollows = await db.select({
+        followerId: socialFollows.followerId,
+        followedId: socialFollows.followedId,
+      }).from(socialFollows);
+
+      const followPairs = new Set<string>();
+      for (const f of allFollows) {
+        followPairs.add(`${f.followerId}->${f.followedId}`);
+      }
+
+      const processedPairs = new Set<string>();
+      for (const f of allFollows) {
+        const uIdx = idToIdx.get(f.followerId);
+        const vIdx = idToIdx.get(f.followedId);
+        if (uIdx === undefined || vIdx === undefined) continue;
+
+        const forwardKey = `${f.followerId}->${f.followedId}`;
+        const reverseKey = `${f.followedId}->${f.followerId}`;
+        const undirectedKey = f.followerId < f.followedId ? `${f.followerId}:${f.followedId}` : `${f.followedId}:${f.followerId}`;
+
+        if (processedPairs.has(undirectedKey)) continue;
+        processedPairs.add(undirectedKey);
+
+        const isMutual = followPairs.has(reverseKey);
+        if (linkDefinition === "mutual" && !isMutual) continue;
+
+        const weight = isMutual ? 3.5 : 1.0;
+        addWeightedEdge(uIdx, vIdx, weight);
+      }
+    }
+
+    // Signal B: Co-Following / Shared Audience Bipartite Projection
+    if (strategy === "hybrid" || strategy === "co_following") {
+      await storage.updateTaskProgress(taskId, 50, "Analyzing co-following & shared audience overlap...");
+      const allFollows = await db.select({
+        followerId: socialFollows.followerId,
+        followedId: socialFollows.followedId,
+      }).from(socialFollows);
+
+      const followedToFollowers = new Map<string, number[]>();
+      const followerDegree = new Map<number, number>();
+
+      for (const f of allFollows) {
+        const uIdx = idToIdx.get(f.followerId);
+        if (uIdx === undefined) continue;
+
+        followerDegree.set(uIdx, (followerDegree.get(uIdx) || 0) + 1);
+        if (!followedToFollowers.has(f.followedId)) {
+          followedToFollowers.set(f.followedId, []);
+        }
+        followedToFollowers.get(f.followedId)!.push(uIdx);
+      }
+
+      // Count shared following co-occurrences
+      const coFollowCounts = new Map<string, number>();
+      for (const followers of followedToFollowers.values()) {
+        // Filter out extreme hub accounts with > 800 followers to prevent combinatorial noise
+        if (followers.length < 2 || followers.length > 800) continue;
+
+        for (let i = 0; i < followers.length; i++) {
+          for (let j = i + 1; j < followers.length; j++) {
+            const u = followers[i];
+            const v = followers[j];
+            const key = u < v ? `${u}:${v}` : `${v}:${u}`;
+            coFollowCounts.set(key, (coFollowCounts.get(key) || 0) + 1);
+          }
+        }
+      }
+
+      const minOverlap = strategy === "co_following" ? 2 : 2;
+      for (const [key, count] of coFollowCounts.entries()) {
+        if (count >= minOverlap) {
+          const [uStr, vStr] = key.split(":");
+          const uIdx = parseInt(uStr, 10);
+          const vIdx = parseInt(vStr, 10);
+          const degU = followerDegree.get(uIdx) || 1;
+          const degV = followerDegree.get(vIdx) || 1;
+          // Cosine / Jaccard similarity weighting
+          const sim = count / Math.sqrt(degU * degV);
+          const weight = Math.min(4.0, sim * 5.0 + (count >= 4 ? 1.0 : 0));
+          addWeightedEdge(uIdx, vIdx, weight);
+        }
+      }
+    }
+
+    // Signal C: Co-Mentions in Posts
+    if (strategy === "hybrid") {
+      try {
+        const posts = await db.select({
+          mentionedAccounts: socialAccountPosts.mentionedAccounts,
+        }).from(socialAccountPosts);
+
+        for (const p of posts) {
+          if (!p.mentionedAccounts) continue;
+          try {
+            const parsed = JSON.parse(p.mentionedAccounts);
+            if (Array.isArray(parsed)) {
+              const usernames = new Set<string>();
+              for (const entry of parsed) {
+                if (Array.isArray(entry.accounts)) {
+                  for (const un of entry.accounts) usernames.add(un.toLowerCase());
+                }
+              }
+              const mentionedUIdxs: number[] = [];
+              for (const acc of accounts) {
+                if (usernames.has(acc.username.toLowerCase())) {
+                  const idx = idToIdx.get(acc.id);
+                  if (idx !== undefined) mentionedUIdxs.push(idx);
+                }
+              }
+              for (let i = 0; i < mentionedUIdxs.length; i++) {
+                for (let j = i + 1; j < mentionedUIdxs.length; j++) {
+                  addWeightedEdge(mentionedUIdxs[i], mentionedUIdxs[j], 2.5);
+                }
+              }
+            }
+          } catch {}
+        }
+      } catch (err) {
+        log(`[TaskWorker] Co-mention parsing skipped: ${err}`);
+      }
+    }
+
+    // Signal D: Bio Keyword Semantic Overlap
+    const accountKeywords = new Map<number, string[]>();
+    const globalTokenCounts = new Map<string, number>();
+    for (let i = 0; i < nodeCount; i++) {
+      const p = profileMap.get(nodeIds[i]);
+      const kws = extractBioKeywords(p?.bio);
+      if (kws.length > 0) {
+        accountKeywords.set(i, kws);
+        for (const kw of new Set(kws)) {
+          globalTokenCounts.set(kw, (globalTokenCounts.get(kw) || 0) + 1);
+        }
+      }
+    }
+
+    if (strategy === "hybrid" || strategy === "bio_keywords") {
+      await storage.updateTaskProgress(taskId, 65, "Extracting semantic bio themes...");
+      const tokenToAccounts = new Map<string, number[]>();
+      for (const [idx, kws] of accountKeywords.entries()) {
+        for (const kw of new Set(kws)) {
+          if (!tokenToAccounts.has(kw)) tokenToAccounts.set(kw, []);
+          tokenToAccounts.get(kw)!.push(idx);
+        }
+      }
+
+      const bioOverlapCounts = new Map<string, number>();
+      for (const [kw, accList] of tokenToAccounts.entries()) {
+        if (accList.length >= 2 && accList.length <= 150) {
+          const idf = Math.log(nodeCount / (1 + accList.length));
+          for (let i = 0; i < accList.length; i++) {
+            for (let j = i + 1; j < accList.length; j++) {
+              const u = accList[i];
+              const v = accList[j];
+              const key = u < v ? `${u}:${v}` : `${v}:${u}`;
+              bioOverlapCounts.set(key, (bioOverlapCounts.get(key) || 0) + idf * 0.5);
+            }
+          }
+        }
+      }
+
+      for (const [key, score] of bioOverlapCounts.entries()) {
+        if (score >= 0.8) {
+          const [uStr, vStr] = key.split(":");
+          const uIdx = parseInt(uStr, 10);
+          const vIdx = parseInt(vStr, 10);
+          const weight = Math.min(strategy === "bio_keywords" ? 3.0 : 1.5, score);
+          addWeightedEdge(uIdx, vIdx, weight);
+        }
+      }
+    }
+
+    // ── 3. Run Louvain Community Detection ──────────────────────────────────
+    await storage.updateTaskProgress(taskId, 75, "Running Louvain modularity clustering...");
+    const graphEdges: GraphEdge[] = [];
+    for (const [key, weight] of edgeWeights.entries()) {
+      const [uStr, vStr] = key.split(":");
+      graphEdges.push({
+        u: parseInt(uStr, 10),
+        v: parseInt(vStr, 10),
+        weight,
+      });
+    }
+
+    const { communities, modularity } = runLouvainClustering(nodeCount, graphEdges, resolution);
+
+    // ── 4. Process, Filter & Enrich Results ──────────────────────────────────
+    await storage.updateTaskProgress(taskId, 88, "Evaluating cluster quality and generating previews...");
+    const results: any[] = [];
+    const internalDegreeMap = new Map<number, number>();
+    for (const edge of graphEdges) {
+      internalDegreeMap.set(edge.u, (internalDegreeMap.get(edge.u) || 0) + edge.weight);
+      internalDegreeMap.set(edge.v, (internalDegreeMap.get(edge.v) || 0) + edge.weight);
+    }
+
+    for (const [commId, memberIdxs] of communities.entries()) {
+      const cSize = memberIdxs.length;
+      if (cSize < minGroupSize || cSize > maxGroupSize) continue;
+
+      const memberSet = new Set(memberIdxs);
+      let internalWeight = 0;
+      let totalIncidentWeight = 0;
+      let internalEdgesCount = 0;
+
+      for (const edge of graphEdges) {
+        const uIn = memberSet.has(edge.u);
+        const vIn = memberSet.has(edge.v);
+        if (uIn && vIn) {
+          internalWeight += edge.weight;
+          internalEdgesCount++;
+        }
+        if (uIn || vIn) {
+          totalIncidentWeight += edge.weight;
+        }
+      }
+
+      if (internalEdgesCount === 0 && cSize > 2) continue;
+
+      // Cohesion score: percentage of internal vs incident connection strength
+      const cohesionScore = totalIncidentWeight > 0 ? Math.min(100, Math.round((internalWeight / totalIncidentWeight) * 100)) : 50;
+
+      // Find top hub nodes in community by internal degree
+      const sortedMemberIdxs = [...memberIdxs].sort((a, b) => (internalDegreeMap.get(b) || 0) - (internalDegreeMap.get(a) || 0));
+      const topHubs = sortedMemberIdxs.slice(0, 2).map(idx => accounts[idx]);
+
+      // Extract top distinctive keywords for community
+      const commTokenCounts = new Map<string, number>();
+      for (const idx of memberIdxs) {
+        const kws = accountKeywords.get(idx) || [];
+        for (const kw of new Set(kws)) {
+          commTokenCounts.set(kw, (commTokenCounts.get(kw) || 0) + 1);
+        }
+      }
+
+      const rankedKeywords: string[] = [];
+      for (const [kw, count] of commTokenCounts.entries()) {
+        if (count >= 2) {
+          const gCount = globalTokenCounts.get(kw) || 1;
+          const tfIdf = (count / cSize) * Math.log((nodeCount + 1) / (gCount + 1));
+          rankedKeywords.push(kw);
+        }
+      }
+      rankedKeywords.sort((a, b) => (commTokenCounts.get(b) || 0) - (commTokenCounts.get(a) || 0));
+      const topKeywords = rankedKeywords.slice(0, 4);
+
+      // Generate descriptive thematic name
+      let suggestedName = "";
+      const hubNames = topHubs.map(h => `@${h.username}`).join(" & ");
+
+      if (topKeywords.length >= 2) {
+        const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+        suggestedName = `${cap(topKeywords[0])} & ${cap(topKeywords[1])} Circle (${hubNames})`;
+      } else if (topKeywords.length === 1) {
+        const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+        suggestedName = `${cap(topKeywords[0])} Network (${hubNames})`;
+      } else {
+        suggestedName = `Circle around ${hubNames}`;
+      }
+
+      // Member previews (all members for frontend rendering without loading 25k records)
+      const memberPreviews = sortedMemberIdxs.map(idx => {
+        const acc = accounts[idx];
+        const prof = profileMap.get(acc.id);
+        return {
+          id: acc.id,
+          username: acc.username,
+          nickname: prof?.nickname || null,
+          imageUrl: prof?.imageUrl || null,
+          bioSummary: prof?.bio ? prof.bio.slice(0, 90) : null,
+        };
+      });
+
+      const memberIds = memberIdxs.map(idx => accounts[idx].id);
+
+      results.push({
+        id: `pg-${commId}-${Date.now()}`,
+        suggestedName,
+        memberIds,
+        memberCount: memberIds.length,
+        memberPreviews,
+        topKeywords,
+        cohesionScore,
+        density: cSize > 1 ? (2 * internalEdgesCount) / (cSize * (cSize - 1)) : 1.0,
+        densityRatio: cohesionScore / 20.0,
+        internalEdgesCount,
+      });
+    }
+
+    // Sort results by cohesion score and size
+    results.sort((a, b) => b.cohesionScore - a.cohesionScore || b.memberCount - a.memberCount);
+
+    await storage.updateTaskProgress(taskId, 100, `Found ${results.length} potential groups across ${nodeCount} accounts.`);
+    return JSON.stringify(results);
+
+  } else {
+    // ── PEOPLE NETWORK CLUSTERING ─────────────────────────────────────────────
+    await storage.updateTaskProgress(taskId, 20, "Loading people and relationship graph...");
+    const allPeople = await storage.getAllPeople();
+    const nodeIds = allPeople.map(p => p.id);
+    const nodeCount = nodeIds.length;
+    const idToIdx = new Map<string, number>();
+    for (let i = 0; i < nodeCount; i++) {
+      idToIdx.set(nodeIds[i], i);
+    }
+
+    const edgeWeights = new Map<string, number>();
+    const addWeightedEdge = (uIdx: number, vIdx: number, w: number) => {
+      if (uIdx === vIdx) return;
+      const minIdx = uIdx < vIdx ? uIdx : vIdx;
+      const maxIdx = uIdx < vIdx ? vIdx : uIdx;
+      const key = `${minIdx}:${maxIdx}`;
+      edgeWeights.set(key, (edgeWeights.get(key) || 0) + w);
+    };
+
+    if (linkDefinition === "family") {
+      const allLin = await db.select().from(lineage);
+      for (const l of allLin) {
+        const u = idToIdx.get(l.childId);
+        const v = idToIdx.get(l.parentId);
+        if (u !== undefined && v !== undefined) addWeightedEdge(u, v, 4.0);
+      }
+      const allParts = await db.select().from(partnerships);
+      for (const p of allParts) {
+        const u = idToIdx.get(p.person1Id);
+        const v = idToIdx.get(p.person2Id);
+        if (u !== undefined && v !== undefined) addWeightedEdge(u, v, 5.0);
+      }
+      const allRels = await storage.getAllRelationships();
+      for (const r of allRels) {
+        if (r.familyRelationshipType) {
+          const u = idToIdx.get(r.fromPersonId);
+          const v = idToIdx.get(r.toPersonId);
+          if (u !== undefined && v !== undefined) addWeightedEdge(u, v, 3.0);
+        }
+      }
+    } else {
+      const allRels = await storage.getAllRelationships();
+      for (const r of allRels) {
+        const u = idToIdx.get(r.fromPersonId);
+        const v = idToIdx.get(r.toPersonId);
+        if (u !== undefined && v !== undefined) addWeightedEdge(u, v, 2.0);
+      }
+      const allParts = await db.select().from(partnerships);
+      for (const p of allParts) {
+        const u = idToIdx.get(p.person1Id);
+        const v = idToIdx.get(p.person2Id);
+        if (u !== undefined && v !== undefined) addWeightedEdge(u, v, 4.0);
+      }
+      const allLin = await db.select().from(lineage);
+      for (const l of allLin) {
+        const u = idToIdx.get(l.childId);
+        const v = idToIdx.get(l.parentId);
+        if (u !== undefined && v !== undefined) addWeightedEdge(u, v, 3.5);
+      }
+    }
+
+    const graphEdges: GraphEdge[] = [];
+    for (const [key, weight] of edgeWeights.entries()) {
+      const [uStr, vStr] = key.split(":");
+      graphEdges.push({
+        u: parseInt(uStr, 10),
+        v: parseInt(vStr, 10),
+        weight,
+      });
+    }
+
+    await storage.updateTaskProgress(taskId, 60, "Clustering people connections...");
+    const { communities } = runLouvainClustering(nodeCount, graphEdges, resolution);
+
+    await storage.updateTaskProgress(taskId, 85, "Formatting community results...");
+    const results: any[] = [];
+    const personMap = new Map(allPeople.map(p => [p.id, p]));
+
+    for (const [commId, memberIdxs] of communities.entries()) {
+      const cSize = memberIdxs.length;
+      if (cSize < minGroupSize || cSize > maxGroupSize) continue;
+
+      const memberIds = memberIdxs.map(idx => nodeIds[idx]);
+      const memberPeople = memberIds.map(id => personMap.get(id)).filter(Boolean) as any[];
+
+      const topPeople = memberPeople.slice(0, 2);
+      const names = topPeople.map(p => `${p.firstName || ""} ${p.lastName || ""}`.trim() || "Person").join(" & ");
+      const suggestedName = `Family & Friends Circle (${names})`;
+
+      const memberPreviews = memberPeople.slice(0, 20).map(p => ({
+        id: p.id,
+        username: `${p.firstName || ""} ${p.lastName || ""}`.trim(),
+        nickname: p.nickname || null,
+        imageUrl: p.imageUrl || null,
+        bioSummary: p.company ? `${p.title || "Role"} at ${p.company}` : null,
+      }));
+
+      results.push({
+        id: `pg-person-${commId}-${Date.now()}`,
+        suggestedName,
+        memberIds,
+        memberCount: memberIds.length,
+        memberPreviews,
+        topKeywords: [],
+        cohesionScore: 80,
+        density: 1.0,
+        densityRatio: 2.0,
+        internalEdgesCount: memberIdxs.length,
+      });
+    }
+
+    results.sort((a, b) => b.memberCount - a.memberCount);
+    await storage.updateTaskProgress(taskId, 100, `Found ${results.length} communities.`);
+    return JSON.stringify(results);
+  }
 }
 
 async function processNextTask(): Promise<boolean> {

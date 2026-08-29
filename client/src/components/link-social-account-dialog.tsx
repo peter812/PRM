@@ -49,7 +49,7 @@ export function LinkSocialAccountDialog({
       if (!res.ok) throw new Error("Failed to search accounts");
       return res.json();
     },
-    enabled: open && searchQuery.trim().length >= 2,
+    enabled: open && searchQuery.trim().length >= 3,
   });
 
   const { data: linkedAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
@@ -61,7 +61,7 @@ export function LinkSocialAccountDialog({
     enabled: open && linkedAccountIds.length > 0,
   });
 
-  const displayAccounts = searchQuery.trim().length >= 2 ? searchResults : linkedAccounts;
+  const displayAccounts = searchQuery.trim().length >= 3 ? searchResults : linkedAccounts;
 
   const linkMutation = useMutation({
     mutationFn: async (accountIds: string[]) => {
@@ -123,7 +123,7 @@ export function LinkSocialAccountDialog({
           <div className="relative flex-shrink-0">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground" />
             <Input
-              placeholder="Type 2+ characters to search..."
+              placeholder="Type 3+ characters to search..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 text-xs md:text-sm h-8 md:h-auto"
@@ -132,9 +132,9 @@ export function LinkSocialAccountDialog({
           </div>
 
           <div className="flex-1 overflow-auto space-y-1 md:space-y-2 min-h-0">
-            {searchQuery.trim().length > 0 && searchQuery.trim().length < 2 && (
+            {searchQuery.trim().length > 0 && searchQuery.trim().length < 3 && (
               <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
-                Type {2 - searchQuery.trim().length} more character{2 - searchQuery.trim().length > 1 ? "s" : ""} to search...
+                Type {3 - searchQuery.trim().length} more character{3 - searchQuery.trim().length > 1 ? "s" : ""} to search...
               </div>
             )}
             {searchQuery.trim().length === 0 && linkedAccounts.length === 0 && (
@@ -191,7 +191,7 @@ export function LinkSocialAccountDialog({
                 );
               })
             ) : (
-              !isSearching && searchQuery.trim().length >= 2 && (
+              !isSearching && searchQuery.trim().length >= 3 && (
                 <div className="text-center py-4 md:py-8 text-[0.65rem] md:text-sm text-muted-foreground">
                   No accounts found
                 </div>

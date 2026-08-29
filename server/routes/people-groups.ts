@@ -1507,18 +1507,25 @@ export function registerRoutes(app: Express) {
       try {
         const settings = req.body as {
           entityType: "people" | "social_accounts";
+          strategy?: "hybrid" | "co_following" | "network_modularity" | "bio_keywords";
           minGroupSize?: number;
+          maxGroupSize?: number;
+          resolution?: number;
+          minCohesion?: number;
           minDensityMultiplier?: number;
-          linkDefinition: "any" | "mutual" | "family";
+          linkDefinition?: "any" | "mutual" | "family";
         };
-        if (!settings.entityType || !settings.linkDefinition) {
-          return res.status(400).json({ error: "entityType and linkDefinition are required." });
+        if (!settings.entityType) {
+          return res.status(400).json({ error: "entityType is required." });
         }
+        settings.linkDefinition = settings.linkDefinition || "any";
+        settings.strategy = settings.strategy || "hybrid";
+
         const task = await storage.createTask({
           userId: req.user!.id,
           type: "find_potential_groups",
           status: "pending",
-          title: `Community detection: ${settings.entityType} (${settings.linkDefinition})`,
+          title: `Community detection: ${settings.entityType} (${settings.strategy})`,
           payload: JSON.stringify(settings),
         });
         triggerTaskWorker();
@@ -1560,19 +1567,50 @@ export function registerRoutes(app: Express) {
     // Promote potential group to actual group
     app.post("/api/potential-groups/create", async (req, res) => {
       try {
-        const { name, color, members } = req.body as {
+        const { name, color, members, entityType } = req.body as {
           name: string;
           color: string;
           members: string[];
+          entityType?: "people" | "social_accounts";
         };
         if (!name || !color) {
           return res.status(400).json({ error: "Name and color are required." });
         }
+
+        const isSocial = entityType === "social_accounts";
+        let linkedPersonIds: string[] = [];
+
+        if (isSocial && members && members.length > 0) {
+          const linkedRows = await db
+            .select({ ownerUuid: socialAccounts.ownerUuid })
+            .from(socialAccounts)
+            .where(inArray(socialAccounts.id, members));
+
+          const personIds = linkedRows
+            .map((r) => r.ownerUuid)
+            .filter((id): id is string => Boolean(id));
+
+          linkedPersonIds = Array.from(new Set(personIds));
+        }
+
+        const initialMembers = isSocial ? linkedPersonIds : (members || []);
+
         const group = await storage.createGroup({
           name,
           color,
-          members: members || [],
+          members: initialMembers,
+          crowdMembers: isSocial ? (members || []) : [],
+          createdByUserId: req.user!.id,
         });
+
+        if (isSocial && members && members.length > 0) {
+          await db
+            .update(socialAccounts)
+            .set({ groupId: group.id })
+            .where(inArray(socialAccounts.id, members));
+        }
+
+        syncEntityInBackground("group", group.id);
         res.json({ success: true, groupId: group.id });
       } catch (error) {
         console.error("Error creating group from analysis:", error);
