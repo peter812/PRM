@@ -26,7 +26,6 @@ import {
   ssoConfig,
   socialAccounts,
   socialAccountTypes,
-  socialProfileVersions,
   socialFollows,
   socialNetworkChanges,
   socialAccountPosts,
@@ -43,6 +42,11 @@ import {
   pendingSocialAccountImports,
   type PendingSocialAccountImport,
   type InsertPendingSocialAccountImport,
+  insights,
+  osintScanQueue,
+  type Insight,
+  type InsertInsight,
+  type OsintScanQueueRow,
   type DailyNote,
   type InsertDailyNote,
   type DailyNoteEvent,
@@ -88,8 +92,6 @@ import {
   type InsertSocialAccount,
   type SocialAccountType,
   type InsertSocialAccountType,
-  type SocialProfileVersion,
-  type InsertSocialProfileVersion,
   type SocialNetworkState,
   type SocialFollow,
   type InsertSocialFollow,
@@ -417,11 +419,6 @@ export interface IStorage {
   ): Promise<{ results: Record<string, SocialAccountWithCurrentProfile>; not_found: string[] }>;
 
   // Social profile version operations
-  getCurrentProfileVersion(socialAccountId: string): Promise<SocialProfileVersion | null>;
-  getProfileVersions(socialAccountId: string): Promise<SocialProfileVersion[]>;
-  createProfileVersion(version: InsertSocialProfileVersion): Promise<SocialProfileVersion>;
-  updateProfileVersion(id: string, data: Partial<InsertSocialProfileVersion>): Promise<SocialProfileVersion | undefined>;
-  getAllProfileVersions(): Promise<SocialProfileVersion[]>;
 
   // Social follow operations (edge table; network state is derived)
   getNetworkState(socialAccountId: string): Promise<SocialNetworkState | null>;
@@ -492,7 +489,7 @@ export interface IStorage {
   getPhotoByHash(fileHash: string): Promise<Photo | undefined>;
   getPhotoParent(subImageId: string): Promise<Photo | undefined>;
   deleteInstagramImageUrls(): Promise<{
-    profileVersionsCleared: number;
+    profileImagesCleared: number;
     postsCleared: number;
     photosDeleted: number;
     deletedPhotos?: { id: string; vectorId: string | null }[];
@@ -570,6 +567,22 @@ export interface IStorage {
   markPendingImportAsImported(id: string): Promise<PendingSocialAccountImport | undefined>;
   deletePendingSocialAccountImport(id: string): Promise<boolean>;
   deleteAllPendingSocialAccountImports(options?: PendingImportFilter): Promise<number>;
+
+  // Insights
+  createInsight(data: InsertInsight): Promise<Insight>;
+  getInsightsForSocialAccount(socialAccountId: string): Promise<Insight[]>;
+  getInsightsForPerson(personId: string): Promise<Insight[]>;
+  deleteInsight(id: string): Promise<boolean>;
+
+  // OSINT scan queue
+  getMeUserIdForSocialAccount(socialAccountId: string): Promise<number | null>;
+  getMeOwnedSocialAccountIds(): Promise<string[]>;
+  enqueueOsintScans(targetIds: string[], tools: string[], requestedByUserId: number, skipIfScannedWithinDays: number): Promise<number>;
+  resetRunningOsintScans(): Promise<void>;
+  claimNextOsintScan(): Promise<(OsintScanQueueRow & { username: string }) | undefined>;
+  updateOsintScan(id: string, patch: Partial<Pick<OsintScanQueueRow, "status" | "error" | "completedAt">>): Promise<void>;
+  getOsintScanQueue(): Promise<{ counts: Record<string, number>; rows: (OsintScanQueueRow & { username: string })[] }>;
+  deleteOsintScans(status: string): Promise<number>;
 
   // Session store
   sessionStore: session.Store;
@@ -793,25 +806,17 @@ export class DatabaseStorage implements IStorage {
 
     const accountIds = Array.from(accountIdSet);
 
-    const [accounts, types, currentProfiles] = await Promise.all([
+    const [accounts, types] = await Promise.all([
       accountIds.length
-        ? db.select({ id: socialAccounts.id, username: socialAccounts.username, typeId: socialAccounts.typeId })
+        ? db.select({ id: socialAccounts.id, username: socialAccounts.username, typeId: socialAccounts.typeId, imageUrl: socialAccounts.imageUrl })
             .from(socialAccounts)
             .where(inArray(socialAccounts.id, accountIds))
-        : Promise.resolve([] as Array<{ id: string; username: string; typeId: string | null }>),
+        : Promise.resolve([] as Array<{ id: string; username: string; typeId: string | null; imageUrl: string | null }>),
       db.select({ id: socialAccountTypes.id, color: socialAccountTypes.color }).from(socialAccountTypes),
-      accountIds.length
-        ? db.select({ socialAccountId: socialProfileVersions.socialAccountId, imageUrl: socialProfileVersions.imageUrl })
-            .from(socialProfileVersions)
-            .where(and(eq(socialProfileVersions.isCurrent, true), inArray(socialProfileVersions.socialAccountId, accountIds)))
-        : Promise.resolve([] as Array<{ socialAccountId: string; imageUrl: string | null }>),
     ]);
 
     const typeColorById = new Map<string, string | null>();
     types.forEach(t => typeColorById.set(t.id, t.color || null));
-
-    const profileImageById = new Map<string, string | null>();
-    currentProfiles.forEach(p => profileImageById.set(p.socialAccountId, p.imageUrl || null));
 
     const briefById = new Map<string, { id: string; username: string; typeColor: string | null; imageUrl: string | null }>();
     accounts.forEach(a => {
@@ -819,7 +824,7 @@ export class DatabaseStorage implements IStorage {
         id: a.id,
         username: a.username,
         typeColor: a.typeId ? (typeColorById.get(a.typeId) ?? null) : null,
-        imageUrl: profileImageById.get(a.id) ?? null,
+        imageUrl: a.imageUrl ?? null,
       });
     });
 
@@ -2414,9 +2419,9 @@ export class DatabaseStorage implements IStorage {
       if (row.imageUrl) results.push({ table: "groups", id: row.id, column: "imageUrl", url: row.imageUrl });
     }
 
-    const socialProfileRows = await db.select({ id: socialProfileVersions.id, imageUrl: socialProfileVersions.imageUrl }).from(socialProfileVersions);
-    for (const row of socialProfileRows) {
-      if (row.imageUrl) results.push({ table: "social_profile_versions", id: row.id, column: "imageUrl", url: row.imageUrl });
+    const socialAccountRows = await db.select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl }).from(socialAccounts);
+    for (const row of socialAccountRows) {
+      if (row.imageUrl) results.push({ table: "social_accounts", id: row.id, column: "imageUrl", url: row.imageUrl });
     }
 
     return results;
@@ -2436,8 +2441,8 @@ export class DatabaseStorage implements IStorage {
       case "groups":
         await db.update(groups).set({ imageUrl: newUrl }).where(eq(groups.id, id));
         break;
-      case "social_profile_versions":
-        await db.update(socialProfileVersions).set({ imageUrl: newUrl }).where(eq(socialProfileVersions.id, id));
+      case "social_accounts":
+        await db.update(socialAccounts).set({ imageUrl: newUrl }).where(eq(socialAccounts.id, id));
         break;
     }
   }
@@ -2811,20 +2816,16 @@ export class DatabaseStorage implements IStorage {
 
   // Social graph operations
   async getSocialGraph(settings: SocialGraphSettings): Promise<SocialGraphData> {
-    const [allAccounts, allTypes, allFollows, allCurrentProfiles] = await Promise.all([
+    const [allAccounts, allTypes, allFollows] = await Promise.all([
       db.select().from(socialAccounts),
       db.select().from(socialAccountTypes),
       db.select().from(socialFollows),
-      db.select().from(socialProfileVersions).where(eq(socialProfileVersions.isCurrent, true)),
     ]);
 
     const typeColorMap = new Map<string, string>();
     allTypes.forEach(t => {
       if (t.color) typeColorMap.set(t.id, t.color);
     });
-
-    const profileMap = new Map<string, SocialProfileVersion>();
-    allCurrentProfiles.forEach(p => profileMap.set(p.socialAccountId, p));
 
     const followingMap = new Map<string, string[]>();
     allFollows.forEach(edge => {
@@ -3032,11 +3033,10 @@ export class DatabaseStorage implements IStorage {
     ownerRows.forEach(o => ownerMap.set(o.id, o));
 
     let nodes: SocialGraphNode[] = filtered.map(a => {
-      const profile = profileMap.get(a.id);
       const owner = a.ownerUuid ? ownerMap.get(a.ownerUuid) : undefined;
       return {
         id: a.id,
-        name: profile?.nickname || a.username,
+        name: a.nickname || a.username,
         typeColor: (a.typeId ? typeColorMap.get(a.typeId) : null) || '#10b981',
         connectionCount: uniqueConnectionCounts.get(a.id) || 0,
         val: 10,
@@ -3131,14 +3131,35 @@ export class DatabaseStorage implements IStorage {
     return { nodes, links };
   }
 
+  /**
+   * Projects an account row into the shape every reader consumes.
+   *
+   * `currentProfile` used to be a row from social_profile_versions. Nothing writes
+   * that table any more — applySnapshot, resolveScrapedAccounts and the image
+   * pipeline all write these fields onto social_accounts directly — so it is derived
+   * here instead. That keeps ~110 call sites across the client working unchanged
+   * while leaving exactly one source of truth underneath them.
+   *
+   * The synthetic id is deliberately not a uuid: nothing reads it, and anything that
+   * starts to should fail loudly rather than address a row that no longer exists.
+   */
   private buildSocialAccountWithProfile(
     account: SocialAccount,
-    profile: SocialProfileVersion | null,
     state: SocialNetworkState | null
   ): SocialAccountWithCurrentProfile {
     return {
       ...account,
-      currentProfile: profile || null,
+      currentProfile: {
+        id: `derived:${account.id}`,
+        socialAccountId: account.id,
+        nickname: account.nickname,
+        bio: account.bio,
+        accountUrl: account.accountUrl,
+        imageUrl: account.imageUrl,
+        externalImageUrl: account.externalImageUrl,
+        detectedAt: account.lastScrapedAt ?? account.internalAccountCreationDate,
+        isCurrent: true,
+      },
       latestState: state || null,
     };
   }
@@ -3152,8 +3173,8 @@ export class DatabaseStorage implements IStorage {
       conditions.push(
         or(
           ilike(socialAccounts.username, query),
-          ilike(socialProfileVersions.nickname, query),
-          ilike(socialProfileVersions.accountUrl, query)
+          ilike(socialAccounts.nickname, query),
+          ilike(socialAccounts.accountUrl, query)
         )
       );
     }
@@ -3172,32 +3193,16 @@ export class DatabaseStorage implements IStorage {
       rows = await db
         .select({
           account: socialAccounts,
-          profile: socialProfileVersions,
         })
         .from(socialAccounts)
-        .leftJoin(
-          socialProfileVersions,
-          and(
-            eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-            eq(socialProfileVersions.isCurrent, true)
-          )
-        )
         .orderBy(socialAccounts.username);
     } else {
       const whereClause = conditions.length === 1 ? conditions[0] : and(...conditions);
       rows = await db
         .select({
           account: socialAccounts,
-          profile: socialProfileVersions,
         })
         .from(socialAccounts)
-        .leftJoin(
-          socialProfileVersions,
-          and(
-            eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-            eq(socialProfileVersions.isCurrent, true)
-          )
-        )
         .where(whereClause)
         .orderBy(
           startQuery 
@@ -3207,7 +3212,7 @@ export class DatabaseStorage implements IStorage {
         );
     }
 
-    return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
+    return rows.map(row => this.buildSocialAccountWithProfile(row.account, null));
   }
 
   async getSocialAccountsPaginated(options: {
@@ -3225,8 +3230,8 @@ export class DatabaseStorage implements IStorage {
       conditions.push(
         or(
           ilike(socialAccounts.username, query),
-          ilike(socialProfileVersions.nickname, query),
-          ilike(socialProfileVersions.accountUrl, query)
+          ilike(socialAccounts.nickname, query),
+          ilike(socialAccounts.accountUrl, query)
         )
       );
     }
@@ -3261,7 +3266,6 @@ export class DatabaseStorage implements IStorage {
 
     const selectFields = {
       account: socialAccounts,
-      profile: socialProfileVersions,
       followerCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.followed_id = ${socialAccounts.id})`,
       followingCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.follower_id = ${socialAccounts.id})`,
     };
@@ -3271,13 +3275,6 @@ export class DatabaseStorage implements IStorage {
       rows = await db
         .select(selectFields)
         .from(socialAccounts)
-        .leftJoin(
-          socialProfileVersions,
-          and(
-            eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-            eq(socialProfileVersions.isCurrent, true)
-          )
-        )
         .where(whereClause)
         .orderBy(
           startQuery
@@ -3291,13 +3288,6 @@ export class DatabaseStorage implements IStorage {
       rows = await db
         .select(selectFields)
         .from(socialAccounts)
-        .leftJoin(
-          socialProfileVersions,
-          and(
-            eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-            eq(socialProfileVersions.isCurrent, true)
-          )
-        )
         .orderBy(socialAccounts.username)
         .offset(offset)
         .limit(limit);
@@ -3310,7 +3300,7 @@ export class DatabaseStorage implements IStorage {
         followingCount: Number(row.followingCount) || 0,
         updatedAt: null,
       };
-      return this.buildSocialAccountWithProfile(row.account, row.profile, state);
+      return this.buildSocialAccountWithProfile(row.account, state);
     });
   }
 
@@ -3318,23 +3308,15 @@ export class DatabaseStorage implements IStorage {
     const [row] = await db
       .select({
         account: socialAccounts,
-        profile: socialProfileVersions,
       })
       .from(socialAccounts)
-      .leftJoin(
-        socialProfileVersions,
-        and(
-          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-          eq(socialProfileVersions.isCurrent, true)
-        )
-      )
       .where(and(eq(socialAccounts.id, id), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
     if (!row) return undefined;
 
     const currentState = await this.getNetworkState(id);
 
-    return this.buildSocialAccountWithProfile(row.account, row.profile, currentState);
+    return this.buildSocialAccountWithProfile(row.account, currentState);
   }
 
   async getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]> {
@@ -3343,57 +3325,33 @@ export class DatabaseStorage implements IStorage {
     const rows = await db
       .select({
         account: socialAccounts,
-        profile: socialProfileVersions,
       })
       .from(socialAccounts)
-      .leftJoin(
-        socialProfileVersions,
-        and(
-          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-          eq(socialProfileVersions.isCurrent, true)
-        )
-      )
       .where(and(inArray(socialAccounts.id, ids), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
-    return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
+    return rows.map(row => this.buildSocialAccountWithProfile(row.account, null));
   }
 
   async getSocialAccountsByOwner(ownerUuid: string): Promise<SocialAccountWithCurrentProfile[]> {
     const rows = await db
       .select({
         account: socialAccounts,
-        profile: socialProfileVersions,
       })
       .from(socialAccounts)
-      .leftJoin(
-        socialProfileVersions,
-        and(
-          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-          eq(socialProfileVersions.isCurrent, true)
-        )
-      )
       .where(and(eq(socialAccounts.ownerUuid, ownerUuid), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
-    return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
+    return rows.map(row => this.buildSocialAccountWithProfile(row.account, null));
   }
 
   async getSocialAccountsByGroup(groupId: string): Promise<SocialAccountWithCurrentProfile[]> {
     const rows = await db
       .select({
         account: socialAccounts,
-        profile: socialProfileVersions,
       })
       .from(socialAccounts)
-      .leftJoin(
-        socialProfileVersions,
-        and(
-          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-          eq(socialProfileVersions.isCurrent, true)
-        )
-      )
       .where(and(eq(socialAccounts.groupId, groupId), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
-    return rows.map(row => this.buildSocialAccountWithProfile(row.account, row.profile, null));
+    return rows.map(row => this.buildSocialAccountWithProfile(row.account, null));
   }
 
   async createSocialAccount(insertAccount: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile> {
@@ -3404,27 +3362,33 @@ export class DatabaseStorage implements IStorage {
       internalAccountCreationType: insertAccount.internalAccountCreationType || "User",
     }).returning();
 
-    const [profileVersion] = await db.insert(socialProfileVersions).values({
-      socialAccountId: account.id,
-      isCurrent: true,
-    }).returning();
-
-    return this.buildSocialAccountWithProfile(account, profileVersion, null);
+    return this.buildSocialAccountWithProfile(account, null);
   }
+
+  /**
+   * Fields a caller is allowed to set on an account.
+   *
+   * Deliberately an explicit list rather than a spread of the caller's object: this
+   * takes request bodies, and a spread would let one set visibility or
+   * createdByUserId. The profile fields are on it because they live on this row now —
+   * the get-or-create dance against social_profile_versions that used to carry them
+   * is gone, along with the table.
+   */
+  private static readonly UPDATABLE_ACCOUNT_FIELDS = [
+    "username", "ownerUuid", "groupId", "typeId", "internalAccountCreationType",
+    "lastScrapedAt", "isSimple",
+    "nickname", "bio", "accountUrl", "imageUrl", "externalImageUrl", "location",
+  ] as const;
 
   async updateSocialAccount(
     id: string,
     accountData: Partial<InsertSocialAccount>
   ): Promise<SocialAccount | undefined> {
-    const { username, ownerUuid, groupId, typeId, internalAccountCreationType, lastScrapedAt, isSimple } = accountData as any;
     const updateFields: Record<string, any> = {};
-    if (username !== undefined) updateFields.username = username;
-    if (ownerUuid !== undefined) updateFields.ownerUuid = ownerUuid;
-    if (groupId !== undefined) updateFields.groupId = groupId;
-    if (typeId !== undefined) updateFields.typeId = typeId;
-    if (internalAccountCreationType !== undefined) updateFields.internalAccountCreationType = internalAccountCreationType;
-    if (lastScrapedAt !== undefined) updateFields.lastScrapedAt = lastScrapedAt;
-    if (isSimple !== undefined) updateFields.isSimple = isSimple;
+    for (const field of DatabaseStorage.UPDATABLE_ACCOUNT_FIELDS) {
+      const value = (accountData as any)[field];
+      if (value !== undefined) updateFields[field] = value;
+    }
 
     if (Object.keys(updateFields).length === 0) return undefined;
 
@@ -3497,12 +3461,18 @@ export class DatabaseStorage implements IStorage {
           .set({ socialAccountId: keptAccount.id })
           .where(eq(socialAccountPosts.socialAccountId, dup.id));
           
-        // 2. Update profile versions, ensuring isCurrent is false so we don't have multiple currents
+        // 2. Re-point the journal. social_account_history cascades on delete, so
+        //    without this the duplicate's history would be destroyed rather than
+        //    merged — including the entries that recorded how it got its edges.
         await db
-          .update(socialProfileVersions)
-          .set({ socialAccountId: keptAccount.id, isCurrent: false })
-          .where(eq(socialProfileVersions.socialAccountId, dup.id));
-          
+          .update(socialAccountHistory)
+          .set({ socialAccountId: keptAccount.id })
+          .where(eq(socialAccountHistory.socialAccountId, dup.id));
+        await db
+          .update(socialAccountHistory)
+          .set({ observedViaAccountId: keptAccount.id })
+          .where(eq(socialAccountHistory.observedViaAccountId, dup.id));
+
         // 3. Re-point follow edges from the duplicate to the kept account
         //    (the duplicate's own edges are removed by cascade when it is deleted)
         await db.execute(sql`
@@ -3584,13 +3554,6 @@ export class DatabaseStorage implements IStorage {
     const [countResult] = await db
       .select({ count: sql<number>`COUNT(*)` })
       .from(socialAccounts)
-      .leftJoin(
-        socialProfileVersions,
-        and(
-          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-          eq(socialProfileVersions.isCurrent, true)
-        )
-      )
       .where(whereClause);
     const total = Number(countResult?.count || 0);
 
@@ -3599,18 +3562,10 @@ export class DatabaseStorage implements IStorage {
     const rows = await db
       .select({
         account: socialAccounts,
-        profile: socialProfileVersions,
         followerCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.followed_id = ${socialAccounts.id})`,
         followingCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.follower_id = ${socialAccounts.id})`,
       })
       .from(socialAccounts)
-      .leftJoin(
-        socialProfileVersions,
-        and(
-          eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-          eq(socialProfileVersions.isCurrent, true)
-        )
-      )
       .where(whereClause)
       .orderBy(
         sql`CASE
@@ -3630,7 +3585,7 @@ export class DatabaseStorage implements IStorage {
         followingCount: Number(row.followingCount) || 0,
         updatedAt: null,
       };
-      return this.buildSocialAccountWithProfile(row.account, row.profile, state);
+      return this.buildSocialAccountWithProfile(row.account, state);
     });
 
     return { results, total };
@@ -3653,18 +3608,10 @@ export class DatabaseStorage implements IStorage {
       const rows = await db
         .select({
           account: socialAccounts,
-          profile: socialProfileVersions,
           followerCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.followed_id = ${socialAccounts.id})`,
           followingCount: sql<number>`(SELECT COUNT(*)::int FROM social_follows sf WHERE sf.follower_id = ${socialAccounts.id})`,
         })
         .from(socialAccounts)
-        .leftJoin(
-          socialProfileVersions,
-          and(
-            eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-            eq(socialProfileVersions.isCurrent, true)
-          )
-        )
         .where(
           and(
             eq(socialAccounts.username, lookup.username),
@@ -3681,7 +3628,7 @@ export class DatabaseStorage implements IStorage {
           followingCount: Number(row.followingCount) || 0,
           updatedAt: null,
         };
-        results[lookup.username] = this.buildSocialAccountWithProfile(row.account, row.profile, state);
+        results[lookup.username] = this.buildSocialAccountWithProfile(row.account, state);
       } else {
         notFound.push(lookup.username);
       }
@@ -3691,55 +3638,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Social profile version operations
-  async getCurrentProfileVersion(socialAccountId: string): Promise<SocialProfileVersion | null> {
-    const [version] = await db
-      .select()
-      .from(socialProfileVersions)
-      .where(
-        and(
-          eq(socialProfileVersions.socialAccountId, socialAccountId),
-          eq(socialProfileVersions.isCurrent, true)
-        )
-      );
-    return version || null;
-  }
 
-  async getProfileVersions(socialAccountId: string): Promise<SocialProfileVersion[]> {
-    return await db
-      .select()
-      .from(socialProfileVersions)
-      .where(eq(socialProfileVersions.socialAccountId, socialAccountId))
-      .orderBy(desc(socialProfileVersions.detectedAt));
-  }
 
-  async createProfileVersion(version: InsertSocialProfileVersion): Promise<SocialProfileVersion> {
-    if (version.isCurrent) {
-      await db
-        .update(socialProfileVersions)
-        .set({ isCurrent: false })
-        .where(
-          and(
-            eq(socialProfileVersions.socialAccountId, version.socialAccountId),
-            eq(socialProfileVersions.isCurrent, true)
-          )
-        );
-    }
-    const [created] = await db.insert(socialProfileVersions).values(version).returning();
-    return created;
-  }
 
-  async updateProfileVersion(id: string, data: Partial<InsertSocialProfileVersion>): Promise<SocialProfileVersion | undefined> {
-    const [updated] = await db
-      .update(socialProfileVersions)
-      .set(data)
-      .where(eq(socialProfileVersions.id, id))
-      .returning();
-    return updated || undefined;
-  }
 
-  async getAllProfileVersions(): Promise<SocialProfileVersion[]> {
-    return await db.select().from(socialProfileVersions).orderBy(socialProfileVersions.detectedAt);
-  }
 
   // Social follow operations. A follow is a single directed edge in
   // social_follows; "network state" (follower/following counts) is derived.
@@ -3952,10 +3854,15 @@ export class DatabaseStorage implements IStorage {
       kind === "all" ? undefined : eq(socialAccountHistory.entryKind, kind),
     );
 
+    // Joined to the account so visibility is enforced here rather than relying on
+    // whichever route happens to call this.
+    const visible = and(whereClause, visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId));
+
     const [countResult] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(socialAccountHistory)
-      .where(whereClause);
+      .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountHistory.socialAccountId))
+      .where(visible);
     const total = Number(countResult?.count || 0);
 
     // Every column except `delta`, which is TOASTed and holds up to 10,000 ids —
@@ -3987,7 +3894,8 @@ export class DatabaseStorage implements IStorage {
         previousImageUrl: socialAccountHistory.previousImageUrl,
       })
       .from(socialAccountHistory)
-      .where(whereClause)
+      .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountHistory.socialAccountId))
+      .where(visible)
       .orderBy(desc(socialAccountHistory.detectedAt))
       .limit(limit)
       .offset((page - 1) * limit);
@@ -4021,20 +3929,29 @@ export class DatabaseStorage implements IStorage {
     const listLimit = Math.min(500, Math.max(1, options.listLimit || 100));
     const listOffset = Math.max(0, options.listOffset || 0);
 
-    // The one place `delta` is read.
+    // The one place `delta` is read. Joined to the account so an entry the caller
+    // cannot see is never loaded — authorization belongs in the query, not only in
+    // the route that happens to call it today.
     const [row] = await db
-      .select()
+      .select({ entry: socialAccountHistory })
       .from(socialAccountHistory)
-      .where(eq(socialAccountHistory.id, entryId));
+      .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountHistory.socialAccountId))
+      .where(and(
+        eq(socialAccountHistory.id, entryId),
+        visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId),
+      ));
     if (!row) return undefined;
 
-    const { delta, ...rest } = row;
+    const { delta, ...rest } = row.entry;
     const [entry] = await this.attachObservedVia([rest]);
 
     const ids = (delta ?? {}) as SocialAccountHistoryDelta;
+    // Resolve the visible subset first, then page over that. Slicing the raw ids and
+    // filtering afterwards made `total` count accounts the caller never receives, so
+    // the list read "showing 87 of 100" with no further page to fetch.
     const list = async (key: keyof SocialAccountHistoryDelta) => {
-      const all = ids[key] ?? [];
-      return { total: all.length, items: await this.hydrateAccountRefs(all.slice(listOffset, listOffset + listLimit)) };
+      const visible = await this.hydrateAccountRefs(ids[key] ?? []);
+      return { total: visible.length, items: visible.slice(listOffset, listOffset + listLimit) };
     };
 
     return {
@@ -4055,7 +3972,11 @@ export class DatabaseStorage implements IStorage {
         lastAt: sql<Date | null>`max(${socialAccountHistory.detectedAt})`,
       })
       .from(socialAccountHistory)
-      .where(eq(socialAccountHistory.socialAccountId, socialAccountId))
+      .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountHistory.socialAccountId))
+      .where(and(
+        eq(socialAccountHistory.socialAccountId, socialAccountId),
+        visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId),
+      ))
       .groupBy(socialAccountHistory.entryKind);
 
     const summary: SocialAccountHistorySummary = {
@@ -4206,12 +4127,7 @@ export class DatabaseStorage implements IStorage {
       internalAccountCreationType: account.internalAccountCreationType || "User",
     }).returning();
 
-    const [profileVersion] = await db.insert(socialProfileVersions).values({
-      socialAccountId: newAccount.id,
-      isCurrent: true,
-    }).returning();
-
-    return this.buildSocialAccountWithProfile(newAccount, profileVersion, null);
+    return this.buildSocialAccountWithProfile(newAccount, null);
   }
 
   async getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse> {
@@ -4391,21 +4307,13 @@ export class DatabaseStorage implements IStorage {
       searchPromises.push(
         db.select({
             account: socialAccounts,
-            profile: socialProfileVersions,
           })
           .from(socialAccounts)
-          .leftJoin(
-            socialProfileVersions,
-            and(
-              eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-              eq(socialProfileVersions.isCurrent, true)
-            )
-          )
           .where(or(
             ilike(socialAccounts.username, searchPattern),
-            ilike(socialProfileVersions.nickname, searchPattern),
-            ilike(socialProfileVersions.bio, searchPattern),
-            ilike(socialProfileVersions.accountUrl, searchPattern)
+            ilike(socialAccounts.nickname, searchPattern),
+            ilike(socialAccounts.bio, searchPattern),
+            ilike(socialAccounts.accountUrl, searchPattern)
           ))
           .orderBy(
             sql`CASE WHEN ${socialAccounts.username} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
@@ -4413,11 +4321,7 @@ export class DatabaseStorage implements IStorage {
           )
           .limit(10)
           .then(rows => {
-            results.socialProfiles = rows.map(row => ({
-              ...row.account,
-              currentProfile: row.profile || null,
-              latestState: null,
-            }));
+            results.socialProfiles = rows.map(row => this.buildSocialAccountWithProfile(row.account, null));
           })
       );
     }
@@ -4977,7 +4881,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteInstagramImageUrls(): Promise<{
-    profileVersionsCleared: number;
+    profileImagesCleared: number;
     postsCleared: number;
     photosDeleted: number;
     deletedPhotos?: { id: string; vectorId: string | null }[];
@@ -4986,15 +4890,15 @@ export class DatabaseStorage implements IStorage {
 
     const [imgUrlResult, extImgUrlResult, postsResult, photosResult] = await Promise.all([
       db
-        .update(socialProfileVersions)
+        .update(socialAccounts)
         .set({ imageUrl: null })
-        .where(sql`${socialProfileVersions.imageUrl} ~ ${igPattern}`)
-        .returning({ id: socialProfileVersions.id }),
+        .where(sql`${socialAccounts.imageUrl} ~ ${igPattern}`)
+        .returning({ id: socialAccounts.id }),
       db
-        .update(socialProfileVersions)
+        .update(socialAccounts)
         .set({ externalImageUrl: null })
-        .where(sql`${socialProfileVersions.externalImageUrl} ~ ${igPattern}`)
-        .returning({ id: socialProfileVersions.id }),
+        .where(sql`${socialAccounts.externalImageUrl} ~ ${igPattern}`)
+        .returning({ id: socialAccounts.id }),
       db
         .update(socialAccountPosts)
         .set({ content: null })
@@ -5006,13 +4910,13 @@ export class DatabaseStorage implements IStorage {
         .returning({ id: photos.id, vectorId: photos.vectorId }),
     ]);
 
-    const clearedProfileVersionIds = new Set([
+    const clearedAccountIds = new Set([
       ...imgUrlResult.map((r) => r.id),
       ...extImgUrlResult.map((r) => r.id),
     ]);
 
     return {
-      profileVersionsCleared: clearedProfileVersionIds.size,
+      profileImagesCleared: clearedAccountIds.size,
       postsCleared: postsResult.length,
       photosDeleted: photosResult.length,
       deletedPhotos: photosResult,
@@ -5041,7 +4945,7 @@ export class DatabaseStorage implements IStorage {
       db.select({ imageUrl: notes.imageUrl, imageUuid: notes.imageUuid }).from(notes),
       db.select({ imageUrl: interactions.imageUrl, imageUuid: interactions.imageUuid }).from(interactions),
       db.select({ imageUrl: groups.imageUrl }).from(groups),
-      db.select({ imageUrl: socialProfileVersions.imageUrl, externalImageUrl: socialProfileVersions.externalImageUrl }).from(socialProfileVersions),
+      db.select({ imageUrl: socialAccounts.imageUrl, externalImageUrl: socialAccounts.externalImageUrl }).from(socialAccounts),
       db.select({ content: socialAccountPosts.content }).from(socialAccountPosts),
     ]);
 
@@ -5748,6 +5652,135 @@ export class DatabaseStorage implements IStorage {
       .where(eq(pendingSocialAccountImports.id, id))
       .returning({ id: pendingSocialAccountImports.id });
     return result.length > 0;
+  }
+  // ── Insights ────────────────────────────────────────────────────────────────
+
+  async createInsight(data: InsertInsight): Promise<Insight> {
+    const [row] = await db.insert(insights).values(data).returning();
+    return row;
+  }
+
+  async getInsightsForSocialAccount(socialAccountId: string): Promise<Insight[]> {
+    return db
+      .select()
+      .from(insights)
+      .where(and(
+        arrayContains(insights.applicableSocialAccountIds, [socialAccountId]),
+        visibleShared(insights.visibility, insights.createdByUserId),
+      ))
+      .orderBy(desc(insights.collectedAt));
+  }
+
+  // Insights about a person, whether tagged with the person directly or with
+  // one of the social accounts they own.
+  async getInsightsForPerson(personId: string): Promise<Insight[]> {
+    return db
+      .select()
+      .from(insights)
+      .where(and(
+        sql`(${insights.applicablePeopleIds} @> ARRAY[${personId}]::text[]
+          OR ${insights.applicableSocialAccountIds} && ARRAY(SELECT id FROM social_accounts WHERE owner_uuid = ${personId}))`,
+        visibleShared(insights.visibility, insights.createdByUserId),
+      ))
+      .orderBy(desc(insights.collectedAt));
+  }
+
+  async deleteInsight(id: string): Promise<boolean> {
+    const result = await db
+      .delete(insights)
+      .where(and(eq(insights.id, id), visibleShared(insights.visibility, insights.createdByUserId)))
+      .returning({ id: insights.id });
+    return result.length > 0;
+  }
+
+  // ── OSINT scan queue ────────────────────────────────────────────────────────
+
+  /** The user id behind the account's owner when that owner is a "Me" person, else null. */
+  async getMeUserIdForSocialAccount(socialAccountId: string): Promise<number | null> {
+    const [row] = await db
+      .select({ userId: people.userId })
+      .from(socialAccounts)
+      .innerJoin(people, eq(people.id, socialAccounts.ownerUuid))
+      .where(eq(socialAccounts.id, socialAccountId));
+    return row?.userId ?? null;
+  }
+
+  async getMeOwnedSocialAccountIds(): Promise<string[]> {
+    const rows = await db
+      .select({ id: socialAccounts.id })
+      .from(socialAccounts)
+      .innerJoin(people, eq(people.id, socialAccounts.ownerUuid))
+      .where(isNotNull(people.userId));
+    return rows.map(r => r.id);
+  }
+
+  /**
+   * Queue every (target, tool) pair in one statement. Pairs already live in
+   * the queue, or with an OSINT insight from that tool newer than the cutoff,
+   * are left out. Returns how many rows were added.
+   */
+  async enqueueOsintScans(targetIds: string[], tools: string[], requestedByUserId: number, skipIfScannedWithinDays: number): Promise<number> {
+    if (!targetIds.length || !tools.length) return 0;
+    const result = await db.execute(sql`
+      INSERT INTO osint_scan_queue (social_account_id, tool, requested_by_user_id)
+      SELECT sa.id, t.tool, ${requestedByUserId}
+      FROM social_accounts sa
+      CROSS JOIN unnest(${tools}::text[]) AS t(tool)
+      WHERE sa.id = ANY(${targetIds}::text[])
+        AND NOT EXISTS (
+          SELECT 1 FROM insights i
+          WHERE i.type = 'osint' AND i.source = t.tool
+            AND i.applicable_social_account_ids @> ARRAY[sa.id]
+            AND i.collected_at > now() - make_interval(days => ${skipIfScannedWithinDays})
+        )
+      ON CONFLICT (social_account_id, tool) WHERE status IN ('pending','running') DO NOTHING
+    `);
+    return result.rowCount ?? 0;
+  }
+
+  /** A row left 'running' by a crashed process is picked up again. */
+  async resetRunningOsintScans(): Promise<void> {
+    await db.update(osintScanQueue).set({ status: "pending" }).where(eq(osintScanQueue.status, "running"));
+  }
+
+  async claimNextOsintScan(): Promise<(OsintScanQueueRow & { username: string }) | undefined> {
+    const [row] = await db
+      .update(osintScanQueue)
+      .set({ status: "running", attempts: sql`${osintScanQueue.attempts} + 1` })
+      .where(eq(osintScanQueue.id, sql`(
+        SELECT id FROM osint_scan_queue WHERE status = 'pending'
+        ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+      )`))
+      .returning();
+    if (!row) return undefined;
+    const [account] = await db.select({ username: socialAccounts.username }).from(socialAccounts).where(eq(socialAccounts.id, row.socialAccountId));
+    return { ...row, username: account?.username ?? "" };
+  }
+
+  async updateOsintScan(id: string, patch: Partial<Pick<OsintScanQueueRow, "status" | "error" | "completedAt">>): Promise<void> {
+    await db.update(osintScanQueue).set(patch).where(eq(osintScanQueue.id, id));
+  }
+
+  async getOsintScanQueue(): Promise<{ counts: Record<string, number>; rows: (OsintScanQueueRow & { username: string })[] }> {
+    const countRows = await db
+      .select({ status: osintScanQueue.status, count: sql<number>`COUNT(*)::int` })
+      .from(osintScanQueue)
+      .groupBy(osintScanQueue.status);
+    const rows = await db
+      .select({ row: osintScanQueue, username: socialAccounts.username })
+      .from(osintScanQueue)
+      .innerJoin(socialAccounts, eq(socialAccounts.id, osintScanQueue.socialAccountId))
+      .orderBy(desc(osintScanQueue.createdAt))
+      .limit(100);
+    return {
+      counts: Object.fromEntries(countRows.map(r => [r.status, r.count])),
+      rows: rows.map(r => ({ ...r.row, username: r.username })),
+    };
+  }
+
+  async deleteOsintScans(status: string): Promise<number> {
+    const result = await db.delete(osintScanQueue).where(eq(osintScanQueue.status, status)).returning({ id: osintScanQueue.id });
+    return result.length;
   }
 }
 

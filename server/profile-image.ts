@@ -6,6 +6,8 @@ import { uploadImageLocally } from "./local-storage";
 import { syncEntityInBackground } from "./vector-universal";
 import { eq } from "drizzle-orm";
 import crypto from "crypto";
+import dns from "node:dns/promises";
+import net from "node:net";
 
 /**
  * Downloading, hashing and storing an Instagram profile picture.
@@ -70,15 +72,120 @@ export interface FetchedProfileImage {
   ogMetadata: Record<string, unknown>;
 }
 
-/** Downloads and hashes a profile picture. Throws when the CDN refuses the request. */
+/**
+ * Hosts this server is willing to make an outbound request to.
+ *
+ * The image url arrives on an extension payload, so it is caller-controlled: without
+ * this, `fetchProfileImage` is a server-side request forgery primitive pointed at
+ * whatever the caller names — cloud metadata, a database port, anything on the
+ * private network — with the response body stored and served back out.
+ *
+ * The allowlist is the real control. Checking the resolved address as well is defence
+ * in depth: with a host allowlist, rebinding requires a record under Instagram's own
+ * domains.
+ */
+const ALLOWED_IMAGE_HOSTS = [/\.cdninstagram\.com$/i, /\.fbcdn\.net$/i];
+
+/** Profile pictures are well under a megabyte; this is only here to bound the damage. */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+const FETCH_TIMEOUT_MS = 10_000;
+
+/** Redirects are followed by hand so the allowlist applies to every hop, not just the first. */
+const MAX_REDIRECTS = 3;
+
+function isPrivateAddress(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split(".").map(Number);
+    return a === 10 || a === 127 || a === 0
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 169 && b === 254)          // link-local, and so cloud metadata
+      || (a === 100 && b >= 64 && b <= 127);
+  }
+  const v6 = ip.toLowerCase();
+  if (v6.startsWith("::ffff:")) return isPrivateAddress(v6.slice(7));
+  return v6 === "::1" || v6.startsWith("fc") || v6.startsWith("fd") || v6.startsWith("fe80");
+}
+
+/** Throws unless `raw` is an https url on an allowed CDN host that resolves publicly. */
+async function assertFetchableImageUrl(raw: string): Promise<string> {
+  const url = new URL(raw);
+  if (url.protocol !== "https:") {
+    throw new Error(`Refusing to fetch image over ${url.protocol}`);
+  }
+  if (!ALLOWED_IMAGE_HOSTS.some((re) => re.test(url.hostname))) {
+    throw new Error(`Refusing to fetch image from disallowed host ${url.hostname}`);
+  }
+  for (const { address } of await dns.lookup(url.hostname, { all: true })) {
+    if (isPrivateAddress(address)) {
+      throw new Error(`Refusing to fetch image: ${url.hostname} resolves to ${address}`);
+    }
+  }
+  return url.toString();
+}
+
+/**
+ * Buffers a response body, refusing to exceed the cap.
+ *
+ * Content-Length is checked first because it is free, and again while reading because
+ * it is advisory — a chunked response carries no length at all.
+ */
+async function readCapped(response: Response): Promise<Buffer> {
+  const declared = Number(response.headers.get("content-length") ?? 0);
+  if (declared > MAX_IMAGE_BYTES) {
+    throw new Error(`Failed to download image: ${declared} bytes exceeds cap`);
+  }
+  if (!response.body) return Buffer.alloc(0);
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let seen = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    seen += value.length;
+    if (seen > MAX_IMAGE_BYTES) {
+      await reader.cancel();
+      throw new Error("Failed to download image: exceeded cap mid-stream");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Downloads and hashes a profile picture.
+ *
+ * Throws when the CDN refuses the request, when the url is not one we are willing to
+ * fetch, or when the response exceeds what a profile picture can plausibly be.
+ */
 export async function fetchProfileImage(imageUrl: string): Promise<FetchedProfileImage> {
-  const response = await fetch(imageUrl, { headers: { "User-Agent": INSTAGRAM_USER_AGENT } });
+  let target = await assertFetchableImageUrl(imageUrl);
+  let response: Response;
+
+  for (let hop = 0; ; hop++) {
+    response = await fetch(target, {
+      headers: { "User-Agent": INSTAGRAM_USER_AGENT },
+      redirect: "manual",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+
+    const location = response.status >= 300 && response.status < 400
+      ? response.headers.get("location")
+      : null;
+    if (!location) break;
+
+    if (hop >= MAX_REDIRECTS) throw new Error("Failed to download image: too many redirects");
+    target = await assertFetchableImageUrl(new URL(location, target).toString());
+  }
+
   if (!response.ok) {
     throw new Error(`Failed to download image: HTTP ${response.status} ${response.statusText}`);
   }
 
   const contentType = response.headers.get("content-type") || "image/jpeg";
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readCapped(response);
 
   return {
     buffer,

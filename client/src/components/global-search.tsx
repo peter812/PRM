@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from "react";
-import { Search as SearchIcon, Sparkles, Calendar, FileText, AtSign, BookOpen, MessageSquare } from "lucide-react";
+import { useState, useRef, useEffect, useLayoutEffect } from "react";
+import { Search as SearchIcon, Sparkles, Calendar, FileText, AtSign, BookOpen, MessageSquare, ChevronDown, LayoutGrid } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -7,6 +7,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useLocation } from "wouter";
 import { getInitials } from "@/lib/utils";
 import type { Person, Group, Interaction, Note, SocialAccountWithCurrentProfile, DailyNote, AiChat, MegaSearchResult, UuidLookupResult } from "@shared/schema";
@@ -18,13 +25,39 @@ import {
   CATEGORY_ICONS,
 } from "@/lib/search-preferences";
 
+type SearchTypeFilter = 'all' | SearchCategory;
+
 export function GlobalSearch() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [preferences, setPreferences] = useState<SearchPreferences>(loadPreferences);
   const [isSuperSearchActive, setIsSuperSearchActive] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<SearchTypeFilter>('all');
+  const [leadingWidth, setLeadingWidth] = useState(0);
   const [, setLocation] = useLocation();
   const containerRef = useRef<HTMLDivElement>(null);
+  const leadingRef = useRef<HTMLDivElement>(null);
+
+  // Keep the input's left padding in sync with the width of the type dropdown + search icon.
+  useLayoutEffect(() => {
+    const el = leadingRef.current;
+    if (!el) return;
+    const update = () => setLeadingWidth(el.getBoundingClientRect().width);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // An explicit type selection overrides the per-category preferences; "all" respects them.
+  const effectiveEnabled: Record<SearchCategory, boolean> = typeFilter === 'all'
+    ? preferences.enabled
+    : (Object.fromEntries(
+        preferences.order.map((category) => [category, category === typeFilter])
+      ) as Record<SearchCategory, boolean>);
+
+  const TypeFilterIcon = typeFilter === 'all' ? LayoutGrid : CATEGORY_ICONS[typeFilter];
+  const typeFilterLabel = typeFilter === 'all' ? 'All' : CATEGORY_LABELS[typeFilter];
 
   // UUID detection regex
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -32,7 +65,7 @@ export function GlobalSearch() {
 
   const queryParams = new URLSearchParams();
   queryParams.set('q', searchQuery);
-  Object.entries(preferences.enabled).forEach(([key, value]) => {
+  Object.entries(effectiveEnabled).forEach(([key, value]) => {
     const paramName = key === 'people' ? 'includePeople' :
       key === 'groups' ? 'includeGroups' :
         key === 'interactions' ? 'includeInteractions' :
@@ -104,7 +137,7 @@ export function GlobalSearch() {
     (results?.chats?.length || 0);
 
   const renderCategory = (category: SearchCategory) => {
-    if (!preferences.enabled[category]) return null;
+    if (!effectiveEnabled[category]) return null;
 
     const Icon = CATEGORY_ICONS[category];
     const label = CATEGORY_LABELS[category];
@@ -385,10 +418,55 @@ export function GlobalSearch() {
   return (
     <div className="relative flex-1 max-w-2xl" ref={containerRef}>
       <div className="relative flex items-center">
-        <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+        <div
+          ref={leadingRef}
+          className="absolute left-1 top-1/2 -translate-y-1/2 flex items-center gap-1"
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                data-testid="btn-search-type-filter"
+                aria-label={`Search type: ${typeFilterLabel}`}
+              >
+                <TypeFilterIcon className="h-3.5 w-3.5" />
+                <span>{typeFilterLabel}</span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[10rem]">
+              <DropdownMenuRadioGroup
+                value={typeFilter}
+                onValueChange={(value) => setTypeFilter(value as SearchTypeFilter)}
+              >
+                <DropdownMenuRadioItem value="all" data-testid="search-type-all">
+                  <LayoutGrid className="h-3.5 w-3.5 mr-2 text-muted-foreground" />
+                  All
+                </DropdownMenuRadioItem>
+                {preferences.order.map((category) => {
+                  const Icon = CATEGORY_ICONS[category];
+                  return (
+                    <DropdownMenuRadioItem
+                      key={category}
+                      value={category}
+                      data-testid={`search-type-${category}`}
+                    >
+                      <Icon className="h-3.5 w-3.5 mr-2 text-muted-foreground" />
+                      {CATEGORY_LABELS[category]}
+                    </DropdownMenuRadioItem>
+                  );
+                })}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <SearchIcon className="h-4 w-4 text-muted-foreground pointer-events-none" />
+        </div>
         <Input
           type="search"
           placeholder={isSuperSearchActive ? "Super Search..." : "Search..."}
+          style={{ paddingLeft: leadingWidth ? leadingWidth + 12 : undefined }}
           className={`pl-9 transition-all duration-300 ${isSuperSearchReady ? "pr-20" : "pr-10"} ${
             isSuperSearchActive
               ? "border-red-500 focus-visible:ring-red-500 shadow-[0_0_10px_2px_rgba(239,68,68,0.3)] focus:shadow-[0_0_12px_3px_rgba(239,68,68,0.5)] dark:border-red-500/80 dark:focus-visible:ring-red-500 dark:shadow-[0_0_12px_rgba(239,68,68,0.4)]"

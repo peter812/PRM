@@ -27,7 +27,7 @@ type BackfillResult = {
 };
 
 type DeleteInstagramResult = {
-  profileVersionsCleared: number;
+  profileImagesCleared: number;
   postsCleared: number;
   photosDeleted: number;
 };
@@ -119,7 +119,7 @@ export default function ImageStorageSettingsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
       toast({
         title: "Instagram URLs removed",
-        description: `${data.profileVersionsCleared} profile image${data.profileVersionsCleared !== 1 ? "s" : ""}, ${data.postsCleared} post${data.postsCleared !== 1 ? "s" : ""}, ${data.photosDeleted} photo record${data.photosDeleted !== 1 ? "s" : ""} cleared.`,
+        description: `${data.profileImagesCleared} profile image${data.profileImagesCleared !== 1 ? "s" : ""}, ${data.postsCleared} post${data.postsCleared !== 1 ? "s" : ""}, ${data.photosDeleted} photo record${data.photosDeleted !== 1 ? "s" : ""} cleared.`,
       });
     },
     onError: (error: Error) => {

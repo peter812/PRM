@@ -10,86 +10,20 @@
 import type { Express } from "express";
 import { storage } from "../storage";
 import { requireAdmin } from "../auth";
+import {
+  OSINT_ENABLED_KEY,
+  OSINT_API_URL_KEY,
+  OSINT_API_KEY_KEY,
+  normalizeOsintUrl,
+  loadOsintConfig as loadConfig,
+  isOsintConfigured as isConfigured,
+  osintFetch,
+  type OsintConfig,
+} from "../osint-client";
+import { queueOsintScansForAllMeAccounts } from "../osint-scan-queue";
 
-const OSINT_ENABLED_KEY = "osint_enabled";
-const OSINT_API_URL_KEY = "osint_api_url";
-const OSINT_API_KEY_KEY = "osint_api_key";
-
-async function getOsintSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
 async function setOsintSetting(key: string, value: string): Promise<void> {
   await storage.setAppSetting(key, value);
-}
-
-/**
- * Normalize a user-entered address down to just `scheme://host(:port)` — no
- * path, query, hash, or trailing slash. So the user only has to type
- * `http(s)://{ip}(:port)` and pasting something like
- * `https://1.2.3.4:8000/api/v1/` still works. Returns null if it can't be
- * parsed into a valid http(s) origin.
- */
-function normalizeOsintUrl(raw: string): string | null {
-  let value = raw.trim();
-  if (!value) return null;
-  // Assume http:// when no scheme is given so the URL parser has something to chew on.
-  if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
-  try {
-    const u = new URL(value);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    if (!u.hostname) return null;
-    // u.host includes the port when one was specified, and omits it otherwise.
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return null;
-  }
-}
-
-/** Strip trailing slashes so `base + "/path"` never produces a double slash. */
-function osintBase(url: string): string {
-  return url.replace(/\/+$/, "");
-}
-
-type OsintConfig = { enabled: boolean; apiUrl: string; apiKey: string };
-
-async function loadConfig(): Promise<OsintConfig> {
-  const [enabled, apiUrl, apiKey] = await Promise.all([
-    getOsintSetting(OSINT_ENABLED_KEY),
-    getOsintSetting(OSINT_API_URL_KEY),
-    getOsintSetting(OSINT_API_KEY_KEY),
-  ]);
-  return {
-    enabled: enabled === "true",
-    // Normalize on read as well, so addresses stored before URL normalization
-    // (or with a stray `/api/v1` path) still resolve to a clean origin and we
-    // never build `.../api/v1/api/v1/...`.
-    apiUrl: apiUrl ? (normalizeOsintUrl(apiUrl) ?? apiUrl) : "",
-    apiKey: apiKey ?? "",
-  };
-}
-
-/** True when connectivity is turned on and both address + key are present. */
-function isConfigured(cfg: OsintConfig): boolean {
-  return cfg.enabled && !!cfg.apiUrl && !!cfg.apiKey;
-}
-
-/** Call the PRM-osint API with the stored key injected. */
-async function osintFetch(
-  apiUrl: string,
-  apiKey: string,
-  path: string,
-  init: RequestInit = {},
-  timeoutMs = 15000,
-): Promise<Response> {
-  return fetch(`${osintBase(apiUrl)}/api/v1${path}`, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      ...(init.headers ?? {}),
-    },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
 }
 
 export function registerRoutes(app: Express) {
@@ -262,6 +196,39 @@ export function registerRoutes(app: Express) {
       res.status(response.status).type("application/json").send(body);
     } catch (error: any) {
       res.status(502).json({ error: `Failed to contact PRM-osint: ${error?.message ?? error}` });
+    }
+  });
+
+  // ── Auto-scan queue ───────────────────────────────────────────────────────
+  app.get("/api/osint/scan-queue", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    try {
+      res.json(await storage.getOsintScanQueue());
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to load scan queue: ${error?.message ?? error}` });
+    }
+  });
+
+  // Queue the network of every Me-owned account (a one-time catch-up after
+  // turning auto-scans on; new follows are queued as they happen).
+  app.post("/api/osint/scan-queue/backfill", requireAdmin, async (_req, res) => {
+    try {
+      await queueOsintScansForAllMeAccounts();
+      res.json(await storage.getOsintScanQueue());
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to queue scans: ${error?.message ?? error}` });
+    }
+  });
+
+  app.delete("/api/osint/scan-queue", requireAdmin, async (req, res) => {
+    const status = String(req.query.status ?? "");
+    if (!["pending", "done", "failed"].includes(status)) {
+      return res.status(400).json({ error: "status must be pending, done, or failed" });
+    }
+    try {
+      res.json({ deleted: await storage.deleteOsintScans(status) });
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to clear scan queue: ${error?.message ?? error}` });
     }
   });
 }

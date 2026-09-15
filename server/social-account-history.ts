@@ -125,6 +125,12 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
   const batchId = crypto.randomUUID();
 
   return db.transaction(async (tx) => {
+    // A stuck ingest holds row locks on every account it touches, and the pool has no
+    // statement timeout of its own. Bound it here rather than discovering the ceiling
+    // in production.
+    await tx.execute(sql`SET LOCAL statement_timeout = '120s'`);
+    await tx.execute(sql`SET LOCAL lock_timeout = '10s'`);
+
     const [before] = await tx
       .select()
       .from(socialAccounts)
@@ -135,20 +141,23 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
       throw new Error(`Social account ${snap.socialAccountId} not found`);
     }
 
-    // An account is on its first real capture when nothing but the migration's
-    // baseline has ever been written for it. The delta lists are still recorded —
-    // you want to know who the first five thousand were — but the entry is typed so
-    // the UI reads "5,000 captured" rather than "+5,000 gained".
-    const [{ count: priorEntries }] = await tx
+    // An account is on its first real capture when it has never been scraped directly.
+    // Only 'direct' entries count: a 'neighbour' row means someone else's scrape
+    // mentioned this account, and a 'baseline' row is the migration's synthetic
+    // starting point — neither is a capture of this account. Counting them (as this
+    // once did, excluding only baselines) made the flag false for almost everyone,
+    // since accounts enter the system as neighbours of the first import that names
+    // them, which put a fabricated spike at the head of nearly every history.
+    const [{ count: priorCaptures }] = await tx
       .select({ count: sql<number>`COUNT(*)::int` })
       .from(socialAccountHistory)
       .where(
         and(
           eq(socialAccountHistory.socialAccountId, snap.socialAccountId),
-          sql`${socialAccountHistory.entryKind} <> 'baseline'`,
+          eq(socialAccountHistory.entryKind, "direct"),
         ),
       );
-    const isInitialCapture = priorEntries === 0;
+    const isInitialCapture = priorCaptures === 0;
 
     // ── Edge diff, one direction at a time ────────────────────────────────────
     // `neighbourDelta` accumulates the per-account count moves this run causes on
@@ -298,70 +307,79 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
       })
       .returning();
 
-    // ── Neighbour entries ─────────────────────────────────────────────────────
-    // Every account touched by this run gets its own entry, so a change is visible
-    // from both sides even though only one of them was scraped. These carry no
+    // ── Neighbour counts and entries ──────────────────────────────────────────
+    // Every account touched by this run has its counts moved here, and — outside an
+    // initial capture — gets its own entry too, so a change is visible from both
+    // sides even though only one of them was scraped. Those entries carry no
     // `delta`: observedViaAccountId plus the count columns already tell the whole
-    // story, which is what keeps a 10k-follower import near 2 MB of journal
-    // rather than 20 MB.
+    // story.
     if (neighbourDelta.size) {
-      const neighbours = [...neighbourDelta.entries()];
-
-      const currentCounts = new Map<string, { followers: number; following: number }>();
-      await chunked(neighbours, async (batch) => {
-        const rows = await tx
-          .select({
-            id: socialAccounts.id,
-            followers: socialAccounts.followersCount,
-            following: socialAccounts.followingCount,
-          })
-          .from(socialAccounts)
-          .where(inArray(socialAccounts.id, batch.map(([id]) => id)));
-        for (const r of rows) currentCounts.set(r.id, { followers: r.followers, following: r.following });
-      });
-
-      const entries = neighbours
-        .filter(([id]) => currentCounts.has(id))
-        .map(([id, move]) => {
-          const now = currentCounts.get(id)!;
-          return {
-            id,
-            move,
-            followersAfter: now.followers + move.followers,
-            followingAfter: now.following + move.following,
-          };
-        });
-
-      await chunked(entries, (batch) =>
-        tx.insert(socialAccountHistory).values(
-          batch.map((n) => ({
-            socialAccountId: n.id,
-            batchId,
-            entryKind: "neighbour",
-            changeSource: snap.source,
-            captureScope: "none" as const,
-            observedViaAccountId: snap.socialAccountId,
-            followersAfter: n.followersAfter,
-            followersAdded: Math.max(n.move.followers, 0),
-            followersLost: Math.max(-n.move.followers, 0),
-            followingAfter: n.followingAfter,
-            followingAdded: Math.max(n.move.following, 0),
-            followingLost: Math.max(-n.move.following, 0),
-          })),
-        ),
+      // Sorted by id so that concurrent runs take these row locks in the same order.
+      // The task worker is single-threaded, but the image worker is a separate loop
+      // writing the same rows, and unordered updates across the two can deadlock.
+      const neighbours = [...neighbourDelta.entries()].sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0,
       );
 
-      await chunked(entries, (batch) =>
+      // Counts move by a delta rather than being written as an absolute. An absolute
+      // computed from a value read earlier in the transaction silently discards any
+      // increment another writer made in between.
+      await chunked(neighbours, (batch) =>
         tx.execute(sql`
           UPDATE ${socialAccounts} AS sa
-          SET followers_count = v.followers, following_count = v.following
+          SET followers_count = sa.followers_count + v.d_followers,
+              following_count = sa.following_count + v.d_following
           FROM (VALUES ${sql.join(
-            batch.map((n) => sql`(${n.id}, ${n.followersAfter}::int, ${n.followingAfter}::int)`),
+            batch.map(([id, move]) => sql`(${id}, ${move.followers}::int, ${move.following}::int)`),
             sql`, `,
-          )}) AS v(id, followers, following)
+          )}) AS v(id, d_followers, d_following)
           WHERE sa.id = v.id
         `),
       );
+
+      // Neighbour entries are skipped on an initial capture. That is the one run that
+      // produces an entry per account in the entire captured graph — ten thousand rows
+      // for a ten-thousand-follower pull — and it adds nothing: the direct entry's
+      // `delta` already names every account involved, under the same batchId. A
+      // steady-state rescrape moves a handful of edges, which is where a per-account
+      // entry is worth writing.
+      if (!isInitialCapture) {
+        // Read after the update, so this is the true post-move count rather than an
+        // arithmetic guess. Ids that no longer exist simply do not come back.
+        const counts = new Map<string, { followers: number; following: number }>();
+        await chunked(neighbours, async (batch) => {
+          const rows = await tx
+            .select({
+              id: socialAccounts.id,
+              followers: socialAccounts.followersCount,
+              following: socialAccounts.followingCount,
+            })
+            .from(socialAccounts)
+            .where(inArray(socialAccounts.id, batch.map(([id]) => id)));
+          for (const r of rows) counts.set(r.id, { followers: r.followers, following: r.following });
+        });
+
+        const entries = neighbours.filter(([id]) => counts.has(id));
+
+        await chunked(entries, (batch) =>
+          tx.insert(socialAccountHistory).values(
+            batch.map(([id, move]) => ({
+              socialAccountId: id,
+              batchId,
+              entryKind: "neighbour",
+              changeSource: snap.source,
+              captureScope: "none" as const,
+              observedViaAccountId: snap.socialAccountId,
+              followersAfter: counts.get(id)!.followers,
+              followersAdded: Math.max(move.followers, 0),
+              followersLost: Math.max(-move.followers, 0),
+              followingAfter: counts.get(id)!.following,
+              followingAdded: Math.max(move.following, 0),
+              followingLost: Math.max(-move.following, 0),
+            })),
+          ),
+        );
+      }
     }
 
     return entry;

@@ -12,6 +12,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
 import { startTaskWorker } from "./task-worker";
+import { startOsintScanRunner } from "./osint-scan-queue";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { etagMiddleware } from "./middleware/etag-cache";
 import { requestIdMiddleware } from "./middleware/request-id";
@@ -174,5 +175,6 @@ app.use((req, res, next) => {
   }, () => {
     log(`serving on port ${port}`);
     startTaskWorker();
+    startOsintScanRunner();
   });
 })();

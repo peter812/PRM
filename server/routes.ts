@@ -7,6 +7,7 @@ import { registerRoutes as registerAiVector } from "./routes/ai-vector";
 import { registerRoutes as registerFamily } from "./routes/family";
 import { registerRoutes as registerMessages } from "./routes/messages";
 import { registerRoutes as registerOsint } from "./routes/osint";
+import { registerRoutes as registerInsights } from "./routes/insights";
 import { registerRoutes as registerTps } from "./routes/tps";
 import { registerPendingImportsRoutes } from "./routes/pending-imports";
 import { registerRoutes as registerBackups } from "./routes/backups";
@@ -29,6 +30,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerFamily(app);
   registerMessages(app);
   registerOsint(app);
+  registerInsights(app);
   registerBackups(app);
 
   const httpServer = createServer(app);

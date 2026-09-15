@@ -500,7 +500,12 @@ export const socialAccountHistory = pgTable("social_account_history", {
   delta: jsonb("delta"),
 }, (t) => [
   index("social_account_history_account_idx").on(t.socialAccountId, t.detectedAt),
-  index("social_account_history_kind_idx").on(t.socialAccountId, t.entryKind, t.detectedAt),
+  // Partial on 'direct' — see db-init.ts. Neighbour rows are the bulk of this table
+  // and nothing lists them by kind, so keeping them out of this index takes an index
+  // write off the hot insert path.
+  index("social_account_history_direct_idx")
+    .on(t.socialAccountId, t.detectedAt)
+    .where(sql`entry_kind = 'direct'`),
 ]);
 
 export const socialFollows = pgTable("social_follows", {
@@ -832,6 +837,45 @@ export const pendingSocialAccountImports = pgTable("pending_social_account_impor
 }, (t) => [
   index("idx_pending_imports_username").on(t.accountUsername),
   index("idx_pending_imports_already_added").on(t.alreadyAdded),
+]);
+
+// Insights: a single piece of information gleaned from a non-human source (an
+// OSINT tool today; other automated sources later), attached to whichever
+// people and social accounts it is about. Rows only ever accumulate — a
+// re-scan appends a new row rather than replacing the old one.
+export const insights = pgTable("insights", {
+  ...sharedOwnership(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: text("type").notNull(),      // e.g. 'osint'
+  source: text("source"),            // finer than type, e.g. the OSINT tool name
+  collectedAt: timestamp("collected_at").notNull().defaultNow(),
+  rawText: text("raw_text"),         // what the Insights tab shows
+  data: jsonb("data").notNull().default(sql`'[]'::jsonb`), // the full structured result
+  applicablePeopleIds: text("applicable_people_ids").array().notNull().default(sql`ARRAY[]::text[]`),
+  applicableSocialAccountIds: text("applicable_social_account_ids").array().notNull().default(sql`ARRAY[]::text[]`),
+}, (t) => [
+  index("insights_collected_at_idx").on(t.collectedAt),
+  index("insights_people_gin").using("gin", t.applicablePeopleIds),
+  index("insights_social_accounts_gin").using("gin", t.applicableSocialAccountIds),
+]);
+
+// OSINT scan queue: one row per (account, tool) the drip runner still has to
+// run, or has run. Rows are drained one at a time on a slow interval so the
+// OSINT endpoint is never hammered.
+export const osintScanQueue = pgTable("osint_scan_queue", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  tool: text("tool").notNull(),
+  status: text("status").notNull().default("pending"), // pending | running | done | failed
+  requestedByUserId: integer("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  attempts: integer("attempts").notNull().default(0),
+  error: text("error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+}, (t) => [
+  index("osint_scan_queue_status_created_idx").on(t.status, t.createdAt),
+  // At most one live row per account+tool; finished rows stay as history.
+  uniqueIndex("osint_scan_queue_live_uniq").on(t.socialAccountId, t.tool).where(sql`status IN ('pending','running')`),
 ]);
 
 // Relations
@@ -1506,6 +1550,10 @@ export const insertPendingSocialAccountImportSchema = createInsertSchema(pending
 export type PendingSocialAccountImport = typeof pendingSocialAccountImports.$inferSelect;
 export type InsertPendingSocialAccountImport = z.infer<typeof insertPendingSocialAccountImportSchema>;
 
+export type Insight = typeof insights.$inferSelect;
+export type InsertInsight = typeof insights.$inferInsert;
+export type OsintScanQueueRow = typeof osintScanQueue.$inferSelect;
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema> & { role?: UserRole };
@@ -1710,6 +1758,24 @@ export type AiToolCallTrace = {
   summary: string;
   /** Whether the tool ran successfully. */
   ok: boolean;
+};
+
+/**
+ * A question the chat LLM asks the user via the `ask_user` tool. The server
+ * emits these in a `user_question_request` stream event; the client renders a
+ * form and POSTs back `AiUserAnswer[]`.
+ */
+export type AiUserQuestion =
+  | { type: "true_false"; question: string }
+  | { type: "multiple_choice"; question: string; choices: string[]; allowOther?: boolean }
+  | { type: "open_ended"; question: string }
+  | { type: "slider"; question: string; lowLabel: string; highLabel: string };
+
+export type AiUserAnswer = {
+  question: string;
+  type: AiUserQuestion["type"];
+  /** boolean (true_false), string (multiple_choice / open_ended), 0–100 number (slider). */
+  answer: boolean | string | number | null;
 };
 
 export type AiChatMessage = {

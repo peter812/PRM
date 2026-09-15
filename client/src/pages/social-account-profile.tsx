@@ -38,6 +38,7 @@ import { PostDetailDialog } from "@/components/post-detail-dialog";
 import { SiInstagram } from "react-icons/si";
 import { MessagesTab } from "@/components/messages-tab";
 import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
+import { InsightsTab } from "@/components/insights-tab";
 import { SocialAccountRow } from "@/components/social-account-row";
 import {
   Dialog,
@@ -627,6 +628,13 @@ export default function SocialAccountProfile() {
                 data-testid="tab-history"
               >
                 History
+              </TabsTrigger>
+              <TabsTrigger
+                value="insights"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-insights"
+              >
+                Insights
               </TabsTrigger>
             </TabsList>
           </div>
@@ -1354,6 +1362,10 @@ export default function SocialAccountProfile() {
                 imageUrl: account.imageUrl,
               }}
             />
+          </TabsContent>
+
+          <TabsContent value="insights" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <InsightsTab socialAccountId={account.id} />
           </TabsContent>
         </div>
       </Tabs>

@@ -36,6 +36,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { ToolApprovalPopup, type ToolApprovalRequest } from "@/components/tool-approval-popup";
+import { UserQuestionCard, type UserQuestionRequest } from "@/components/user-question-card";
+import type { AiUserAnswer } from "@shared/schema";
 import {
   Loader2,
   Plus,
@@ -61,6 +63,7 @@ import {
   CheckCircle2,
   XCircle,
   Link2,
+  MessageCircleQuestion,
   type LucideIcon,
 } from "lucide-react";
 
@@ -101,6 +104,7 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   book: Book,
   notebook: NotebookPen,
   "message-square": MessageSquare,
+  "help-circle": MessageCircleQuestion,
 };
 
 /**
@@ -402,6 +406,21 @@ export default function AiChatDemoPage() {
     }
   };
 
+  // Pending `ask_user` form, populated when the server emits a
+  // `user_question_request` event. Rendered above the composer; the stream
+  // stays paused until the user submits or skips.
+  const [pendingQuestion, setPendingQuestion] = useState<UserQuestionRequest | null>(null);
+
+  /** Send the user's answers (or null for skip) for a pending question form to the server. */
+  const respondToQuestion = async (id: string, answers: AiUserAnswer[] | null) => {
+    setPendingQuestion(null);
+    try {
+      await apiRequest("POST", `/api/ai-tools/questions/${id}`, { answers });
+    } catch (err: any) {
+      toast({ title: "Failed to send answers", description: err.message, variant: "destructive" });
+    }
+  };
+
   // Core streaming helper: reads NDJSON from a /stream endpoint, appends tokens to
   // streamingContent state, and on the final sentinel line updates the query cache.
   const runStream = async (chatId: string, url: string, payload: { message: string; attachments: ChatAttachment[] }) => {
@@ -465,6 +484,14 @@ export default function AiChatDemoPage() {
             ]);
             continue;
           }
+          if (parsed.event === "user_question_request") {
+            setPendingQuestion({ id: parsed.id, questions: Array.isArray(parsed.questions) ? parsed.questions : [] });
+            continue;
+          }
+          if (parsed.event === "user_question_answered") {
+            setPendingQuestion((prev) => (prev?.id === parsed.id ? null : prev));
+            continue;
+          }
           if (parsed.event === "tool_approval_decision") {
             // Already handled optimistically when the user clicked; just
             // make sure the popup is gone.
@@ -497,6 +524,7 @@ export default function AiChatDemoPage() {
     setStreamingContent("");
     setStreamingToolCalls([]);
     setPendingApprovals([]);
+    setPendingQuestion(null);
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       let chatId = activeChatId;
@@ -565,6 +593,7 @@ export default function AiChatDemoPage() {
     setStreamingContent("");
     setStreamingToolCalls([]);
     setPendingApprovals([]);
+    setPendingQuestion(null);
     setStreamingUserMessage({ role: "user", content: payload.message, attachments: payload.attachments });
     try {
       await runStream(activeChatId, `/api/ai-chats/${activeChatId}/regenerate/stream`, payload);
@@ -963,6 +992,7 @@ export default function AiChatDemoPage() {
 
         <div className="border-t p-3">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+            <UserQuestionCard request={pendingQuestion} onSubmit={respondToQuestion} />
             {pendingAttachments.length > 0 && (
               <div className="flex flex-wrap gap-1" data-testid="pending-attachments">
                 {pendingAttachments.map((a, idx) => (

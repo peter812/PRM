@@ -12,7 +12,13 @@ import {
   Check,
   Sliders,
   Info,
+  ChevronDown,
+  FolderInput,
+  Layers,
+  CalendarClock,
 } from "lucide-react";
+import { formatDistanceToNowStrict } from "date-fns";
+import type { Group, SubGroup } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -44,6 +50,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -59,7 +71,11 @@ interface MemberPreview {
   nickname?: string | null;
   imageUrl?: string | null;
   bioSummary?: string | null;
+  createdAt?: string | null;
 }
+
+type PromoteMode = "create" | "add_to_group" | "add_as_subgroup";
+const NEW_SUBGROUP = "__new__";
 
 interface PotentialGroupResult {
   id: string;
@@ -96,11 +112,27 @@ export default function PotentialGroupsPage() {
   // Task running state
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
 
-  // Dialog/Modal state for creating a group
+  // Dialog/Modal state for promoting a result (new group / existing group / sub group)
   const [selectedResult, setSelectedResult] = useState<PotentialGroupResult | null>(null);
+  const [promoteMode, setPromoteMode] = useState<PromoteMode>("create");
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupColor, setNewGroupColor] = useState("#8b5cf6");
   const [selectedMemberIds, setSelectedMemberIds] = useState<Set<string>>(new Set());
+  const [targetGroupId, setTargetGroupId] = useState("");
+  const [targetSubGroupId, setTargetSubGroupId] = useState("");
+  const [newSubGroupName, setNewSubGroupName] = useState("");
+
+  // Small account popup when a member chip is clicked
+  const [viewedMember, setViewedMember] = useState<MemberPreview | null>(null);
+
+  const { data: groups = [] } = useQuery<Group[]>({
+    queryKey: ["/api/groups"],
+    enabled: selectedResult !== null && promoteMode !== "create",
+  });
+  const { data: targetSubGroups = [] } = useQuery<SubGroup[]>({
+    queryKey: ["/api/groups", targetGroupId, "subgroups"],
+    enabled: promoteMode === "add_as_subgroup" && !!targetGroupId,
+  });
 
   // Task execution query
   const { data: taskStatus } = useQuery<AnalysisTaskResponse>({
@@ -173,6 +205,43 @@ export default function PotentialGroupsPage() {
     },
   });
 
+  // Mutator to add members to an existing group / sub group
+  const assignMutation = useMutation({
+    mutationFn: async (payload: {
+      groupId: string;
+      subGroupId?: string;
+      newSubGroupName?: string;
+      members: string[];
+      entityType: string;
+    }) => {
+      const res = await apiRequest("POST", "/api/potential-groups/assign", payload);
+      return res.json() as Promise<{ success: boolean; groupId: string; subGroupId?: string }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/subgroups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      const groupName = groups.find((g) => g.id === data.groupId)?.name ?? "group";
+      toast({
+        title: data.subGroupId ? "Added to sub group" : "Added to group",
+        description: `Added ${selectedMemberIds.size} members to "${groupName}".`,
+      });
+      setSelectedResult(null);
+      navigate(
+        data.subGroupId
+          ? `/group/${data.groupId}/subgroup/${data.subGroupId}`
+          : `/group/${data.groupId}${entityType === "social_accounts" ? "?tab=social" : ""}`
+      );
+    },
+    onError: (err) => {
+      toast({
+        title: "Failed to add members",
+        description: err.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   // Auto reset link definition if changing entity types
   useEffect(() => {
     if (entityType === "social_accounts" && linkDefinition === "family") {
@@ -180,11 +249,15 @@ export default function PotentialGroupsPage() {
     }
   }, [entityType, linkDefinition]);
 
-  const handleOpenPromoteDialog = (result: PotentialGroupResult) => {
+  const handleOpenPromoteDialog = (result: PotentialGroupResult, mode: PromoteMode) => {
     setSelectedResult(result);
+    setPromoteMode(mode);
     setNewGroupName(result.suggestedName);
     setNewGroupColor("#" + Math.floor(Math.random() * 16777215).toString(16).padStart(6, "0"));
     setSelectedMemberIds(new Set(result.memberIds));
+    setTargetGroupId("");
+    setTargetSubGroupId("");
+    setNewSubGroupName(result.suggestedName);
   };
 
   const handleToggleMember = (id: string) => {
@@ -205,20 +278,62 @@ export default function PotentialGroupsPage() {
     setSelectedMemberIds(updated);
   };
 
-  const handleCreateGroup = () => {
-    if (!newGroupName.trim()) {
-      return toast({
-        title: "Group name is required",
-        variant: "destructive",
+  const handleSubmitPromote = () => {
+    const members = Array.from(selectedMemberIds);
+    if (promoteMode === "create") {
+      if (!newGroupName.trim()) {
+        return toast({ title: "Group name is required", variant: "destructive" });
+      }
+      return createGroupMutation.mutate({
+        name: newGroupName.trim(),
+        color: newGroupColor,
+        members,
+        entityType,
       });
     }
-    createGroupMutation.mutate({
-      name: newGroupName.trim(),
-      color: newGroupColor,
-      members: Array.from(selectedMemberIds),
+    if (!targetGroupId) {
+      return toast({ title: "Select a group", variant: "destructive" });
+    }
+    if (promoteMode === "add_as_subgroup") {
+      if (!targetSubGroupId) {
+        return toast({ title: "Select a sub group", variant: "destructive" });
+      }
+      if (targetSubGroupId === NEW_SUBGROUP && !newSubGroupName.trim()) {
+        return toast({ title: "Sub group name is required", variant: "destructive" });
+      }
+    }
+    assignMutation.mutate({
+      groupId: targetGroupId,
+      subGroupId: targetSubGroupId && targetSubGroupId !== NEW_SUBGROUP ? targetSubGroupId : undefined,
+      newSubGroupName: targetSubGroupId === NEW_SUBGROUP ? newSubGroupName.trim() : undefined,
+      members,
       entityType,
     });
   };
+
+  const isSubmitting = createGroupMutation.isPending || assignMutation.isPending;
+  const dialogCopy: Record<PromoteMode, { title: string; description: string; action: string; pending: string }> = {
+    create: {
+      title: "Create Group from Cluster",
+      description: "Promote this discovered community into an active group. You can customize the name, color, and included members.",
+      action: "Create Group",
+      pending: "Creating...",
+    },
+    add_to_group: {
+      title: "Add to Existing Group",
+      description: "Add the members of this discovered community to a group you already have.",
+      action: "Add to Group",
+      pending: "Adding...",
+    },
+    add_as_subgroup: {
+      title: "Add as Sub Group",
+      description: "Add this discovered community to a group as a sub group. Pick an existing sub group or create a new one.",
+      action: "Add to Sub Group",
+      pending: "Adding...",
+    },
+  };
+  const accountAge = (m: MemberPreview) =>
+    m.createdAt ? formatDistanceToNowStrict(new Date(m.createdAt)) : null;
 
   return (
     <TooltipProvider>
@@ -475,7 +590,11 @@ export default function PotentialGroupsPage() {
                           {(result.memberPreviews || []).slice(0, 10).map((member) => (
                             <Tooltip key={member.id}>
                               <TooltipTrigger asChild>
-                                <div className="flex items-center gap-1.5 bg-muted/60 hover:bg-muted px-2 py-1 rounded-full text-xs cursor-default transition-colors">
+                                <button
+                                  type="button"
+                                  onClick={() => setViewedMember(member)}
+                                  className="flex items-center gap-1.5 bg-muted/60 hover:bg-muted px-2 py-1 rounded-full text-xs cursor-pointer transition-colors"
+                                >
                                   {member.imageUrl ? (
                                     <Avatar className="w-4 h-4">
                                       <AvatarImage src={member.imageUrl} />
@@ -487,7 +606,7 @@ export default function PotentialGroupsPage() {
                                   <span className="font-medium truncate max-w-24">
                                     @{member.username}
                                   </span>
-                                </div>
+                                </button>
                               </TooltipTrigger>
                               <TooltipContent className="text-xs">
                                 <p className="font-semibold">@{member.username}</p>
@@ -505,14 +624,32 @@ export default function PotentialGroupsPage() {
                       </CardContent>
 
                       <CardFooter className="pt-0 pb-3">
-                        <Button
-                          variant="outline"
-                          className="w-full border-primary/30 hover:bg-primary/10 text-xs font-medium"
-                          onClick={() => handleOpenPromoteDialog(result)}
-                        >
-                          <Plus className="h-3.5 w-3.5 mr-1.5" />
-                          Accept as Group
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className="w-full border-primary/30 hover:bg-primary/10 text-xs font-medium"
+                            >
+                              <Plus className="h-3.5 w-3.5 mr-1.5" />
+                              Accept
+                              <ChevronDown className="h-3.5 w-3.5 ml-auto opacity-60" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-56">
+                            <DropdownMenuItem onClick={() => handleOpenPromoteDialog(result, "create")}>
+                              <Plus className="h-4 w-4 mr-2" />
+                              Accept as Group
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleOpenPromoteDialog(result, "add_to_group")}>
+                              <FolderInput className="h-4 w-4 mr-2" />
+                              Add to Current Group
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleOpenPromoteDialog(result, "add_as_subgroup")}>
+                              <Layers className="h-4 w-4 mr-2" />
+                              Add as Sub Group
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </CardFooter>
                     </Card>
                   ))}
@@ -540,36 +677,102 @@ export default function PotentialGroupsPage() {
           >
             <DialogContent className="max-w-lg">
               <DialogHeader>
-                <DialogTitle className="text-xl">Create Group from Cluster</DialogTitle>
-                <DialogDescription>
-                  Promote this discovered community into an active group. You can customize the name, color, and included members.
-                </DialogDescription>
+                <DialogTitle className="text-xl">{dialogCopy[promoteMode].title}</DialogTitle>
+                <DialogDescription>{dialogCopy[promoteMode].description}</DialogDescription>
               </DialogHeader>
 
               <div className="space-y-4 py-2">
-                <div className="space-y-2">
-                  <Label htmlFor="group-name">Group Name</Label>
-                  <Input
-                    id="group-name"
-                    value={newGroupName}
-                    onChange={(e) => setNewGroupName(e.target.value)}
-                    placeholder="Enter group name..."
-                  />
-                </div>
+                {promoteMode === "create" ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="group-name">Group Name</Label>
+                      <Input
+                        id="group-name"
+                        value={newGroupName}
+                        onChange={(e) => setNewGroupName(e.target.value)}
+                        placeholder="Enter group name..."
+                      />
+                    </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="group-color">Theme Color</Label>
-                  <div className="flex items-center gap-3">
-                    <Input
-                      id="group-color"
-                      type="color"
-                      value={newGroupColor}
-                      onChange={(e) => setNewGroupColor(e.target.value)}
-                      className="w-12 h-10 p-1 cursor-pointer"
-                    />
-                    <span className="text-sm font-mono uppercase">{newGroupColor}</span>
+                    <div className="space-y-2">
+                      <Label htmlFor="group-color">Theme Color</Label>
+                      <div className="flex items-center gap-3">
+                        <Input
+                          id="group-color"
+                          type="color"
+                          value={newGroupColor}
+                          onChange={(e) => setNewGroupColor(e.target.value)}
+                          className="w-12 h-10 p-1 cursor-pointer"
+                        />
+                        <span className="text-sm font-mono uppercase">{newGroupColor}</span>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-2">
+                    <Label htmlFor="target-group">Group</Label>
+                    <Select
+                      value={targetGroupId}
+                      onValueChange={(val) => {
+                        setTargetGroupId(val);
+                        setTargetSubGroupId("");
+                      }}
+                    >
+                      <SelectTrigger id="target-group">
+                        <SelectValue placeholder="Select a group..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {groups.map((g) => (
+                          <SelectItem key={g.id} value={g.id}>
+                            <span className="flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: g.color }} />
+                              {g.name}
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                </div>
+                )}
+
+                {promoteMode === "add_as_subgroup" && (
+                  <div className="space-y-2">
+                    <Label htmlFor="target-subgroup">Sub Group</Label>
+                    <Select
+                      value={targetSubGroupId}
+                      onValueChange={setTargetSubGroupId}
+                      disabled={!targetGroupId}
+                    >
+                      <SelectTrigger id="target-subgroup">
+                        <SelectValue placeholder={targetGroupId ? "Select a sub group..." : "Select a group first"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NEW_SUBGROUP}>
+                          <span className="flex items-center gap-2">
+                            <Plus className="h-3.5 w-3.5" />
+                            Add new sub group
+                          </span>
+                        </SelectItem>
+                        {targetSubGroups.map((sg) => (
+                          <SelectItem key={sg.id} value={sg.id}>
+                            <span className="flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: sg.color }} />
+                              {sg.name}
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {targetSubGroupId === NEW_SUBGROUP && (
+                      <Input
+                        value={newSubGroupName}
+                        onChange={(e) => setNewSubGroupName(e.target.value)}
+                        placeholder="New sub group name..."
+                        autoFocus
+                      />
+                    )}
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
@@ -625,23 +828,46 @@ export default function PotentialGroupsPage() {
                 <Button variant="ghost" onClick={() => setSelectedResult(null)}>
                   Cancel
                 </Button>
-                <Button
-                  onClick={handleCreateGroup}
-                  disabled={createGroupMutation.isPending}
-                >
-                  {createGroupMutation.isPending ? (
+                <Button onClick={handleSubmitPromote} disabled={isSubmitting}>
+                  {isSubmitting ? (
                     <>
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Creating...
+                      {dialogCopy[promoteMode].pending}
                     </>
                   ) : (
-                    "Create Group"
+                    dialogCopy[promoteMode].action
                   )}
                 </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
         )}
+
+        {/* Account popup */}
+        <Dialog open={viewedMember !== null} onOpenChange={(open) => !open && setViewedMember(null)}>
+          {viewedMember && (
+            <DialogContent className="max-w-xs p-5">
+              <DialogHeader className="sr-only">
+                <DialogTitle>@{viewedMember.username}</DialogTitle>
+                <DialogDescription>Account details</DialogDescription>
+              </DialogHeader>
+              <div className="flex flex-col items-center text-center gap-3 pt-2">
+                <Avatar className="w-20 h-20">
+                  <AvatarImage src={viewedMember.imageUrl ?? undefined} />
+                  <AvatarFallback className="text-lg">{getInitials(viewedMember.username)}</AvatarFallback>
+                </Avatar>
+                <div>
+                  <p className="font-semibold">@{viewedMember.username}</p>
+                  <p className="text-sm text-muted-foreground">{viewedMember.nickname || "No display name"}</p>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <CalendarClock className="h-3.5 w-3.5" />
+                  {accountAge(viewedMember) ? `Account age: ${accountAge(viewedMember)}` : "Account age unknown"}
+                </div>
+              </div>
+            </DialogContent>
+          )}
+        </Dialog>
       </div>
     </TooltipProvider>
   );

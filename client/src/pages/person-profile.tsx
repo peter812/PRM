@@ -36,6 +36,7 @@ import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { getInitials } from "@/lib/utils";
 import { MessagesTab } from "@/components/messages-tab";
+import { InsightsTab } from "@/components/insights-tab";
 import { TrueDbTab } from "@/components/true-db-tab";
 
 function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit?: number }) {
@@ -382,6 +383,13 @@ export default function PersonProfile() {
                 data-testid="tab-truedb"
               >
                 TrueDB
+              </TabsTrigger>
+              <TabsTrigger
+                value="insights"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-insights"
+              >
+                Insights
               </TabsTrigger>
               {showPhotosTab && (
                 <TabsTrigger
@@ -778,6 +786,10 @@ export default function PersonProfile() {
 
           <TabsContent value="truedb" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <TrueDbTab person={person} />
+          </TabsContent>
+
+          <TabsContent value="insights" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <InsightsTab personId={person.id} />
           </TabsContent>
 
           {showPhotosTab && (

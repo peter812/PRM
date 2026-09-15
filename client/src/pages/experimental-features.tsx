@@ -7,7 +7,11 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle2, ImageIcon, Loader2, Radar, Save, Sparkles, XCircle } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { CheckCircle2, ImageIcon, Loader2, Radar, Save, ScanSearch, Sparkles, XCircle } from "lucide-react";
+import { OSINT_TOOLS } from "@/lib/osint-tools";
+import type { OsintScanQueueRow } from "@shared/schema";
 
 type OsintSettings = { enabled: boolean; apiUrl: string; hasApiKey: boolean };
 
@@ -166,6 +170,142 @@ function OsintConnectivitySection() {
   );
 }
 
+type ScanQueue = { counts: Record<string, number>; rows: (OsintScanQueueRow & { username: string })[] };
+
+const USERNAME_TOOLS = OSINT_TOOLS.filter((t) => t.supportedTargetTypes.includes("username"));
+
+// Auto-scan settings live in app_settings alongside the other feature flags on
+// this page, so they go through the same /api/settings key/value endpoint.
+function OsintAutoScanSection({
+  settings,
+  saveSetting,
+}: {
+  settings: Record<string, string | null>;
+  saveSetting: (key: string, value: string) => void;
+}) {
+  const { toast } = useToast();
+  const enabled = settings.osint_auto_scan_enabled === "true";
+  const tools = (settings.osint_auto_scan_tools ?? "sherlock").split(",").filter(Boolean);
+  const [intervalSeconds, setIntervalSeconds] = useState(settings.osint_auto_scan_interval_seconds ?? "180");
+
+  const { data: queue } = useQuery<ScanQueue>({
+    queryKey: ["/api/osint/scan-queue"],
+    refetchInterval: enabled ? 30000 : false,
+  });
+
+  const queueMutation = useMutation({
+    mutationFn: async ({ method, path }: { method: string; path: string }) => {
+      const res = await apiRequest(method, path);
+      return res.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/osint/scan-queue"] }),
+    onError: (error: Error) => toast({ title: "Queue action failed", description: error.message, variant: "destructive" }),
+  });
+
+  const toggleTool = (name: string, on: boolean) => {
+    const next = on ? [...tools, name] : tools.filter((t) => t !== name);
+    saveSetting("osint_auto_scan_tools", next.join(","));
+  };
+
+  const counts = queue?.counts ?? {};
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ScanSearch className="h-5 w-5 text-muted-foreground" />
+          Automatic OSINT Scans
+        </CardTitle>
+        <CardDescription>
+          When a social account linked to your Me profile is added or updated, every account it
+          follows is queued for a username scan. Scans run one at a time on the interval below
+          and land in the Insights tab of each account.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between">
+          <Label htmlFor="osint-auto-scan" className="flex-1 cursor-pointer pr-4">
+            Enable automatic scans
+          </Label>
+          <Switch
+            id="osint-auto-scan"
+            checked={enabled}
+            onCheckedChange={(checked) => saveSetting("osint_auto_scan_enabled", checked ? "true" : "false")}
+            data-testid="switch-osint-auto-scan"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Tools</Label>
+          <div className="flex flex-wrap gap-4">
+            {USERNAME_TOOLS.map((t) => (
+              <label key={t.name} className="flex items-center gap-2 text-sm cursor-pointer">
+                <Checkbox checked={tools.includes(t.name)} onCheckedChange={(v) => toggleTool(t.name, v === true)} />
+                {t.label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="osint-interval">Seconds between scans</Label>
+          <Input
+            id="osint-interval"
+            type="number"
+            min={60}
+            className="w-32"
+            value={intervalSeconds}
+            onChange={(e) => setIntervalSeconds(e.target.value)}
+            onBlur={() => saveSetting("osint_auto_scan_interval_seconds", intervalSeconds)}
+            data-testid="input-osint-interval"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {["pending", "running", "done", "failed"].map((status) => (
+            <Badge key={status} variant={status === "failed" ? "destructive" : "secondary"}>
+              {status}: {counts[status] ?? 0}
+            </Badge>
+          ))}
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            disabled={!enabled || queueMutation.isPending}
+            onClick={() => queueMutation.mutate({ method: "POST", path: "/api/osint/scan-queue/backfill" })}
+            data-testid="button-osint-backfill"
+          >
+            Queue my network now
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!counts.failed || queueMutation.isPending}
+            onClick={() => queueMutation.mutate({ method: "DELETE", path: "/api/osint/scan-queue?status=failed" })}
+          >
+            Clear failed
+          </Button>
+        </div>
+
+        {queue && queue.rows.length > 0 && (
+          <div className="max-h-64 overflow-y-auto rounded-md border divide-y text-sm">
+            {queue.rows.map((row) => (
+              <div key={row.id} className="flex items-center gap-3 px-3 py-1.5" data-testid={`scan-queue-row-${row.id}`}>
+                <span className="font-medium truncate">@{row.username}</span>
+                <span className="text-muted-foreground">{row.tool}</span>
+                <Badge variant={row.status === "failed" ? "destructive" : "outline"} className="ml-auto shrink-0">
+                  {row.status}
+                </Badge>
+                {row.error && <span className="truncate text-xs text-destructive max-w-[40%]">{row.error}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ExperimentalFeaturesPage() {
   const { toast } = useToast();
 
@@ -281,6 +421,10 @@ export default function ExperimentalFeaturesPage() {
 
         {/* PRM-osint connectivity */}
         <OsintConnectivitySection />
+        <OsintAutoScanSection
+          settings={settings ?? {}}
+          saveSetting={(key, value) => updateSettingMutation.mutate({ key, value })}
+        />
       </div>
     </div>
   );

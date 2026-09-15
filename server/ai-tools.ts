@@ -21,6 +21,7 @@ import { eq, and, sql } from "drizzle-orm";
 import { searchUniversal } from "./vector-universal";
 import { searchAppKnowledge } from "./vector-app-knowledge";
 import { computeFamilyLabels } from "./family-relations-helper";
+import type { AiUserAnswer, AiUserQuestion } from "@shared/schema";
 
 
 export type AiToolIcon =
@@ -37,7 +38,8 @@ export type AiToolIcon =
   | "notebook-pen"
   | "message-square"
   | "message-square-plus"
-  | "pencil";
+  | "pencil"
+  | "help-circle";
 
 /**
  * High-level grouping shown in the Intelligence → Tools settings page. The
@@ -53,7 +55,8 @@ export type AiToolCategory =
   | "social-accounts"
   | "relationships"
   | "search"
-  | "messages";
+  | "messages"
+  | "conversation";
 
 export interface AiToolJsonSchema {
   type: "object";
@@ -89,6 +92,12 @@ export interface AiToolDefinition {
 
 export interface AiToolContext {
   userId: number;
+  /**
+   * Pauses the turn and shows the user a question form. Only injected by the
+   * streaming chat loop (it needs the open response stream); absent elsewhere.
+   * Resolves to `null` when the user skips the questions.
+   */
+  askUser?: (questions: AiUserQuestion[]) => Promise<AiUserAnswer[] | null>;
 }
 
 export interface AiToolResult {
@@ -185,6 +194,65 @@ function trimRelationship(r: any) {
 function matchesQuery(haystack: string | null | undefined, q: string): boolean {
   if (!haystack) return false;
   return haystack.toLowerCase().includes(q.toLowerCase());
+}
+
+/** Hard limits for the `ask_user` tool so a runaway model can't render a wall of inputs. */
+const MAX_USER_QUESTIONS = 3;
+const MAX_QUESTION_CHARS = 300;
+const MAX_LABEL_CHARS = 60;
+
+/**
+ * System-prompt addendum appended by the streaming chat loop whenever the
+ * `ask_user` tool is enabled. Kept next to the tool so guidance and schema
+ * evolve together.
+ */
+export const ASK_USER_SYSTEM_INSTRUCTIONS =
+  "\n\n[ASKING THE USER QUESTIONS]\n" +
+  "You have an ask_user tool. Calling it pauses your turn and shows the user a short form; their answers come back as the tool result and you then continue in the same turn. " +
+  "Use it only when a decision genuinely depends on the user: the request is ambiguous, required information is missing, or you must choose between materially different actions. " +
+  "Do NOT use it for anything you can look up with your other tools, and never just to confirm you understood. " +
+  "Ask at most 3 questions per call and batch related questions into one call rather than asking one at a time. Keep every question short and self-contained.\n" +
+  "Question types: " +
+  "true_false for a yes/no decision; " +
+  "multiple_choice for 2–4 mutually exclusive options (an 'Other' free-text option is offered automatically, so the user can give a more nuanced answer if your choices don't fit — set allowOther to false only when the answer must be one of your choices); " +
+  "open_ended for free text you cannot enumerate; " +
+  "slider for degree, intensity, or preference — set lowLabel and highLabel to describe the two ends; the answer arrives as a number from 0 (low) to 100 (high).\n" +
+  "When the answers arrive, act on them immediately and do not re-ask. If the result says the user skipped, proceed with a sensible default and state the assumption you made.";
+
+/** Validate + clamp the raw `questions` arg from the model into well-formed AiUserQuestion[]. */
+function sanitizeUserQuestions(raw: unknown): AiUserQuestion[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AiUserQuestion[] = [];
+  for (const q of raw.slice(0, MAX_USER_QUESTIONS)) {
+    if (!q || typeof q !== "object") continue;
+    const question = asString((q as any).question).trim().slice(0, MAX_QUESTION_CHARS);
+    if (!question) continue;
+    const type = (q as any).type;
+    if (type === "true_false" || type === "open_ended") {
+      out.push({ type, question });
+    } else if (type === "multiple_choice") {
+      const choices = (Array.isArray((q as any).choices) ? (q as any).choices : [])
+        .map((c: unknown) => asString(c).trim().slice(0, MAX_QUESTION_CHARS))
+        .filter(Boolean)
+        .slice(0, 4);
+      if (choices.length < 2) continue;
+      out.push({ type, question, choices, allowOther: (q as any).allowOther !== false });
+    } else if (type === "slider") {
+      out.push({
+        type,
+        question,
+        lowLabel: asString((q as any).lowLabel).trim().slice(0, MAX_LABEL_CHARS) || "Low",
+        highLabel: asString((q as any).highLabel).trim().slice(0, MAX_LABEL_CHARS) || "High",
+      });
+    }
+  }
+  return out;
+}
+
+function formatAnswer(a: AiUserAnswer): string {
+  if (a.answer === null || a.answer === "") return "(no answer)";
+  if (typeof a.answer === "boolean") return a.answer ? "Yes" : "No";
+  return String(a.answer);
 }
 
 export const AI_TOOLS: AiToolDefinition[] = [
@@ -960,6 +1028,60 @@ export const AI_TOOLS: AiToolDefinition[] = [
           data: { error: error?.message || String(error) },
         };
       }
+    },
+  },
+  {
+    name: "ask_user",
+    label: "Ask user",
+    icon: "help-circle",
+    category: "conversation",
+    description:
+      "Pause and ask the user up to 3 short questions in a form, then continue with their answers. Use only when a decision genuinely depends on the user (ambiguous request, missing required info, or choosing between materially different actions) — never for information you can look up with other tools. Types: true_false (yes/no), multiple_choice (2–4 choices; an 'Other' free-text option is added unless allowOther is false), open_ended (free text), slider (0–100 between lowLabel and highLabel).",
+    parameters: {
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          description: "1 to 3 questions to show the user together.",
+          minItems: 1,
+          maxItems: MAX_USER_QUESTIONS,
+          items: {
+            type: "object",
+            properties: {
+              type: {
+                type: "string",
+                enum: ["true_false", "multiple_choice", "open_ended", "slider"],
+                description: "Which input to show for this question.",
+              },
+              question: { type: "string", description: "The question text, short and self-contained." },
+              choices: {
+                type: "array",
+                items: { type: "string" },
+                description: "multiple_choice only: 2–4 mutually exclusive options.",
+              },
+              allowOther: {
+                type: "boolean",
+                description: "multiple_choice only: offer an 'Other' free-text option (default true).",
+              },
+              lowLabel: { type: "string", description: "slider only: what the left/low end (0) means." },
+              highLabel: { type: "string", description: "slider only: what the right/high end (100) means." },
+            },
+            required: ["type", "question"],
+          },
+        },
+      },
+      required: ["questions"],
+    },
+    handler: async (args, ctx) => {
+      if (!ctx.askUser) throw new Error("Questions are only available in streaming chat");
+      const questions = sanitizeUserQuestions(args.questions);
+      if (questions.length === 0) throw new Error("No valid questions were provided");
+      const answers = await ctx.askUser(questions);
+      if (!answers) return { summary: "Skipped by user", data: { skipped: true } };
+      return {
+        summary: answers.map((a) => `${a.question} → ${formatAnswer(a)}`).join("; ").slice(0, 300),
+        data: { answers },
+      };
     },
   },
 

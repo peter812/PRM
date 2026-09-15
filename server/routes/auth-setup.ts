@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { users, interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, lineage, partnerships, photos, dailyNoteEvents, dailyNoteInvolvedParties, dailyNoteAuditLogs, sexGuessQueue, appSettings, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { users, interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, lineage, partnerships, photos, dailyNoteEvents, dailyNoteInvolvedParties, dailyNoteAuditLogs, sexGuessQueue, appSettings, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -673,7 +673,6 @@ export function registerRoutes(app: Express) {
           allGroupNotes,
           allSocialAccounts,
           allSocialAccountTypes,
-          allProfileVersions,
           allFollows,
           mePersonResult,
           allLineages,
@@ -698,7 +697,6 @@ export function registerRoutes(app: Express) {
           storage.getAllGroupNotes(),
           storage.getAllSocialAccounts(),
           storage.getAllSocialAccountTypes(),
-          storage.getAllProfileVersions(),
           storage.getAllFollows(),
           db.select().from(people).where(isNotNull(people.userId)).limit(1),
           db.select().from(lineage),
@@ -915,6 +913,8 @@ export function registerRoutes(app: Express) {
           xml += `      <id>${escapeXml(account.id)}</id>\n`;
           xml += `      <username>${escapeXml(account.username)}</username>\n`;
           xml += `      <nickname>${escapeXml(account.currentProfile?.nickname || "")}</nickname>\n`;
+          xml += `      <bio>${escapeXml(account.currentProfile?.bio || "")}</bio>
+`;
           xml += `      <account_url>${escapeXml(account.currentProfile?.accountUrl || "")}</account_url>\n`;
           xml += `      <owner_uuid>${escapeXml(ownerUuid || "")}</owner_uuid>\n`;
           xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
@@ -1118,22 +1118,6 @@ export function registerRoutes(app: Express) {
         xml += '  </app_settings_list>\n';
 
         if (includeHistory) {
-          // Export social profile versions
-          xml += '  <social_profile_versions>\n';
-          for (const version of allProfileVersions) {
-            xml += '    <social_profile_version>\n';
-            xml += `      <id>${escapeXml(version.id)}</id>\n`;
-            xml += `      <social_account_id>${escapeXml(version.socialAccountId)}</social_account_id>\n`;
-            xml += `      <nickname>${escapeXml(version.nickname || "")}</nickname>\n`;
-            xml += `      <bio>${escapeXml(version.bio || "")}</bio>\n`;
-            xml += `      <account_url>${escapeXml(version.accountUrl || "")}</account_url>\n`;
-            xml += `      <image_url>${escapeXml(version.imageUrl || "")}</image_url>\n`;
-            xml += `      <external_image_url>${escapeXml(version.externalImageUrl || "")}</external_image_url>\n`;
-            xml += `      <is_current>${escapeXml(version.isCurrent)}</is_current>\n`;
-            xml += `      <detected_at>${escapeXml(version.detectedAt)}</detected_at>\n`;
-            xml += '    </social_profile_version>\n';
-          }
-          xml += '  </social_profile_versions>\n';
 
           // Export social network snapshots (derived from follow edges)
           xml += '  <social_network_snapshots>\n';
@@ -1654,6 +1638,7 @@ export function registerRoutes(app: Express) {
           const id = unescapeXml(parseXmlTag("id", block));
           const username = unescapeXml(parseXmlTag("username", block));
           const nickname = unescapeXml(parseXmlTag("nickname", block));
+          const bio = unescapeXml(parseXmlTag("bio", block));
           const accountUrl = unescapeXml(parseXmlTag("account_url", block));
           const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
           const typeId = unescapeXml(parseXmlTag("type_id", block));
@@ -1689,18 +1674,14 @@ export function registerRoutes(app: Express) {
               lastScrapedAt: lastScrapedAtStr ? new Date(lastScrapedAtStr) : null,
               currentPosts: currentPosts || null,
               deletedPosts: deletedPosts || null,
+              // Profile fields are columns here now, so they ride along rather than
+              // needing a second write against a separate table.
+              nickname: nickname || null,
+              bio: bio || null,
+              accountUrl: accountUrl || null,
+              imageUrl: imageUrl || null,
             }).where(eq(socialAccounts.id, id));
-  
-            if (nickname || accountUrl || imageUrl) {
-              if (created.currentProfile) {
-                await storage.updateProfileVersion(created.currentProfile.id, {
-                  nickname: nickname || null,
-                  accountUrl: accountUrl || null,
-                  imageUrl: imageUrl || null,
-                });
-              }
-            }
-  
+
             collectFollowEdges(id, followers, following);
 
             importedCounts.socialAccounts++;
@@ -1724,15 +1705,17 @@ export function registerRoutes(app: Express) {
             const pvIsCurrent = parseXmlTag("is_current", block) === "true";
   
             if (!socialAccountId || !existingSocialAccountUuids.has(socialAccountId)) continue;
-  
-            await storage.createProfileVersion({
-              socialAccountId,
+            // Backups written before the journal carry a profile-version history. That
+            // table is gone and superseded entries have nowhere truthful to go, so
+            // only the current one is restored — onto the account itself.
+            if (!pvIsCurrent) continue;
+
+            await storage.updateSocialAccount(socialAccountId, {
               nickname: pvNickname || null,
               bio: pvBio || null,
               accountUrl: pvAccountUrl || null,
               imageUrl: pvImageUrl || null,
               externalImageUrl: pvExternalImageUrl || null,
-              isCurrent: pvIsCurrent,
             });
           } catch (error) {
             console.error(`Error importing profile version:`, error);
@@ -3154,6 +3137,9 @@ export function registerRoutes(app: Express) {
           "images_tab_enabled",
           "chrome_extension_id",
           "chrome_extension_max_records",
+          "osint_auto_scan_enabled",
+          "osint_auto_scan_tools",
+          "osint_auto_scan_interval_seconds",
         ];
         const settings: Record<string, string | null> = {};
         for (const key of keys) {

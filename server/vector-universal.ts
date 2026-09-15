@@ -454,10 +454,6 @@ async function loadEntityData(type: UniversalEntityType, entityId: string): Prom
     case "social_account": {
       const [row] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, entityId));
       if (!row) return null;
-      // Get current profile for bio/nickname
-      const profile = await db.query.socialProfileVersions.findFirst({
-        where: (t, { eq, and }) => and(eq(t.socialAccountId, entityId), eq(t.isCurrent, true)),
-      });
       // Get platform name
       let platformName = "";
       if (row.typeId) {
@@ -466,8 +462,8 @@ async function loadEntityData(type: UniversalEntityType, entityId: string): Prom
       }
       return {
         ...row,
-        bio: profile?.bio || "",
-        nickname: profile?.nickname || "",
+        bio: row.bio || "",
+        nickname: row.nickname || "",
         platformName,
       };
     }

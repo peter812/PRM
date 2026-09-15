@@ -3,8 +3,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
-import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
+import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
@@ -903,15 +903,9 @@ export function registerRoutes(app: Express) {
           db.select({
               id: socialAccounts.id,
               username: socialAccounts.username,
-              nickname: socialProfileVersions.nickname,
+              nickname: socialAccounts.nickname,
             })
             .from(socialAccounts)
-            .leftJoin(socialProfileVersions,
-              and(
-                eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-                eq(socialProfileVersions.isCurrent, true)
-              )
-            )
             .where(inArray(socialAccounts.id, assignedUuids)),
         ]);
   
@@ -1775,34 +1769,71 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // ── Tool-call approval bus ───────────────────────────────────────────────
-    // When a write tool is invoked while executionMode === "auth", the
-    // streaming chat loop registers a pending approval here keyed by id and
-    // awaits the resulting promise. The client posts the user's decision to
-    // POST /api/ai-tools/approvals/:id and the loop resumes.
+    // ── Client reply bus ─────────────────────────────────────────────────────
+    // The streaming chat loop sometimes has to wait on the user mid-turn: a
+    // write-tool approval (executionMode === "auth") or an `ask_user` question
+    // form. It registers a pending promise here keyed by id, emits a stream
+    // event, and the client POSTs the reply to one of the endpoints below,
+    // which resolves the promise so the loop resumes.
     type ApprovalDecision = "accept" | "reject";
-    const pendingApprovals = new Map<string, {
+    const pendingClientReplies = new Map<string, {
       userId: number;
-      resolve: (decision: ApprovalDecision) => void;
+      resolve: (value: unknown) => void;
     }>();
   
-    function awaitApproval(id: string, userId: number): Promise<ApprovalDecision> {
+    function awaitClientReply<T>(id: string, userId: number): Promise<T> {
       return new Promise((resolve) => {
-        pendingApprovals.set(id, { userId, resolve });
+        pendingClientReplies.set(id, { userId, resolve: resolve as (value: unknown) => void });
       });
+    }
+  
+    /** Look up + remove the pending reply for `id`, enforcing ownership. Sends the error response itself. */
+    function takePendingReply(req: import("express").Request, res: import("express").Response) {
+      const pending = pendingClientReplies.get(req.params.id);
+      if (!pending) { res.status(404).json({ error: "request_not_found" }); return null; }
+      if (pending.userId !== req.user!.id) { res.status(403).json({ error: "forbidden" }); return null; }
+      pendingClientReplies.delete(req.params.id);
+      return pending;
     }
   
     app.post("/api/ai-tools/approvals/:id", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const id = req.params.id;
       const decision = req.body?.decision === "accept" ? "accept"
         : req.body?.decision === "reject" ? "reject" : null;
       if (!decision) return res.status(400).json({ error: "decision must be 'accept' or 'reject'" });
-      const pending = pendingApprovals.get(id);
-      if (!pending) return res.status(404).json({ error: "approval_not_found" });
-      if (pending.userId !== req.user!.id) return res.status(403).json({ error: "forbidden" });
-      pendingApprovals.delete(id);
+      const pending = takePendingReply(req, res);
+      if (!pending) return;
       pending.resolve(decision);
+      res.json({ ok: true });
+    });
+  
+    /** Validate the `answers` body for an ask_user reply: null (skipped) or up to 3 primitive answers. */
+    function sanitizeUserAnswers(raw: unknown): AiUserAnswer[] | null | undefined {
+      if (raw === null) return null;
+      if (!Array.isArray(raw)) return undefined;
+      const out: AiUserAnswer[] = [];
+      for (const a of raw.slice(0, 3)) {
+        if (!a || typeof a !== "object") return undefined;
+        const { question, type, answer } = a as Record<string, unknown>;
+        if (typeof question !== "string" || typeof type !== "string") return undefined;
+        if (!["true_false", "multiple_choice", "open_ended", "slider"].includes(type)) return undefined;
+        if (answer !== null && !["boolean", "string", "number"].includes(typeof answer)) return undefined;
+        out.push({
+          question: question.slice(0, 300),
+          type: type as AiUserAnswer["type"],
+          answer: typeof answer === "string" ? answer.slice(0, 2000) : (answer as AiUserAnswer["answer"]),
+        });
+      }
+      return out;
+    }
+  
+    app.post("/api/ai-tools/questions/:id", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const answers = sanitizeUserAnswers(req.body?.answers);
+      if (answers === undefined) return res.status(400).json({ error: "answers must be null or an array of {question,type,answer}" });
+      const pending = takePendingReply(req, res);
+      if (!pending) return;
+      pending.resolve(answers);
       res.json({ ok: true });
     });
   
@@ -1832,6 +1863,11 @@ export function registerRoutes(app: Express) {
       const tools = toolNames.size > 0 ? buildOllamaToolsArray(toolNames) : undefined;
       const toolTrace: AiToolCallTrace[] = [];
   
+      // Teach the model when/how to use ask_user, but only when it's offered.
+      if (toolNames.has("ask_user") && messages[0]?.role === "system") {
+        messages[0] = { ...messages[0], content: `${messages[0].content}${ASK_USER_SYSTEM_INSTRUCTIONS}` };
+      }
+  
       const writeLine = (obj: unknown) => {
         res.write(JSON.stringify(obj) + "\n");
         (res as any).flush?.();
@@ -1839,8 +1875,33 @@ export function registerRoutes(app: Express) {
   
       const MAX_ITERATIONS = 5;
       // Per-iteration timeout (5 minutes total budget for the whole loop).
+      // Time spent waiting on the user (approvals / questions) is excluded.
+      const OVERALL_BUDGET_MS = 300000;
+      let budgetRemainingMs = OVERALL_BUDGET_MS;
+      let budgetStartedAt = Date.now();
       const overallController = new AbortController();
-      const overallTimeout = setTimeout(() => overallController.abort(), 300000);
+      let overallTimeout = setTimeout(() => overallController.abort(), budgetRemainingMs);
+      const pauseBudget = () => {
+        clearTimeout(overallTimeout);
+        budgetRemainingMs = Math.max(0, budgetRemainingMs - (Date.now() - budgetStartedAt));
+      };
+      const resumeBudget = () => {
+        budgetStartedAt = Date.now();
+        overallTimeout = setTimeout(() => overallController.abort(), budgetRemainingMs);
+      };
+  
+      /** Wait for the client to answer (or skip) an ask_user form. Passed to tool handlers via ctx. */
+      const askUser = async (questions: AiUserQuestion[]): Promise<AiUserAnswer[] | null> => {
+        const id = `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+        writeLine({ event: "user_question_request", id, questions });
+        pauseBudget();
+        try {
+          return await awaitClientReply<AiUserAnswer[] | null>(id, userId);
+        } finally {
+          resumeBudget();
+          writeLine({ event: "user_question_answered", id });
+        }
+      };
   
       try {
         for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
@@ -1981,7 +2042,9 @@ export function registerRoutes(app: Express) {
                   icon: def.icon,
                   args,
                 });
-                const decision = await awaitApproval(id, userId);
+                pauseBudget();
+                const decision = await awaitClientReply<ApprovalDecision>(id, userId);
+                resumeBudget();
                 writeLine({ event: "tool_approval_decision", id, decision });
                 if (decision === "reject") {
                   const summary = "Rejected by user";
@@ -1999,7 +2062,7 @@ export function registerRoutes(app: Express) {
               }
             }
             try {
-              const result = await def.handler(args, { userId });
+              const result = await def.handler(args, { userId, askUser });
               writeLine({ event: "tool_result", id, ok: true, summary: result.summary });
               toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary: result.summary, ok: true });
               messages.push({

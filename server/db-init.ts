@@ -373,9 +373,18 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
       )
     `);
     await pool.query(`CREATE INDEX social_account_history_account_idx ON social_account_history (social_account_id, detected_at)`);
-    await pool.query(`CREATE INDEX social_account_history_kind_idx ON social_account_history (social_account_id, entry_kind, detected_at)`);
     log("Created social_account_history table");
   }
+
+  // The kind index is partial. Neighbour rows are the bulk of this table, and the only
+  // kind-filtered listing anyone browses is 'direct', so restricting the index means
+  // the neighbour insert path maintains one index instead of two.
+  await pool.query(`DROP INDEX IF EXISTS social_account_history_kind_idx`);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS social_account_history_direct_idx
+    ON social_account_history (social_account_id, detected_at DESC)
+    WHERE entry_kind = 'direct'
+  `);
 
   // 2a. What the extension reports it finished collecting (contract v2). Null on
   //     payloads from older builds, which the import path still infers scope for.
@@ -392,8 +401,41 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
   // Only the two the import and diff engine actually use are created here. The other
   // declared-but-absent indexes on social_accounts (visibility, owner_uuid, group_id,
   // type_id) affect other pages and are left alone deliberately.
-  await pool.query(`CREATE INDEX IF NOT EXISTS social_accounts_username_idx ON social_accounts (username)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS social_follows_follower_id_idx ON social_follows (follower_id)`);
+  // Username wants to be UNIQUE: shared/schema.ts declares it so, and the bulk import
+  // inserts by handle, so without the constraint two runs naming the same new account
+  // create two rows and split that node's graph.
+  //
+  // An earlier build of this migration created it non-unique, so a plain
+  // IF NOT EXISTS would leave that weaker index in place. Duplicates also make the
+  // unique build fail, and that must not take the boot down — report and move on.
+  const { rows: [{ isunique }] } = await pool.query(`
+    SELECT COALESCE(bool_or(indisunique), false) AS isunique
+    FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+    WHERE c.relname = 'social_accounts_username_idx'
+  `);
+  if (!isunique) {
+    const { rows: dupes } = await pool.query(`
+      SELECT username, COUNT(*)::int AS n FROM social_accounts
+      GROUP BY username HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 5
+    `);
+    if (dupes.length > 0) {
+      log(`WARNING: social_accounts.username is not unique — ${dupes.length}+ duplicate handles ` +
+          `(e.g. ${dupes.map(d => `${d.username} x${d.n}`).join(", ")}). ` +
+          `Merge them, then restart to build the unique index.`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS social_accounts_username_idx ON social_accounts (username)`);
+    } else {
+      await pool.query(`DROP INDEX IF EXISTS social_accounts_username_idx`);
+      await pool.query(`CREATE UNIQUE INDEX social_accounts_username_idx ON social_accounts (username)`);
+      log("Built unique index on social_accounts.username");
+    }
+  }
+
+  // Deliberately dropped, not created: social_follows has
+  // PRIMARY KEY (follower_id, followed_id), whose index already serves every lookup on
+  // follower_id. A separate one only adds a write per edge to the hottest insert path
+  // in the app. social_follows_followed_id_idx, created with the table, is the one that
+  // earns its keep — it serves the followers half of the diff.
+  await pool.query(`DROP INDEX IF EXISTS social_follows_follower_id_idx`);
 
   // Everything below backfills from the legacy tables, and is first-run-only: these
   // are full-table statements that have no business running on every boot. The
@@ -584,6 +626,39 @@ async function validateAndSyncSchema(): Promise<void> {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_pending_imports_already_added
       ON pending_social_account_imports (already_added)
+    `);
+
+    // Same reason as above: these two tables post-date most databases.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS insights (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        visibility TEXT NOT NULL DEFAULT 'public',
+        type TEXT NOT NULL,
+        source TEXT,
+        collected_at TIMESTAMP NOT NULL DEFAULT now(),
+        raw_text TEXT,
+        data JSONB NOT NULL DEFAULT '[]'::jsonb,
+        applicable_people_ids TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+        applicable_social_account_ids TEXT[] NOT NULL DEFAULT ARRAY[]::text[]
+      );
+      CREATE INDEX IF NOT EXISTS insights_collected_at_idx ON insights (collected_at);
+      CREATE INDEX IF NOT EXISTS insights_people_gin ON insights USING gin (applicable_people_ids);
+      CREATE INDEX IF NOT EXISTS insights_social_accounts_gin ON insights USING gin (applicable_social_account_ids);
+      CREATE TABLE IF NOT EXISTS osint_scan_queue (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        tool TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        completed_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS osint_scan_queue_status_created_idx ON osint_scan_queue (status, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS osint_scan_queue_live_uniq ON osint_scan_queue (social_account_id, tool)
+        WHERE status IN ('pending','running');
     `);
 
     // Check and add missing columns

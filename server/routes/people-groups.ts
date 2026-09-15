@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -1564,6 +1564,32 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    // Resolve the selected member IDs into (person ids, social account ids).
+    // For social accounts the linked owner is what goes in group/sub group members.
+    const resolveMembers = async (members: string[], isSocial: boolean) => {
+      if (!isSocial) return { personIds: members, accountIds: [] as string[] };
+      if (members.length === 0) return { personIds: [] as string[], accountIds: [] as string[] };
+      const linkedRows = await db
+        .select({ ownerUuid: socialAccounts.ownerUuid })
+        .from(socialAccounts)
+        .where(inArray(socialAccounts.id, members));
+      const personIds = Array.from(new Set(
+        linkedRows.map((r) => r.ownerUuid).filter((id): id is string => Boolean(id))
+      ));
+      return { personIds, accountIds: members };
+    };
+
+    // Point the social accounts at the group (a social account belongs to one group).
+    const linkAccountsToGroup = async (groupId: string, accountIds: string[]) => {
+      if (accountIds.length === 0) return;
+      await db
+        .update(socialAccounts)
+        .set({ groupId })
+        .where(inArray(socialAccounts.id, accountIds));
+    };
+
+    const union = (a: string[] | null | undefined, b: string[]) => Array.from(new Set([...(a || []), ...b]));
+
     // Promote potential group to actual group
     app.post("/api/potential-groups/create", async (req, res) => {
       try {
@@ -1578,43 +1604,77 @@ export function registerRoutes(app: Express) {
         }
 
         const isSocial = entityType === "social_accounts";
-        let linkedPersonIds: string[] = [];
-
-        if (isSocial && members && members.length > 0) {
-          const linkedRows = await db
-            .select({ ownerUuid: socialAccounts.ownerUuid })
-            .from(socialAccounts)
-            .where(inArray(socialAccounts.id, members));
-
-          const personIds = linkedRows
-            .map((r) => r.ownerUuid)
-            .filter((id): id is string => Boolean(id));
-
-          linkedPersonIds = Array.from(new Set(personIds));
-        }
-
-        const initialMembers = isSocial ? linkedPersonIds : (members || []);
+        const { personIds, accountIds } = await resolveMembers(members || [], isSocial);
 
         const group = await storage.createGroup({
           name,
           color,
-          members: initialMembers,
-          crowdMembers: isSocial ? (members || []) : [],
+          members: personIds,
+          crowdMembers: accountIds,
           createdByUserId: req.user!.id,
         });
 
-        if (isSocial && members && members.length > 0) {
-          await db
-            .update(socialAccounts)
-            .set({ groupId: group.id })
-            .where(inArray(socialAccounts.id, members));
-        }
+        await linkAccountsToGroup(group.id, accountIds);
 
         syncEntityInBackground("group", group.id);
         res.json({ success: true, groupId: group.id });
       } catch (error) {
         console.error("Error creating group from analysis:", error);
         res.status(500).json({ error: "Failed to create group" });
+      }
+    });
+
+    // Add a potential group's members to an existing group, optionally into a
+    // sub group (existing by id, or a new one by name).
+    app.post("/api/potential-groups/assign", async (req, res) => {
+      try {
+        const { groupId, subGroupId, newSubGroupName, members, entityType } = req.body as {
+          groupId: string;
+          subGroupId?: string;
+          newSubGroupName?: string;
+          members: string[];
+          entityType?: "people" | "social_accounts";
+        };
+        if (!groupId) {
+          return res.status(400).json({ error: "Group is required." });
+        }
+        const group = await storage.getGroupById(groupId);
+        if (!group) {
+          return res.status(404).json({ error: "Group not found" });
+        }
+
+        const isSocial = entityType === "social_accounts";
+        const { personIds, accountIds } = await resolveMembers(members || [], isSocial);
+
+        await storage.updateGroup(groupId, {
+          members: union(group.members, personIds),
+          crowdMembers: union(group.crowdMembers, accountIds),
+        });
+        await linkAccountsToGroup(groupId, accountIds);
+
+        let resultSubGroupId: string | undefined;
+        if (subGroupId) {
+          const subGroup = await storage.getSubGroupById(subGroupId);
+          if (!subGroup || subGroup.groupId !== groupId) {
+            return res.status(404).json({ error: "Sub group not found in this group" });
+          }
+          await storage.updateSubGroup(subGroupId, { members: union(subGroup.members, personIds) });
+          resultSubGroupId = subGroupId;
+        } else if (newSubGroupName?.trim()) {
+          const subGroup = await storage.createSubGroup({
+            groupId,
+            name: newSubGroupName.trim(),
+            color: getRandomSubGroupColor(),
+            members: personIds,
+          });
+          resultSubGroupId = subGroup.id;
+        }
+
+        syncEntityInBackground("group", groupId);
+        res.json({ success: true, groupId, subGroupId: resultSubGroupId });
+      } catch (error) {
+        console.error("Error assigning potential group:", error);
+        res.status(500).json({ error: "Failed to add members to group" });
       }
     });
 

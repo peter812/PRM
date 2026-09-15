@@ -6,6 +6,7 @@ import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLoc
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
 import { log } from "./vite";
+import { queueOsintScansForMeAccount } from "./osint-scan-queue";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
 import { runAsSystem, runAsUser, actingUserId } from "./access";
 import {
@@ -65,7 +66,6 @@ import {
   aiChats,
   appSettings,
   socialAccounts,
-  socialProfileVersions,
   groups,
   relationships,
   socialFollows,
@@ -73,6 +73,7 @@ import {
   subGroups,
   truePersonSearch,
   faces,
+  type SocialAccountHistoryDelta,
 } from "@shared/schema";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
 
@@ -93,9 +94,8 @@ let imageTaskPollTimer: ReturnType<typeof setTimeout> | null = null;
 async function processDownloadImgInstagram(imageTaskId: string, payload: {
   socialAccountId: string;
   imageUrl: string;
-  profileVersionId?: string | null;
 }): Promise<string> {
-  const { socialAccountId, imageUrl, profileVersionId } = payload;
+  const { socialAccountId, imageUrl } = payload;
 
   const fetched = await fetchProfileImage(imageUrl);
 
@@ -123,15 +123,6 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
   }
 
   await recordProfileImageChange(socialAccountId, cdnUrl, currentImageUrl);
-
-  // TRANSITIONAL: social_profile_versions is still read by the routes and the UI.
-  // Remove this write, and the profileVersionId payload field, when those readers
-  // move to social_accounts.image_url and the table is dropped.
-  const targetVersionId =
-    profileVersionId || (await storage.getCurrentProfileVersion(socialAccountId))?.id || null;
-  if (targetVersionId) {
-    await storage.updateProfileVersion(targetVersionId, { imageUrl: cdnUrl });
-  }
 
   // Link the photo to this image task
   await db.update(imageTasks).set({ photoId }).where(eq(imageTasks.id, imageTaskId));
@@ -261,9 +252,8 @@ export function triggerImageTaskWorker() {
 async function processGetImgTask(payload: {
   socialAccountId: string;
   imageUrl: string;
-  profileVersionId?: string | null;
 }): Promise<string> {
-  const { socialAccountId, imageUrl, profileVersionId } = payload;
+  const { socialAccountId, imageUrl } = payload;
 
   const tmpDir = os.tmpdir();
   const tmpFile = path.join(tmpDir, `task_img_${Date.now()}_${Math.random().toString(36).slice(2)}`);
@@ -295,14 +285,12 @@ async function processGetImgTask(payload: {
     } catch {
     }
 
-    if (profileVersionId) {
-      await storage.updateProfileVersion(profileVersionId, { imageUrl: cdnUrl });
-    } else {
-      const currentProfile = await storage.getCurrentProfileVersion(socialAccountId);
-      if (currentProfile) {
-        await storage.updateProfileVersion(currentProfile.id, { imageUrl: cdnUrl });
-      }
-    }
+    // Same single writer as every other image path, so the change is journalled.
+    await recordProfileImageChange(
+      socialAccountId,
+      cdnUrl,
+      await getCurrentProfileImageUrl(socialAccountId),
+    );
 
     return JSON.stringify({ cdnUrl, socialAccountId });
   } catch (error) {
@@ -363,8 +351,7 @@ async function processExportXmlTask(taskId: string, payload: {
     storage.getAllSocialAccountTypes(),
   ]);
 
-  const [allProfileVersions, allFollows, mePersonResult] = await Promise.all([
-    storage.getAllProfileVersions(),
+  const [allFollows, mePersonResult] = await Promise.all([
     storage.getAllFollows(),
     db.select().from(people).where(isNotNull(people.userId)).limit(1),
   ]);
@@ -582,6 +569,8 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <id>${escapeXml(account.id)}</id>\n`;
     xml += `      <username>${escapeXml(account.username)}</username>\n`;
     xml += `      <nickname>${escapeXml(account.currentProfile?.nickname || "")}</nickname>\n`;
+    xml += `      <bio>${escapeXml(account.currentProfile?.bio || "")}</bio>
+`;
     xml += `      <account_url>${escapeXml(account.currentProfile?.accountUrl || "")}</account_url>\n`;
     xml += `      <owner_uuid>${escapeXml(ownerUuid || "")}</owner_uuid>\n`;
     xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
@@ -789,21 +778,6 @@ async function processExportXmlTask(taskId: string, payload: {
   if (includeHistory) {
     await storage.updateTaskProgress(taskId, 84, "Exporting profile history…");
 
-    xml += '  <social_profile_versions>\n';
-    for (const version of allProfileVersions) {
-      xml += '    <social_profile_version>\n';
-      xml += `      <id>${escapeXml(version.id)}</id>\n`;
-      xml += `      <social_account_id>${escapeXml(version.socialAccountId)}</social_account_id>\n`;
-      xml += `      <nickname>${escapeXml(version.nickname || "")}</nickname>\n`;
-      xml += `      <bio>${escapeXml(version.bio || "")}</bio>\n`;
-      xml += `      <account_url>${escapeXml(version.accountUrl || "")}</account_url>\n`;
-      xml += `      <image_url>${escapeXml(version.imageUrl || "")}</image_url>\n`;
-      xml += `      <external_image_url>${escapeXml(version.externalImageUrl || "")}</external_image_url>\n`;
-      xml += `      <is_current>${escapeXml(version.isCurrent)}</is_current>\n`;
-      xml += `      <detected_at>${escapeXml(version.detectedAt)}</detected_at>\n`;
-      xml += '    </social_profile_version>\n';
-    }
-    xml += '  </social_profile_versions>\n';
 
     xml += '  <social_network_snapshots>\n';
     for (const account of allSocialAccounts) {
@@ -1234,6 +1208,7 @@ async function processImportXmlTask(taskId: string, payload: {
     const id = unescapeXml(parseXmlTag("id", block));
     const username = unescapeXml(parseXmlTag("username", block));
     const nickname = unescapeXml(parseXmlTag("nickname", block));
+    const bio = unescapeXml(parseXmlTag("bio", block));
     const accountUrl = unescapeXml(parseXmlTag("account_url", block));
     const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
     const typeId = unescapeXml(parseXmlTag("type_id", block));
@@ -1272,19 +1247,18 @@ async function processImportXmlTask(taskId: string, payload: {
         lastScrapedAt: lastScrapedAtStr ? new Date(lastScrapedAtStr) : null,
         currentPosts: currentPosts || null,
         deletedPosts: deletedPosts || null,
+        // Profile fields are columns here now, so they ride along rather than
+        // needing a second write against a separate table.
+        nickname: nickname || null,
+        bio: bio || null,
+        accountUrl: accountUrl || null,
+        imageUrl: imageUrl || null,
       }).where(eq(socialAccounts.id, id));
 
       socialAccountIdMap.set(id, id);
       existingSocialAccountUuids.add(id);
       existingSocialAccounts.push(created);
 
-      if (nickname || accountUrl || imageUrl) {
-        if (created.currentProfile) {
-          await storage.updateProfileVersion(created.currentProfile.id, {
-            nickname: nickname || null, accountUrl: accountUrl || null, imageUrl: imageUrl || null,
-          });
-        }
-      }
       collectFollowEdges(id, followers, following);
       importedCounts.socialAccounts++;
     } catch (e) { console.error(`Error importing social account ${id}:`, e); }
@@ -1345,10 +1319,14 @@ async function processImportXmlTask(taskId: string, payload: {
       const pvImageUrl = unescapeXml(parseXmlTag("image_url", block));
       const pvExternalImageUrl = unescapeXml(parseXmlTag("external_image_url", block));
       const pvIsCurrent = parseXmlTag("is_current", block) === "true";
-      await storage.createProfileVersion({
-        socialAccountId: mappedAccountId, nickname: pvNickname || null, bio: pvBio || null,
+      // Backups written before the journal carry a profile-version history. That
+      // table is gone and superseded entries have nowhere truthful to go, so only
+      // the current one is restored — onto the account itself.
+      if (!pvIsCurrent) continue;
+      await storage.updateSocialAccount(mappedAccountId, {
+        nickname: pvNickname || null, bio: pvBio || null,
         accountUrl: pvAccountUrl || null, imageUrl: pvImageUrl || null,
-        externalImageUrl: pvExternalImageUrl || null, isCurrent: pvIsCurrent,
+        externalImageUrl: pvExternalImageUrl || null,
       });
     } catch (e) { console.error("Error importing profile version:", e); }
   }
@@ -1837,18 +1815,11 @@ async function processImportInstagram(taskId: string, payload: {
 
     if (existingAccount) {
       if (fullName && existingAccount.currentProfile?.nickname !== fullName) {
-        await storage.createProfileVersion({
-          socialAccountId: existingAccount.id,
-          nickname: fullName,
-          accountUrl: existingAccount.currentProfile?.accountUrl || null,
-          imageUrl: existingAccount.currentProfile?.imageUrl || null,
-          isCurrent: true,
-        });
+        await storage.updateSocialAccount(existingAccount.id, { nickname: fullName });
         updatedCount++;
       }
 
       if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
-        const currentProfile = await storage.getCurrentProfileVersion(existingAccount.id);
         await storage.createImageTask({
           userId: actingUserId(),
           type: "download_img_instagram",
@@ -1856,7 +1827,6 @@ async function processImportInstagram(taskId: string, payload: {
           parentTaskId: taskId,
           payload: JSON.stringify({
             socialAccountId: existingAccount.id,
-            profileVersionId: currentProfile?.id || null,
             imageUrl: profilePicUrl,
           }),
         });
@@ -1869,15 +1839,9 @@ async function processImportInstagram(taskId: string, payload: {
         ownerUuid: null,
         typeId: instagramTypeId,
         internalAccountCreationType: `${targetAccountUsername} import`,
+        nickname: fullName || null,
+        accountUrl: `https://instagram.com/${username}`,
       });
-
-      const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
-      if (currentProfile) {
-        await storage.updateProfileVersion(currentProfile.id, {
-          nickname: fullName || null,
-          accountUrl: `https://instagram.com/${username}`,
-        });
-      }
 
       if (profilePicUrl) {
         await storage.createImageTask({
@@ -1887,7 +1851,6 @@ async function processImportInstagram(taskId: string, payload: {
           parentTaskId: taskId,
           payload: JSON.stringify({
             socialAccountId: newAccount.id,
-            profileVersionId: currentProfile?.id || null,
             imageUrl: profilePicUrl,
           }),
         });
@@ -2067,15 +2030,11 @@ async function importOneDmThread(
         typeId: instagramType?.id || null,
         internalAccountCreationType: "dm backup import",
       });
-      const currentProfile = await storage.getCurrentProfileVersion(newAccount.id);
-      if (currentProfile) {
-        // Non-owner participant's display name; export owner is listed last
-        const nickname = parsed.participants.length >= 1 ? parsed.participants[0] : null;
-        await storage.updateProfileVersion(currentProfile.id, {
-          nickname,
-          accountUrl: `https://instagram.com/${parsed.username}`,
-        });
-      }
+      // Non-owner participant's display name; export owner is listed last
+      await storage.updateSocialAccount(newAccount.id, {
+        nickname: parsed.participants.length >= 1 ? parsed.participants[0] : null,
+        accountUrl: `https://instagram.com/${parsed.username}`,
+      });
       counterpartId = newAccount.id;
     }
   }
@@ -2423,6 +2382,9 @@ async function resolveScrapedAccounts(
           username: handle,
           typeId: typeId || undefined,
           ownerUuid: null,
+          // Without this the row lands with a null creator, which visibleShared()
+          // reads as public — a 10k import would publish 10k accounts to every user.
+          createdByUserId: actingUserId() ?? undefined,
           internalAccountCreationType: "PRM-chrome import",
           nickname: row.full_name || row.displayName || null,
           accountUrl: `https://instagram.com/${handle}`,
@@ -2498,30 +2460,42 @@ export async function processImportSocial(
   // difference between recording no change and inventing hundreds of unfollows.
   //
   // Older builds send nothing, so fall back to inferring from which lists arrived.
-  const gotFollowers = Boolean(record.accountFollowers?.trim());
-  const gotFollowing = Boolean(record.accountFollowing?.trim());
+  // Parsed before scope is inferred, because inference needs row counts rather than
+  // raw string truthiness: a CSV that is a header line and nothing else is a non-empty
+  // string but an empty list, and under authoritative deletion those mean opposite
+  // things — "nothing changed" versus "unfollow everyone".
+  const parsedFollowers = parseCsvRows(record.accountFollowers);
+  const parsedFollowing = parseCsvRows(record.accountFollowing);
   const scope: CaptureScope =
     (record.captureScope as CaptureScope | null) ??
     (record.importType === "account" ? "profile"
-      : gotFollowers && gotFollowing ? "both"
-      : gotFollowers ? "followers"
-      : gotFollowing ? "following"
+      : parsedFollowers.length && parsedFollowing.length ? "both"
+      : parsedFollowers.length ? "followers"
+      : parsedFollowing.length ? "following"
       : "profile");
+
+  // A direction the scrape did not capture contributes no rows. When the extension
+  // declares a scope it is still honoured as-is, empty list included — that is the
+  // whole point of the declaration.
+  const followerRows = capturesFollowers(scope) ? parsedFollowers : [];
+  const followingRows = capturesFollowing(scope) ? parsedFollowing : [];
+  const graphRows = [...followerRows, ...followingRows];
 
   let followerIds: string[] | undefined;
   let followingIds: string[] | undefined;
-  const graphRows: any[] = [];
   let resolved = new Map<string, string>();
 
   if (scope !== "profile") {
     await storage.updateTaskProgress(taskId, 25, "Resolving accounts...");
-    const followerRows = capturesFollowers(scope) ? parseCsvRows(record.accountFollowers) : [];
-    const followingRows = capturesFollowing(scope) ? parseCsvRows(record.accountFollowing) : [];
-    graphRows.push(...followerRows, ...followingRows);
-
     resolved = await resolveScrapedAccounts(graphRows, typeId);
-    const idsFor = (rows: any[]) =>
-      rows.map(r => resolved.get(handleOf(r))).filter((id): id is string => Boolean(id));
+
+    const idsFor = (rows: any[]) => rows.map(handleOf).filter(Boolean).map(handle => {
+      // resolveScrapedAccounts creates every handle it cannot find, so a miss here is
+      // a real failure. Dropping it silently would be recorded as an unfollow.
+      const id = resolved.get(handle);
+      if (!id) throw new Error(`Failed to resolve @${handle} during import`);
+      return id;
+    });
 
     if (capturesFollowers(scope)) followerIds = idsFor(followerRows);
     if (capturesFollowing(scope)) followingIds = idsFor(followingRows);
@@ -2551,6 +2525,7 @@ export async function processImportSocial(
     source: "extension",
     pendingImportId: record.id,
   });
+  void queueOsintScansForMeAccount(mainAccount.id, (entry.delta as SocialAccountHistoryDelta | null)?.followingAdded ?? []);
 
   // 5. Graph avatars stay on the async queue. Fetching thousands inline would
   //    serialize the import behind Instagram's CDN, and they play no part in change
@@ -3168,22 +3143,16 @@ async function processFindPotentialGroups(taskId: string, payload: {
       ownerUuid: socialAccounts.ownerUuid,
       typeId: socialAccounts.typeId,
       groupId: socialAccounts.groupId,
+      nickname: socialAccounts.nickname,
+      bio: socialAccounts.bio,
+      imageUrl: socialAccounts.imageUrl,
+      createdAt: socialAccounts.internalAccountCreationDate,
     }).from(socialAccounts);
 
-    const profileVersions = await db.select({
-      socialAccountId: socialProfileVersions.socialAccountId,
-      nickname: socialProfileVersions.nickname,
-      bio: socialProfileVersions.bio,
-      imageUrl: socialProfileVersions.imageUrl,
-    }).from(socialProfileVersions).where(eq(socialProfileVersions.isCurrent, true));
 
-    const profileMap = new Map<string, { nickname: string | null; bio: string | null; imageUrl: string | null }>();
-    for (const p of profileVersions) {
-      profileMap.set(p.socialAccountId, {
-        nickname: p.nickname,
-        bio: p.bio,
-        imageUrl: p.imageUrl,
-      });
+    const profileMap = new Map<string, { nickname: string | null; bio: string | null; imageUrl: string | null; createdAt: Date | null }>();
+    for (const a of accounts) {
+      profileMap.set(a.id, { nickname: a.nickname, bio: a.bio, imageUrl: a.imageUrl, createdAt: a.createdAt });
     }
 
     const nodeIds = accounts.map(a => a.id);
@@ -3478,6 +3447,7 @@ async function processFindPotentialGroups(taskId: string, payload: {
           nickname: prof?.nickname || null,
           imageUrl: prof?.imageUrl || null,
           bioSummary: prof?.bio ? prof.bio.slice(0, 90) : null,
+          createdAt: prof?.createdAt || null,
         };
       });
 
@@ -3599,6 +3569,7 @@ async function processFindPotentialGroups(taskId: string, payload: {
         nickname: p.nickname || null,
         imageUrl: p.imageUrl || null,
         bioSummary: p.company ? `${p.title || "Role"} at ${p.company}` : null,
+        createdAt: p.createdAt || null,
       }));
 
       results.push({

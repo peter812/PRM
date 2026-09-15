@@ -20,6 +20,7 @@ import {
   NotebookPen,
   MessageSquare,
   MessageSquarePlus,
+  MessageCircleQuestion,
   Pencil,
   RefreshCw,
   AlertCircle,
@@ -66,6 +67,7 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   "message-square": MessageSquare,
   "message-square-plus": MessageSquarePlus,
   pencil: Pencil,
+  "help-circle": MessageCircleQuestion,
 };
 
 // Display labels for each backend category. Keep in sync with `AiToolCategory`
@@ -79,6 +81,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   "daily-notes": "Daily notes",
   "social-accounts": "Social accounts",
   relationships: "Relationships",
+  conversation: "Conversation",
 };
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
@@ -90,11 +93,12 @@ const CATEGORY_ICONS: Record<string, LucideIcon> = {
   "daily-notes": NotebookPen,
   "social-accounts": AtSign,
   relationships: UserPlus,
+  conversation: MessageCircleQuestion,
 };
 
 
 // Stable category ordering for the UI.
-const CATEGORY_ORDER = ["search", "messages", "people", "interactions", "notes", "daily-notes", "social-accounts", "relationships"];
+const CATEGORY_ORDER = ["search", "messages", "people", "interactions", "notes", "daily-notes", "social-accounts", "relationships", "conversation"];
 
 export default function IntelligenceToolsSettingsPage() {
   const { toast } = useToast();

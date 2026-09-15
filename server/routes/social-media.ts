@@ -3,7 +3,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialProfileVersions, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -35,6 +35,7 @@ import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
 import { hashPassword, requireAuth, requireAdmin, authenticateExtensionToken } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
+import { queueOsintScansForMeAccount } from "../osint-scan-queue";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import fs from "fs";
@@ -232,6 +233,8 @@ export function registerRoutes(app: Express) {
           xml += `      <id>${escapeXml(account.id)}</id>\n`;
           xml += `      <username>${escapeXml(account.username)}</username>\n`;
           xml += `      <nickname>${escapeXml(account.currentProfile?.nickname || "")}</nickname>\n`;
+          xml += `      <bio>${escapeXml(account.currentProfile?.bio || "")}</bio>
+`;
           xml += `      <account_url>${escapeXml(account.currentProfile?.accountUrl || "")}</account_url>\n`;
           xml += `      <owner_uuid>${escapeXml(account.ownerUuid || "")}</owner_uuid>\n`;
           xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
@@ -247,24 +250,6 @@ export function registerRoutes(app: Express) {
         xml += '  </social_accounts>\n';
   
         if (includeHistory) {
-          xml += '  <social_profile_versions>\n';
-          for (const account of accounts) {
-            const versions = await storage.getProfileVersions(account.id);
-            for (const version of versions) {
-              xml += '    <social_profile_version>\n';
-              xml += `      <id>${escapeXml(version.id)}</id>\n`;
-              xml += `      <social_account_id>${escapeXml(version.socialAccountId)}</social_account_id>\n`;
-              xml += `      <nickname>${escapeXml(version.nickname || "")}</nickname>\n`;
-              xml += `      <bio>${escapeXml(version.bio || "")}</bio>\n`;
-              xml += `      <account_url>${escapeXml(version.accountUrl || "")}</account_url>\n`;
-              xml += `      <image_url>${escapeXml(version.imageUrl || "")}</image_url>\n`;
-              xml += `      <external_image_url>${escapeXml(version.externalImageUrl || "")}</external_image_url>\n`;
-              xml += `      <is_current>${escapeXml(version.isCurrent)}</is_current>\n`;
-              xml += `      <detected_at>${escapeXml(version.detectedAt)}</detected_at>\n`;
-              xml += '    </social_profile_version>\n';
-            }
-          }
-          xml += '  </social_profile_versions>\n';
   
           xml += '  <social_network_snapshots>\n';
           for (const account of accounts) {
@@ -384,6 +369,7 @@ export function registerRoutes(app: Express) {
             }
   
             const nickname = unescapeXml(parseXmlTag("nickname", block));
+            const bio = unescapeXml(parseXmlTag("bio", block));
             const accountUrl = unescapeXml(parseXmlTag("account_url", block));
             const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
             const typeId = unescapeXml(parseXmlTag("type_id", block));
@@ -407,20 +393,16 @@ export function registerRoutes(app: Express) {
               username,
               ownerUuid: ownerUuid || null,
               typeId: typeId || null,
+              // These are columns on the account now, so they go in with the insert
+              // rather than as a second write against a separate table.
+              nickname: nickname || null,
+              bio: bio || null,
+              accountUrl: accountUrl || null,
+              imageUrl: imageUrl || null,
             });
             socialAccountIdMap.set(id, id);
             allSocialAccounts.push(created);
-  
-            if (nickname || accountUrl || imageUrl) {
-              if (created.currentProfile) {
-                await storage.updateProfileVersion(created.currentProfile.id, {
-                  nickname: nickname || null,
-                  accountUrl: accountUrl || null,
-                  imageUrl: imageUrl || null,
-                });
-              }
-            }
-  
+
             collectFollowEdges(id, followers, following);
 
             importedCounts.socialAccounts++;
@@ -444,15 +426,18 @@ export function registerRoutes(app: Express) {
   
             if (!socialAccountId || !importedAccountIds.has(socialAccountId)) continue;
   
+            // Backups written before the journal carry a profile-version history.
+            // That table is gone and the superseded entries have nowhere truthful to
+            // go, so only the current one is restored — onto the account itself.
+            if (!pvIsCurrent) continue;
+
             const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
-            await storage.createProfileVersion({
-              socialAccountId: mappedAccountId,
+            await storage.updateSocialAccount(mappedAccountId, {
               nickname: pvNickname || null,
               bio: pvBio || null,
               accountUrl: pvAccountUrl || null,
               imageUrl: pvImageUrl || null,
               externalImageUrl: pvExternalImageUrl || null,
-              isCurrent: pvIsCurrent,
             });
             importedCounts.profileVersions++;
           } catch (error) {
@@ -549,6 +534,7 @@ export function registerRoutes(app: Express) {
         });
         sseManager.broadcast("social_account.created", { id: account.id, username: account.username });
         syncEntityInBackground("social_account", account.id);
+        void queueOsintScansForMeAccount(account.id);
         res.status(201).json(account);
       } catch (error) {
         console.error("Error creating social account:", error);
@@ -568,6 +554,11 @@ export function registerRoutes(app: Express) {
         if (body.typeId !== undefined) registryFields.typeId = body.typeId;
         if (body.internalAccountCreationType !== undefined) registryFields.internalAccountCreationType = body.internalAccountCreationType;
         if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;
+        // Profile fields live on the account row now, so they go in the same update.
+        if (body.nickname !== undefined) registryFields.nickname = body.nickname;
+        if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
+        if (body.imageUrl !== undefined) registryFields.imageUrl = body.imageUrl;
+        if (body.bio !== undefined) registryFields.bio = body.bio;
 
         if (body.bio !== undefined || body.nickname !== undefined || body.accountUrl !== undefined || body.imageUrl !== undefined) {
           registryFields.isSimple = false;
@@ -576,26 +567,7 @@ export function registerRoutes(app: Express) {
         if (Object.keys(registryFields).length > 0) {
           await storage.updateSocialAccount(id, registryFields);
         }
-  
-        const profileFields: Record<string, any> = {};
-        if (body.nickname !== undefined) profileFields.nickname = body.nickname;
-        if (body.accountUrl !== undefined) profileFields.accountUrl = body.accountUrl;
-        if (body.imageUrl !== undefined) profileFields.imageUrl = body.imageUrl;
-        if (body.bio !== undefined) profileFields.bio = body.bio;
-  
-        if (Object.keys(profileFields).length > 0) {
-          const currentProfile = await storage.getCurrentProfileVersion(id);
-          if (currentProfile) {
-            await storage.updateProfileVersion(currentProfile.id, profileFields);
-          } else {
-            await storage.createProfileVersion({
-              socialAccountId: id,
-              isCurrent: true,
-              ...profileFields,
-            });
-          }
-        }
-  
+
         const account = await storage.getSocialAccountById(id);
         if (!account) {
           return res.status(404).json({ error: "Social account not found" });
@@ -605,6 +577,7 @@ export function registerRoutes(app: Express) {
   
         sseManager.broadcast("social_account.updated", { id });
         syncEntityInBackground("social_account", id);
+        void queueOsintScansForMeAccount(id);
         res.json(account);
       } catch (error) {
         console.error("Error updating social account:", error);
@@ -897,6 +870,7 @@ export function registerRoutes(app: Express) {
           if (!oldFollowing.has(g)) edgesToAdd.push({ followerId: id, followedId: g, source: "manual" });
         }
         await storage.addFollows(edgesToAdd);
+        void queueOsintScansForMeAccount(id, edgesToAdd.filter(e => e.followerId === id).map(e => e.followedId));
 
         for (const f of Array.from(oldFollowers)) {
           if (!newFollowers.has(f)) await storage.removeFollow(f, id);
@@ -1283,6 +1257,7 @@ export function registerRoutes(app: Express) {
   
         for (const accountId of socialAccountIds) {
           await storage.updateSocialAccount(accountId, { ownerUuid: personId });
+          void queueOsintScansForMeAccount(accountId);
         }
   
         if (!person.imageUrl) {
@@ -1387,16 +1362,9 @@ export function registerRoutes(app: Express) {
           .select({
             id: socialAccounts.id,
             username: socialAccounts.username,
-            nickname: socialProfileVersions.nickname,
+            nickname: socialAccounts.nickname,
           })
           .from(socialAccounts)
-          .leftJoin(
-            socialProfileVersions,
-            and(
-              eq(socialProfileVersions.socialAccountId, socialAccounts.id),
-              eq(socialProfileVersions.isCurrent, true)
-            )
-          )
           .orderBy(socialAccounts.username);
         res.json(rows.map(r => ({ id: r.id, username: r.username, nickname: r.nickname ?? null })));
       } catch (error) {
@@ -1791,7 +1759,7 @@ export function registerRoutes(app: Express) {
         return res.status(401).json({ error: "Not authenticated" });
       }
       try {
-        const { socialAccountId, imageUrl, profileVersionId, parentTaskId } = req.body;
+        const { socialAccountId, imageUrl, parentTaskId } = req.body;
         if (!socialAccountId || typeof socialAccountId !== "string") {
           return res.status(400).json({ error: "socialAccountId is required" });
         }
@@ -1806,7 +1774,6 @@ export function registerRoutes(app: Express) {
           payload: JSON.stringify({
             socialAccountId,
             imageUrl,
-            profileVersionId: profileVersionId || null,
           }),
         });
         triggerImageTaskWorker();
@@ -2268,31 +2235,16 @@ export function registerRoutes(app: Express) {
         if (body.typeId !== undefined) registryFields.typeId = body.typeId;
         if (body.internalAccountCreationType !== undefined) registryFields.internalAccountCreationType = body.internalAccountCreationType;
         if (body.lastScrapedAt !== undefined) registryFields.lastScrapedAt = body.lastScrapedAt;
-  
+        // Profile fields live on the account row now, so they go in the same update.
+        if (body.nickname !== undefined) registryFields.nickname = body.nickname;
+        if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
+        if (body.imageUrl !== undefined) registryFields.imageUrl = body.imageUrl;
+        if (body.bio !== undefined) registryFields.bio = body.bio;
+
         if (Object.keys(registryFields).length > 0) {
           await storage.updateSocialAccount(id, registryFields);
         }
-  
-        // Update profile fields
-        const profileFields: Record<string, any> = {};
-        if (body.nickname !== undefined) profileFields.nickname = body.nickname;
-        if (body.accountUrl !== undefined) profileFields.accountUrl = body.accountUrl;
-        if (body.imageUrl !== undefined) profileFields.imageUrl = body.imageUrl;
-        if (body.bio !== undefined) profileFields.bio = body.bio;
-  
-        if (Object.keys(profileFields).length > 0) {
-          const currentProfile = await storage.getCurrentProfileVersion(id);
-          if (currentProfile) {
-            await storage.updateProfileVersion(currentProfile.id, profileFields);
-          } else {
-            await storage.createProfileVersion({
-              socialAccountId: id,
-              isCurrent: true,
-              ...profileFields,
-            });
-          }
-        }
-  
+
         // Broadcast SSE event
         sseManager.broadcast("social_account.updated", { id });
   
@@ -2711,25 +2663,6 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    // Get all profile versions (paginated)
-    app.get("/api/social-accounts/profile-versions", async (req, res) => {
-      try {
-        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 30));
-        const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
-
-        const rows = await db
-          .select()
-          .from(socialProfileVersions)
-          .orderBy(desc(socialProfileVersions.detectedAt))
-          .limit(limit)
-          .offset(offset);
-
-        res.json(rows);
-      } catch (error) {
-        console.error("Error fetching profile versions:", error);
-        res.status(500).json({ error: "Failed to fetch profile versions" });
-      }
-    });
 
     // List all posts paginated (offset / limit)
     app.get("/api/social-account-posts", async (req, res) => {
