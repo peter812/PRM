@@ -15,6 +15,7 @@ import {
   ExternalLink,
   X,
   User,
+  UserSearch,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,9 +25,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatDistanceToNow, format } from "date-fns";
-import { cn } from "@/lib/utils";
+import { cn, isSelfMessage } from "@/lib/utils";
 import { MessageBubble } from "@/components/message-bubble";
 import { ConversationMediaDialog } from "@/components/conversation-media-dialog";
+import { FindMyNameDialog, unlinkedAddresses } from "@/components/find-my-name-dialog";
 
 function isReactionNoise(content: string | null | undefined): boolean {
   if (!content) return false;
@@ -98,6 +100,7 @@ export function ConversationThreadPane({
   // Pagination: grow the window (newest N messages); server returns newest-first
   const [pageCount, setPageCount] = useState(1);
   const [isMediaOpen, setIsMediaOpen] = useState(false);
+  const [isFindNameOpen, setIsFindNameOpen] = useState(false);
 
   const handleJumpToMessage = (messageId: string) => {
     setIsMediaOpen(false);
@@ -380,6 +383,19 @@ export function ConversationThreadPane({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {unlinkedAddresses(conversation).length > 0 && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsFindNameOpen(true)}
+              className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground shrink-0"
+              title="Find my name — link an unknown number to a person"
+              data-testid="button-find-my-name"
+            >
+              <UserSearch className="h-4 w-4" />
+            </Button>
+          )}
+
           <Button
             variant="ghost"
             size="icon"
@@ -436,7 +452,7 @@ export function ConversationThreadPane({
               )}
 
               {renderedMessages.map((msg: any, i: number) => {
-                const isSelfEntity = msg.senderPersonId === null && msg.senderSocialAccountId === null;
+                const isSelfEntity = isSelfMessage(msg);
                 // Bubble side: normally self-on-the-right; in perspective mode the
                 // subject's messages go right instead
                 const isSelf = hasPerspective ? isSubjectSender(msg) : isSelfEntity;
@@ -622,6 +638,7 @@ export function ConversationThreadPane({
         conversationId={conversationId}
         onJumpToMessage={handleJumpToMessage}
       />
+      <FindMyNameDialog open={isFindNameOpen} onOpenChange={setIsFindNameOpen} conversation={conversation} />
     </div>
   );
 }

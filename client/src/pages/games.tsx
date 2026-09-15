@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Trophy, HelpCircle } from "lucide-react";
+import { Trophy, HelpCircle, MessageSquareText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function GamesPage() {
@@ -50,6 +50,26 @@ export default function GamesPage() {
             </p>
             <Button asChild className="w-full">
               <Link href="/guess-the-sex">Play Guess the Sex</Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <MessageSquareText className="h-5 w-5 text-green-500" />
+              Describe Me
+            </CardTitle>
+            <CardDescription>
+              Say what you know about someone.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-6 text-sm text-muted-foreground">
+              You get a random person; describe them out loud. The recording becomes bullet points you confirm, then it's saved as a note on their profile. Each person comes up at most once every 90 days.
+            </p>
+            <Button asChild className="w-full">
+              <Link href="/describe-me">Play Describe Me</Link>
             </Button>
           </CardContent>
         </Card>

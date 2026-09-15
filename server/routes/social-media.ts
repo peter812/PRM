@@ -58,7 +58,7 @@ import { syncEntityInBackground, deleteEntityVector } from "../vector-universal"
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "../image-pass-in-utils";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "../xml-utils";
 import { parseExportZipName } from "../instagram-dm-import";
-import { runAsUser } from "../access";
+import { runAsUser, preserveAccess } from "../access";
 
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -1529,7 +1529,7 @@ export function registerRoutes(app: Express) {
     // can be many GB.
     app.post(
       "/api/tasks/import-instagram-backup",
-      importDmZipUpload.single("zip"),
+      preserveAccess(importDmZipUpload.single("zip")),
       async (req, res) => {
         try {
           if (!req.isAuthenticated() || !req.user) {
@@ -1562,6 +1562,7 @@ export function registerRoutes(app: Express) {
               rootUsername,
               options: {
                 skipNoise: req.body.skipNoise !== "false",
+                skipAutomated: req.body.skipAutomated !== "false",
                 importMedia: req.body.importMedia !== "false",
               },
             }),
@@ -1574,6 +1575,43 @@ export function registerRoutes(app: Express) {
         }
       }
     );
+
+    // POST /api/tasks/import-sms — imports an "SMS Backup & Restore" XML export
+    // for the person whose profile this is invoked from (the phone's owner).
+    app.post("/api/tasks/import-sms", preserveAccess(importDmZipUpload.single("xml")), async (req, res) => {
+      try {
+        if (!req.isAuthenticated() || !req.user) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+        if (!req.file) {
+          return res.status(400).json({ error: "No XML file provided" });
+        }
+        const rootPersonId = req.body.rootPersonId as string | undefined;
+        if (!rootPersonId || !(await storage.getPersonById(rootPersonId))) {
+          return res.status(400).json({ error: "rootPersonId is required" });
+        }
+
+        const task = await storage.createTask({
+          userId: req.user.id,
+          type: "import_sms",
+          status: "pending",
+          payload: JSON.stringify({
+            userId: req.user.id,
+            xmlPath: req.file.path,
+            rootPersonId,
+            options: {
+              skipNoise: req.body.skipNoise !== "false",
+              skipAutomated: req.body.skipAutomated !== "false",
+            },
+          }),
+        });
+        triggerTaskWorker();
+        res.json(task);
+      } catch (error) {
+        console.error("Error creating import_sms task:", error);
+        res.status(500).json({ error: `Failed to create import task: ${error instanceof Error ? error.message : String(error)}` });
+      }
+    });
 
     // POST /api/tasks/multi-image-download — creates a background multi_image_download task
     app.post("/api/tasks/multi-image-download", async (req, res) => {

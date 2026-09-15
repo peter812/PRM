@@ -26,6 +26,10 @@ services:
       - "5000:5000"
     env_file:
       - .env
+    environment:
+      # Whisper runs in this stack; overrides any localhost URL in .env
+      WHISPER_API_URL: http://whisper:8000
+      WHISPER_MODEL: ${WHISPER_MODEL:-Systran/faster-distil-whisper-small.en}
     volumes:
       - .:/app
       - /app/node_modules
@@ -48,8 +52,25 @@ services:
       people_net:
         ipv4_address: 10.5.0.11
 
+  whisper:
+    extends:
+      file: docker-compose.whisper.yml
+      service: whisper
+    networks:
+      people_net:
+        ipv4_address: 10.5.0.12
+
+  whisper-init:
+    extends:
+      file: docker-compose.whisper.yml
+      service: whisper-init
+    networks:
+      people_net:
+        ipv4_address: 10.5.0.13
+
 volumes:
   postgres_data:
+  whisper_models:
 
 networks:
   people_net:

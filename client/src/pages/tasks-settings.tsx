@@ -43,6 +43,10 @@ function getTaskLabel(type: string): string {
       return "Social Extraction Import";
     case "import_instagram":
       return "Instagram Import";
+    case "import_instagram_backup":
+      return "Instagram Backup Import";
+    case "import_sms":
+      return "SMS Backup Import";
     case "export_xml":
       return "XML Export";
     case "import_xml":

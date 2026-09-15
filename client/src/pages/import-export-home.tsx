@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, Share2, Database, ChevronRight, ImageIcon, Camera, Archive, Chrome } from "lucide-react";
+import { Users, Share2, ChevronRight, ImageIcon, Camera, Archive, Chrome, MessageSquare } from "lucide-react";
 
 const importExportSections = [
   {
@@ -20,6 +20,12 @@ const importExportSections = [
     description: "Import follower and following data from social media platforms like Instagram. Connect imported accounts to your existing social profiles.",
     icon: Share2,
     url: "/settings/import-export/social-media",
+  },
+  {
+    title: "Messages",
+    description: "Import SMS, MMS, and RCS conversations from an SMS Backup & Restore XML export. Threads are matched to people by phone number.",
+    icon: MessageSquare,
+    url: "/settings/import-export/messages",
   },
   {
     title: "Extension Imports",

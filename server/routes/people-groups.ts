@@ -77,7 +77,7 @@ let isUserCreationAllowed = false;
 
 
 
-async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
+export async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
   const apiUrl = (await storage.getAppSetting("ollama_api_url")) ?? "";
   if (!apiUrl.trim()) return null;
   const base = apiUrl.replace(/\/+$/, "");
@@ -91,6 +91,11 @@ async function buildOllamaChatContext(): Promise<{ base: string; headers: Record
   return { base, headers };
 }
 
+/** Ollama model for plain-text tasks: the dedicated text model, falling back to the general one. */
+export async function getOllamaTextModel(): Promise<string> {
+  return ((await storage.getAppSetting("ollama_text_model")) ?? "").trim()
+    || ((await storage.getAppSetting("ollama_model")) ?? "").trim();
+}
 
 export function registerRoutes(app: Express) {
     // Graph endpoint - optimized for minimal data transfer
@@ -991,9 +996,7 @@ export function registerRoutes(app: Express) {
         if (!ctx) return res.status(400).json({ error: "Ollama API URL is not configured" });
   
         const familyTreeModel = ((await storage.getAppSetting("ollama_family_tree_model")) ?? "").trim();
-        const textModel = ((await storage.getAppSetting("ollama_text_model")) ?? "").trim();
-        const fallbackModel = ((await storage.getAppSetting("ollama_model")) ?? "").trim();
-        const model = familyTreeModel || textModel || fallbackModel;
+        const model = familyTreeModel || (await getOllamaTextModel());
         if (!model) return res.status(400).json({ error: "No AI model configured. Set one at Settings → Intelligence → Family Tree." });
   
         const result = await generateFamilyTreeChanges({

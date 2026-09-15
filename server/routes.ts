@@ -11,6 +11,7 @@ import { registerRoutes as registerInsights } from "./routes/insights";
 import { registerRoutes as registerTps } from "./routes/tps";
 import { registerPendingImportsRoutes } from "./routes/pending-imports";
 import { registerRoutes as registerBackups } from "./routes/backups";
+import { registerRoutes as registerDescribeMe } from "./routes/describe-me";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Register sub-route modules.
@@ -32,6 +33,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerOsint(app);
   registerInsights(app);
   registerBackups(app);
+  registerDescribeMe(app);
 
   const httpServer = createServer(app);
   return httpServer;

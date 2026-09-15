@@ -1,0 +1,42 @@
+# ============================================================
+# Whisper (speech-to-text) server — speaches
+# ============================================================
+# OpenAI-compatible transcription API used by dictation and Describe Me.
+# Standalone for native development (./start-dev); docker-compose.yml
+# extends the same service for production.
+#
+#   Start:  docker compose -f docker-compose.whisper.yml up -d
+#   Stop:   docker compose -f docker-compose.whisper.yml down
+#
+# whisper-init downloads the model once the server is healthy (idempotent),
+# so the first transcription doesn't wait on a download. Change the model
+# with WHISPER_MODEL in .env. For an NVIDIA GPU use the ...:latest-cuda image.
+# ============================================================
+
+services:
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    container_name: prm-whisper
+    ports:
+      - "8000:8000"
+    volumes:
+      - whisper_models:/home/ubuntu/.cache/huggingface/hub
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  whisper-init:
+    image: curlimages/curl:latest
+    container_name: prm-whisper-init
+    command: ["-sS", "-X", "POST", "http://whisper:8000/v1/models/${WHISPER_MODEL:-Systran/faster-distil-whisper-small.en}"]
+    depends_on:
+      whisper:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  whisper_models:

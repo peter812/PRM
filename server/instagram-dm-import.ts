@@ -40,8 +40,6 @@ export interface ParsedMessage {
   share?: { link?: string; text?: string };
   reactions: { actor: string; emoji: string }[];
   callDurationSec?: number;
-  /** "Liked a message" / "Reacted … to your message" system echoes */
-  isSystemNoise: boolean;
 }
 
 export interface ParsedMedia {
@@ -131,19 +129,6 @@ export function parseThreadFolderName(folder: string): { username: string; threa
   // Group threads and edge cases may not follow the pattern; fall back to the
   // whole name as both username and id so imports still get a stable key.
   return { username: base, threadId: base };
-}
-
-// ── Noise detection ──
-
-const NOISE_PATTERNS = [
-  /^Liked a message$/,
-  /^Reacted .{1,16} to your message\.?$/su,
-  /^You unsent a message\.?$/,
-  /^.+ unsent a message\.?$/,
-];
-
-function isNoiseContent(content: string): boolean {
-  return NOISE_PATTERNS.some((re) => re.test(content));
 }
 
 // ── Main parser ──
@@ -262,7 +247,6 @@ export function parseInstagramThread(
       ...(share ? { share } : {}),
       reactions,
       ...(typeof m.call_duration === "number" ? { callDurationSec: m.call_duration } : {}),
-      isSystemNoise: content !== null && media.length === 0 && isNoiseContent(content),
     });
   }
 

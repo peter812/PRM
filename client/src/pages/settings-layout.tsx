@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -40,6 +40,7 @@ const ImportSocialMediaPage = lazy(() => import("@/pages/import-social-media"));
 const BackupsPage = lazy(() => import("@/pages/backups-page"));
 const ImagePassInPage = lazy(() => import("@/pages/image-pass-in"));
 const InstagramXmlTransferPage = lazy(() => import("@/pages/instagram-xml-transfer"));
+const ImportMessagesPage = lazy(() => import("@/pages/import-messages"));
 const ExtensionImportsSettingsPage = lazy(() => import("@/pages/extension-imports-settings"));
 const TasksSettingsPage = lazy(() => import("@/pages/tasks-settings"));
 const ImageStorageSettingsPage = lazy(() => import("@/pages/image-storage-settings"));
@@ -137,6 +138,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Contacts", url: "/settings/import-export/contacts", icon: Users },
       { title: "Social Media", url: "/settings/import-export/social-media", icon: Share2 },
+      { title: "Messages", url: "/settings/import-export/messages", icon: MessageSquare },
       { title: "Extension Imports", url: "/settings/import-export/extension-imports", icon: Chrome },
       { title: "Backups", url: "/settings/import-export/backups", icon: Archive },
       { title: "Image Pass In", url: "/settings/import-export/image-pass-in", icon: ImageIcon },
@@ -300,6 +302,7 @@ export default function SettingsLayout() {
           <Route path="/recognition" component={RecognitionSettingsPage} />
           <Route path="/import-export/contacts" component={ImportContactsPage} />
           <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
+          <Route path="/import-export/messages" component={ImportMessagesPage} />
           <Route path="/import-export/extension-imports" component={ExtensionImportsSettingsPage} />
           <Route path="/import-export/backups" component={BackupsPage} />
           <Route path="/backups" component={BackupsPage} />

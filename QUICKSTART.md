@@ -62,6 +62,17 @@ Open **http://localhost:5000**
 
 On first visit, you'll be guided through creating your admin account.
 
+**Start scripts**
+
+`start-dev.sh` / `start-dev.bat` starts the Whisper speech-to-text container
+(`docker-compose.whisper.yml`) and then `npm run dev` — use this instead of
+`npm run dev` when you want dictation / Describe Me to work. Postgres is
+whatever `DATABASE_URL` points at.
+
+`start-prod.sh` / `start-prod.bat` brings up app + Whisper + Postgres in Docker
+(`docker-compose.yml`). The Whisper model (`WHISPER_MODEL` in `.env`) is
+downloaded once, in the background, on first start.
+
 ---
 
 ## Database Options

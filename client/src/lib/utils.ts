@@ -55,3 +55,17 @@ export function safeJsonParse<T>(json: string | null | undefined, fallback: T): 
     return fallback;
   }
 }
+
+/**
+ * A message authored by the PRM user. Manual entry and imports from the Me
+ * person's own phone/account leave both sender FKs null; importers that
+ * cannot link a sender to a person or account leave them null too but record
+ * the sender's name in metadata, and those are never self.
+ */
+export function isSelfMessage(msg: {
+  senderPersonId: string | null;
+  senderSocialAccountId: string | null;
+  metadata?: { senderName?: string } | null;
+}): boolean {
+  return msg.senderPersonId === null && msg.senderSocialAccountId === null && !msg.metadata?.senderName;
+}

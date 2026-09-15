@@ -5,6 +5,8 @@ import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3 } from "./s3";
 import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally } from "./local-storage";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
+import { parseSmsBackup } from "./sms-import";
+import { classifyMessage, type AutomatedCategory } from "./message-classifier";
 import { log } from "./vite";
 import { queueOsintScansForMeAccount } from "./osint-scan-queue";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
@@ -74,6 +76,8 @@ import {
   truePersonSearch,
   faces,
   type SocialAccountHistoryDelta,
+  cleanPhoneNumberForStorage,
+  formatPhoneNumberForDisplay,
 } from "@shared/schema";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
 
@@ -1974,8 +1978,39 @@ function findThreadFolders(root: string): string[] {
 }
 
 interface ImportDmOptions {
+  /** Drop platform echoes ("Liked a message") */
   skipNoise?: boolean;
+  /** Drop machine-sent messages: codes, shipping, receipts, promos */
+  skipAutomated?: boolean;
   importMedia?: boolean;
+}
+
+type SkippedByCategory = Partial<Record<AutomatedCategory, number>>;
+
+/**
+ * Category to skip for a text message under the given options, or null to keep
+ * it. Media messages are never classified: their text is a caption.
+ */
+function skipCategory(content: string | null, hasMedia: boolean, options: ImportDmOptions): AutomatedCategory | null {
+  if (!content || hasMedia) return null;
+  const category = classifyMessage(content);
+  if (!category) return null;
+  const wanted = category === "system_noise" ? options.skipNoise !== false : options.skipAutomated !== false;
+  return wanted ? category : null;
+}
+
+function tally(counts: SkippedByCategory, category: AutomatedCategory) {
+  counts[category] = (counts[category] ?? 0) + 1;
+}
+
+function sumCounts(items: SkippedByCategory[]): SkippedByCategory {
+  const out: SkippedByCategory = {};
+  for (const counts of items) {
+    for (const [category, n] of Object.entries(counts)) {
+      out[category as AutomatedCategory] = (out[category as AutomatedCategory] ?? 0) + n;
+    }
+  }
+  return out;
 }
 
 interface ImportThreadSummary {
@@ -1985,7 +2020,7 @@ interface ImportThreadSummary {
   skippedUnchanged: boolean;
   inserted: number;
   skippedDuplicates: number;
-  skippedNoise: number;
+  skipped: SkippedByCategory;
   photosImported: number;
   videosImported: number;
   audioImported: number;
@@ -2000,7 +2035,6 @@ async function importOneDmThread(
   options: ImportDmOptions,
   progress: { threadIndex: number; threadCount: number },
 ): Promise<ImportThreadSummary> {
-  const skipNoise = options.skipNoise !== false;
   const importMedia = options.importMedia !== false;
 
   const parsed: ParsedThread = loadThreadFolder(threadFolder);
@@ -2046,7 +2080,7 @@ async function importOneDmThread(
     : null;
 
   // ── Resolve or create the conversation ──
-  let conversation = await storage.getConversationByIgThreadId(parsed.threadId);
+  let conversation = await storage.getConversationByMetadata("igThreadId", parsed.threadId);
   if (!conversation) {
     conversation = await storage.createConversation({
       createdByUserId: userId,
@@ -2095,7 +2129,7 @@ async function importOneDmThread(
     skippedUnchanged: false,
     inserted: 0,
     skippedDuplicates: 0,
-    skippedNoise: 0,
+    skipped: {},
     photosImported: 0,
     videosImported: 0,
     audioImported: 0,
@@ -2137,8 +2171,9 @@ async function importOneDmThread(
       summary.skippedDuplicates++;
       continue;
     }
-    if (skipNoise && msg.isSystemNoise) {
-      summary.skippedNoise++;
+    const skip = skipCategory(msg.content, msg.media.length > 0, options);
+    if (skip) {
+      tally(summary.skipped, skip);
       continue;
     }
 
@@ -2620,7 +2655,7 @@ export async function processImportInstagramBackup(
       threadsSkippedUnchanged: summaries.filter((s) => s.skippedUnchanged).length,
       inserted: summaries.reduce((n, s) => n + s.inserted, 0),
       skippedDuplicates: summaries.reduce((n, s) => n + s.skippedDuplicates, 0),
-      skippedNoise: summaries.reduce((n, s) => n + s.skippedNoise, 0),
+      skipped: sumCounts(summaries.map((s) => s.skipped)),
       photosImported: summaries.reduce((n, s) => n + s.photosImported, 0),
       videosImported: summaries.reduce((n, s) => n + s.videosImported, 0),
       audioImported: summaries.reduce((n, s) => n + s.audioImported, 0),
@@ -2630,6 +2665,174 @@ export async function processImportInstagramBackup(
   } finally {
     fs.rmSync(extractDir, { recursive: true, force: true });
     fs.rmSync(zipPath, { force: true });
+  }
+}
+
+/**
+ * Imports an "SMS Backup & Restore" XML export. The root person — whose phone
+ * the backup came from — owns every conversation. Counterpart numbers are
+ * matched against people's phone fields; unmatched threads still import,
+ * titled by the number, so they can be linked to a person later.
+ */
+export async function processImportSms(
+  taskId: string,
+  payload: {
+    userId: number;
+    xmlPath: string;
+    rootPersonId: string;
+    options?: ImportDmOptions;
+  }
+): Promise<string> {
+  const { userId, xmlPath, rootPersonId, options = {} } = payload;
+  try {
+    const { threads } = parseSmsBackup(fs.readFileSync(xmlPath, "utf-8"));
+    if (threads.length === 0) {
+      throw new Error("No <sms> or <mms> messages found in the uploaded XML");
+    }
+
+    // The Me person's own messages use the null-sender "self" convention that
+    // manual entry uses; anyone else's phone attributes them to that person.
+    const me = await storage.getMePerson(userId);
+    const ownerSenderPersonId = me?.id === rootPersonId ? null : rootPersonId;
+
+    const personByPhone = new Map<string, string>();
+    for (const p of await storage.getAllPeople()) {
+      for (const phone of [p.phone, ...(p.additionalPhones ?? [])]) {
+        const key = cleanPhoneNumberForStorage(phone);
+        if (key && !personByPhone.has(key)) personByPhone.set(key, p.id);
+      }
+    }
+
+    const importUuid = crypto.randomUUID();
+    const importDate = new Date();
+    const summary = {
+      threads: 0,
+      /** Nothing left to import after filtering */
+      threadsSkipped: 0,
+      inserted: 0,
+      skippedDuplicates: 0,
+      skipped: {} as SkippedByCategory,
+      /** MMS with no text part — media is not imported from SMS backups */
+      mediaOnlySkipped: 0,
+      unmatchedNumbers: [] as string[],
+    };
+
+    for (let t = 0; t < threads.length; t++) {
+      const thread = threads[t];
+      if (await isTaskCancelled(taskId)) {
+        return JSON.stringify({ cancelled: true, ...summary });
+      }
+      await storage.updateTaskProgress(taskId, Math.round((t / threads.length) * 99), `Thread ${t + 1}/${threads.length}`);
+
+      // Filter first so a thread that is nothing but automated noise never
+      // creates an empty conversation
+      const kept = thread.messages.filter((msg) => {
+        if (!msg.content) {
+          summary.mediaOnlySkipped++;
+          return false;
+        }
+        const skip = skipCategory(msg.content, msg.hasMedia, options);
+        if (skip) tally(summary.skipped, skip);
+        return !skip;
+      });
+      if (kept.length === 0) {
+        summary.threadsSkipped++;
+        continue;
+      }
+
+      const counterparts = thread.addresses.map((address) => ({
+        address,
+        personId: personByPhone.get(address) ?? null,
+      }));
+      const unmatched = counterparts.filter((c) => !c.personId).map((c) => c.address);
+      summary.unmatchedNumbers.push(...unmatched);
+
+      let conversation = await storage.getConversationByMetadata("smsThreadKey", thread.key);
+      if (!conversation) {
+        conversation = await storage.createConversation({
+          createdByUserId: userId,
+          // Participant names label fully-matched threads; otherwise show who the number is
+          title: unmatched.length === 0
+            ? null
+            : thread.contactName ?? thread.addresses.map(formatPhoneNumberForDisplay).join(", "),
+          channelType: "phone",
+          socialAccountId: null,
+          externalUrl: null,
+          metadata: {
+            smsThreadKey: thread.key,
+            addresses: thread.addresses,
+            contactName: thread.contactName,
+            isGroup: thread.addresses.length > 1,
+          },
+          lastMessageAt: null,
+          importDate,
+          importUuid,
+        });
+        await storage.addConversationParticipant({
+          conversationId: conversation.id,
+          personId: rootPersonId,
+          socialAccountId: null,
+          role: "owner",
+          importDate,
+          importUuid,
+        });
+        for (const c of counterparts) {
+          if (!c.personId) continue;
+          await storage.addConversationParticipant({
+            conversationId: conversation.id,
+            personId: c.personId,
+            socialAccountId: null,
+            role: "participant",
+            importDate,
+            importUuid,
+          });
+        }
+      }
+      summary.threads++;
+
+      const existingExternalIds = await storage.getMessageExternalIds(conversation.id);
+      for (const msg of kept) {
+        if (existingExternalIds.has(msg.externalId)) {
+          summary.skippedDuplicates++;
+          continue;
+        }
+        const senderPersonId = msg.isOwner
+          ? ownerSenderPersonId
+          : (msg.senderAddress && personByPhone.get(msg.senderAddress)) || null;
+        // Group contact_name lists everyone, so only a 1:1 thread's name identifies the sender
+        const senderName = !msg.isOwner && !senderPersonId
+          ? (thread.addresses.length === 1 && thread.contactName) || formatPhoneNumberForDisplay(msg.senderAddress)
+          : undefined;
+        const recipients = msg.isOwner
+          ? counterparts.filter((c) => c.personId).map((c) => ({ personId: c.personId, recipientType: "to" }))
+          : [{ personId: rootPersonId, recipientType: "to" }];
+
+        const message = await storage.createMessage(
+          {
+            conversationId: conversation.id,
+            senderPersonId,
+            senderSocialAccountId: null,
+            content: msg.content,
+            contentType: "text",
+            imageUuids: [],
+            attachments: null,
+            externalId: msg.externalId,
+            sentAt: msg.sentAt,
+            metadata: senderName ? { senderName } : null,
+            importDate,
+            importUuid,
+          },
+          recipients
+        );
+        summary.inserted++;
+        void syncEntityInBackground("message", message.id);
+      }
+    }
+
+    summary.unmatchedNumbers = [...new Set(summary.unmatchedNumbers)];
+    return JSON.stringify({ success: true, ...summary });
+  } finally {
+    fs.rmSync(xmlPath, { force: true });
   }
 }
 
@@ -3665,6 +3868,11 @@ async function processNextTask(): Promise<boolean> {
         case "import_instagram_backup": {
           const payload = JSON.parse(task.payload);
           result = await processImportInstagramBackup(task.id, payload);
+          break;
+        }
+        case "import_sms": {
+          const payload = JSON.parse(task.payload);
+          result = await processImportSms(task.id, payload);
           break;
         }
         case "export_xml": {

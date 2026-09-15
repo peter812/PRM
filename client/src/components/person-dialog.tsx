@@ -50,6 +50,8 @@ interface PersonDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   person?: Person;
+  /** Prefill for create mode (e.g. a name guessed from a conversation) */
+  initialValues?: Partial<Pick<FormValues, "firstName" | "lastName" | "phone">>;
   onPersonCreated?: (person: Person, selectedSubGroupIds?: string[]) => void;
   onDelete?: () => void;
   subGroups?: SubGroup[];
@@ -60,6 +62,7 @@ export function PersonDialog({
   open,
   onOpenChange,
   person,
+  initialValues,
   onPersonCreated,
   onDelete,
   subGroups,
@@ -117,12 +120,13 @@ export function PersonDialog({
           imageUrl: null,
           noSocialMedia: 0,
           sex: "unknown",
+          ...initialValues,
         });
       }
       setTagInput("");
       setSelectedSubGroupIds([]);
     }
-  }, [open, person, form]);
+  }, [open, person, initialValues, form]);
 
   const mutation = useMutation({
     mutationFn: async (data: FormValues) => {

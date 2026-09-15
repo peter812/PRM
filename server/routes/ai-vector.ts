@@ -1361,8 +1361,8 @@ export function registerRoutes(app: Express) {
         const familyTreeModel = (await getOllamaSetting("ollama_family_tree_model")) ?? "";
         const autoDescribeImages = (await getOllamaSetting("ollama_auto_describe_images")) ?? "false";
         const sexGuessModel = (await getOllamaSetting("ollama_sex_guess_model")) ?? "";
-        const whisperApiUrl = (await getOllamaSetting("whisper_api_url")) ?? "";
-        const whisperModel = (await getOllamaSetting("whisper_model")) ?? "";
+        const whisperApiUrl = (await getOllamaSetting("whisper_api_url")) || process.env.WHISPER_API_URL || "";
+        const whisperModel = (await getOllamaSetting("whisper_model")) || process.env.WHISPER_MODEL || "";
         res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true", sexGuessModel, whisperApiUrl, whisperModel });
       } catch (error) {
         res.status(500).json({ error: "Failed to fetch Ollama settings" });
@@ -2750,18 +2750,20 @@ export function registerRoutes(app: Express) {
   
     // Transcribe a recorded audio clip to text using a configured local Whisper
     // server. Forwards the audio to an OpenAI-compatible transcription endpoint
-    // (whisper.cpp whisper-server, faster-whisper / speaches, etc.).
+    // (whisper.cpp whisper-server, faster-whisper / speaches, etc.). The URL and
+    // model come from Intelligence settings, else WHISPER_API_URL / WHISPER_MODEL
+    // (set by docker-compose for the bundled speaches container).
     app.post("/api/daily-notes/transcribe", upload.single("audio"), async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const apiUrl = (await getOllamaSetting("whisper_api_url")) ?? "";
+        const apiUrl = (await getOllamaSetting("whisper_api_url")) || process.env.WHISPER_API_URL || "";
         if (!apiUrl.trim()) {
           return res.status(400).json({ error: "No Whisper (speech-to-text) server URL configured. Set one in Intelligence settings." });
         }
         if (!req.file) return res.status(400).json({ error: "No audio provided." });
 
         const base = apiUrl.replace(/\/+$/, "");
-        const model = ((await getOllamaSetting("whisper_model")) ?? "").trim() || "whisper-1";
+        const model = ((await getOllamaSetting("whisper_model")) || process.env.WHISPER_MODEL || "").trim() || "whisper-1";
 
         const headers: Record<string, string> = {};
         const authRequired = (await getOllamaSetting("whisper_auth_required")) === "true";

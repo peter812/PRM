@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { MessageCircle } from "lucide-react";
-import { NewConversationDialog } from "@/components/new-conversation-dialog";
-import { ImportInstagramBackupDialog } from "@/components/import-instagram-backup-dialog";
+import { ImportBackupDialog, type ImportBackupSource } from "@/components/import-backup-dialog";
 import { ConversationListPane } from "@/components/conversation-list-pane";
 import { ConversationThreadPane } from "@/components/conversation-thread-pane";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -37,7 +36,11 @@ function AccountMessagesView({ socialAccountId }: { socialAccountId: string }) {
       perspective
       title="DMs"
       // The account is the root account of any backup imported from its profile
-      importAccount={account ? { id: account.id, username: account.username } : undefined}
+      importSource={
+        account
+          ? { kind: "instagram", rootSocialAccountId: account.id, rootUsername: account.username }
+          : undefined
+      }
     />
   );
 }
@@ -64,6 +67,12 @@ function PersonMessagesView({ personId }: { personId: string }) {
       perspective={!isMe}
       perspectiveAccountIds={[...linkedIds]}
       title={isMe ? "Messages" : "Their Messages"}
+      // An SMS backup imported from a profile came from that person's phone
+      importSource={
+        person
+          ? { kind: "sms", rootPersonId: personId, personName: `${person.firstName} ${person.lastName}` }
+          : undefined
+      }
     />
   );
 }
@@ -74,8 +83,8 @@ interface EmbeddedMessagesViewProps {
   perspective: boolean;
   perspectiveAccountIds?: string[];
   title: string;
-  /** When set, shows the "Import Backup" action for this Instagram account */
-  importAccount?: { id: string; username: string };
+  /** When set, shows the "Import Backup" action for this profile's backup type */
+  importSource?: ImportBackupSource;
 }
 
 function EmbeddedMessagesView({
@@ -84,10 +93,9 @@ function EmbeddedMessagesView({
   perspective,
   perspectiveAccountIds,
   title,
-  importAccount,
+  importSource,
 }: EmbeddedMessagesViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isNewDialogOpen, setIsNewDialogOpen] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const isMobile = useIsMobile();
 
@@ -101,8 +109,7 @@ function EmbeddedMessagesView({
           <ConversationListPane
             selectedId={selectedId}
             onSelect={setSelectedId}
-            onNewConversation={() => setIsNewDialogOpen(true)}
-            onImport={importAccount ? () => setIsImportDialogOpen(true) : undefined}
+            onImport={importSource ? () => setIsImportDialogOpen(true) : undefined}
             socialAccountId={socialAccountId}
             personId={personId}
             perspective={perspective}
@@ -133,19 +140,8 @@ function EmbeddedMessagesView({
         </div>
       )}
 
-      <NewConversationDialog
-        open={isNewDialogOpen}
-        onOpenChange={setIsNewDialogOpen}
-        initialPersonId={personId}
-        initialSocialAccountId={socialAccountId}
-      />
-      {importAccount && (
-        <ImportInstagramBackupDialog
-          open={isImportDialogOpen}
-          onOpenChange={setIsImportDialogOpen}
-          rootSocialAccountId={importAccount.id}
-          rootUsername={importAccount.username}
-        />
+      {importSource && (
+        <ImportBackupDialog open={isImportDialogOpen} onOpenChange={setIsImportDialogOpen} source={importSource} />
       )}
     </div>
   );

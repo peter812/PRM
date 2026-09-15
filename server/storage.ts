@@ -141,11 +141,12 @@ import {
   type CollegeExperience,
   type AdditionalSchoolingExperience,
   cleanPhoneNumberForStorage,
+  formatPhoneNumberForDisplay,
 } from "@shared/schema";
 import { computeFamilyLabels } from "./family-relations-helper";
 import { visibleShared, ownedByCurrentUser, currentAccess, actingUserId } from "./access";
 import { db, pool } from "./db";
-import { eq, or, and, ilike, sql, inArray, arrayContains, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
+import { eq, or, and, ilike, sql, inArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { deleteImageLocally, isLocalImageUrl } from "./local-storage";
@@ -263,6 +264,7 @@ export interface IStorage {
   deletePeopleCreatedSince(cutoff: Date): Promise<{ deleted: number }>;
   updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }>;
   getRandomPeoplePair(): Promise<Person[]>;
+  getRandomDescribablePerson(excludeIds: string[]): Promise<Person | undefined>;
 
   // Schooling operations
   getSchoolingByPersonId(personId: string): Promise<Schooling | undefined>;
@@ -549,10 +551,19 @@ export interface IStorage {
   getConversationParticipants(conversationId: string): Promise<ConversationParticipant[]>;
 
   createMessage(data: InsertMessage, recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>): Promise<Message>;
-  getMessagesByConversation(conversationId: string, offset: number, limit: number): Promise<{ messages: MessageWithRecipients[]; total: number }>;
+  getMessagesByConversation(conversationId: string, offset: number, limit: number, order?: "asc" | "desc"): Promise<{ messages: MessageWithRecipients[]; total: number }>;
+  /** Phone conversations whose counterpart numbers include `address` (normalized) */
+  getPhoneConversationsByAddress(address: string): Promise<Conversation[]>;
+  /**
+   * Attributes an unlinked phone number to a person everywhere it appears:
+   * adds them as a participant and claims the number's messages. Returns how
+   * many conversations were touched.
+   */
+  linkPhoneToPerson(address: string, personId: string): Promise<number>;
   deleteMessage(id: string): Promise<void>;
   updateMessage(id: string, data: Partial<InsertMessage>): Promise<Message>;
-  getConversationByIgThreadId(threadId: string): Promise<Conversation | undefined>;
+  /** Look up an imported conversation by its source-platform key stored in metadata */
+  getConversationByMetadata(key: "igThreadId" | "smsThreadKey", value: string): Promise<Conversation | undefined>;
   getMessageExternalIds(conversationId: string): Promise<Set<string>>;
   getPhotoByFileHash(fileHash: string): Promise<Photo | undefined>;
 
@@ -1390,6 +1401,28 @@ export class DatabaseStorage implements IStorage {
       .orderBy(sql`RANDOM()`)
       .limit(2);
     return result;
+  }
+
+  /**
+   * Random person for the Describe Me game: not described in the last 90 days,
+   * not the caller's own "Me", and not one they skipped this session.
+   */
+  async getRandomDescribablePerson(excludeIds: string[]): Promise<Person | undefined> {
+    const selfUserId = currentAccess()?.userId ?? null;
+    const [person] = await db
+      .select()
+      .from(people)
+      .where(
+        and(
+          sql`(${people.lastDescribedAt} IS NULL OR ${people.lastDescribedAt} < NOW() - INTERVAL '90 days')`,
+          selfUserId === null ? undefined : sql`(${people.userId} IS NULL OR ${people.userId} <> ${selfUserId})`,
+          excludeIds.length ? sql`${people.id} <> ALL(${excludeIds}::text[])` : undefined,
+          visibleShared(people.visibility, people.createdByUserId),
+        )
+      )
+      .orderBy(sql`RANDOM()`)
+      .limit(1);
+    return person;
   }
 
   private async removePersonFromInteractions(personId: string): Promise<void> {
@@ -5361,7 +5394,8 @@ export class DatabaseStorage implements IStorage {
   async getMessagesByConversation(
     conversationId: string,
     offset: number,
-    limit: number
+    limit: number,
+    order: "asc" | "desc" = "desc"
   ): Promise<{ messages: MessageWithRecipients[]; total: number }> {
     // Messages inherit the thread's visibility and carry none of their own.
     if (!(await this.getConversation(conversationId))) return { messages: [], total: 0 };
@@ -5375,7 +5409,9 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
-      .orderBy(desc(messages.sentAt), desc(messages.createdAt))
+      .orderBy(...(order === "asc"
+        ? [asc(messages.sentAt), asc(messages.createdAt)]
+        : [desc(messages.sentAt), desc(messages.createdAt)]))
       .limit(limit)
       .offset(offset);
 
@@ -5439,18 +5475,80 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async getConversationByIgThreadId(threadId: string): Promise<Conversation | undefined> {
+  async getConversationByMetadata(key: "igThreadId" | "smsThreadKey", value: string): Promise<Conversation | undefined> {
     const [row] = await db
       .select()
       .from(conversations)
       .where(
         and(
-          sql`${conversations.metadata}->>'igThreadId' = ${threadId}`,
+          // key is a closed union, so it is safe to inline (a bound param makes ->> ambiguous)
+          sql`${conversations.metadata}->>${sql.raw(`'${key}'`)} = ${value}`,
           visibleShared(conversations.visibility, conversations.createdByUserId),
         )
       )
       .limit(1);
     return row;
+  }
+
+  async getPhoneConversationsByAddress(address: string): Promise<Conversation[]> {
+    return await db
+      .select()
+      .from(conversations)
+      .where(
+        and(
+          eq(conversations.channelType, "phone"),
+          sql`${conversations.metadata}->'addresses' @> ${JSON.stringify([address])}::jsonb`,
+          visibleShared(conversations.visibility, conversations.createdByUserId),
+        )
+      );
+  }
+
+  async linkPhoneToPerson(address: string, personId: string): Promise<number> {
+    const threads = await this.getPhoneConversationsByAddress(address);
+    const phonesByPerson = new Map(
+      (await this.getAllPeople()).map((p) => [
+        p.id,
+        [p.phone, ...(p.additionalPhones ?? [])].map(cleanPhoneNumberForStorage),
+      ])
+    );
+    for (const conversation of threads) {
+      const addresses: string[] = (conversation.metadata as any)?.addresses ?? [];
+      const participants = await this.getConversationParticipants(conversation.id);
+      if (!participants.some((p) => p.personId === personId)) {
+        await this.addConversationParticipant({
+          conversationId: conversation.id,
+          personId,
+          socialAccountId: null,
+          role: "participant",
+          importDate: null,
+          importUuid: null,
+        });
+      }
+      // The importer labels unlinked senders by number (or, in a 1:1 thread, by
+      // the backup's contact name), so in a 1:1 thread every labeled message is
+      // theirs; in a group only the ones labeled with this number are.
+      await db
+        .update(messages)
+        .set({ senderPersonId: personId })
+        .where(
+          and(
+            eq(messages.conversationId, conversation.id),
+            isNull(messages.senderPersonId),
+            sql`${messages.metadata}->>'senderName' IS NOT NULL`,
+            addresses.length === 1
+              ? undefined
+              : sql`${messages.metadata}->>'senderName' = ${formatPhoneNumberForDisplay(address)}`,
+          )
+        );
+      // Fully-matched threads take their title from the participants instead
+      const linkedPhones = new Set(
+        [...participants, { personId }].flatMap((p) => phonesByPerson.get(p.personId ?? "") ?? [])
+      );
+      if (addresses.every((a) => linkedPhones.has(a))) {
+        await this.updateConversation(conversation.id, { title: null });
+      }
+    }
+    return threads.length;
   }
 
   async getMessageExternalIds(conversationId: string): Promise<Set<string>> {

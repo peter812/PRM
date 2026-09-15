@@ -510,6 +510,7 @@ async function validateAndSyncSchema(): Promise<void> {
         maiden_name: "TEXT",
         jobs: "JSONB DEFAULT '[]'::jsonb",
         personface_uuid: "VARCHAR",
+        last_described_at: "TIMESTAMP",
       },
       schooling: {
         high_school: "TEXT",

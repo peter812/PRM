@@ -53,6 +53,7 @@ const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
 const GamesPage = lazy(() => import("@/pages/games"));
+const DescribeMePage = lazy(() => import("@/pages/describe-me"));
 const ImageDetailPage = lazy(() => import("@/pages/image-detail"));
 const ImagesListPage = lazy(() => import("@/pages/images-list"));
 const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
@@ -166,6 +167,7 @@ function Router() {
         <ProtectedRoute path="/demos" component={DemosPage} />
         <ProtectedRoute path="/demos/osint/:tool" component={OsintDemoPage} />
         <ProtectedRoute path="/games" component={GamesPage} />
+        <ProtectedRoute path="/describe-me" component={DescribeMePage} />
         <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
         <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
         <ProtectedRoute path="/unknown-faces" component={UnknownFaces} />
@@ -181,6 +183,7 @@ function Router() {
         <ProtectedRoute path="/import-export/backups" component={() => <Redirect to="/settings/import-export/backups" />} />
         <ProtectedRoute path="/import-export/contacts" component={() => <Redirect to="/settings/import-export/contacts" />} />
         <ProtectedRoute path="/import-export/social-media" component={() => <Redirect to="/settings/import-export/social-media" />} />
+        <ProtectedRoute path="/import-export/messages" component={() => <Redirect to="/settings/import-export/messages" />} />
         <ProtectedRoute path="/import-export/extension-imports" component={() => <Redirect to="/settings/import-export/extension-imports" />} />
         <ProtectedRoute path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export/instagram-xml" />} />
         <ProtectedRoute path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export/image-pass-in" />} />

@@ -57,6 +57,8 @@ export function parseXmlArray(containerTag: string, itemTag: string, text: strin
  */
 export function unescapeXml(str: string): string {
   return str
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
     .replace(/&apos;/g, "'")
     .replace(/&quot;/g, '"')
     .replace(/&gt;/g, ">")

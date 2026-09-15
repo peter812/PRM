@@ -256,7 +256,7 @@ function buildContextPrompt(args: {
 // JSON extraction (the model sometimes wraps it in fences or prose)
 // ────────────────────────────────────────────────────────────────────────────
 
-function extractJsonObject(text: string): unknown {
+export function extractJsonObject(text: string): unknown {
   if (!text) return null;
   // Strip fenced blocks first.
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);

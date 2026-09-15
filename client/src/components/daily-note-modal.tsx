@@ -25,6 +25,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
+import { useDictation } from "@/hooks/use-dictation";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
 import { Plus, Trash2, Eye, Edit2, ChevronDown, X, Lock, Sparkles, Loader2, Check, CloudOff, Mic, Square } from "lucide-react";
@@ -98,12 +99,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
   // Keep the latest field values available to autosave timers / flush handlers.
   latestRef.current = { userTitle, body, events, parties };
 
-  // ── Dictation (speech-to-text) state ──────────────────────────────────────
-  const [recording, setRecording] = useState<"idle" | "recording" | "transcribing">("idle");
   const bodyRef = useRef<HTMLTextAreaElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
 
   const { data: people = [] } = useQuery<any[]>({ queryKey: ["/api/people"] });
   const { data: groups = [] } = useQuery<any[]>({ queryKey: ["/api/groups"] });
@@ -220,11 +216,6 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
   };
 
   // ── Dictation helpers ─────────────────────────────────────────────────────
-  const stopMediaStream = () => {
-    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
-    mediaStreamRef.current = null;
-  };
-
   // Insert transcribed text into the body at the caret (or append if no focus).
   const insertTranscript = (text: string) => {
     const trimmed = text.trim();
@@ -253,87 +244,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     scheduleAutosave();
   };
 
-  const transcribeBlob = async (blob: Blob) => {
-    setRecording("transcribing");
-    try {
-      const form = new FormData();
-      const ext = blob.type.includes("ogg") ? "ogg" : "webm";
-      form.append("audio", blob, `dictation.${ext}`);
-      const res = await fetch("/api/daily-notes/transcribe", {
-        method: "POST",
-        body: form,
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Transcription failed (${res.status})`);
-      }
-      const data = await res.json() as { text?: string };
-      insertTranscript(data.text || "");
-    } catch (err: any) {
-      toast({ title: "Dictation failed", description: err.message || "Could not transcribe audio.", variant: "destructive" });
-    } finally {
-      setRecording("idle");
-    }
-  };
-
-  const startRecording = async () => {
-    if (isReadOnly || recording !== "idle") return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream;
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm")
-        ? "audio/webm"
-        : MediaRecorder.isTypeSupported("audio/ogg")
-          ? "audio/ogg"
-          : "";
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      audioChunksRef.current = [];
-      recorder.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      recorder.onstop = () => {
-        stopMediaStream();
-        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        audioChunksRef.current = [];
-        if (blob.size > 0) void transcribeBlob(blob);
-        else setRecording("idle");
-      };
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setRecording("recording");
-    } catch (err: any) {
-      stopMediaStream();
-      setRecording("idle");
-      toast({
-        title: "Microphone unavailable",
-        description: err?.name === "NotAllowedError"
-          ? "Microphone permission was denied."
-          : (err?.message || "Could not access the microphone."),
-        variant: "destructive",
-      });
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
-  };
-
-  const toggleRecording = () => {
-    if (recording === "recording") stopRecording();
-    else if (recording === "idle") void startRecording();
-  };
-
-  // Stop the mic if the modal unmounts mid-recording.
-  useEffect(() => {
-    return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        mediaRecorderRef.current.stop();
-      }
-      stopMediaStream();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { status: recording, toggle: toggleRecording } = useDictation(insertTranscript);
 
   // Best-effort save if the tab/page is closing mid-edit.
   useEffect(() => {

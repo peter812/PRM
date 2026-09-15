@@ -126,6 +126,21 @@ export function enterAccessContext(ctx: AccessContext): void {
   storage.enterWith(ctx);
 }
 
+/**
+ * Wrap a middleware so the request's access context survives it. multer's disk
+ * storage calls `next` from a WriteStream "finish" callback, which loses the
+ * AsyncLocalStorage store installed by accessMiddleware; the handler after it
+ * would then throw AccessContextMissingError on any filtered query.
+ */
+export function preserveAccess(
+  middleware: import("express").RequestHandler,
+): import("express").RequestHandler {
+  return (req, res, next) => {
+    const ctx = currentAccess();
+    middleware(req, res, (err?: unknown) => (ctx ? runWithAccess(ctx, () => next(err)) : next(err)));
+  };
+}
+
 // ── Query predicates ─────────────────────────────────────────────────────────
 //
 // All of these return `undefined` when the caller bypasses filtering, so they

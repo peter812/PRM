@@ -194,6 +194,7 @@ export const people = pgTable("people", {
   additionalEmails: jsonb("additional_emails").$type<string[]>().default(sql`'[]'::jsonb`),
   additionalPhones: jsonb("additional_phones").$type<string[]>().default(sql`'[]'::jsonb`),
   deniedRecommendations: jsonb("denied_recommendations").$type<string[]>().default(sql`'[]'::jsonb`),
+  lastDescribedAt: timestamp("last_described_at"), // last time the Describe Me game saved a note for this person (90-day cooldown)
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   // One "Me" person per user (§8.4). Partial so the many non-Me rows stay unconstrained.

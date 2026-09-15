@@ -2,6 +2,9 @@ import { Router } from "express";
 import { storage } from "../storage";
 import { z } from "zod";
 import { syncEntityInBackground } from "../vector-universal";
+import { cleanPhoneNumberForStorage, formatPhoneNumberForDisplay } from "@shared/schema";
+import { buildOllamaChatContext, getOllamaTextModel } from "./people-groups";
+import { guessNameFromMessages } from "../find-name-ai";
 
 export function registerRoutes(app: any) {
   const router = Router();
@@ -195,7 +198,8 @@ export function registerRoutes(app: any) {
     try {
       const offset = parseInt(req.query.offset as string) || 0;
       const limit = parseInt(req.query.limit as string) || 50;
-      const result = await storage.getMessagesByConversation(req.params.id, offset, limit);
+      const order = req.query.order === "asc" ? "asc" : "desc";
+      const result = await storage.getMessagesByConversation(req.params.id, offset, limit, order);
       res.json(result);
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -256,6 +260,79 @@ export function registerRoutes(app: any) {
         return res.status(400).json({ error: error.errors });
       }
       res.status(500).json({ error: "Failed to create message" });
+    }
+  });
+
+  // Both phone-number routes take an address from the thread's own metadata.
+  const phoneAddressSchema = z.object({ address: z.string().min(1) });
+  async function getPhoneThread(id: string, address: string) {
+    const conversation = await storage.getConversation(id);
+    const addresses: string[] = (conversation?.metadata as any)?.addresses ?? [];
+    return conversation && addresses.includes(address) ? conversation : undefined;
+  }
+
+  // POST /api/conversations/:id/find-name — AI guess at who an unlinked number is
+  router.post("/conversations/:id/find-name", async (req, res) => {
+    try {
+      const { address } = phoneAddressSchema.parse(req.body);
+      const conversation = await getPhoneThread(req.params.id, address);
+      if (!conversation) return res.status(404).json({ error: "Number not found in this conversation" });
+
+      if ((await storage.getAppSetting("ollama_enabled")) !== "true") {
+        return res.status(400).json({ error: "AI is disabled in settings" });
+      }
+      const ollama = await buildOllamaChatContext();
+      if (!ollama) return res.status(400).json({ error: "Ollama API URL is not configured" });
+      const model = await getOllamaTextModel();
+      if (!model) return res.status(400).json({ error: "No AI model configured. Set one at Settings → Intelligence." });
+
+      const { addresses, contactName } = conversation.metadata as { addresses: string[]; contactName: string | null };
+      const { messages } = await storage.getMessagesByConversation(conversation.id, 0, 30, "asc");
+      const displayed = formatPhoneNumberForDisplay(address);
+      const lines = messages
+        .filter((m) => m.content)
+        .map((m) => {
+          const senderName = (m.metadata as any)?.senderName as string | undefined;
+          const label = m.senderPerson
+            ? `${m.senderPerson.firstName} ${m.senderPerson.lastName}`
+            : !senderName ? "me"
+            : addresses.length === 1 || senderName === displayed ? "them"
+            : senderName;
+          return `[${label}]: ${m.content}`;
+        });
+
+      const guess = await guessNameFromMessages({ ollama, model, lines, contactName: contactName ?? null });
+      res.json(guess);
+    } catch (error: any) {
+      console.error("Error guessing name:", error);
+      if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+      res.status(500).json({ error: error?.message || "Failed to guess name" });
+    }
+  });
+
+  // POST /api/conversations/:id/link-phone — attach a number to a person everywhere it appears
+  router.post("/conversations/:id/link-phone", async (req, res) => {
+    try {
+      const { address, personId } = phoneAddressSchema.extend({ personId: z.string().min(1) }).parse(req.body);
+      if (!(await getPhoneThread(req.params.id, address))) {
+        return res.status(404).json({ error: "Number not found in this conversation" });
+      }
+      const person = await storage.getPersonById(personId);
+      if (!person) return res.status(404).json({ error: "Person not found" });
+
+      const phones = [person.phone, ...(person.additionalPhones ?? [])].map(cleanPhoneNumberForStorage);
+      if (!phones.includes(address)) {
+        await storage.updatePerson(
+          personId,
+          person.phone ? { additionalPhones: [...(person.additionalPhones ?? []), address] } : { phone: address }
+        );
+      }
+      const conversationsUpdated = await storage.linkPhoneToPerson(address, personId);
+      res.json({ conversationsUpdated });
+    } catch (error) {
+      console.error("Error linking phone:", error);
+      if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+      res.status(500).json({ error: "Failed to link phone number" });
     }
   });
 
