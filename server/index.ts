@@ -13,6 +13,7 @@ import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
 import { startTaskWorker } from "./task-worker";
 import { startOsintScanRunner } from "./osint-scan-queue";
+import { startStoriesScheduler } from "./stories-scheduler";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { etagMiddleware } from "./middleware/etag-cache";
 import { requestIdMiddleware } from "./middleware/request-id";
@@ -53,21 +54,23 @@ app.use(rateLimitMiddleware);
 // --- Upgrade #4: ETag / If-None-Match caching ---
 app.use(etagMiddleware);
 
-// Setup auth after body parsers
-setupAuth(app);
-
 // Middleware to bypass auth if DISABLE_AUTH is set.
 // Guarded to non-production environments so a stray DISABLE_AUTH=true in
-// production can never bypass authentication.
+// production can never bypass authentication. Registered before setupAuth so
+// the /api/user route it defines sees the mock user too; passport's
+// initialize/session leave an already-set req.user alone.
 app.use((req, res, next) => {
   if (process.env.DISABLE_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
     // Mock authenticated user for development
-    if (!req.isAuthenticated()) {
+    if (!(req as any).user) {
       (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev', role: 'super_admin' };
     }
   }
   next();
 });
+
+// Setup auth after body parsers
+setupAuth(app);
 
 // Ambient request-level access context for all multi-user query predicates.
 // Must run after passport (and the dev bypass above) so req.user is set.
@@ -176,5 +179,6 @@ app.use((req, res, next) => {
     log(`serving on port ${port}`);
     startTaskWorker();
     startOsintScanRunner();
+    startStoriesScheduler();
   });
 })();

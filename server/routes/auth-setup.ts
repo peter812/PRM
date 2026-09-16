@@ -96,6 +96,7 @@ function isPublicApiPath(path: string): boolean {
   if (path.startsWith("/v1/pending-imports")) return true;
   if (path.startsWith("/v1/scrape-results")) return true;
   if (path.startsWith("/v1/account-status")) return true;
+  if (path.startsWith("/v1/stories")) return true;
   return false;
 }
 
@@ -3140,6 +3141,13 @@ export function registerRoutes(app: Express) {
           "osint_auto_scan_enabled",
           "osint_auto_scan_tools",
           "osint_auto_scan_interval_seconds",
+          "stories_enabled",
+          "stories_api_url",
+          "stories_run_window",
+          "stories_run_every_days",
+          "stories_skip_day_probability",
+          "stories_image_storage",
+          "stories_next_run_at",
         ];
         const settings: Record<string, string | null> = {};
         for (const key of keys) {

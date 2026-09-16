@@ -237,6 +237,48 @@ async function addColumnIfNotExists(
 }
 
 /**
+ * Instagram stories used to be configured by flat app_settings keys for a single
+ * scraper. Turn those into the first story_importers row, attach the runs made
+ * under them, and drop the keys. stories_image_storage stays: it is still global.
+ */
+async function migrateStorySettingsToImporter(): Promise<void> {
+  const keys = [
+    "stories_enabled",
+    "stories_api_url",
+    "stories_run_window",
+    "stories_run_every_days",
+    "stories_skip_day_probability",
+    "stories_next_run_at",
+  ];
+  const { rows } = await pool.query(`SELECT key, value FROM app_settings WHERE key = ANY($1)`, [keys]);
+  if (rows.length === 0) return;
+  const old = Object.fromEntries(rows.map((r: { key: string; value: string }) => [r.key, r.value])) as Record<string, string | undefined>;
+
+  const { rows: existing } = await pool.query(`SELECT 1 FROM story_importers LIMIT 1`);
+  if (existing.length === 0) {
+    const everyDays = Math.round(Number(old.stories_run_every_days));
+    const skip = Number(old.stories_skip_day_probability);
+    const nextRun = old.stories_next_run_at && !Number.isNaN(Date.parse(old.stories_next_run_at)) ? new Date(old.stories_next_run_at) : null;
+    const { rows: [importer] } = await pool.query(
+      `INSERT INTO story_importers (label, service_url, enabled, run_every_days, run_window, skip_day_probability, next_run_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [
+        "Importer 1",
+        old.stories_api_url ?? "",
+        old.stories_enabled === "true",
+        Number.isFinite(everyDays) && everyDays >= 1 ? Math.min(everyDays, 30) : 1,
+        /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(old.stories_run_window ?? "") ? old.stories_run_window : "19:30-22:30",
+        Number.isFinite(skip) && skip >= 0 && skip <= 1 ? skip : 0.08,
+        nextRun,
+      ],
+    );
+    await pool.query(`UPDATE story_scrape_runs SET importer_id = $1 WHERE importer_id IS NULL`, [importer.id]);
+    log("Migrated Instagram stories settings into story_importers");
+  }
+  await pool.query(`DELETE FROM app_settings WHERE key = ANY($1)`, [keys]);
+}
+
+/**
  * Migrates follower/following storage to the social_follows edge table.
  * Creates social_follows, backfills it from the deprecated social_network_state
  * arrays (and legacy social_network_snapshots) if present, then drops them.
@@ -511,6 +553,9 @@ async function validateAndSyncSchema(): Promise<void> {
         jobs: "JSONB DEFAULT '[]'::jsonb",
         personface_uuid: "VARCHAR",
         last_described_at: "TIMESTAMP",
+        political_left_right: "REAL",
+        political_lib_auth: "REAL",
+        political_updated_at: "TIMESTAMP",
       },
       schooling: {
         high_school: "TEXT",
@@ -589,6 +634,16 @@ async function validateAndSyncSchema(): Promise<void> {
         account_following_count: "INTEGER",
         account_image_url: "TEXT",
       },
+      social_account_posts: {
+        metadata: "JSONB",
+        scraped_from: "TEXT",
+      },
+      story_scrape_runs: {
+        token_hash: "TEXT",
+        token_expires_at: "TIMESTAMP",
+        importer_id: "VARCHAR REFERENCES story_importers(id) ON DELETE SET NULL",
+        scraped_from: "TEXT",
+      },
     };
 
     // The pending-imports table is written by the Chrome extension over
@@ -658,6 +713,32 @@ async function validateAndSyncSchema(): Promise<void> {
         completed_at TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS osint_scan_queue_status_created_idx ON osint_scan_queue (status, created_at);
+      CREATE TABLE IF NOT EXISTS story_scrape_runs (
+        id VARCHAR PRIMARY KEY,
+        status TEXT NOT NULL,
+        started_at TIMESTAMP NOT NULL,
+        finished_at TIMESTAMP,
+        counts JSONB NOT NULL DEFAULT '{}'::jsonb,
+        items JSONB NOT NULL DEFAULT '[]'::jsonb,
+        error TEXT,
+        token_hash TEXT,
+        token_expires_at TIMESTAMP
+      );
+      ALTER TABLE story_scrape_runs DROP COLUMN IF EXISTS user_id;
+      CREATE INDEX IF NOT EXISTS story_scrape_runs_started_idx ON story_scrape_runs (started_at);
+      CREATE TABLE IF NOT EXISTS story_importers (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        label TEXT NOT NULL,
+        service_url TEXT NOT NULL DEFAULT '',
+        enabled BOOLEAN NOT NULL DEFAULT false,
+        run_every_days INTEGER NOT NULL DEFAULT 1,
+        run_window TEXT NOT NULL DEFAULT '19:30-22:30',
+        skip_day_probability REAL NOT NULL DEFAULT 0.08,
+        download_videos BOOLEAN NOT NULL DEFAULT false,
+        next_run_at TIMESTAMP,
+        last_username TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT now()
+      );
       CREATE UNIQUE INDEX IF NOT EXISTS osint_scan_queue_live_uniq ON osint_scan_queue (social_account_id, tool)
         WHERE status IN ('pending','running');
     `);
@@ -674,6 +755,10 @@ async function validateAndSyncSchema(): Promise<void> {
         await addColumnIfNotExists(tableName, columnName, columnDef);
       }
     }
+
+    // Stories: the audit index needs the column the loop above just added.
+    await pool.query(`CREATE INDEX IF NOT EXISTS social_account_posts_scraped_from_idx ON social_account_posts (scraped_from)`);
+    await migrateStorySettingsToImporter();
 
     // Backfill image_uuid for notes and interactions from the photos table
     // (safe to run repeatedly — only updates rows where image_uuid is still NULL)

@@ -1,10 +1,101 @@
 # Instagram Stories — extraction plan
 
 Nightly, an agent-driven Chrome logged in as your main Instagram account
-watches every story in the tray, keeps the **image** stories plus their
-metadata, and hands them to PRM per account per day. Video stories are
-skipped. Stories from accounts PRM doesn't know are dropped but **logged**, so
-you can always answer "why isn't X's story here?".
+watches every story in the tray, keeps each story's image plus its metadata,
+and hands them to PRM per account per day. Stories from accounts PRM doesn't
+know are dropped but **logged**, so you can always answer "why isn't X's
+story here?".
+
+**As built (2026-09-15)** — code lives in `../PRM-stories` (scraper) and
+`server/routes/stories.ts`, `server/stories-scheduler.ts`,
+`client/src/pages/stories-settings.tsx` (PRM). Deviations from the text below:
+
+- **Every tray entry is watched, seen or not** (the `seen < latest_reel_media`
+  filter in §2.3 is gone): a story lives 24 h and the run happens once a day,
+  so anything you looked at yourself during the day would otherwise be lost.
+- **Videos are kept as their cover frame** (§2.3's video skip and the
+  `skipped:video` outcome / `videosSkipped` count are gone): every story item
+  carries `image_versions2`, for a video that is the frame the viewer shows
+  before playback. The story row is stored like an image one with
+  `metadata.mediaType = 2` and `metadata.videoDuration`; the UI marks it.
+- **No Docker.** The scraper runs natively (`npm start`); there is no image,
+  compose file, Xvfb or noVNC (§5 and step 7 of §6 are dropped).
+
+- **PRM owns the schedule** (§2.4 is superseded). `stories-scheduler.ts` ticks
+  every minute; each evening it picks a random minute in the admin-set window
+  (`stories_run_window`), rolls the skip-day chance, and if not skipping mints
+  a `story_scrape_runs` row plus a random token (sha256 stored, **6 h** expiry)
+  and `POST`s `{ runId, token }` to `<stories_api_url>/run`. The scraper has no
+  scheduler, no `state.json`, and stores nothing secret — only `PRM_URL`.
+- **Auth** (§4.1 is superseded): the scraper confirms the token it was handed
+  with `GET /api/v1/stories/auth`, then uses it as `x-stories-token` on the
+  item and manifest posts. The extension-token pairing is gone. Runs are
+  instance-wide (no `user_id`); ingest runs as system. Settings are admin-only
+  `app_settings` keys (`stories_enabled`, `stories_api_url`,
+  `stories_run_window`, `stories_run_every_days`,
+  `stories_skip_day_probability`, `stories_image_storage`).
+- **Login from the settings page**: `POST /api/stories/login` (admin) asks the
+  scraper's `POST /login` to open Instagram in a visible Chrome window on its
+  profile. The page lives under
+  Settings → Import & Export → Instagram Stories with a how-to, the login
+  section, the schedule (every N days + time-of-day window) and the run log.
+- **The start call is the login check**: the scraper opens instagram.com and
+  answers `{ ok: true }` or `{ ok: false, reason: needs_login | checkpoint |
+  already_running | error }` before the run proceeds; PRM records the reason
+  as the run status and keeps trying nightly (a human logs in from the same
+  profile in the meantime). `rate_limited` makes PRM wait 48 h.
+- **Timing** (§2.3): most stories get a 0.5–1 s flick; every 4–7 stories one
+  is held 5–9 s; every 25–40 the mouse idles 8–20 s; 4 % back-step once.
+  Videos get the same flick. No per-account sampling skips (the viewer
+  auto-advances through the tray, so "not opening" an account isn't a thing).
+- Dedupe uses the existing deterministic post id (`instagram:story:<pk>`)
+  instead of a new `external_id` column, and `expiresAt` lives in `metadata` —
+  the only new post column is `metadata jsonb`. The manifest is posted once
+  after the items. The settings page links a `no_account` username to its
+  Instagram profile rather than a pre-filled create dialog.
+- **No analysis hooks are attached** (§4.2 step 4 and §7 are off): no vector
+  sync, no face / LLM tasks. Phase 2 will switch them on.
+
+**Multiple importers (2026-09-15)** — further deviations:
+
+- **One card per Instagram account.** `story_importers` replaces the flat
+  `stories_*` settings keys (a one-time boot migration turns them into card
+  #1 and attaches existing runs). Each row is one prm-stories install (its
+  own `STORIES_PORT`, profile and login) with its own `service_url`,
+  `run_every_days`, `run_window`, `skip_day_probability`, `enabled`,
+  `next_run_at` and `download_videos`. `stories_image_storage` stays global.
+  The scheduler ticks every importer independently (`Promise.allSettled`);
+  `story_scrape_runs.importer_id` says which card a run belongs to
+  (`ON DELETE SET NULL`, so history survives a removed card). The settings
+  page is a `+` button and a card per importer, each with its own session
+  status, login and run-now; storage is a separate card. The runs table gained
+  only an *Importer* column.
+- **Provenance.** At the start of every run the scraper reads the logged-in
+  @username from the nav's Profile link (fallback: the `viewer` object in the
+  home page's inline JSON). It goes into the `/run` reply (`username`), onto
+  `story_scrape_runs.scraped_from`, `story_importers.last_username` (shown on
+  the card) and every story's `social_account_posts.scraped_from` (shown behind
+  an info icon in the story dialog). `meta.scrapedFrom` is **required** by the
+  items route. If the username can't be read the run ends `no_username` and
+  nothing is delivered.
+- **Videos** (per card, off by default). PRM sends `videos: true` in the `/run`
+  body; the scraper fetches `video_versions[0].url` from inside the page (the
+  viewer plays from `blob:` urls, so nothing is on the wire), caps it at
+  `MAX_VIDEO_MB` (50) and sends it as a second multipart field `video`. PRM
+  stores it with `uploadMediaLocally` / `uploadMediaToS3` and sets
+  `metadata.videoUrl`; the cover jpg stays in `content`. The story dialog plays
+  it with the cover as poster. Over the cap → cover only, `item.video =
+  "too_large"`.
+- **Per-account delivery.** §2.7's "no PRM traffic while Instagram is open" is
+  dropped (PRM is on the LAN). When the viewer moves from one account to the
+  next, the one it left is queued: `POST /api/v1/stories/check` first (known
+  pks → `duplicate`, unknown posters → `no_account`, no bytes fetched for
+  either; `outcome: "skipped:precheck"`), then image (+ video) download, one
+  `/items` post per story, and a manifest upsert with `status: "running"` so
+  PRM's page shows progress live. The queue is a serial promise chain that
+  never blocks the viewer; the run waits for it before navigating or closing
+  Chrome. The final manifest (`completed`) goes out from `deliverPending`
+  after the browser is closed, together with any retries.
 
 This document covers extraction and ingest only. Analysis (faces, description,
 timeline note) is a follow-on; §7 sketches how it plugs in so the ingest shape
@@ -14,12 +105,12 @@ Decisions already made:
 
 | Question | Answer |
 |---|---|
-| Host | Standalone Puppeteer service, separate repo/dir, optional docker-compose service |
+| Host | Standalone Puppeteer service, separate repo/dir, run natively |
 | Scope | Everyone in the stories tray of the logged-in account |
 | Account | Your main account (posters will see you in "Seen by") |
 | Unknown accounts | Drop the story, log that it was seen |
 | Cadence | Once a day, evening |
-| Videos | Skip entirely (logged only as a run-log line, no media, no PRM row) |
+| Videos | Keep the cover frame (`image_versions2`) as the story image, flagged `mediaType: 2` |
 | Story → note | Fully automatic (phase 2) |
 
 ---
@@ -36,7 +127,7 @@ everything the DOM shows and a lot it doesn't:
 | Field | Meaning |
 |---|---|
 | `pk` / `id`, `code` | stable story id (dedupe key) |
-| `media_type` | `1` image, `2` video — this is the video filter |
+| `media_type` | `1` image, `2` video — stored in `metadata.mediaType`; a video's `image_versions2` is its cover frame |
 | `taken_at`, `expiring_at` | unix seconds |
 | `image_versions2.candidates[]` | signed CDN urls, largest first |
 | `user.username`, `user.pk`, `user.full_name`, `user.profile_pic_url` | the poster |
@@ -131,7 +222,7 @@ ESM. No shared code with PRM; the contract is the HTTP API in §4.
 ```
 warmup        → home feed, 2–4 slow scrolls, random 20–60 s, hover a post or two
 tray          → intercept tray JSON: [{ user, latest_reel_media, seen, ... }]
-              → filter: unseen (seen < latest_reel_media)
+              → every entry, seen or not (as built; the plan had an unseen filter)
               → cap at MAX_ACCOUNTS (default 150), shuffle order slightly
               → decide per-account skip: 5–10% of accounts are randomly NOT opened
                 tonight (humans don't watch every ring); they're still logged
@@ -392,19 +483,11 @@ outcome. `no_account` rows show the username with a link to the existing
 social-account create dialog pre-filled. A red banner when the latest status
 is `needs_login` / `checkpoint` — the only condition that needs a human.
 
-## 5. Docker
+## 5. Hosting
 
-`prm-stories/docker-compose.yml` runs standalone; PRM's `docker-compose.yml`
-gains a `stories` service that `extends` it (the `docker-compose.whisper.yml`
-pattern). Image: `node:20-bookworm` + `google-chrome-stable` + `xvfb` +
-`x11vnc` + `novnc`; `CMD xvfb-run -s "-screen 0 1440x900x24" node dist/index.js`.
-Volumes: `stories_profile:/app/profile`, `stories_runs:/app/runs`. Port
-`6080` (noVNC) published on localhost only, used for the one-time login.
-`shm_size: 1gb` (Chrome in Docker crashes without it). Container
-`TZ` must equal the host's.
-
-The IP the container egresses from is the host's — fine at home, not fine on
-a VPS (§2.1).
+Dropped: the scraper runs natively on a desktop (`npm start`), no Docker. It
+needs the machine's own Chrome, a window (parked off-screen between logins)
+and the home connection's IP (§2.1).
 
 ## 6. Build order
 
@@ -418,8 +501,6 @@ a VPS (§2.1).
 4. PRM: schema (§3), routes (§4), pairing.
 5. `deliver.ts` + retry queue; end-to-end run.
 6. Status page (§4.3).
-7. Dockerfile + compose; verify login via noVNC and that the profile volume
-   survives `docker compose down/up`.
 
 ## 7. Phase 2 (not in this plan) — what the ingest already enables
 

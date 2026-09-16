@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, unique, uniqueIndex, AnyPgColumn, index, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, real, unique, uniqueIndex, AnyPgColumn, index, primaryKey } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -195,6 +195,9 @@ export const people = pgTable("people", {
   additionalPhones: jsonb("additional_phones").$type<string[]>().default(sql`'[]'::jsonb`),
   deniedRecommendations: jsonb("denied_recommendations").$type<string[]>().default(sql`'[]'::jsonb`),
   lastDescribedAt: timestamp("last_described_at"), // last time the Describe Me game saved a note for this person (90-day cooldown)
+  politicalLeftRight: real("political_left_right"), // Left (-10) to Right (+10)
+  politicalLibAuth: real("political_lib_auth"), // Libertarian (-10) to Authoritarian (+10)
+  politicalUpdatedAt: timestamp("political_updated_at"), // Timestamp of political leaning last update
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   // One "Me" person per user (§8.4). Partial so the many non-Me rows stay unconstrained.
@@ -547,11 +550,14 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   faceIds: text("face_ids"), // JSON array of arrays of face UUIDs, one entry per image, e.g. '[["uuid1","uuid2"],["uuid3"]]'
   isDeleted: boolean("is_deleted").notNull().default(false),
   postedAt: timestamp("posted_at"),
+  metadata: jsonb("metadata"), // stories: expiresAt, links, hashtags, locations, resharedPost, music, stickers, isAd, videoUrl
+  scrapedFrom: text("scraped_from"), // stories: the Instagram @username the scraper was logged in as when it saw this
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
   index("social_account_posts_social_account_id_idx").on(t.socialAccountId),
   index("social_account_posts_posted_at_idx").on(t.postedAt),
+  index("social_account_posts_scraped_from_idx").on(t.scrapedFrom),
 ]);
 
 // Extension sessions table - holds authenticated Chrome extension sessions
@@ -879,6 +885,44 @@ export const osintScanQueue = pgTable("osint_scan_queue", {
   uniqueIndex("osint_scan_queue_live_uniq").on(t.socialAccountId, t.tool).where(sql`status IN ('pending','running')`),
 ]);
 
+// One row per prm-stories run, instance-wide (stories are an admin feature, not
+// per user). PRM mints the row and a short-lived token when it triggers the
+// scraper; the scraper authenticates its callbacks with that token. `items` is
+// the scraper's per-story log with PRM's verdict merged in — including the
+// stories that were seen but dropped because no social account exists for the
+// poster (outcome "no_account").
+// One prm-stories install (= one Chrome profile = one Instagram login) and its schedule.
+export const storyImporters = pgTable("story_importers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  label: text("label").notNull(),
+  serviceUrl: text("service_url").notNull().default(""),
+  enabled: boolean("enabled").notNull().default(false),
+  runEveryDays: integer("run_every_days").notNull().default(1),
+  runWindow: text("run_window").notNull().default("19:30-22:30"), // "HH:MM-HH:MM", PRM server local time
+  skipDayProbability: real("skip_day_probability").notNull().default(0.08),
+  downloadVideos: boolean("download_videos").notNull().default(false),
+  nextRunAt: timestamp("next_run_at"), // the scheduler's only state per importer
+  lastUsername: text("last_username"), // the @username the service reported on its last run
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const storyScrapeRuns = pgTable("story_scrape_runs", {
+  id: varchar("id").primaryKey(),
+  importerId: varchar("importer_id").references(() => storyImporters.id, { onDelete: "set null" }),
+  // starting | running | completed | skipped | needs_login | checkpoint | no_username | rate_limited | parse_failed | error | unreachable | already_running
+  status: text("status").notNull(),
+  startedAt: timestamp("started_at").notNull(),
+  finishedAt: timestamp("finished_at"),
+  counts: jsonb("counts").notNull().default(sql`'{}'::jsonb`),
+  items: jsonb("items").notNull().default(sql`'[]'::jsonb`),
+  error: text("error"),
+  scrapedFrom: text("scraped_from"),
+  tokenHash: text("token_hash"),
+  tokenExpiresAt: timestamp("token_expires_at"),
+}, (t) => [
+  index("story_scrape_runs_started_idx").on(t.startedAt),
+]);
+
 // Relations
 export const usersRelations = relations(users, ({ one }) => ({
   person: one(people, {
@@ -1120,6 +1164,9 @@ export const insertPersonSchema = createInsertSchema(people)
     additionalEmails: z.array(z.string()).optional(),
     additionalPhones: z.array(z.string()).optional(),
     deniedRecommendations: z.array(z.string()).optional(),
+    politicalLeftRight: z.number().min(-10).max(10).optional().nullable(),
+    politicalLibAuth: z.number().min(-10).max(10).optional().nullable(),
+    politicalUpdatedAt: z.coerce.date().optional().nullable(),
   });
 
 export const insertSchoolingSchema = createInsertSchema(schooling)
@@ -1554,6 +1601,8 @@ export type InsertPendingSocialAccountImport = z.infer<typeof insertPendingSocia
 export type Insight = typeof insights.$inferSelect;
 export type InsertInsight = typeof insights.$inferInsert;
 export type OsintScanQueueRow = typeof osintScanQueue.$inferSelect;
+export type StoryScrapeRun = typeof storyScrapeRuns.$inferSelect;
+export type StoryImporter = typeof storyImporters.$inferSelect;
 
 // Types
 export type User = typeof users.$inferSelect;

@@ -40,6 +40,12 @@ const importExportSections = [
     url: "/settings/import-export/instagram-xml",
   },
   {
+    title: "Instagram Stories",
+    description: "Collect the stories of everyone your Instagram accounts follow on a schedule, log in to Instagram through a live browser window, and review what each run found.",
+    icon: Camera,
+    url: "/settings/import-export/stories",
+  },
+  {
     title: "Image Pass In",
     description: "Automatically fill in missing profile images by pulling them from linked social accounts. People without a profile picture will inherit an image from their first social account that has one.",
     icon: ImageIcon,

@@ -10,6 +10,7 @@ import { registerRoutes as registerOsint } from "./routes/osint";
 import { registerRoutes as registerInsights } from "./routes/insights";
 import { registerRoutes as registerTps } from "./routes/tps";
 import { registerPendingImportsRoutes } from "./routes/pending-imports";
+import { registerStories } from "./routes/stories";
 import { registerRoutes as registerBackups } from "./routes/backups";
 import { registerRoutes as registerDescribeMe } from "./routes/describe-me";
 
@@ -27,6 +28,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // "Unauthorized", which would otherwise shadow every /api/v1/* route.
   registerTps(app);
   registerPendingImportsRoutes(app);
+  registerStories(app);
   registerAiVector(app);
   registerFamily(app);
   registerMessages(app);

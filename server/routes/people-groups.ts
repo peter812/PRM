@@ -190,6 +190,17 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    app.get("/api/political-leaning/next", async (req, res) => {
+      try {
+        const exclude = String(req.query.exclude ?? "").split(",").filter(Boolean);
+        const result = await storage.getRandomPersonWithoutPoliticalLeaning(exclude);
+        res.json({ person: result.person ?? null, remainingCount: result.remainingCount });
+      } catch (error) {
+        console.error("Error picking next person without political leaning:", error);
+        res.status(500).json({ error: "Failed to pick next person" });
+      }
+    });
+
     app.patch("/api/people/:id/elo-rankable", async (req, res) => {
       try {
         const id = req.params.id;
@@ -371,6 +382,16 @@ export function registerRoutes(app: Express) {
         const id = req.params.id;
         const { schooling: schoolingData, ...personBody } = req.body;
         const validatedData = publicInsertPersonSchema.partial().parse(personBody);
+
+        // Auto-manage politicalUpdatedAt if political coordinates are touched
+        if (personBody.politicalLeftRight !== undefined || personBody.politicalLibAuth !== undefined) {
+          if (validatedData.politicalLeftRight === null && validatedData.politicalLibAuth === null) {
+            validatedData.politicalUpdatedAt = null;
+          } else if (validatedData.politicalUpdatedAt === undefined) {
+            validatedData.politicalUpdatedAt = new Date();
+          }
+        }
+
         const person = await storage.updatePerson(id, validatedData);
   
         if (!person) {

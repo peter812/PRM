@@ -54,6 +54,7 @@ const DemosPage = lazy(() => import("@/pages/demos"));
 const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
 const GamesPage = lazy(() => import("@/pages/games"));
 const DescribeMePage = lazy(() => import("@/pages/describe-me"));
+const PoliticalLeaningGamePage = lazy(() => import("@/pages/political-leaning-game"));
 const ImageDetailPage = lazy(() => import("@/pages/image-detail"));
 const ImagesListPage = lazy(() => import("@/pages/images-list"));
 const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
@@ -168,6 +169,8 @@ function Router() {
         <ProtectedRoute path="/demos/osint/:tool" component={OsintDemoPage} />
         <ProtectedRoute path="/games" component={GamesPage} />
         <ProtectedRoute path="/describe-me" component={DescribeMePage} />
+        <ProtectedRoute path="/games/political-leaning" component={PoliticalLeaningGamePage} />
+        <ProtectedRoute path="/political-leaning-game" component={PoliticalLeaningGamePage} />
         <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
         <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
         <ProtectedRoute path="/unknown-faces" component={UnknownFaces} />
@@ -188,6 +191,11 @@ function Router() {
         <ProtectedRoute path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export/instagram-xml" />} />
         <ProtectedRoute path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export/image-pass-in" />} />
         <ProtectedRoute path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
+        <ProtectedRoute path="/osint" component={() => <Redirect to="/settings/osint" />} />
+        <ProtectedRoute path="/settings/social-accounts/:uuid*" component={({ params }) => {
+          const search = typeof window !== "undefined" ? window.location.search : "";
+          return <Redirect to={`/social-accounts/${(params as any)?.uuid || ""}${search}`} replace />;
+        }} />
         <ProtectedRoute path="/settings" nest component={SettingsLayout} />
         <Route component={NotFound} />
       </Switch>

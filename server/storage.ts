@@ -146,7 +146,7 @@ import {
 import { computeFamilyLabels } from "./family-relations-helper";
 import { visibleShared, ownedByCurrentUser, currentAccess, actingUserId } from "./access";
 import { db, pool } from "./db";
-import { eq, or, and, ilike, sql, inArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
+import { eq, or, and, ilike, sql, inArray, notInArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { deleteImageLocally, isLocalImageUrl } from "./local-storage";
@@ -265,6 +265,7 @@ export interface IStorage {
   updateEloScores(winnerId: string, loserId: string): Promise<{ winner: Person; loser: Person }>;
   getRandomPeoplePair(): Promise<Person[]>;
   getRandomDescribablePerson(excludeIds: string[]): Promise<Person | undefined>;
+  getRandomPersonWithoutPoliticalLeaning(excludeIds: string[]): Promise<{ person?: Person; remainingCount: number }>;
 
   // Schooling operations
   getSchoolingByPersonId(personId: string): Promise<Schooling | undefined>;
@@ -1416,13 +1417,35 @@ export class DatabaseStorage implements IStorage {
         and(
           sql`(${people.lastDescribedAt} IS NULL OR ${people.lastDescribedAt} < NOW() - INTERVAL '90 days')`,
           selfUserId === null ? undefined : sql`(${people.userId} IS NULL OR ${people.userId} <> ${selfUserId})`,
-          excludeIds.length ? sql`${people.id} <> ALL(${excludeIds}::text[])` : undefined,
+          excludeIds.length ? notInArray(people.id, excludeIds) : undefined,
           visibleShared(people.visibility, people.createdByUserId),
         )
       )
       .orderBy(sql`RANDOM()`)
       .limit(1);
     return person;
+  }
+
+  async getRandomPersonWithoutPoliticalLeaning(excludeIds: string[]): Promise<{ person?: Person; remainingCount: number }> {
+    const baseConditions = and(
+      sql`(${people.politicalLeftRight} IS NULL OR ${people.politicalLibAuth} IS NULL)`,
+      visibleShared(people.visibility, people.createdByUserId),
+      excludeIds.length ? notInArray(people.id, excludeIds) : undefined,
+    );
+
+    const [countResult] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(people)
+      .where(baseConditions);
+
+    const [person] = await db
+      .select()
+      .from(people)
+      .where(baseConditions)
+      .orderBy(sql`RANDOM()`)
+      .limit(1);
+
+    return { person: person || undefined, remainingCount: countResult?.count ?? 0 };
   }
 
   private async removePersonFromInteractions(personId: string): Promise<void> {

@@ -16,15 +16,13 @@ import type { SocialAccountWithCurrentProfile } from "@shared/schema";
 interface ExportSocialAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  account?: SocialAccountWithCurrentProfile;
-  massExport?: boolean;
+  account: SocialAccountWithCurrentProfile;
 }
 
 export function ExportSocialAccountDialog({
   open,
   onOpenChange,
   account,
-  massExport,
 }: ExportSocialAccountDialogProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [includeHistory, setIncludeHistory] = useState(false);
@@ -34,16 +32,14 @@ export function ExportSocialAccountDialog({
     setIsExporting(true);
     try {
       const params = new URLSearchParams();
-      if (account && !massExport) {
-        params.set("ids", account.id);
-      }
+      params.set("ids", account.id);
       if (includeHistory) {
         params.set("includeHistory", "true");
       }
 
       const queryString = params.toString();
       const response = await fetch(
-        `/api/social-accounts/export-xml${queryString ? `?${queryString}` : ""}`,
+        `/api/social-accounts/export-xml?${queryString}`,
         { credentials: "include" }
       );
 
@@ -55,9 +51,7 @@ export function ExportSocialAccountDialog({
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = massExport
-        ? `social_accounts_export_all.xml`
-        : `${account?.username || "social_account"}_export.xml`;
+      a.download = `${account.username || "social_account"}_export.xml`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -65,9 +59,7 @@ export function ExportSocialAccountDialog({
 
       toast({
         title: "Export Successful",
-        description: massExport
-          ? "Exported all social accounts to XML file"
-          : `Exported ${account?.username} to XML file`,
+        description: `Exported ${account.username} to XML file`,
       });
       onOpenChange(false);
     } catch (error) {
@@ -81,39 +73,34 @@ export function ExportSocialAccountDialog({
     }
   };
 
-  const title = massExport ? "Export All Social Accounts" : "Export Social Account";
-  const description = massExport
-    ? "Export all social accounts to an XML file. This will include account details, followers, and following data."
-    : `Export ${account?.username || ""} to an XML file. This will include the account details, followers, and following data.`;
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
+          <DialogTitle>Export Social Account</DialogTitle>
+          <DialogDescription>
+            Export {account.username} to an XML file. This will include the account details, followers, and following data.
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          {account && !massExport && (
-            <div className="rounded-md border p-4 space-y-2">
-              <p className="text-sm font-medium" data-testid="text-export-username">
-                {account.username}
+          <div className="rounded-md border p-4 space-y-2">
+            <p className="text-sm font-medium" data-testid="text-export-username">
+              {account.username}
+            </p>
+            {account.currentProfile?.nickname && (
+              <p className="text-sm text-muted-foreground" data-testid="text-export-nickname">
+                {account.currentProfile?.nickname}
               </p>
-              {account.currentProfile?.nickname && (
-                <p className="text-sm text-muted-foreground" data-testid="text-export-nickname">
-                  {account.currentProfile?.nickname}
-                </p>
-              )}
-              <div className="flex gap-4 text-xs text-muted-foreground">
-                <span data-testid="text-export-followers">
-                  {account.latestState?.followerCount || 0} followers
-                </span>
-                <span data-testid="text-export-following">
-                  {account.latestState?.followingCount || 0} following
-                </span>
-              </div>
+            )}
+            <div className="flex gap-4 text-xs text-muted-foreground">
+              <span data-testid="text-export-followers">
+                {account.latestState?.followerCount || 0} followers
+              </span>
+              <span data-testid="text-export-following">
+                {account.latestState?.followingCount || 0} following
+              </span>
             </div>
-          )}
+          </div>
 
           <div className="flex items-center justify-between rounded-md border p-4">
             <div className="space-y-0.5">

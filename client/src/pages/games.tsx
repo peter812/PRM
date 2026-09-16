@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Trophy, HelpCircle, MessageSquareText } from "lucide-react";
+import { Trophy, HelpCircle, MessageSquareText, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function GamesPage() {
@@ -70,6 +70,26 @@ export default function GamesPage() {
             </p>
             <Button asChild className="w-full">
               <Link href="/describe-me">Play Describe Me</Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Compass className="h-5 w-5 text-indigo-500" />
+              Political Leaning
+            </CardTitle>
+            <CardDescription>
+              Assign political compass coordinates to your contacts.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-6 text-sm text-muted-foreground">
+              Map people in your network onto the 2D political compass (economic left/right and social libertarian/authoritarian). Quickly categorize unrated profiles with the option to skip.
+            </p>
+            <Button asChild className="w-full">
+              <Link href="/games/political-leaning">Play Political Leaning</Link>
             </Button>
           </CardContent>
         </Card>

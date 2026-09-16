@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare, Radar } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -50,11 +50,13 @@ const RecognitionSettingsPage = lazy(() => import("@/pages/recognition-settings"
 const RecognitionImagesPage = lazy(() => import("@/pages/recognition-images"));
 const RecognitionFacesPage = lazy(() => import("@/pages/recognition-faces"));
 const SocialGraphSettingsPage = lazy(() => import("@/pages/social-graph-settings"));
+const StoriesSettingsPage = lazy(() => import("@/pages/stories-settings"));
 const IntelligenceSettingsPage = lazy(() => import("@/pages/intelligence-settings"));
 const IntelligenceToolsSettingsPage = lazy(() => import("@/pages/intelligence-tools-settings"));
 const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelligence-external-tools-settings"));
 const IntelligenceImagesSettingsPage = lazy(() => import("@/pages/intelligence-images-settings"));
 const VectorSettingsPage = lazy(() => import("@/pages/vector-settings"));
+const OsintSettingsPage = lazy(() => import("@/pages/osint-settings"));
 const TaskDetailPage = lazy(() => import("@/pages/task-detail"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -121,6 +123,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "External Tools", url: "/settings/intelligence/external-tools", icon: Plug },
       { title: "Images", url: "/settings/intelligence/images", icon: ImageIcon },
       { title: "Vector Storage", url: "/settings/vector", icon: Database },
+      { title: "OSINT", url: "/settings/osint", icon: Radar },
     ],
   },
   {
@@ -143,6 +146,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Backups", url: "/settings/import-export/backups", icon: Archive },
       { title: "Image Pass In", url: "/settings/import-export/image-pass-in", icon: ImageIcon },
       { title: "Instagram XML Transfer", url: "/settings/import-export/instagram-xml", icon: Camera },
+      { title: "Instagram Stories", url: "/settings/import-export/stories", icon: Camera },
     ],
   },
   {
@@ -180,7 +184,10 @@ export function SettingsSidebar() {
     location.startsWith("/settings/delete");
   const isApiDocsActive = location.startsWith("/settings/api");
   const isImageStorageActive = location.startsWith("/settings/image-storage") && location !== "/settings/image-storage/tasks";
-  const isIntelligenceActive = location.startsWith("/settings/intelligence") || location === "/settings/vector";
+  const isIntelligenceActive =
+    location.startsWith("/settings/intelligence") ||
+    location === "/settings/vector" ||
+    location.startsWith("/settings/osint");
   const isTasksActive = location.startsWith("/settings/tasks") || location === "/settings/image-tasks" || location === "/settings/image-storage/tasks";
 
   function getIsActive(item: MenuItem): boolean {
@@ -292,6 +299,7 @@ export default function SettingsLayout() {
           <Route path="/intelligence/images" component={IntelligenceImagesSettingsPage} />
           <Route path="/intelligence" component={IntelligenceSettingsPage} />
           <Route path="/vector" component={VectorSettingsPage} />
+          <Route path="/osint" component={OsintSettingsPage} />
           <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />
           <Route path="/instagram" component={() => <Redirect to="/import-export/instagram-xml" />} />
           <Route path="/tasks" component={TasksSettingsPage} />
@@ -300,6 +308,7 @@ export default function SettingsLayout() {
           <Route path="/recognition/images" component={RecognitionImagesPage} />
           <Route path="/recognition/faces" component={RecognitionFacesPage} />
           <Route path="/recognition" component={RecognitionSettingsPage} />
+          <Route path="/import-export/stories" component={StoriesSettingsPage} />
           <Route path="/import-export/contacts" component={ImportContactsPage} />
           <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
           <Route path="/import-export/messages" component={ImportMessagesPage} />
@@ -315,6 +324,12 @@ export default function SettingsLayout() {
           <Route path="/api/settings" component={ApiSettingsPage} />
           <Route path="/api" component={ApiDocs} />
           <Route path="/delete" component={DeleteOptionsPage} />
+          <Route path="/social-accounts/:uuid*">
+            {(params: any) => {
+              const search = typeof window !== "undefined" ? window.location.search : "";
+              return <Redirect to={`~/social-accounts/${params?.uuid || ""}${search}`} replace />;
+            }}
+          </Route>
           <Route component={NotFound} />
         </Switch>
       </Suspense>

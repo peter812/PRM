@@ -1,8 +1,8 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, Layers } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -37,6 +37,7 @@ import { PostDialog } from "@/components/post-dialog";
 import { PostDetailDialog } from "@/components/post-detail-dialog";
 import { SiInstagram } from "react-icons/si";
 import { MessagesTab } from "@/components/messages-tab";
+import { StoriesTab } from "@/components/stories-tab";
 import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
 import { InsightsTab } from "@/components/insights-tab";
 import { SocialAccountRow } from "@/components/social-account-row";
@@ -52,7 +53,39 @@ export default function SocialAccountProfile() {
   const { uuid } = useParams<{ uuid: string }>();
   const [location, navigate] = useLocation();
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("account");
+  const VALID_TABS = ["account", "follow", "posts", "stories", "messages", "history", "insights"];
+
+  const getTabFromSearch = () => {
+    if (typeof window === "undefined") return "account";
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get("tab");
+    if (tabParam && VALID_TABS.includes(tabParam)) {
+      return tabParam;
+    }
+    return "account";
+  };
+
+  const [activeTab, setActiveTab] = useState(getTabFromSearch);
+
+  useEffect(() => {
+    const tab = getTabFromSearch();
+    if (tab !== activeTab) {
+      setActiveTab(tab);
+    }
+  }, [location]);
+
+  const handleTabChange = (newTab: string) => {
+    setActiveTab(newTab);
+    const params = new URLSearchParams(window.location.search);
+    if (newTab === "account") {
+      params.delete("tab");
+    } else {
+      params.set("tab", newTab);
+    }
+    const searchStr = params.toString();
+    const newUrl = `${window.location.pathname}${searchStr ? `?${searchStr}` : ""}`;
+    window.history.replaceState(null, "", newUrl);
+  };
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isLinkFollowingOpen, setIsLinkFollowingOpen] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
@@ -184,10 +217,13 @@ export default function SocialAccountProfile() {
   const followingTotal = followingData?.pages[0]?.total ?? 0;
 
   // Query posts for this social account
-  const { data: posts } = useQuery<SocialAccountPost[]>({
+  const { data: allPosts } = useQuery<SocialAccountPost[]>({
     queryKey: ["/api/social-accounts", uuid, "posts"],
     enabled: !!uuid,
   });
+  // Stories share the table with posts (post_type "story") but get their own tab.
+  const posts = allPosts?.filter((p) => p.postType !== "story");
+  const stories = allPosts?.filter((p) => p.postType === "story") ?? [];
 
   // Recent journal entries, for the "profile image updated" line in the info dialog
   const { data: recentHistory } = useQuery<{ items: SocialAccountHistoryEntry[] }>({
@@ -589,7 +625,7 @@ export default function SocialAccountProfile() {
       </div>
 
       {/* Main Content Area with Left Sidebar Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col md:flex-row overflow-hidden">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Left Side Navigation Menu */}
         <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between overflow-y-auto">
           <div className="p-3">
@@ -614,6 +650,13 @@ export default function SocialAccountProfile() {
                 data-testid="tab-posts"
               >
                 Posts
+              </TabsTrigger>
+              <TabsTrigger
+                value="stories"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-stories"
+              >
+                Stories
               </TabsTrigger>
               <TabsTrigger
                 value="messages"
@@ -812,7 +855,7 @@ export default function SocialAccountProfile() {
                         <Users className="h-4 w-4 text-muted-foreground" />
                         Followers ({account.latestState?.followerCount || followersTotal || 0})
                       </span>
-                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                      <Button variant="ghost" size="sm" onClick={() => handleTabChange("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
                     </h3>
                     {followers.length > 0 ? (
                       <div className="space-y-2 text-xs">
@@ -851,7 +894,7 @@ export default function SocialAccountProfile() {
                         <Users className="h-4 w-4 text-muted-foreground" />
                         Following ({account.latestState?.followingCount || followingTotal || 0})
                       </span>
-                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                      <Button variant="ghost" size="sm" onClick={() => handleTabChange("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
                     </h3>
                     {followingList.length > 0 ? (
                       <div className="space-y-2 text-xs">
@@ -891,7 +934,7 @@ export default function SocialAccountProfile() {
                       <ImageIcon className="h-4 w-4 text-muted-foreground" />
                       Posts ({posts?.length || 0})
                     </span>
-                    <Button variant="ghost" size="sm" onClick={() => setActiveTab("posts")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                    <Button variant="ghost" size="sm" onClick={() => handleTabChange("posts")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
                   </h3>
                   {posts && posts.length > 0 ? (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -931,6 +974,60 @@ export default function SocialAccountProfile() {
                     </div>
                   ) : (
                     <p className="text-xs text-muted-foreground italic">No posts recorded.</p>
+                  )}
+                </Card>
+
+                {/* Summaries: Stories Overview */}
+                <Card className="p-4 space-y-3 shadow-none">
+                  <h3 className="font-semibold text-sm flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Layers className="h-4 w-4 text-muted-foreground" />
+                      Stories ({stories?.length || 0})
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleTabChange("stories")}
+                      className="text-[11px] h-6 px-2 text-primary hover:text-primary"
+                      data-testid="button-view-all-stories"
+                    >
+                      View all
+                    </Button>
+                  </h3>
+                  {stories && stories.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2">
+                      {stories.slice(0, 6).map((story) => {
+                        let images: string[] = [];
+                        try {
+                          images = story.content ? JSON.parse(story.content) : [];
+                        } catch {
+                          images = [];
+                        }
+                        const firstImage = images[0] || null;
+
+                        return (
+                          <div
+                            key={story.id}
+                            className="aspect-[9/16] rounded-md border bg-muted overflow-hidden relative cursor-pointer hover:opacity-90 transition-opacity"
+                            onClick={() => handleTabChange("stories")}
+                            data-testid={`overview-story-${story.id}`}
+                          >
+                            {firstImage ? (
+                              <img src={firstImage} alt="Story thumbnail" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <ImageIcon className="h-6 w-6 text-muted-foreground/40" />
+                              </div>
+                            )}
+                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1 text-[10px] text-white truncate">
+                              {story.postedAt ? new Date(story.postedAt).toLocaleDateString() : ""}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground italic">No stories recorded yet.</p>
                   )}
                 </Card>
 
@@ -1347,6 +1444,10 @@ export default function SocialAccountProfile() {
 
           {/* Messages Tab */}
           {/* Messages Tab */}
+          <TabsContent value="stories" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <StoriesTab stories={stories} />
+          </TabsContent>
+
           <TabsContent value="messages" className="mt-0 flex-1 min-h-0">
             <MessagesTab socialAccountId={account.id} />
           </TabsContent>

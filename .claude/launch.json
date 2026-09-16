@@ -10,6 +10,19 @@
       ],
       "port": 5000,
       "autoPort": true
+    },
+    {
+      "name": "prm-dev-noauth",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "cross-env",
+        "DISABLE_AUTH=true",
+        "NODE_ENV=development",
+        "tsx",
+        "server/index.ts"
+      ],
+      "port": 5000,
+      "autoPort": true
     }
   ]
 }

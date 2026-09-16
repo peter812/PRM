@@ -401,7 +401,7 @@ export default function SettingsHomePage() {
               status={osintStatus.status}
               statusText={osintStatus.text}
               details={osintStatus.details}
-              link="/experimental"
+              link="/osint"
               icon={Radar}
             />
           </div>

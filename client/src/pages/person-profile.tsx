@@ -38,6 +38,7 @@ import { getInitials } from "@/lib/utils";
 import { MessagesTab } from "@/components/messages-tab";
 import { InsightsTab } from "@/components/insights-tab";
 import { TrueDbTab } from "@/components/true-db-tab";
+import { PoliticalLeaningCard } from "@/components/political-leaning-card";
 
 function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit?: number }) {
   const { data, isLoading } = useQuery<any>({
@@ -635,6 +636,9 @@ export default function PersonProfile() {
                     <PersonTagsChips personId={person.id} tags={person.tags || []} />
                   </div>
                 </Card>
+
+                {/* Political Leaning */}
+                <PoliticalLeaningCard person={person} />
               </div>
             </div>
           </TabsContent>

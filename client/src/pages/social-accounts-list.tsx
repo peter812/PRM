@@ -52,10 +52,22 @@ export default function SocialAccountsList() {
   const [accountToDelete, setAccountToDelete] = useState<SocialAccountWithCurrentProfile | null>(null);
   const [accountToEdit, setAccountToEdit] = useState<SocialAccountWithCurrentProfile | null>(null);
   const [accountToExport, setAccountToExport] = useState<SocialAccountWithCurrentProfile | null>(null);
-  const [showMassExportDialog, setShowMassExportDialog] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const prevSearchRef = useRef("");
   const debouncedSearch = useDebounce(searchQuery, 300);
-  const [showFollowsYou, setShowFollowsYou] = useState(false);
+  const [showFollowsYou, setShowFollowsYou] = useState(true);
+
+  const handleSearchChange = (val: string) => {
+    const wasEmpty = !prevSearchRef.current.trim();
+    const isNowEmpty = !val.trim();
+    if (wasEmpty && !isNowEmpty) {
+      setShowFollowsYou(false);
+    } else if (!wasEmpty && isNowEmpty) {
+      setShowFollowsYou(true);
+    }
+    prevSearchRef.current = val;
+    setSearchQuery(val);
+  };
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -198,7 +210,7 @@ export default function SocialAccountsList() {
             <Input
               placeholder="Search accounts..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               data-testid="input-search-accounts"
             />
           </div>
@@ -258,15 +270,6 @@ export default function SocialAccountsList() {
               </SelectContent>
             </Select>
           </div>
-          <Button
-            variant="outline"
-            size="icon"
-            className="hidden md:inline-flex shrink-0"
-            onClick={() => setShowMassExportDialog(true)}
-            data-testid="button-mass-export"
-          >
-            <Download className="h-4 w-4" />
-          </Button>
           <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex shrink-0" data-testid="button-add-account">
             <Plus className="h-4 w-4" />
             Add Account
@@ -896,11 +899,6 @@ export default function SocialAccountsList() {
         />
       )}
 
-      <ExportSocialAccountDialog
-        open={showMassExportDialog}
-        onOpenChange={setShowMassExportDialog}
-        massExport
-      />
 
       <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && setAccountToDelete(null)}>
         <AlertDialogContent>

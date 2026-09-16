@@ -61,6 +61,7 @@ import { parseExportZipName } from "../instagram-dm-import";
 import { runAsUser, preserveAccess } from "../access";
 
 
+const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 // Instagram DM export zips can contain video and far exceed what we want in
@@ -172,6 +173,13 @@ export function registerRoutes(app: Express) {
     app.get("/api/social-accounts/export-xml", async (req, res) => {
       try {
         const ids = req.query.ids as string | undefined;
+        if (!ids) {
+          return res.status(400).json({ error: "ids query parameter is required" });
+        }
+        const accountIds = ids.split(",").map(id => id.trim()).filter(Boolean);
+        if (accountIds.length === 0) {
+          return res.status(400).json({ error: "At least one social account ID must be provided" });
+        }
         const includeHistory = req.query.includeHistory === "true";
   
         const allSocialAccountTypes = await storage.getAllSocialAccountTypes();
@@ -183,18 +191,9 @@ export function registerRoutes(app: Express) {
         const typeIdsUsed = new Set<string>();
         const accounts: SocialAccountWithCurrentProfile[] = [];
   
-        if (ids) {
-          const accountIds = ids.split(",").map(id => id.trim()).filter(Boolean);
-          for (const id of accountIds) {
-            const account = await storage.getSocialAccountById(id);
-            if (account) {
-              accounts.push(account);
-              if (account.typeId) typeIdsUsed.add(account.typeId);
-            }
-          }
-        } else {
-          const allAccounts = await storage.getAllSocialAccounts();
-          for (const account of allAccounts) {
+        for (const id of accountIds) {
+          const account = await storage.getSocialAccountById(id);
+          if (account) {
             accounts.push(account);
             if (account.typeId) typeIdsUsed.add(account.typeId);
           }
@@ -289,9 +288,7 @@ export function registerRoutes(app: Express) {
   
         xml += '</social_accounts_export>\n';
   
-        const filename = ids
-          ? `social_accounts_export.xml`
-          : `social_accounts_export_all.xml`;
+        const filename = "social_accounts_export.xml";
         res.setHeader("Content-Type", "application/xml");
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.send(xml);
@@ -514,7 +511,21 @@ export function registerRoutes(app: Express) {
   
     app.get("/api/social-accounts/:id", async (req, res) => {
       try {
-        const account = await storage.getSocialAccountById(req.params.id);
+        let account = await storage.getSocialAccountById(req.params.id);
+        if (!account) {
+          const normalized = req.params.id.trim().toLowerCase();
+          const [found] = await db
+            .select({ id: socialAccounts.id })
+            .from(socialAccounts)
+            .where(eq(sql`LOWER(${socialAccounts.username})`, normalized))
+            .orderBy(
+              sql`CASE WHEN ${socialAccounts.typeId} = ${INSTAGRAM_TYPE_ID} THEN 0 ELSE 1 END`
+            )
+            .limit(1);
+          if (found) {
+            account = await storage.getSocialAccountById(found.id);
+          }
+        }
         if (!account) {
           return res.status(404).json({ error: "Social account not found" });
         }
@@ -2816,7 +2827,7 @@ const importInstagramPostSchema = z.object({
   }),
 });
 
-function generateDeterministicUuid(input: string): string {
+export function generateDeterministicUuid(input: string): string {
   const hash = crypto.createHash("sha256").update(input).digest("hex");
   return [
     hash.substring(0, 8),
