@@ -351,7 +351,7 @@ function MatchModal({ item, apiUrl, onClose }: { item: ImageItem | null; apiUrl:
             <div className="flex items-start gap-3 rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm">
               <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-destructive" />
               <div className="text-destructive space-y-1">
-                <p className="font-medium">Failed to load image details from PRM-Face.</p>
+                <p className="font-medium">Failed to load image details from PRM-Compute.</p>
                 {error instanceof Error && <p className="text-xs opacity-80">{error.message}</p>}
               </div>
             </div>
@@ -592,7 +592,7 @@ export default function RecognitionImagesPage() {
             <div className="space-y-1">
               <p className="text-destructive font-medium">Invalid or missing API key</p>
               <p className="text-muted-foreground">
-                PRM-Face rejected the request. Please{" "}
+                PRM-Compute rejected the request. Please{" "}
                 <Link href="/settings/recognition" className="underline text-foreground hover:text-foreground/80">
                   regenerate your API key
                 </Link>{" "}

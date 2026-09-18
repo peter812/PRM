@@ -5,8 +5,10 @@ import {
   socialFollows,
   type SocialAccountHistory,
 } from "@shared/schema";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import crypto from "crypto";
+import { applyMeRule } from "./tracking";
+import type { ProfileImageOutcome } from "./profile-image";
 
 /**
  * Which directions a scrape actually captured.
@@ -16,9 +18,9 @@ import crypto from "crypto";
  * profile-only refresh carries no follower list, and without this it would read
  * as an unfollow of every account at once.
  */
-export type CaptureScope = "both" | "followers" | "following" | "profile" | "none";
+export type CaptureScope = "both" | "followers" | "following" | "profile" | "posts" | "none";
 
-export type ChangeSource = "extension" | "xml-import" | "csv-import" | "manual";
+export type ChangeSource = "extension" | "xml-import" | "csv-import" | "manual" | "prm-stories" | "image-pipeline";
 
 export interface IngestSnapshot {
   socialAccountId: string;
@@ -31,11 +33,17 @@ export interface IngestSnapshot {
     bio?: string | null;
     location?: string | null;
     accountUrl?: string | null;
-    /** A stable PRM/S3 url. Pass only when the image genuinely changed. */
-    imageUrl?: string | null;
+    /**
+     * What the picture became, from applyProfileImageVerdict. Pass only when the
+     * classifier said to replace; the entry then carries both previous urls and
+     * the change kind.
+     */
+    image?: ProfileImageOutcome;
     externalImageUrl?: string | null;
     reportedFollowersCount?: number | null;
     reportedFollowingCount?: number | null;
+    /** From Instagram's About dialog; a fact, so no previous value is kept. */
+    joinedAt?: Date | null;
   };
   source: ChangeSource;
   pendingImportId?: string | null;
@@ -54,37 +62,71 @@ export interface IngestSnapshot {
  */
 export async function recordProfileImageChange(
   socialAccountId: string,
-  newImageUrl: string,
-  previousImageUrl: string | null,
+  image: ProfileImageOutcome,
+  source: ChangeSource = "image-pipeline",
 ): Promise<void> {
-  if (previousImageUrl === newImageUrl) return;
-
   await db.transaction(async (tx) => {
     const [account] = await tx
       .select({
         followers: socialAccounts.followersCount,
         following: socialAccounts.followingCount,
+        imageUrl: socialAccounts.imageUrl,
+        imageUrlHq: socialAccounts.imageUrlHq,
       })
       .from(socialAccounts)
       .where(eq(socialAccounts.id, socialAccountId));
     if (!account) return;
+    if (account.imageUrl === image.imageUrl && account.imageUrlHq === image.imageUrlHq) return;
 
     await tx
       .update(socialAccounts)
-      .set({ imageUrl: newImageUrl })
+      .set({ imageUrl: image.imageUrl, imageUrlHq: image.imageUrlHq })
       .where(eq(socialAccounts.id, socialAccountId));
 
     await tx.insert(socialAccountHistory).values({
       socialAccountId,
       batchId: crypto.randomUUID(),
       entryKind: "direct",
-      changeSource: "image-pipeline",
+      changeSource: source,
       captureScope: "profile",
       followersAfter: account.followers,
       followingAfter: account.following,
       profileFieldsChanged: ["image"],
-      previousImageUrl,
+      previousImageUrl: account.imageUrl,
+      previousImageUrlHq: account.imageUrlHq,
+      imageChange: image.imageChange,
     });
+  });
+}
+
+/**
+ * Records what a posts check did: the posts it imported and the ones it marked
+ * deleted. Posts live in their own table and never move a follower count, so this
+ * is a plain journal entry — the counts ride along unchanged so the timeline's
+ * follower columns stay continuous.
+ */
+export async function recordPostsCapture(
+  socialAccountId: string,
+  posts: { added: string[]; deleted: string[] },
+  source: ChangeSource,
+): Promise<void> {
+  const [account] = await db
+    .select({ followers: socialAccounts.followersCount, following: socialAccounts.followingCount })
+    .from(socialAccounts)
+    .where(eq(socialAccounts.id, socialAccountId));
+  if (!account) return;
+
+  await db.insert(socialAccountHistory).values({
+    socialAccountId,
+    batchId: crypto.randomUUID(),
+    entryKind: "direct",
+    changeSource: source,
+    captureScope: "posts",
+    followersAfter: account.followers,
+    followingAfter: account.following,
+    postsAdded: posts.added.length,
+    postsDeleted: posts.deleted.length,
+    delta: { postsAdded: posts.added, postsDeleted: posts.deleted },
   });
 }
 
@@ -100,12 +142,17 @@ async function chunked<T>(items: T[], run: (batch: T[]) => Promise<unknown>): Pr
   }
 }
 
-/** Profile fields the journal tracks, paired with where the previous value is stored. */
+/**
+ * Profile fields the journal tracks, paired with where the previous value is
+ * stored. `joined` has no previous column: the date is only ever filled in.
+ */
 const TRACKED_FIELDS = [
+  { field: "username", column: "previousUsername" },
   { field: "nickname", column: "previousNickname" },
   { field: "bio", column: "previousBio" },
   { field: "location", column: "previousLocation" },
   { field: "image", column: "previousImageUrl" },
+  { field: "joined", column: null },
 ] as const;
 
 /**
@@ -123,8 +170,10 @@ const TRACKED_FIELDS = [
  */
 export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccountHistory> {
   const batchId = crypto.randomUUID();
+  // Every account an added edge touched; the "me" rule grades them once the edges are committed.
+  let touched: string[] = [];
 
-  return db.transaction(async (tx) => {
+  const written = await db.transaction(async (tx) => {
     // A stuck ingest holds row locks on every account it touches, and the pool has no
     // statement timeout of its own. Bound it here rather than discovering the ceiling
     // in production.
@@ -148,6 +197,7 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
     // once did, excluding only baselines) made the flag false for almost everyone,
     // since accounts enter the system as neighbours of the first import that names
     // them, which put a fabricated spike at the head of nearly every history.
+    // A posts check never looks at the graph either, so it doesn't count.
     const [{ count: priorCaptures }] = await tx
       .select({ count: sql<number>`COUNT(*)::int` })
       .from(socialAccountHistory)
@@ -155,6 +205,7 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
         and(
           eq(socialAccountHistory.socialAccountId, snap.socialAccountId),
           eq(socialAccountHistory.entryKind, "direct"),
+          ne(socialAccountHistory.captureScope, "posts"),
         ),
       );
     const isInitialCapture = priorCaptures === 0;
@@ -235,10 +286,12 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
     // empty, and that is a real change worth recording.
     const p = snap.profile ?? {};
     const candidates: Record<string, { next: unknown; prev: unknown }> = {
+      username: { next: (snap as any).username ?? (p as any).username, prev: before.username },
       nickname: { next: p.nickname, prev: before.nickname },
       bio: { next: p.bio, prev: before.bio },
       location: { next: p.location, prev: before.location },
-      image: { next: p.imageUrl, prev: before.imageUrl },
+      image: { next: p.image?.imageUrl, prev: before.imageUrl },
+      joined: { next: p.joinedAt?.getTime(), prev: before.joinedAt?.getTime() },
     };
 
     const profileFieldsChanged: string[] = [];
@@ -248,7 +301,11 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
       if (next === undefined) continue;
       if ((next ?? null) === (prev ?? null)) continue;
       profileFieldsChanged.push(field);
-      previousValues[column] = (prev ?? null) as string | null;
+      if (column) previousValues[column] = (prev ?? null) as string | null;
+    }
+    if (p.image) {
+      previousValues.previousImageUrlHq = before.imageUrlHq;
+      previousValues.imageChange = p.image.imageChange;
     }
 
     const followersAfter = before.followersCount + followers.added.length - followers.lost.length;
@@ -262,8 +319,9 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
         ...(p.bio !== undefined ? { bio: p.bio } : {}),
         ...(p.location !== undefined ? { location: p.location } : {}),
         ...(p.accountUrl !== undefined ? { accountUrl: p.accountUrl } : {}),
-        ...(p.imageUrl !== undefined ? { imageUrl: p.imageUrl } : {}),
+        ...(p.image ? { imageUrl: p.image.imageUrl, imageUrlHq: p.image.imageUrlHq } : {}),
         ...(p.externalImageUrl !== undefined ? { externalImageUrl: p.externalImageUrl } : {}),
+        ...(p.joinedAt !== undefined ? { joinedAt: p.joinedAt } : {}),
         ...(p.reportedFollowersCount !== undefined
           ? { reportedFollowersCount: p.reportedFollowersCount }
           : {}),
@@ -382,6 +440,77 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
       }
     }
 
+    touched = [snap.socialAccountId, ...followers.added, ...following.added];
     return entry;
+  });
+
+  await applyMeRule(touched);
+  return written;
+}
+
+/**
+ * Records profile changes (such as username, display name, bio, etc.)
+ * made directly or via manual edit into social_account_history.
+ */
+export async function recordAccountProfileChanges(
+  socialAccountId: string,
+  changes: {
+    username?: string;
+    nickname?: string | null;
+    bio?: string | null;
+    /** Null clears the picture; an outcome replaces it (applyProfileImageVerdict). */
+    image?: ProfileImageOutcome | null;
+    location?: string | null;
+  },
+  existing: {
+    username: string;
+    nickname?: string | null;
+    bio?: string | null;
+    imageUrl?: string | null;
+    imageUrlHq?: string | null;
+    location?: string | null;
+    followersCount?: number | null;
+    followingCount?: number | null;
+  },
+  source: ChangeSource = "manual",
+): Promise<void> {
+  const profileFieldsChanged: string[] = [];
+  const previousValues: Record<string, string | null> = {};
+
+  if (changes.username !== undefined && changes.username !== existing.username) {
+    profileFieldsChanged.push("username");
+    previousValues.previousUsername = existing.username;
+  }
+  if (changes.nickname !== undefined && (changes.nickname ?? null) !== (existing.nickname ?? null)) {
+    profileFieldsChanged.push("nickname");
+    previousValues.previousNickname = existing.nickname ?? null;
+  }
+  if (changes.bio !== undefined && (changes.bio ?? null) !== (existing.bio ?? null)) {
+    profileFieldsChanged.push("bio");
+    previousValues.previousBio = existing.bio ?? null;
+  }
+  if (changes.image !== undefined && (changes.image?.imageUrl ?? null) !== (existing.imageUrl ?? null)) {
+    profileFieldsChanged.push("image");
+    previousValues.previousImageUrl = existing.imageUrl ?? null;
+    previousValues.previousImageUrlHq = existing.imageUrlHq ?? null;
+    previousValues.imageChange = changes.image?.imageChange ?? null;
+  }
+  if (changes.location !== undefined && (changes.location ?? null) !== (existing.location ?? null)) {
+    profileFieldsChanged.push("location");
+    previousValues.previousLocation = existing.location ?? null;
+  }
+
+  if (profileFieldsChanged.length === 0) return;
+
+  await db.insert(socialAccountHistory).values({
+    socialAccountId,
+    batchId: crypto.randomUUID(),
+    entryKind: "direct",
+    changeSource: source,
+    captureScope: "profile",
+    followersAfter: existing.followersCount ?? 0,
+    followingAfter: existing.followingCount ?? 0,
+    profileFieldsChanged,
+    ...previousValues,
   });
 }

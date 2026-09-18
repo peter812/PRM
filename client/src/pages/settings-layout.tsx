@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Share2, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare, Radar } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare, Radar, Instagram, Server, History } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -36,10 +36,8 @@ const ApiDocs = lazy(() => import("@/pages/api-docs"));
 const DeleteOptionsPage = lazy(() => import("@/pages/delete-options"));
 const ImportExportHome = lazy(() => import("@/pages/import-export-home"));
 const ImportContactsPage = lazy(() => import("@/pages/import-contacts"));
-const ImportSocialMediaPage = lazy(() => import("@/pages/import-social-media"));
 const BackupsPage = lazy(() => import("@/pages/backups-page"));
 const ImagePassInPage = lazy(() => import("@/pages/image-pass-in"));
-const InstagramXmlTransferPage = lazy(() => import("@/pages/instagram-xml-transfer"));
 const ImportMessagesPage = lazy(() => import("@/pages/import-messages"));
 const ExtensionImportsSettingsPage = lazy(() => import("@/pages/extension-imports-settings"));
 const TasksSettingsPage = lazy(() => import("@/pages/tasks-settings"));
@@ -50,7 +48,10 @@ const RecognitionSettingsPage = lazy(() => import("@/pages/recognition-settings"
 const RecognitionImagesPage = lazy(() => import("@/pages/recognition-images"));
 const RecognitionFacesPage = lazy(() => import("@/pages/recognition-faces"));
 const SocialGraphSettingsPage = lazy(() => import("@/pages/social-graph-settings"));
-const StoriesSettingsPage = lazy(() => import("@/pages/stories-settings"));
+const InstagramImportersPage = lazy(() => import("@/pages/instagram-importers"));
+const InstagramTrackingPage = lazy(() => import("@/pages/instagram-tracking"));
+const InstagramPostsPage = lazy(() => import("@/pages/instagram-posts"));
+const SocialTasksPage = lazy(() => import("@/pages/social-tasks"));
 const IntelligenceSettingsPage = lazy(() => import("@/pages/intelligence-settings"));
 const IntelligenceToolsSettingsPage = lazy(() => import("@/pages/intelligence-tools-settings"));
 const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelligence-external-tools-settings"));
@@ -132,6 +133,7 @@ const settingsMenuItems: MenuItem[] = [
     icon: ListTodo,
     subItems: [
       { title: "Image Tasks", url: "/settings/image-storage/tasks", icon: ImageIcon },
+      { title: "Social Tasks", url: "/settings/tasks/social", icon: History },
     ],
   },
   {
@@ -140,13 +142,20 @@ const settingsMenuItems: MenuItem[] = [
     icon: FolderSync,
     subItems: [
       { title: "Contacts", url: "/settings/import-export/contacts", icon: Users },
-      { title: "Social Media", url: "/settings/import-export/social-media", icon: Share2 },
       { title: "Messages", url: "/settings/import-export/messages", icon: MessageSquare },
       { title: "Extension Imports", url: "/settings/import-export/extension-imports", icon: Chrome },
       { title: "Backups", url: "/settings/import-export/backups", icon: Archive },
       { title: "Image Pass In", url: "/settings/import-export/image-pass-in", icon: ImageIcon },
-      { title: "Instagram XML Transfer", url: "/settings/import-export/instagram-xml", icon: Camera },
-      { title: "Instagram Stories", url: "/settings/import-export/stories", icon: Camera },
+    ],
+  },
+  {
+    title: "Instagram",
+    url: "/settings/instagram",
+    icon: Instagram,
+    subItems: [
+      { title: "Importers", url: "/settings/instagram", icon: Server },
+      { title: "Tracking", url: "/settings/instagram/tracking", icon: Radar },
+      { title: "Posts", url: "/settings/instagram/posts", icon: ImageIcon },
     ],
   },
   {
@@ -172,7 +181,8 @@ export function SettingsSidebar() {
   const [location] = useLocation();
 
   const isAdminActive = location.startsWith("/settings/admin");
-  const isImportExportActive = location.startsWith("/settings/import-export") || location === "/settings/instagram";
+  const isImportExportActive = location.startsWith("/settings/import-export");
+  const isInstagramActive = location.startsWith("/settings/instagram");
   const isRecognitionActive = location.startsWith("/settings/recognition");
   const isAppOptionsActive =
     location.startsWith("/settings/app") ||
@@ -188,7 +198,11 @@ export function SettingsSidebar() {
     location.startsWith("/settings/intelligence") ||
     location === "/settings/vector" ||
     location.startsWith("/settings/osint");
-  const isTasksActive = location.startsWith("/settings/tasks") || location === "/settings/image-tasks" || location === "/settings/image-storage/tasks";
+  const isTasksActive =
+    location.startsWith("/settings/tasks") ||
+    location === "/settings/social-tasks" ||
+    location === "/settings/image-tasks" ||
+    location === "/settings/image-storage/tasks";
 
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
@@ -198,6 +212,7 @@ export function SettingsSidebar() {
       case "/settings/image-storage": return isImageStorageActive;
       case "/settings/intelligence": return isIntelligenceActive;
       case "/settings/tasks": return isTasksActive;
+      case "/settings/instagram": return isInstagramActive;
       case "/settings/api": return isApiDocsActive;
       default: return isImportExportActive;
     }
@@ -300,17 +315,22 @@ export default function SettingsLayout() {
           <Route path="/intelligence" component={IntelligenceSettingsPage} />
           <Route path="/vector" component={VectorSettingsPage} />
           <Route path="/osint" component={OsintSettingsPage} />
-          <Route path="/import-export/instagram-xml" component={InstagramXmlTransferPage} />
-          <Route path="/instagram" component={() => <Redirect to="/import-export/instagram-xml" />} />
+          <Route path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export" />} />
+          <Route path="/instagram/tracking" component={InstagramTrackingPage} />
+          <Route path="/instagram/posts" component={InstagramPostsPage} />
+          <Route path="/instagram/runs" component={() => <Redirect to="/settings/tasks/social" />} />
+          <Route path="/instagram" component={InstagramImportersPage} />
+          <Route path="/tasks/social" component={SocialTasksPage} />
+          <Route path="/social-tasks" component={SocialTasksPage} />
           <Route path="/tasks" component={TasksSettingsPage} />
           <Route path="/task/:id" component={TaskDetailPage} />
           <Route path="/social-graph" component={SocialGraphSettingsPage} />
           <Route path="/recognition/images" component={RecognitionImagesPage} />
           <Route path="/recognition/faces" component={RecognitionFacesPage} />
           <Route path="/recognition" component={RecognitionSettingsPage} />
-          <Route path="/import-export/stories" component={StoriesSettingsPage} />
+          <Route path="/import-export/stories" component={() => <Redirect to="/instagram" />} />
           <Route path="/import-export/contacts" component={ImportContactsPage} />
-          <Route path="/import-export/social-media" component={ImportSocialMediaPage} />
+          <Route path="/import-export/social-media" component={() => <Redirect to="/settings/import-export" />} />
           <Route path="/import-export/messages" component={ImportMessagesPage} />
           <Route path="/import-export/extension-imports" component={ExtensionImportsSettingsPage} />
           <Route path="/import-export/backups" component={BackupsPage} />

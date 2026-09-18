@@ -9,167 +9,10 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CheckCircle2, Loader2, Radar, Save, ScanSearch, XCircle } from "lucide-react";
+import { AlertCircle, Loader2, Radar, ScanSearch } from "lucide-react";
+import { Link } from "wouter";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 import type { OsintScanQueueRow } from "@shared/schema";
-
-type OsintSettings = { enabled: boolean; apiUrl: string; hasApiKey: boolean };
-
-function OsintConnectivitySection() {
-  const { toast } = useToast();
-  const { data: osint, isLoading } = useQuery<OsintSettings>({
-    queryKey: ["/api/osint/settings"],
-  });
-
-  const [enabled, setEnabled] = useState(false);
-  const [apiUrl, setApiUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
-
-  // Seed the form from the server once settings load.
-  useEffect(() => {
-    if (osint) {
-      setEnabled(osint.enabled);
-      setApiUrl(osint.apiUrl);
-    }
-  }, [osint]);
-
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/osint/settings", {
-        enabled,
-        apiUrl,
-        // Only send the key when the user typed one; blank leaves the stored key intact.
-        ...(apiKey.trim() ? { apiKey } : {}),
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      setApiKey("");
-      queryClient.invalidateQueries({ queryKey: ["/api/osint/settings"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/osint/status"] });
-      toast({ title: "PRM-osint settings saved" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to save settings", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const testMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/osint/test", {
-        apiUrl,
-        ...(apiKey.trim() ? { apiKey } : {}),
-      });
-      return res.json() as Promise<{ ok: boolean; tools?: { name: string }[]; error?: string }>;
-    },
-    onSuccess: (data) => {
-      const count = data.tools?.length ?? 0;
-      setTestResult({ ok: true, message: `Connected — ${count} tool${count === 1 ? "" : "s"} available.` });
-    },
-    onError: (error: Error) => {
-      setTestResult({ ok: false, message: error.message });
-    },
-  });
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Radar className="h-5 w-5 text-muted-foreground" />
-          PRM-osint Connectivity
-        </CardTitle>
-        <CardDescription>
-          Connect to a PRM-osint orchestration server to run OSINT lookups. When enabled and
-          configured, per-tool demo pages appear in the Demos section.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {isLoading ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between">
-              <Label htmlFor="osint-enabled" className="flex-1 cursor-pointer pr-4">
-                Enable PRM-osint Connectivity
-              </Label>
-              <Switch
-                id="osint-enabled"
-                checked={enabled}
-                onCheckedChange={setEnabled}
-                data-testid="switch-osint-enabled"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="osint-url">Address</Label>
-              <Input
-                id="osint-url"
-                type="url"
-                placeholder="http://localhost:8000"
-                value={apiUrl}
-                onChange={(e) => setApiUrl(e.target.value)}
-                data-testid="input-osint-url"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="osint-key">API Key</Label>
-              <Input
-                id="osint-key"
-                type="password"
-                placeholder={osint?.hasApiKey ? "•••••••• (leave blank to keep current)" : "Enter API key"}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                data-testid="input-osint-key"
-              />
-            </div>
-
-            {testResult && (
-              <div
-                className={`flex items-center gap-2 text-sm ${testResult.ok ? "text-green-600 dark:text-green-400" : "text-destructive"}`}
-                data-testid="text-osint-test-result"
-              >
-                {testResult.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-                <span>{testResult.message}</span>
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <Button
-                onClick={() => saveMutation.mutate()}
-                disabled={saveMutation.isPending}
-                data-testid="button-osint-save"
-              >
-                {saveMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Save className="h-4 w-4 mr-2" />
-                )}
-                Save
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setTestResult(null);
-                  testMutation.mutate();
-                }}
-                disabled={testMutation.isPending || !apiUrl.trim()}
-                data-testid="button-osint-test"
-              >
-                {testMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-                Test
-              </Button>
-            </div>
-          </>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
 
 type ScanQueue = { counts: Record<string, number>; rows: (OsintScanQueueRow & { username: string })[] };
 
@@ -343,41 +186,41 @@ export default function OsintSettingsPage() {
     );
   }
 
+  const { data: computeSettings } = useQuery<{ apiUrl: string; hasApiKey: boolean }>({
+    queryKey: ["/api/prm-compute/settings"],
+  });
+  const isComputeConfigured = !!computeSettings?.apiUrl && !!computeSettings?.hasApiKey;
+
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">
+      <div className="max-w-3xl">
         <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-osint-settings-title">
           <Radar className="h-6 w-6" />
           OSINT Settings
         </h1>
         <p className="text-muted-foreground mt-1">
-          Configure PRM-osint server connectivity and automatic background intelligence scans.
+          Configure automatic background intelligence scans powered by PRM-Compute.
         </p>
       </div>
 
-      <Tabs defaultValue="connectivity" className="space-y-4">
-        <TabsList className="grid grid-cols-2 w-full max-w-md">
-          <TabsTrigger value="connectivity" className="flex items-center gap-2" data-testid="tab-osint-connectivity">
-            <Radar className="h-4 w-4" />
-            <span>Connectivity</span>
-          </TabsTrigger>
-          <TabsTrigger value="auto-scans" className="flex items-center gap-2" data-testid="tab-osint-auto-scans">
-            <ScanSearch className="h-4 w-4" />
-            <span>Automatic Scans</span>
-          </TabsTrigger>
-        </TabsList>
+      {!isComputeConfigured && (
+        <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-200 max-w-3xl" data-testid="banner-compute-not-configured">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>PRM-Compute is not configured. OSINT scans require an active PRM-Compute server.</span>
+          </div>
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/settings/recognition">Configure PRM-Compute</Link>
+          </Button>
+        </div>
+      )}
 
-        <TabsContent value="connectivity" className="space-y-4">
-          <OsintConnectivitySection />
-        </TabsContent>
-
-        <TabsContent value="auto-scans" className="space-y-4">
-          <OsintAutoScanSection
-            settings={settings ?? {}}
-            saveSetting={(key, value) => updateSettingMutation.mutate({ key, value })}
-          />
-        </TabsContent>
-      </Tabs>
+      <div className="settings-cards-grid">
+        <OsintAutoScanSection
+          settings={settings ?? {}}
+          saveSetting={(key, value) => updateSettingMutation.mutate({ key, value })}
+        />
+      </div>
     </div>
   );
 }

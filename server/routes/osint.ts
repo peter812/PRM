@@ -108,7 +108,7 @@ export function registerRoutes(app: Express) {
         const body = await response.text();
         return res.status(response.status).json({
           ok: false,
-          error: `PRM-osint returned ${response.status}: ${body}`,
+          error: `PRM-Compute returned ${response.status}: ${body}`,
         });
       }
       const tools = await response.json();
@@ -116,7 +116,7 @@ export function registerRoutes(app: Express) {
     } catch (error: any) {
       const msg = error?.name === "TimeoutError"
         ? "Connection timed out."
-        : `Failed to contact PRM-osint: ${error?.message ?? error}`;
+        : `Failed to contact PRM-Compute: ${error?.message ?? error}`;
       res.status(502).json({ ok: false, error: msg });
     }
   });
@@ -126,7 +126,7 @@ export function registerRoutes(app: Express) {
   async function requireConfigured(res: any): Promise<OsintConfig | null> {
     const cfg = await loadConfig();
     if (!isConfigured(cfg)) {
-      res.status(400).json({ error: "PRM-osint connectivity is not enabled/configured." });
+      res.status(400).json({ error: "PRM-Compute is not configured. Setup PRM-Compute first." });
       return null;
     }
     return cfg;
@@ -141,7 +141,7 @@ export function registerRoutes(app: Express) {
       const body = await response.text();
       res.status(response.status).type("application/json").send(body);
     } catch (error: any) {
-      res.status(502).json({ error: `Failed to contact PRM-osint: ${error?.message ?? error}` });
+      res.status(502).json({ error: `Failed to contact PRM-Compute: ${error?.message ?? error}` });
     }
   });
 
@@ -158,7 +158,7 @@ export function registerRoutes(app: Express) {
       const body = await response.text();
       res.status(response.status).type("application/json").send(body);
     } catch (error: any) {
-      res.status(502).json({ error: `Failed to contact PRM-osint: ${error?.message ?? error}` });
+      res.status(502).json({ error: `Failed to contact PRM-Compute: ${error?.message ?? error}` });
     }
   });
 
@@ -176,7 +176,7 @@ export function registerRoutes(app: Express) {
       const body = await response.text();
       res.status(response.status).type("application/json").send(body);
     } catch (error: any) {
-      res.status(502).json({ error: `Failed to contact PRM-osint: ${error?.message ?? error}` });
+      res.status(502).json({ error: `Failed to contact PRM-Compute: ${error?.message ?? error}` });
     }
   });
 
@@ -195,7 +195,7 @@ export function registerRoutes(app: Express) {
       const body = await response.text();
       res.status(response.status).type("application/json").send(body);
     } catch (error: any) {
-      res.status(502).json({ error: `Failed to contact PRM-osint: ${error?.message ?? error}` });
+      res.status(502).json({ error: `Failed to contact PRM-Compute: ${error?.message ?? error}` });
     }
   });
 

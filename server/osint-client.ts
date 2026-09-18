@@ -33,18 +33,35 @@ export function normalizeOsintUrl(raw: string): string | null {
 export type OsintConfig = { enabled: boolean; apiUrl: string; apiKey: string };
 
 export async function loadOsintConfig(): Promise<OsintConfig> {
-  const [enabled, apiUrl, apiKey] = await Promise.all([
-    storage.getAppSetting(OSINT_ENABLED_KEY),
+  // PRM-Compute (formerly PRM-face) hosts the unified OSINT service.
+  // We check compute settings first, falling back to legacy settings for seamless transition.
+  const [
+    computeUrl,
+    computeKey,
+    faceUrl,
+    faceKey,
+    legacyUrl,
+    legacyKey,
+    legacyEnabled,
+  ] = await Promise.all([
+    storage.getAppSetting("prm_compute_api_url"),
+    storage.getAppSetting("prm_compute_api_key"),
+    storage.getAppSetting("prm_face_api_url"),
+    storage.getAppSetting("prm_face_api_key"),
     storage.getAppSetting(OSINT_API_URL_KEY),
     storage.getAppSetting(OSINT_API_KEY_KEY),
+    storage.getAppSetting(OSINT_ENABLED_KEY),
   ]);
+
+  const rawUrl = computeUrl || faceUrl || legacyUrl || "";
+  const apiKey = computeKey || faceKey || legacyKey || "";
+  const apiUrl = rawUrl ? (normalizeOsintUrl(rawUrl) ?? rawUrl) : "";
+  const enabled = (!!apiUrl && !!apiKey) || legacyEnabled === "true";
+
   return {
-    enabled: enabled === "true",
-    // Normalize on read as well, so addresses stored before URL normalization
-    // (or with a stray `/api/v1` path) still resolve to a clean origin and we
-    // never build `.../api/v1/api/v1/...`.
-    apiUrl: apiUrl ? (normalizeOsintUrl(apiUrl) ?? apiUrl) : "",
-    apiKey: apiKey ?? "",
+    enabled,
+    apiUrl,
+    apiKey,
   };
 }
 
@@ -53,7 +70,7 @@ export function isOsintConfigured(cfg: OsintConfig): boolean {
   return cfg.enabled && !!cfg.apiUrl && !!cfg.apiKey;
 }
 
-/** Call the PRM-osint API with the stored key injected. */
+/** Call the PRM-Compute OSINT API with the stored key injected. */
 export async function osintFetch(
   apiUrl: string,
   apiKey: string,
@@ -61,8 +78,14 @@ export async function osintFetch(
   init: RequestInit = {},
   timeoutMs = 15000,
 ): Promise<Response> {
-  // Strip trailing slashes so `base + "/path"` never produces a double slash.
-  return fetch(`${apiUrl.replace(/\/+$/, "")}/api/v1${path}`, {
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  // PRM-compute hosts OSINT endpoints at /api/osint/* (tools, scans, etc.)
+  const endpointPath = cleanPath.startsWith("/api/osint")
+    ? cleanPath
+    : `/api/osint${cleanPath}`;
+
+  // Strip trailing slashes so `base + path` never produces a double slash.
+  return fetch(`${apiUrl.replace(/\/+$/, "")}${endpointPath}`, {
     ...init,
     headers: {
       "content-type": "application/json",

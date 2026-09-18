@@ -56,8 +56,8 @@ const APP_OPTIONS = [
 
 export default function AppOptionsPage() {
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="space-y-2 mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="space-y-2 mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-app-options-title">
           App Options
         </h1>
@@ -66,7 +66,7 @@ export default function AppOptionsPage() {
         </p>
       </div>
 
-      <div className="space-y-4">
+      <div className="settings-cards-grid">
         {APP_OPTIONS.map(({ href, icon: Icon, title, description, testId }) => (
           <Link key={href} href={href} className="block">
             <Card className="hover-elevate cursor-pointer" data-testid={testId}>

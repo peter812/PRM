@@ -1,7 +1,7 @@
 // Generated route module - social-media.ts
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "../storage";
+import { postedBy, storage } from "../storage";
 import { db } from "../db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
@@ -31,9 +31,10 @@ import {
   type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
-import { uploadImageToS3, deleteImageFromS3 } from "../s3";
-import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { hashPassword, requireAuth, requireAdmin, authenticateExtensionToken } from "../auth";
+import { deleteImageFromS3 } from "../s3";
+import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl } from "../prm-s3";
+import { deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
+import { hashPassword, requireAuth, requireAdmin } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { queueOsintScansForMeAccount } from "../osint-scan-queue";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -43,6 +44,10 @@ import path from "path";
 import os from "os";
 import Papa from "papaparse";
 import { sendApiError, ErrorCodes } from "../middleware/error-handler";
+import { resolvePhotoSource } from "../photo-source";
+import { recordAccountProfileChanges } from "../social-account-history";
+import { ingestManualProfileImage } from "../profile-image";
+import { updateTracking, type TrackingPatch } from "../tracking";
 import { sseManager } from "../middleware/sse";
 import {
   loadVectorConfig,
@@ -58,7 +63,7 @@ import { syncEntityInBackground, deleteEntityVector } from "../vector-universal"
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "../image-pass-in-utils";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "../xml-utils";
 import { parseExportZipName } from "../instagram-dm-import";
-import { runAsUser, preserveAccess } from "../access";
+import { preserveAccess } from "../access";
 
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
@@ -144,6 +149,7 @@ export function registerRoutes(app: Express) {
           searchQuery: searchQuery || undefined,
           typeId: typeId || undefined,
           followsAccountIds,
+          interestLevel: (req.query.interestLevel as string) || undefined,
         });
 
         if (full) {
@@ -557,6 +563,10 @@ export function registerRoutes(app: Express) {
       try {
         const id = req.params.id;
         const body = req.body;
+        const existing = await storage.getSocialAccountById(id);
+        if (!existing) {
+          return res.status(404).json({ error: "Social account not found" });
+        }
   
         const registryFields: Record<string, any> = {};
         if (body.username !== undefined) registryFields.username = body.username;
@@ -568,8 +578,21 @@ export function registerRoutes(app: Express) {
         // Profile fields live on the account row now, so they go in the same update.
         if (body.nickname !== undefined) registryFields.nickname = body.nickname;
         if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
-        if (body.imageUrl !== undefined) registryFields.imageUrl = body.imageUrl;
         if (body.bio !== undefined) registryFields.bio = body.bio;
+        // A hand-picked picture goes through the same tiering as a scraped one.
+        const changes: Parameters<typeof recordAccountProfileChanges>[1] = registryFields;
+        if (body.imageUrl === null) {
+          registryFields.imageUrl = null;
+          registryFields.imageUrlHq = null;
+          changes.image = null;
+        } else if (typeof body.imageUrl === "string" && body.imageUrl !== existing.imageUrl) {
+          const image = await ingestManualProfileImage(id, existing, body.imageUrl);
+          if (image) {
+            registryFields.imageUrl = image.imageUrl;
+            registryFields.imageUrlHq = image.imageUrlHq;
+            changes.image = image;
+          }
+        }
 
         if (body.bio !== undefined || body.nickname !== undefined || body.accountUrl !== undefined || body.imageUrl !== undefined) {
           registryFields.isSimple = false;
@@ -577,7 +600,21 @@ export function registerRoutes(app: Express) {
 
         if (Object.keys(registryFields).length > 0) {
           await storage.updateSocialAccount(id, registryFields);
+          await recordAccountProfileChanges(id, changes, existing);
         }
+
+        // Tracking fields re-spread the due dates, so they go through their own writer.
+        const tracking: TrackingPatch = {};
+        if (body.interestLevel !== undefined) tracking.interestLevel = body.interestLevel;
+        for (const k of ["infoEveryDays", "followsEveryDays", "postsEveryDays"] as const) {
+          if (body[k] === undefined) continue;
+          const days = body[k] === null ? null : Number(body[k]);
+          if (days !== null && (!Number.isInteger(days) || days < 1)) {
+            return res.status(400).json({ error: `${k} must be a whole number of days` });
+          }
+          tracking[k] = days;
+        }
+        if (Object.keys(tracking).length > 0) await updateTracking(existing, tracking);
 
         const account = await storage.getSocialAccountById(id);
         if (!account) {
@@ -923,6 +960,18 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    app.get("/api/social-account-posts/:id/comments", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+        const post = await storage.getPostById(req.params.id);
+        if (!post) return res.status(404).json({ error: "Post not found" });
+        res.json(await storage.getCommentsByPostId(post.id));
+      } catch (error) {
+        console.error("Error fetching post comments:", error);
+        res.status(500).json({ error: "Failed to fetch post comments" });
+      }
+    });
+  
     app.post("/api/social-accounts/:id/posts", async (req, res) => {
       try {
         if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -930,6 +979,7 @@ export function registerRoutes(app: Express) {
           ...req.body,
           socialAccountId: req.params.id,
         });
+        if (parsed.likesHidden) parsed.likeCount = 0;
         const post = await storage.createPost(parsed);
         res.status(201).json(post);
       } catch (error) {
@@ -944,13 +994,14 @@ export function registerRoutes(app: Express) {
     app.patch("/api/social-account-posts/:id", async (req, res) => {
       try {
         if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-        const allowedFields = ["postType", "content", "description", "likeCount", "commentCount", "comments", "mentionedAccounts", "isDeleted", "postedAt"];
+        const allowedFields = ["postType", "content", "description", "likeCount", "likesHidden", "commentCount", "mentionedAccounts", "isDeleted", "postedAt"];
         const updateData: Record<string, unknown> = {};
         for (const key of allowedFields) {
           if (key in req.body) {
             updateData[key] = req.body[key];
           }
         }
+        if (updateData.likesHidden === true) updateData.likeCount = 0;
         const post = await storage.updatePost(req.params.id, updateData);
         if (!post) return res.status(404).json({ error: "Post not found" });
         res.json(post);
@@ -1858,7 +1909,8 @@ export function registerRoutes(app: Express) {
       try {
         const mode = await storage.getImageStorageMode(req.user.id);
         const hasS3Creds = !!(process.env.S3_ENDPOINT && process.env.S3_ACCESS_KEY && process.env.S3_SECRET_KEY && process.env.S3_BUCKET);
-        res.json({ mode, hasS3Creds });
+        const prmS3Config = await getPrmS3Config();
+        res.json({ mode, hasS3Creds, hasPrmS3Creds: prmS3Config.isConfigured });
       } catch (error) {
         console.error("Error getting image storage mode:", error);
         res.status(500).json({ error: "Failed to get image storage mode" });
@@ -1871,14 +1923,98 @@ export function registerRoutes(app: Express) {
       }
       try {
         const { mode } = req.body;
-        if (mode !== "s3" && mode !== "local") {
-          return res.status(400).json({ error: "Invalid storage mode. Must be 's3' or 'local'" });
+        if (mode !== "s3" && mode !== "prm-s3" && mode !== "local") {
+          return res.status(400).json({ error: "Invalid storage mode. Must be 'prm-s3', 's3', or 'local'" });
         }
         await storage.setImageStorageMode(req.user.id, mode);
         res.json({ success: true, mode });
       } catch (error) {
         console.error("Error setting image storage mode:", error);
         res.status(500).json({ error: "Failed to set image storage mode" });
+      }
+    });
+  
+    app.get("/api/image-storage/prm-s3/settings", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const config = await getPrmS3Config();
+        res.json({
+          endpoint: config.endpoint,
+          publicEndpoint: config.publicEndpoint,
+          deliveryMode: config.deliveryMode,
+          bucket: config.bucket,
+          region: config.region,
+          hasAccessKey: !!config.accessKeyId,
+          hasSecretKey: !!config.secretAccessKey,
+          accessKeyId: config.accessKeyId,
+          secretAccessKey: config.secretAccessKey ? "••••••••" : "",
+        });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/image-storage/prm-s3/settings", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const { endpoint, publicEndpoint, deliveryMode, bucket, region, accessKeyId, secretAccessKey } = req.body;
+        if (deliveryMode !== undefined && deliveryMode !== "direct" && deliveryMode !== "proxy") {
+          return res.status(400).json({ error: "deliveryMode must be 'direct' or 'proxy'" });
+        }
+        if (typeof endpoint === "string" && endpoint.trim() && !isValidEndpointUrl(endpoint.trim(), "http")) {
+          return res.status(400).json({ error: "endpoint must be a valid http(s) URL" });
+        }
+        if (typeof publicEndpoint === "string" && publicEndpoint.trim() && !isValidEndpointUrl(publicEndpoint.trim(), "https")) {
+          return res.status(400).json({ error: "publicEndpoint must be a valid http(s) URL" });
+        }
+        const toSave: any = { endpoint, publicEndpoint, deliveryMode, bucket, region, accessKeyId };
+        if (secretAccessKey && !secretAccessKey.includes("••")) {
+          toSave.secretAccessKey = secretAccessKey;
+        }
+        await setPrmS3Config(toSave);
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.post("/api/image-storage/prm-s3/test", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const result = await testPrmS3Connection();
+        res.json(result);
+      } catch (error: any) {
+        res.json({ ok: false, message: error.message });
+      }
+    });
+
+    app.post("/api/image-storage/transfer", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const { from, to, concurrency } = req.body;
+        const validModes = ["local", "s3", "prm-s3"];
+        if (!validModes.includes(from) || !validModes.includes(to) || from === to) {
+          return res.status(400).json({ error: "Invalid transfer options. 'from' and 'to' must be distinct storage providers ('local', 's3', 'prm-s3')" });
+        }
+        const task = await storage.createTask({
+          userId: req.user.id,
+          type: "transfer_images",
+          status: "pending",
+          payload: JSON.stringify({ userId: req.user.id, from, to, concurrency: Number(concurrency) || undefined }),
+        });
+        triggerTaskWorker();
+        res.json(task);
+      } catch (error: any) {
+        console.error("Error creating image transfer task:", error);
+        res.status(500).json({ error: "Failed to create transfer task" });
       }
     });
   
@@ -1901,6 +2037,25 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    app.post("/api/image-storage/backfill-profile-image-tiers", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const task = await storage.createTask({
+          userId: req.user.id,
+          type: "backfill_profile_image_tiers",
+          status: "pending",
+          payload: JSON.stringify({ userId: req.user.id }),
+        });
+        triggerTaskWorker();
+        res.json(task);
+      } catch (error) {
+        console.error("Error creating profile image tier backfill task:", error);
+        res.status(500).json({ error: "Failed to create backfill task" });
+      }
+    });
+
     app.post("/api/image-storage/transfer-to-s3", async (req, res) => {
       if (!req.isAuthenticated() || !req.user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -1926,9 +2081,20 @@ export function registerRoutes(app: Express) {
       }
       try {
         const allUrls = await storage.getAllImageUrls();
-        const localCount = allUrls.filter(u => isLocalImageUrl(u.url)).length;
-        const s3Count = allUrls.filter(u => !isLocalImageUrl(u.url)).length;
-        res.json({ total: allUrls.length, local: localCount, s3: s3Count });
+        let localCount = 0;
+        let prmS3Count = 0;
+        let s3Count = 0;
+
+        for (const u of allUrls) {
+          if (isLocalImageUrl(u.url)) {
+            localCount++;
+          } else if (isPrmS3ImageUrl(u.url)) {
+            prmS3Count++;
+          } else if (!u.url.includes("instagram.com") && !u.url.includes("fbcdn.net")) {
+            s3Count++;
+          }
+        }
+        res.json({ total: allUrls.length, local: localCount, s3: s3Count, prmS3: prmS3Count });
       } catch (error) {
         console.error("Error getting image stats:", error);
         res.status(500).json({ error: "Failed to get image stats" });
@@ -1965,10 +2131,28 @@ export function registerRoutes(app: Express) {
         if (!photo) {
           return res.status(404).json({ error: "Photo not found" });
         }
-        res.json(photo);
+        const source = await resolvePhotoSource(photo);
+        res.json({ ...photo, source });
       } catch (error) {
         console.error("Error fetching photo:", error);
         res.status(500).json({ error: "Failed to fetch photo" });
+      }
+    });
+  
+    app.get("/api/photos/:id/source", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const photo = await storage.getPhotoById(req.params.id);
+        if (!photo) {
+          return res.status(404).json({ error: "Photo not found" });
+        }
+        const source = await resolvePhotoSource(photo);
+        res.json({ source });
+      } catch (error) {
+        console.error("Error fetching photo source:", error);
+        res.status(500).json({ error: "Failed to fetch photo source" });
       }
     });
   
@@ -2064,6 +2248,8 @@ export function registerRoutes(app: Express) {
           try {
             if (isLocalImageUrl(p.location)) {
               await deleteImageLocally(p.location);
+            } else if (isPrmS3ImageUrl(p.location)) {
+              await deleteImageFromPrmS3(p.location);
             } else if (p.location.includes(process.env.S3_BUCKET || "")) {
               await deleteImageFromS3(p.location);
             }
@@ -2287,11 +2473,25 @@ export function registerRoutes(app: Express) {
         // Profile fields live on the account row now, so they go in the same update.
         if (body.nickname !== undefined) registryFields.nickname = body.nickname;
         if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
-        if (body.imageUrl !== undefined) registryFields.imageUrl = body.imageUrl;
         if (body.bio !== undefined) registryFields.bio = body.bio;
+        // A hand-picked picture goes through the same tiering as a scraped one.
+        const changes: Parameters<typeof recordAccountProfileChanges>[1] = registryFields;
+        if (body.imageUrl === null) {
+          registryFields.imageUrl = null;
+          registryFields.imageUrlHq = null;
+          changes.image = null;
+        } else if (typeof body.imageUrl === "string" && body.imageUrl !== existing.imageUrl) {
+          const image = await ingestManualProfileImage(id, existing, body.imageUrl);
+          if (image) {
+            registryFields.imageUrl = image.imageUrl;
+            registryFields.imageUrlHq = image.imageUrlHq;
+            changes.image = image;
+          }
+        }
 
         if (Object.keys(registryFields).length > 0) {
           await storage.updateSocialAccount(id, registryFields);
+          await recordAccountProfileChanges(id, changes, existing);
         }
 
         // Broadcast SSE event
@@ -2336,195 +2536,6 @@ export function registerRoutes(app: Express) {
         sendApiError(res, 500, ErrorCodes.INTERNAL_ERROR, "Failed to fetch URL list.", {}, (req as any).requestId);
       }
     });
-
-    // --- Instagram Post Import Endpoint ---
-    const importInstagramPostHandler = async (req: Request, res: Response) => {
-      try {
-        // 1. Authenticate using X-Extension-Token header
-        const token = req.headers["x-extension-token"] as string;
-        if (!token) {
-          return res.status(401).json({ error: "Extension token required" });
-        }
-
-        const session = await authenticateExtensionToken(token);
-        if (!session) {
-          return res.status(401).json({ error: "Invalid extension token" });
-        }
-
-        // Update session's last accessed timestamp
-        await storage.updateExtensionSessionLastAccessed(session.id);
-
-        await runAsUser(session.userId, async () => {
-          // 2. Validate payload
-          const parsedResult = importInstagramPostSchema.safeParse(req.body);
-          if (!parsedResult.success) {
-            return res.status(400).json({
-              error: "Invalid request payload",
-              details: parsedResult.error.errors,
-            });
-          }
-          const payload = parsedResult.data;
-
-          // 3. Resolve target account (Instagram)
-          const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
-          const normalizedUsername = payload.username.trim().toLowerCase();
-
-          let targetAccount = await db
-            .select()
-            .from(socialAccounts)
-            .where(
-              and(
-                eq(socialAccounts.username, normalizedUsername),
-                eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)
-              )
-            )
-            .limit(1)
-            .then(rows => rows[0]);
-
-          if (!targetAccount) {
-            targetAccount = await storage.createSocialAccount({
-              createdByUserId: session.userId,
-              username: normalizedUsername,
-              typeId: INSTAGRAM_TYPE_ID,
-              internalAccountCreationType: "auto-import",
-            });
-          }
-
-          // 4. De-duplication check using deterministic post UUID
-          const deterministicPostId = generateDeterministicUuid(`instagram:post:${payload.post.post_id}`);
-          const [existingPost] = await db
-            .select()
-            .from(socialAccountPosts)
-            .where(eq(socialAccountPosts.id, deterministicPostId))
-            .limit(1);
-
-          if (existingPost) {
-            return res.status(200).json({
-              status: "already_exists",
-              message: "Post already exists, skipped duplicate",
-              post: existingPost,
-            });
-          }
-
-          // 5. Process media and upload files
-          const storageMode = await storage.getImageStorageMode(session.userId);
-          const uploadedUrls: string[] = [];
-
-          for (const mediaItem of payload.post.media) {
-            const matches = mediaItem.data.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-            if (!matches) {
-              return res.status(400).json({
-                error: `Invalid media data URL format for file ${mediaItem.filename}`,
-              });
-            }
-
-            const mimeType = matches[1];
-            const base64Data = matches[2];
-            const buffer = Buffer.from(base64Data, "base64");
-
-            let imageUrl: string;
-            if (storageMode === "local") {
-              imageUrl = await uploadImageLocally(buffer, mediaItem.filename, mimeType);
-            } else {
-              imageUrl = await uploadImageToS3(buffer, mediaItem.filename, mimeType);
-            }
-            uploadedUrls.push(imageUrl);
-
-            // Register in photos table with post locator
-            try {
-              const photo = await storage.insertPhoto({
-                location: imageUrl,
-                prmLocation: `post:${deterministicPostId}`,
-                isSubImage: false,
-              });
-              // Auto-describe and vectorize images in the background (fire-and-forget)
-              syncEntityInBackground("image", photo.id);
-            } catch (photoErr) {
-              console.error("Warning: failed to register photo in photos table:", photoErr);
-            }
-          }
-
-          // 6. Create post
-          const postType = payload.post.media_type === 2 ? "video" : (payload.post.media_type === 8 ? "carousel" : "post");
-          const [createdPost] = await db
-            .insert(socialAccountPosts)
-            .values({
-              id: deterministicPostId,
-              socialAccountId: targetAccount.id,
-              postType,
-              content: JSON.stringify(uploadedUrls),
-              description: payload.post.caption || null,
-              likeCount: 0,
-              commentCount: 0,
-              postedAt: new Date(payload.post.taken_at * 1000),
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .returning();
-
-          // Sync social account in background
-          syncEntityInBackground("social_account", targetAccount.id);
-
-          res.status(201).json({
-            message: "Instagram post imported successfully",
-            post: createdPost,
-          });
-        });
-      } catch (error) {
-        console.error("Error importing Instagram post:", error);
-        res.status(500).json({ error: "Failed to import Instagram post" });
-      }
-    };
-
-    const checkPostDuplicatesHandler = async (req: Request, res: Response) => {
-      try {
-        const token = req.headers["x-extension-token"] as string;
-        if (!token) {
-          return res.status(401).json({ error: "Extension token required" });
-        }
-
-        const session = await authenticateExtensionToken(token);
-        if (!session) {
-          return res.status(401).json({ error: "Invalid extension token" });
-        }
-
-        await storage.updateExtensionSessionLastAccessed(session.id);
-
-        await runAsUser(session.userId, async () => {
-          const { postIds } = req.body;
-          if (!Array.isArray(postIds)) {
-            return res.status(400).json({ error: "postIds must be an array of strings" });
-          }
-
-          if (postIds.length === 0) {
-            return res.json({ existingPostIds: [] });
-          }
-
-          const deterministicIds = postIds.map(id => generateDeterministicUuid(`instagram:post:${id}`));
-
-          const existing = await db
-            .select({ id: socialAccountPosts.id })
-            .from(socialAccountPosts)
-            .where(inArray(socialAccountPosts.id, deterministicIds));
-
-          const existingSet = new Set(existing.map(p => p.id));
-          const existingPostIds = postIds.filter(id => {
-            const detId = generateDeterministicUuid(`instagram:post:${id}`);
-            return existingSet.has(detId);
-          });
-
-          res.json({ existingPostIds });
-        });
-      } catch (error) {
-        console.error("Error checking post duplicates:", error);
-        res.status(500).json({ error: "Failed to check duplicates" });
-      }
-    };
-
-    app.post("/api/posts/instagram/import", importInstagramPostHandler);
-    app.post("/api/v1/posts/import", importInstagramPostHandler);
-    app.post("/api/posts/instagram/check", checkPostDuplicatesHandler);
-    app.post("/api/v1/posts/check", checkPostDuplicatesHandler);
 
     // ========================
     // New Social Accounts & Posts Endpoints
@@ -2724,7 +2735,7 @@ export function registerRoutes(app: Express) {
 
         const conditions = [eq(socialAccountPosts.isDeleted, false)];
         if (postType) conditions.push(eq(socialAccountPosts.postType, postType));
-        if (socialAccountId) conditions.push(eq(socialAccountPosts.socialAccountId, socialAccountId));
+        if (socialAccountId) conditions.push(postedBy(socialAccountId));
 
         const rows = await db
           .select()
@@ -2753,7 +2764,7 @@ export function registerRoutes(app: Express) {
 
         const conditions = [eq(socialAccountPosts.isDeleted, false)];
         if (postType) conditions.push(eq(socialAccountPosts.postType, postType));
-        if (socialAccountId) conditions.push(eq(socialAccountPosts.socialAccountId, socialAccountId));
+        if (socialAccountId) conditions.push(postedBy(socialAccountId));
 
         const totalRows = await db
           .select({ count: sql<number>`count(*)::int` })
@@ -2806,27 +2817,7 @@ export function registerRoutes(app: Express) {
 
 }
 
-// --- Instagram Post Import Helper Schemas & Functions ---
-
-const importInstagramPostSchema = z.object({
-  username: z.string().min(1),
-  platform: z.literal("Instagram"),
-  post: z.object({
-    post_id: z.string().min(1),
-    shortcode: z.string().min(1),
-    caption: z.string().optional(),
-    taken_at: z.number().int(),
-    media_type: z.number().int(),
-    media: z.array(
-      z.object({
-        type: z.literal("image"),
-        filename: z.string().min(1),
-        data: z.string().min(1),
-      })
-    ).min(1),
-  }),
-});
-
+/** Stable ids for Instagram media: `instagram:post:<pk>` / `instagram:story:<pk>` → uuid, so a re-import is a no-op. */
 export function generateDeterministicUuid(input: string): string {
   const hash = crypto.createHash("sha256").update(input).digest("hex");
   return [

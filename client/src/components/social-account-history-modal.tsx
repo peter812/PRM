@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { ChevronDown, ImageIcon, Loader2 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,14 +15,18 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SocialAccountRow } from "@/components/social-account-row";
-import type { HistoryAccountList, SocialAccountHistoryDetail } from "@shared/schema";
+import { Link } from "wouter";
+import type { HistoryAccountList, HistoryPostList, SocialAccountHistoryDetail } from "@shared/schema";
 
 /** The account's values today, which is what a previous* value is a change away from. */
 export interface CurrentProfileValues {
+  username?: string | null;
   nickname?: string | null;
   bio?: string | null;
   location?: string | null;
   imageUrl?: string | null;
+  imageUrlHq?: string | null;
+  joinedAt?: Date | string | null;
 }
 
 const LIST_PAGE = 100;
@@ -65,6 +69,8 @@ export function SocialAccountHistoryModal({
           lastPage.followersLostList.total,
           lastPage.followingAddedList.total,
           lastPage.followingLostList.total,
+          lastPage.postsAddedList.total,
+          lastPage.postsDeletedList.total,
         );
         return loaded < biggest ? loaded : undefined;
       },
@@ -72,7 +78,7 @@ export function SocialAccountHistoryModal({
     });
 
   const entry = data?.pages[0];
-  const merge = (pick: (page: SocialAccountHistoryDetail) => HistoryAccountList): HistoryAccountList => ({
+  const merge = <T,>(pick: (page: SocialAccountHistoryDetail) => { total: number; items: T[] }) => ({
     total: entry ? pick(entry).total : 0,
     items: (data?.pages ?? []).flatMap((page) => pick(page).items),
   });
@@ -103,15 +109,29 @@ export function SocialAccountHistoryModal({
 
             <div className="space-y-4 pt-1 max-h-[60vh] overflow-y-auto pr-1">
               {entry.profileFieldsChanged.includes("image") && (
-                <Section title="Profile image">
+                <Section title={entry.imageChange === "improved" ? "Profile image improved" : "Profile image"}>
                   <div className="flex items-center gap-4">
-                    <ImageSide label="Before" url={entry.previousImageUrl} />
-                    <span className="text-muted-foreground">→</span>
-                    <ImageSide label="Now" url={current?.imageUrl} />
+                    {entry.imageChange === "improved" ? (
+                      // Same picture, better copy: the 150 it had against the 1080 it has now.
+                      <>
+                        <ImageSide label="LQ" url={entry.previousImageUrl} />
+                        <span className="text-muted-foreground">→</span>
+                        <ImageSide label="HQ" url={current?.imageUrlHq} fallbackUrl={current?.imageUrl} />
+                      </>
+                    ) : (
+                      <>
+                        <ImageSide label="Before" url={entry.previousImageUrlHq} fallbackUrl={entry.previousImageUrl} />
+                        <span className="text-muted-foreground">→</span>
+                        <ImageSide label="Now" url={current?.imageUrlHq} fallbackUrl={current?.imageUrl} />
+                      </>
+                    )}
                   </div>
                 </Section>
               )}
 
+              {entry.profileFieldsChanged.includes("username") && (
+                <BeforeAfter title="Username" before={entry.previousUsername} after={current?.username} />
+              )}
               {entry.profileFieldsChanged.includes("nickname") && (
                 <BeforeAfter title="Display name" before={entry.previousNickname} after={current?.nickname} />
               )}
@@ -120,6 +140,15 @@ export function SocialAccountHistoryModal({
               )}
               {entry.profileFieldsChanged.includes("location") && (
                 <BeforeAfter title="Location" before={entry.previousLocation} after={current?.location} />
+              )}
+              {entry.profileFieldsChanged.includes("joined") && (
+                <Section title="Date joined">
+                  <p className="text-sm">
+                    {current?.joinedAt
+                      ? new Date(current.joinedAt).toLocaleString([], { year: "numeric", month: "long" })
+                      : <span className="italic text-muted-foreground">empty</span>}
+                  </p>
+                </Section>
               )}
 
               <CountSection
@@ -145,6 +174,9 @@ export function SocialAccountHistoryModal({
                 onClose={onClose}
               />
 
+              <PostSection title="Posts imported" list={merge((p) => p.postsAddedList)} testId="posts-added" onNavigate={onClose} />
+              <PostSection title="Posts deleted" list={merge((p) => p.postsDeletedList)} testId="posts-deleted" onNavigate={onClose} />
+
               {hasNextPage && (
                 <div className="flex justify-center">
                   <Button
@@ -157,7 +189,7 @@ export function SocialAccountHistoryModal({
                     {isFetchingNextPage ? (
                       <><Loader2 className="h-3 w-3 animate-spin mr-1" />Loading...</>
                     ) : (
-                      "Load more accounts"
+                      "Load more"
                     )}
                   </Button>
                 </div>
@@ -179,11 +211,28 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function ImageSide({ label, url }: { label: string; url?: string | null }) {
+function ImageSide({
+  label,
+  url,
+  fallbackUrl,
+}: {
+  label: string;
+  url?: string | null;
+  fallbackUrl?: string | null;
+}) {
+  const primary = url ?? fallbackUrl;
+  const fallback = url ? fallbackUrl : undefined;
+
   return (
     <div className="flex flex-col items-center gap-1">
       <Avatar className="w-14 h-14">
-        {url && <AvatarImage src={url} alt={label} />}
+        {primary && (
+          <AvatarImage
+            src={primary}
+            fallbackSrc={fallback ?? undefined}
+            alt={label}
+          />
+        )}
         <AvatarFallback className="text-xs">{label}</AvatarFallback>
       </Avatar>
       <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{label}</span>
@@ -300,6 +349,7 @@ function AccountList({
             id={account.id}
             username={account.username}
             imageUrl={account.imageUrl}
+            imageUrlHq={account.imageUrlHq}
             testIdPrefix={`history-${testId}`}
             onNavigate={onNavigate}
           />
@@ -311,5 +361,57 @@ function AccountList({
         )}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+/** A grid of thumbnails, each opening the post on its account's page. */
+function PostSection({
+  title,
+  list,
+  testId,
+  onNavigate,
+}: {
+  title: string;
+  list: HistoryPostList;
+  testId: string;
+  onNavigate: () => void;
+}) {
+  if (list.total === 0) return null;
+  return (
+    <>
+      <Separator />
+      <Section title={`${title} (${list.total.toLocaleString()})`}>
+        <div className="grid grid-cols-4 gap-2" data-testid={`grid-history-${testId}`}>
+          {list.items.map((post) => (
+            <Link
+              key={post.id}
+              href={`/social-accounts/${post.socialAccountId}?postId=${post.id}`}
+              onClick={onNavigate}
+              className="aspect-square rounded-md border bg-muted overflow-hidden relative hover:opacity-90 transition-opacity"
+              title={post.description ?? undefined}
+              data-testid={`link-history-${testId}-${post.id}`}
+            >
+              {post.thumbnailUrl ? (
+                <img src={post.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <ImageIcon className="h-5 w-5 text-muted-foreground/40" />
+                </div>
+              )}
+              {post.postedAt && (
+                <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-1 py-0.5 text-[10px] text-white">
+                  {new Date(post.postedAt).toLocaleDateString()}
+                </span>
+              )}
+            </Link>
+          ))}
+        </div>
+        {list.items.length < list.total && (
+          <p className="text-xs text-muted-foreground pt-1">
+            Showing {list.items.length.toLocaleString()} of {list.total.toLocaleString()}
+          </p>
+        )}
+      </Section>
+    </>
   );
 }

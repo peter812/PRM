@@ -121,8 +121,8 @@ export default function VectorSettingsPage() {
   }
 
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="space-y-2 mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="space-y-2 mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-vector-title">
           <Database className="h-6 w-6" />
           Vector Storage
@@ -132,7 +132,7 @@ export default function VectorSettingsPage() {
         </p>
       </div>
 
-      <div className="space-y-6">
+      <div className="settings-cards-grid">
         <Card data-testid="card-vector-enable">
           <CardHeader>
             <CardTitle className="text-lg">Enable Vector Storage</CardTitle>

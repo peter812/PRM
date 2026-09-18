@@ -1,16 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, HelpCircle, Loader2, LogIn, Play, Plus, Trash2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, HelpCircle, Loader2, LogIn, Play, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,196 +18,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
-
-interface RunItem {
-  username: string;
-  storyPk: string | null;
-  takenAt: string | null;
-  mediaType: number | null;
-  outcome: string;
-  prmOutcome?: string;
-  accountId?: string | null;
-}
-
-interface StoryRun {
-  id: string;
-  importerId: string | null;
-  importerLabel: string | null;
-  status: string;
-  startedAt: string;
-  finishedAt: string | null;
-  counts: Partial<Record<"accountsInTray" | "accountsOpened" | "storiesSeen" | "imagesSaved" | "unreached", number>>;
-  items: RunItem[];
-  error: string | null;
-}
-
-/** PRM's verdict wins once delivered; before that the scraper's own outcome is all we know. */
-const finalOutcome = (i: RunItem) => i.prmOutcome ?? i.outcome;
-
-const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
-  completed: "default",
-  starting: "secondary",
-  running: "secondary",
-  skipped: "secondary",
-  rate_limited: "outline",
-  unreachable: "outline",
-  already_running: "outline",
-  needs_login: "destructive",
-  checkpoint: "destructive",
-  no_username: "destructive",
-  parse_failed: "destructive",
-  error: "destructive",
-};
-
-function RunRow({
-  run,
-  isSelected,
-  onToggleSelect,
-  onDelete,
-  isAdmin,
-}: {
-  run: StoryRun;
-  isSelected: boolean;
-  onToggleSelect: (id: string) => void;
-  onDelete: (run: StoryRun) => void;
-  isAdmin: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState("all");
-  const noAccount = run.items.filter((i) => finalOutcome(i) === "no_account").length;
-  const items = filter === "all" ? run.items : run.items.filter((i) => finalOutcome(i) === filter);
-  const outcomes = Array.from(new Set(run.items.map(finalOutcome))).sort();
-  const c = run.counts;
-
-  return (
-    <>
-      <TableRow className="cursor-pointer" onClick={() => setOpen((o) => !o)} data-testid={`row-run-${run.id}`}>
-        <TableCell className="w-8">{open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</TableCell>
-        {isAdmin && (
-          <TableCell className="w-8" onClick={(e) => e.stopPropagation()}>
-            <Checkbox
-              checked={isSelected}
-              onCheckedChange={() => onToggleSelect(run.id)}
-              aria-label={`Select run ${run.id}`}
-              data-testid={`checkbox-run-${run.id}`}
-            />
-          </TableCell>
-        )}
-        <TableCell>{new Date(run.startedAt).toLocaleString()}</TableCell>
-        <TableCell className="text-muted-foreground">{run.importerLabel ?? "—"}</TableCell>
-        <TableCell><Badge variant={STATUS_VARIANT[run.status] ?? "outline"}>{run.status}</Badge></TableCell>
-        <TableCell className="text-right">{c.accountsOpened ?? 0} / {c.accountsInTray ?? 0}</TableCell>
-        <TableCell className="text-right">{c.storiesSeen ?? 0}</TableCell>
-        <TableCell className="text-right">{c.imagesSaved ?? 0}</TableCell>
-        <TableCell className="text-right">{noAccount}</TableCell>
-        {isAdmin && (
-          <TableCell className="text-right w-12" onClick={(e) => e.stopPropagation()}>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-destructive"
-              onClick={() => onDelete(run)}
-              title="Delete run"
-              data-testid={`button-delete-run-${run.id}`}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </TableCell>
-        )}
-      </TableRow>
-      {open && (
-        <TableRow>
-          <TableCell colSpan={isAdmin ? 10 : 8} className="bg-muted/30 p-4">
-            {run.error && <p className="text-sm text-destructive mb-3">{run.error}</p>}
-            {run.items.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No stories recorded for this run.</p>
-            ) : (
-              <>
-                <Select value={filter} onValueChange={setFilter}>
-                  <SelectTrigger className="w-56 mb-3" data-testid="select-outcome-filter">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All outcomes ({run.items.length})</SelectItem>
-                    {outcomes.map((o) => (
-                      <SelectItem key={o} value={o}>{o} ({run.items.filter((i) => finalOutcome(i) === o).length})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="max-h-96 overflow-y-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Account</TableHead>
-                        <TableHead>Posted</TableHead>
-                        <TableHead>Outcome</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {items.map((i, idx) => (
-                        <TableRow key={`${i.username}-${i.storyPk ?? idx}`}>
-                          <TableCell>
-                            {i.accountId ? (
-                              <Link
-                                href={`~/social-accounts/${i.accountId}?tab=stories${i.storyPk ? `&storyPk=${i.storyPk}` : ""}`}
-                                className="inline-flex items-center gap-1 font-medium hover:underline text-primary"
-                                data-testid={`link-account-${i.username}`}
-                              >
-                                @{i.username}
-                              </Link>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 text-muted-foreground" data-testid={`text-no-account-${i.username}`}>
-                                @{i.username}
-                                <a
-                                  href={`https://www.instagram.com/${i.username}/`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center text-muted-foreground hover:text-foreground"
-                                  title="Open in Instagram (account not in PRM)"
-                                >
-                                  <ExternalLink className="h-3 w-3" />
-                                </a>
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell>{i.takenAt ? new Date(i.takenAt).toLocaleString() : "—"}</TableCell>
-                          <TableCell>{finalOutcome(i)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </>
-            )}
-          </TableCell>
-        </TableRow>
-      )}
-    </>
-  );
-}
-
-type Settings = Record<string, string | null>;
-
-/** One row of story_importers as GET /api/stories/importers returns it. */
-interface Importer {
-  id: string;
-  label: string;
-  serviceUrl: string;
-  enabled: boolean;
-  runEveryDays: number;
-  runWindow: string;
-  skipDayProbability: number;
-  downloadVideos: boolean;
-  nextRunAt: string | null;
-  lastUsername: string | null;
-  createdAt: string;
-}
-
-const IMPORTERS_KEY = ["/api/stories/importers"];
+import { IMPORTERS_KEY, RUNS_KEY, sessionFromRuns, useImporters, useStoryRuns, type Importer, type Settings, type StoryRun } from "@/lib/instagram";
 
 function HowToCard({ defaultOpen }: { defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -269,15 +80,6 @@ function HowToCard({ defaultOpen }: { defaultOpen: boolean }) {
   );
 }
 
-/** What the last run that reached Instagram said about the session. */
-function sessionFromRuns(runs: StoryRun[]): { label: string; ok: boolean | null; at: string | null } {
-  const last = runs.find((r) => ["completed", "running", "needs_login", "checkpoint", "no_username", "rate_limited", "parse_failed", "error"].includes(r.status));
-  if (!last) return { label: "Unknown — no run has reached Instagram yet", ok: null, at: null };
-  if (last.status === "needs_login") return { label: "Logged out — Instagram wants a person to sign in again", ok: false, at: last.startedAt };
-  if (last.status === "checkpoint") return { label: "Flagged — Instagram is asking for a verification step", ok: false, at: last.startedAt };
-  if (last.status === "no_username") return { label: "Logged in, but the service couldn't tell which account — nothing was collected", ok: false, at: last.startedAt };
-  return { label: "Logged in", ok: true, at: last.startedAt };
-}
 
 const EVERY_DAYS_OPTIONS = [
   { value: "1", label: "Every day" },
@@ -285,6 +87,7 @@ const EVERY_DAYS_OPTIONS = [
   { value: "3", label: "Every 3 days" },
   { value: "7", label: "Once a week" },
 ];
+
 
 /** One prm-stories install: its URL, schedule, login and run controls. */
 function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: StoryRun[]; onDelete: (i: Importer) => void }) {
@@ -295,15 +98,21 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
 
   const [label, setLabel] = useState(importer.label);
   const [apiUrl, setApiUrl] = useState(importer.serviceUrl);
+  const [secret, setSecret] = useState("");
   const [start, setStart] = useState(importer.runWindow.split("-")[0] ?? "19:30");
   const [end, setEnd] = useState(importer.runWindow.split("-")[1] ?? "22:30");
   const [skip, setSkip] = useState(String(importer.skipDayProbability));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const windowValid = Boolean(start && end && start < end);
   const nextRunAt = importer.nextRunAt ? new Date(importer.nextRunAt) : null;
+  const [trackStart, setTrackStart] = useState(importer.trackingWindow.split("-")[0] ?? "07:00");
+  const [trackEnd, setTrackEnd] = useState(importer.trackingWindow.split("-")[1] ?? "10:00");
+  const [maxJobs, setMaxJobs] = useState(String(importer.trackingMaxJobs));
+  const trackWindowValid = Boolean(trackStart && trackEnd && trackStart < trackEnd);
+  const nextTrackingRunAt = importer.nextTrackingRunAt ? new Date(importer.nextTrackingRunAt) : null;
 
   const save = useMutation({
-    mutationFn: async (patch: Partial<Omit<Importer, "id" | "nextRunAt" | "lastUsername" | "createdAt">>) =>
+    mutationFn: async (patch: Partial<Omit<Importer, "id" | "nextRunAt" | "nextTrackingRunAt" | "lastUsername" | "createdAt" | "serviceSecretSet">> & { serviceSecret?: string }) =>
       apiRequest("PATCH", `/api/stories/importers/${importer.id}`, patch),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY }),
     onError: (error: Error) => toast({ title: "Failed to save importer", description: error.message, variant: "destructive" }),
@@ -318,6 +127,31 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
     if (Number.isFinite(n) && n >= 0 && n <= 1 && n !== importer.skipDayProbability) save.mutate({ skipDayProbability: n });
     else setSkip(String(importer.skipDayProbability));
   };
+  const saveTrackWindow = () => {
+    const w = `${trackStart}-${trackEnd}`;
+    if (trackWindowValid && w !== importer.trackingWindow) save.mutate({ trackingWindow: w });
+  };
+  const saveMaxJobs = () => {
+    const n = Number(maxJobs);
+    if (Number.isInteger(n) && n >= 1 && n <= 500 && n !== importer.trackingMaxJobs) save.mutate({ trackingMaxJobs: n });
+    else setMaxJobs(String(importer.trackingMaxJobs));
+  };
+
+  const trackNow = useMutation({
+    mutationFn: async () =>
+      (await apiRequest("POST", `/api/stories/importers/${importer.id}/track-now`)).json() as Promise<{ status: string; error: string | null; jobs: number }>,
+    onSuccess: (r) => {
+      toast({
+        title: r.status === "running" ? `Tracking run started with ${r.jobs} jobs` : r.status === "nothing_due" ? "Nothing to check" : `Run not started: ${r.status}`,
+        description: r.error ?? (r.status === "nothing_due" ? "No account is due and no manual job is queued." : undefined),
+        variant: r.status === "running" || r.status === "nothing_due" ? "default" : "destructive",
+      });
+      queryClient.invalidateQueries({ queryKey: RUNS_KEY });
+      queryClient.invalidateQueries({ queryKey: ["/api/tracking/jobs"] });
+      queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY });
+    },
+    onError: (error: Error) => toast({ title: "Failed to trigger tracking run", description: error.message, variant: "destructive" }),
+  });
 
   const openLogin = useMutation({
     mutationFn: async () =>
@@ -345,7 +179,7 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
         description: r.error ?? "The scraper is logged in and watching the tray.",
         variant: r.status === "running" ? "default" : "destructive",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/stories/runs"] });
+      queryClient.invalidateQueries({ queryKey: RUNS_KEY });
       queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY });
     },
     onError: (error: Error) => toast({ title: "Failed to trigger run", description: error.message, variant: "destructive" }),
@@ -404,6 +238,24 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               onChange={(e) => setApiUrl(e.target.value)}
               onBlur={() => apiUrl.trim() !== importer.serviceUrl && save.mutate({ serviceUrl: apiUrl.trim() })}
               data-testid={`input-importer-url-${importer.id}`}
+            />
+          </div>
+          <div className="space-y-2 md:col-span-2">
+            <Label htmlFor={`secret-${importer.id}`}>Service secret</Label>
+            <Input
+              id={`secret-${importer.id}`}
+              type="password"
+              autoComplete="off"
+              placeholder={importer.serviceSecretSet ? "(set — type to replace)" : "STORIES_SERVICE_SECRET on the service, if it has one"}
+              value={secret}
+              disabled={!isAdmin}
+              onChange={(e) => setSecret(e.target.value)}
+              onBlur={() => {
+                if (!secret.trim()) return;
+                save.mutate({ serviceSecret: secret.trim() });
+                setSecret("");
+              }}
+              data-testid={`input-importer-secret-${importer.id}`}
             />
           </div>
           <div className="space-y-2">
@@ -472,6 +324,52 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
           />
         </div>
 
+        <div className="rounded-md border px-3 py-3 space-y-3" data-testid={`section-tracking-${importer.id}`}>
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <Label htmlFor={`tracking-${importer.id}`} className="cursor-pointer">Account tracking (mornings)</Label>
+              <p className="text-xs text-muted-foreground">
+                {importer.trackingEnabled && nextTrackingRunAt
+                  ? <>Next tracking run: <strong data-testid={`text-importer-next-tracking-${importer.id}`}>{nextTrackingRunAt.toLocaleString()}</strong></>
+                  : importer.trackingEnabled ? "Planning the next tracking run…" : "Refreshes accounts by interest level: profile info, follow lists, posts."}
+              </p>
+            </div>
+            <Switch
+              id={`tracking-${importer.id}`}
+              checked={importer.trackingEnabled}
+              disabled={!isAdmin}
+              onCheckedChange={(v) => save.mutate({ trackingEnabled: v })}
+              data-testid={`switch-importer-tracking-${importer.id}`}
+            />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Tracking window</Label>
+              <div className="flex items-center gap-2">
+                <Input type="time" value={trackStart} disabled={!isAdmin} onChange={(e) => setTrackStart(e.target.value)} onBlur={saveTrackWindow} aria-label="Earliest" data-testid={`input-importer-track-start-${importer.id}`} />
+                <span className="text-muted-foreground">to</span>
+                <Input type="time" value={trackEnd} disabled={!isAdmin} onChange={(e) => setTrackEnd(e.target.value)} onBlur={saveTrackWindow} aria-label="Latest" data-testid={`input-importer-track-end-${importer.id}`} />
+              </div>
+              {!trackWindowValid && <p className="text-xs text-destructive">The latest time must be after the earliest.</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={`maxjobs-${importer.id}`}>Checks per run</Label>
+              <Input
+                id={`maxjobs-${importer.id}`}
+                type="number"
+                min={1}
+                max={500}
+                value={maxJobs}
+                disabled={!isAdmin}
+                onChange={(e) => setMaxJobs(e.target.value)}
+                onBlur={saveMaxJobs}
+                data-testid={`input-importer-max-jobs-${importer.id}`}
+              />
+              <p className="text-xs text-muted-foreground">The run ends when the window does; whatever it didn't reach stays due.</p>
+            </div>
+          </div>
+        </div>
+
         <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
           <CollapsibleTrigger asChild>
             <button type="button" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground" data-testid={`button-importer-advanced-${importer.id}`}>
@@ -524,6 +422,10 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               {runNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
               {runNow.isPending ? "Checking Instagram login…" : "Run now"}
             </Button>
+            <Button variant="outline" onClick={() => trackNow.mutate()} disabled={trackNow.isPending || !hasUrl} data-testid={`button-importer-track-now-${importer.id}`}>
+              {trackNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+              {trackNow.isPending ? "Starting…" : "Run tracking now"}
+            </Button>
             {!hasUrl && <span className="text-sm text-muted-foreground">Set the service URL first.</span>}
           </div>
         )}
@@ -531,6 +433,7 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
     </Card>
   );
 }
+
 
 /** Settings shared by every importer. */
 function StorageCard({ settings }: { settings: Settings }) {
@@ -568,25 +471,12 @@ function StorageCard({ settings }: { settings: Settings }) {
   );
 }
 
-export default function StoriesSettingsPage() {
+export default function InstagramImportersPage() {
   const { isAdmin } = useAuth();
   const { toast } = useToast();
   const { data: settings } = useQuery<Settings>({ queryKey: ["/api/settings"] });
-  const { data: runs = [], isLoading } = useQuery<StoryRun[]>({
-    queryKey: ["/api/stories/runs"],
-    queryFn: async () => (await apiRequest("GET", "/api/stories/runs")).json(),
-    staleTime: 0,
-    refetchOnMount: "always",
-  });
-
-  const { data: importers = [] } = useQuery<Importer[]>({
-    queryKey: IMPORTERS_KEY,
-    queryFn: async () => (await apiRequest("GET", "/api/stories/importers")).json(),
-  });
-
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [runToDelete, setRunToDelete] = useState<StoryRun | null>(null);
-  const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+  const { data: runs = [] } = useStoryRuns();
+  const { data: importers = [] } = useImporters();
   const [importerToDelete, setImporterToDelete] = useState<Importer | null>(null);
 
   const addImporter = useMutation({
@@ -601,75 +491,18 @@ export default function StoriesSettingsPage() {
       toast({ title: "Importer removed", description: "Its past runs are kept." });
       setImporterToDelete(null);
       queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY });
-      queryClient.invalidateQueries({ queryKey: ["/api/stories/runs"] });
+      queryClient.invalidateQueries({ queryKey: RUNS_KEY });
     },
     onError: (error: Error) => toast({ title: "Failed to remove importer", description: error.message, variant: "destructive" }),
-  });
-
-  const handleToggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  };
-
-  const handleSelectAll = (checked: boolean) => {
-    if (checked) {
-      setSelectedIds(new Set(runs.map((r) => r.id)));
-    } else {
-      setSelectedIds(new Set());
-    }
-  };
-
-  const deleteSingleMutation = useMutation({
-    mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/stories/runs/${id}`);
-    },
-    onSuccess: (_, id) => {
-      toast({ title: "Run deleted", description: "The story run log has been removed." });
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-      setRunToDelete(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/stories/runs"] });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to delete run", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const deleteBulkMutation = useMutation({
-    mutationFn: async (ids: string[]) => {
-      const res = await apiRequest("POST", "/api/stories/runs/bulk-delete", { ids });
-      return res.json() as Promise<{ ok: boolean; deletedCount: number }>;
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Runs deleted",
-        description: `Successfully removed ${data.deletedCount} run ${data.deletedCount === 1 ? "log" : "logs"}.`,
-      });
-      setSelectedIds(new Set());
-      setShowBulkDeleteDialog(false);
-      queryClient.invalidateQueries({ queryKey: ["/api/stories/runs"] });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to delete runs", description: error.message, variant: "destructive" });
-    },
   });
 
   return (
     <div className="container max-w-full md:max-w-5xl py-3 md:py-8 px-4 md:pl-12">
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold">Instagram Stories</h1>
+        <h1 className="text-2xl font-semibold">Importers</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Collect the stories of everyone your Instagram accounts follow and attach them to their social accounts.
+          Each importer is one Instagram account driven by its own prm-stories service. In the evening it collects the
+          stories of everyone that account follows; in the morning it refreshes tracked accounts.
         </p>
       </div>
 
@@ -707,74 +540,6 @@ export default function StoriesSettingsPage() {
 
       {settings && <StorageCard settings={settings} />}
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-        <div>
-          <h2 className="text-lg font-semibold">Recent runs</h2>
-          <p className="text-sm text-muted-foreground">
-            Expand a run to see every story it saw, including the ones dropped because no social account exists for the
-            poster (<code>no_account</code>).
-          </p>
-        </div>
-        {isAdmin && selectedIds.size > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">{selectedIds.size} selected</span>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowBulkDeleteDialog(true)}
-              disabled={deleteBulkMutation.isPending}
-              data-testid="button-delete-selected-runs"
-            >
-              <Trash2 className="h-4 w-4 mr-1.5" />
-              Delete selected ({selectedIds.size})
-            </Button>
-          </div>
-        )}
-      </div>
-
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-8" />
-            {isAdmin && (
-              <TableHead className="w-8">
-                <Checkbox
-                  checked={runs.length > 0 && selectedIds.size === runs.length}
-                  onCheckedChange={handleSelectAll}
-                  aria-label="Select all runs"
-                  data-testid="checkbox-select-all-runs"
-                />
-              </TableHead>
-            )}
-            <TableHead>Started</TableHead>
-            <TableHead>Importer</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className="text-right">Accounts</TableHead>
-            <TableHead className="text-right">Seen</TableHead>
-            <TableHead className="text-right">Saved</TableHead>
-            <TableHead className="text-right">No account</TableHead>
-            {isAdmin && <TableHead className="w-12 text-right">Actions</TableHead>}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {isLoading ? (
-            <TableRow><TableCell colSpan={isAdmin ? 10 : 8} className="text-center py-8 text-muted-foreground">Loading…</TableCell></TableRow>
-          ) : runs.length === 0 ? (
-            <TableRow><TableCell colSpan={isAdmin ? 10 : 8} className="text-center py-8 text-muted-foreground">No runs delivered yet.</TableCell></TableRow>
-          ) : (
-            runs.map((run) => (
-              <RunRow
-                key={run.id}
-                run={run}
-                isSelected={selectedIds.has(run.id)}
-                onToggleSelect={handleToggleSelect}
-                onDelete={(r) => setRunToDelete(r)}
-                isAdmin={Boolean(isAdmin)}
-              />
-            ))
-          )}
-        </TableBody>
-      </Table>
 
       <AlertDialog open={!!importerToDelete} onOpenChange={(open) => !open && setImporterToDelete(null)}>
         <AlertDialogContent data-testid="dialog-delete-importer">
@@ -794,55 +559,6 @@ export default function StoriesSettingsPage() {
               data-testid="button-confirm-delete-importer"
             >
               {deleteImporter.isPending ? "Removing…" : "Remove importer"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Delete Single Run Dialog */}
-      <AlertDialog open={!!runToDelete} onOpenChange={(open) => !open && setRunToDelete(null)}>
-        <AlertDialogContent data-testid="dialog-delete-single-run">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete story run?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete the run from{" "}
-              <strong>{runToDelete ? new Date(runToDelete.startedAt).toLocaleString() : ""}</strong>?
-              This will remove the run log. Any stories and photos that were saved to PRM will not be deleted.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-delete-run">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => runToDelete && deleteSingleMutation.mutate(runToDelete.id)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={deleteSingleMutation.isPending}
-              data-testid="button-confirm-delete-run"
-            >
-              {deleteSingleMutation.isPending ? "Deleting…" : "Delete run"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Bulk Delete Runs Dialog */}
-      <AlertDialog open={showBulkDeleteDialog} onOpenChange={setShowBulkDeleteDialog}>
-        <AlertDialogContent data-testid="dialog-delete-bulk-runs">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete {selectedIds.size} story {selectedIds.size === 1 ? "run" : "runs"}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete {selectedIds.size} selected run {selectedIds.size === 1 ? "log" : "logs"}?
-              This action cannot be undone. Any stories and photos that were saved to PRM will not be deleted.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-bulk-delete">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteBulkMutation.mutate(Array.from(selectedIds))}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={deleteBulkMutation.isPending}
-              data-testid="button-confirm-bulk-delete"
-            >
-              {deleteBulkMutation.isPending ? "Deleting…" : `Delete ${selectedIds.size} ${selectedIds.size === 1 ? "run" : "runs"}`}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

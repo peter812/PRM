@@ -16,6 +16,7 @@ import { startOsintScanRunner } from "./osint-scan-queue";
 import { startStoriesScheduler } from "./stories-scheduler";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { etagMiddleware } from "./middleware/etag-cache";
+import { prmS3DirectMiddleware } from "./middleware/prm-s3-direct";
 import { requestIdMiddleware } from "./middleware/request-id";
 
 const app = express();
@@ -126,6 +127,9 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// PRM-S3 direct mode: presigned public URLs in JSON responses (see middleware).
+app.use(prmS3DirectMiddleware);
 
 (async () => {
   // Initialize database (reset if no users exist)

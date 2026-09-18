@@ -94,6 +94,18 @@ function useBackHref(currentId: string): { href: string; label: string } {
   return { href: "/images", label: "Back to Images" };
 }
 
+export interface ResolvedPhotoSource {
+  type: string;
+  id: string;
+  label: string;
+  href: string;
+  sublabel?: string;
+}
+
+export type PhotoWithSource = Photo & {
+  source?: ResolvedPhotoSource | null;
+};
+
 export default function ImageDetailPage() {
   const [, params] = useRoute("/image/:id");
   const id = params?.id ?? "";
@@ -208,7 +220,7 @@ export default function ImageDetailPage() {
     height: `${(box.h / nat.h) * 100}%`,
   });
 
-  const { data: photo, isLoading, error } = useQuery<Photo>({
+  const { data: photo, isLoading, error } = useQuery<PhotoWithSource>({
     queryKey: [`/api/photos/${id}`],
     enabled: !!id,
   });
@@ -251,6 +263,46 @@ export default function ImageDetailPage() {
   const hasAiDescription = !!photo.imageDescriptionAt;
   const hasFaceRecog = !!photo.faceIdAt;
   const facialIds = isFacialIdsArray(photo.facialIds) ? photo.facialIds : [];
+
+  const clientSource = (() => {
+    if (!photo.prmLocation) return null;
+    const parts = photo.prmLocation.split(":");
+    const prefix = parts[0]?.trim();
+    const targetId = parts.slice(1).join(":").trim();
+
+    if (prefix === "profile_image" || prefix === "social_profile_image") {
+      if (targetId === "00000000-0000-0000-0000-000000000000") {
+        return { type: "person", id: targetId, label: "Me Profile", href: "/me" };
+      }
+      if (targetId && peopleMap.has(targetId)) {
+        const p = peopleMap.get(targetId)!;
+        const name = `${p.firstName || ""} ${p.lastName || ""}`.trim() || "Person Profile";
+        return { type: "person", id: targetId, label: `Person: ${name}`, href: `/person/${targetId}` };
+      }
+      if (targetId && socialMap.has(targetId)) {
+        const sa = socialMap.get(targetId)!;
+        const handle = sa.currentProfile?.nickname ? `@${sa.username} (${sa.currentProfile.nickname})` : `@${sa.username}`;
+        return { type: "social_account", id: targetId, label: `Social Account: ${handle}`, href: `/social-accounts/${targetId}` };
+      }
+      if (photo.location) {
+        const p = people.find((person) => person.imageUrl === photo.location);
+        if (p) {
+          const name = `${p.firstName || ""} ${p.lastName || ""}`.trim() || "Person Profile";
+          return { type: "person", id: p.id, label: `Person: ${name}`, href: `/person/${p.id}` };
+        }
+        const sa = socialAccounts.find(
+          (acc) => acc.imageUrl === photo.location || (acc as any).externalImageUrl === photo.location
+        );
+        if (sa) {
+          const handle = sa.currentProfile?.nickname ? `@${sa.username} (${sa.currentProfile.nickname})` : `@${sa.username}`;
+          return { type: "social_account", id: sa.id, label: `Social Account: ${handle}`, href: `/social-accounts/${sa.id}` };
+        }
+      }
+    }
+    return null;
+  })();
+
+  const resolvedSource = photo.source ?? clientSource;
 
   return (
     <div className="container max-w-4xl py-6 px-4 overflow-y-auto h-full">
@@ -490,7 +542,44 @@ export default function ImageDetailPage() {
       <div className="mb-6" data-testid="section-location">
         <h2 className="text-sm font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Location</h2>
         <div className="border rounded-md px-3">
-          <MetaRow label="PRM Location" value={photo.prmLocation} mono testId="text-photo-prm-location" />
+          <MetaRow
+            label="PRM Location"
+            value={
+              resolvedSource ? (
+                <Link
+                  href={resolvedSource.href}
+                  className="inline-flex items-center gap-1.5 text-primary hover:underline break-all font-mono text-xs"
+                  data-testid="link-photo-prm-location"
+                >
+                  <span>{photo.prmLocation}</span>
+                  <span className="font-sans text-muted-foreground font-normal">
+                    ({resolvedSource.label})
+                  </span>
+                  <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                </Link>
+              ) : (
+                <span className="break-all">{photo.prmLocation}</span>
+              )
+            }
+            mono={!resolvedSource}
+            testId="text-photo-prm-location"
+          />
+          {resolvedSource && (
+            <MetaRow
+              label="Source"
+              value={
+                <Link
+                  href={resolvedSource.href}
+                  className="inline-flex items-center gap-1.5 text-primary hover:underline break-words"
+                  data-testid="link-photo-source"
+                >
+                  <span>{resolvedSource.label}</span>
+                  <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                </Link>
+              }
+              testId="text-photo-source"
+            />
+          )}
           <MetaRow
             label="Image URL"
             value={
@@ -531,7 +620,7 @@ export default function ImageDetailPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Image?</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to permanently delete this image from PRM, PRM-Face, and S3? This action will also delete all associated face crops and cannot be undone.
+              Are you sure you want to permanently delete this image from PRM, PRM-Compute, and S3? This action will also delete all associated face crops and cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

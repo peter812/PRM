@@ -13,6 +13,7 @@ import {
   Sun,
   Monitor,
   Scan,
+  ScanText,
   Sparkles,
   MessagesSquare,
   MessageSquareText,
@@ -25,6 +26,7 @@ import {
   Leaf,
   Radar,
   Inbox,
+  Activity,
 } from "lucide-react";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 import { Link, useLocation } from "wouter";
@@ -98,6 +100,11 @@ const menuItems = [
         url: "/social-accounts/pending-imports",
         icon: Inbox,
       },
+      {
+        title: "Tracking",
+        url: "/social-accounts/tracking",
+        icon: Activity,
+      },
     ],
   },
   {
@@ -162,6 +169,11 @@ const menuItems = [
         title: "AI Description Demo",
         url: "/ai-desc-demo",
         icon: Sparkles,
+      },
+      {
+        title: "OCR",
+        url: "/ocr-demo",
+        icon: ScanText,
       },
     ],
   },

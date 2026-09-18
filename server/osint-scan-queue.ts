@@ -73,7 +73,7 @@ type OsintJob = { id: string; status: "pending" | "running" | "done" | "error" |
 
 async function osintJson(cfg: OsintConfig, path: string, init?: RequestInit): Promise<OsintJob> {
   const res = await osintFetch(cfg.apiUrl, cfg.apiKey, path, init);
-  if (!res.ok) throw new Error(`PRM-osint returned ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`PRM-Compute returned ${res.status}: ${await res.text()}`);
   return res.json();
 }
 

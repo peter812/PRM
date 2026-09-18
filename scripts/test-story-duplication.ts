@@ -22,7 +22,7 @@ async function main() {
     .values({
       username: testUsername,
       typeId: INSTAGRAM_TYPE_ID,
-      displayName: "Test User",
+      nickname: "Test User",
     })
     .returning();
 

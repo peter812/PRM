@@ -43,8 +43,8 @@ export default function SearchSettingsPage() {
   }, [preferences, toast]);
 
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-search-options-title">
           Search Options
         </h1>
@@ -53,25 +53,27 @@ export default function SearchSettingsPage() {
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <SearchIcon className="h-5 w-5 text-muted-foreground" />
-            Search Categories
-          </CardTitle>
-          <CardDescription>
-            Drag items to reorder how results appear. Uncheck to exclude a category from global search.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <DraggableList
-            items={preferences.order}
-            enabled={preferences.enabled}
-            onReorder={handleReorder}
-            onToggle={handleToggle}
-          />
-        </CardContent>
-      </Card>
+      <div className="settings-cards-grid">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <SearchIcon className="h-5 w-5 text-muted-foreground" />
+              Search Categories
+            </CardTitle>
+            <CardDescription>
+              Drag items to reorder how results appear. Uncheck to exclude a category from global search.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DraggableList
+              items={preferences.order}
+              enabled={preferences.enabled}
+              onReorder={handleReorder}
+              onToggle={handleToggle}
+            />
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

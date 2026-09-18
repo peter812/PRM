@@ -21,16 +21,43 @@ const Avatar = React.forwardRef<
 ))
 Avatar.displayName = AvatarPrimitive.Root.displayName
 
+export interface AvatarImageProps
+  extends React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Image> {
+  fallbackSrc?: string;
+}
+
 const AvatarImage = React.forwardRef<
   React.ElementRef<typeof AvatarPrimitive.Image>,
-  React.ComponentPropsWithoutRef<typeof AvatarPrimitive.Image>
->(({ className, ...props }, ref) => (
-  <AvatarPrimitive.Image
-    ref={ref}
-    className={cn("aspect-square h-full w-full", className)}
-    {...props}
-  />
-))
+  AvatarImageProps
+>(({ className, src, fallbackSrc, onError, onLoadingStatusChange, ...props }, ref) => {
+  const [imgSrc, setImgSrc] = React.useState(src);
+
+  React.useEffect(() => {
+    setImgSrc(src);
+  }, [src]);
+
+  const handleLoadingStatusChange = React.useCallback(
+    (status: "idle" | "loading" | "loaded" | "error") => {
+      if (status === "error" && fallbackSrc && imgSrc !== fallbackSrc) {
+        setImgSrc(fallbackSrc);
+        return;
+      }
+      onLoadingStatusChange?.(status);
+    },
+    [fallbackSrc, imgSrc, onLoadingStatusChange]
+  );
+
+  return (
+    <AvatarPrimitive.Image
+      ref={ref}
+      src={imgSrc}
+      className={cn("aspect-square h-full w-full", className)}
+      onLoadingStatusChange={handleLoadingStatusChange}
+      onError={onError}
+      {...props}
+    />
+  );
+})
 AvatarImage.displayName = AvatarPrimitive.Image.displayName
 
 const AvatarFallback = React.forwardRef<

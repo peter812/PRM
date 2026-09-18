@@ -1,12 +1,13 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
-import { useParams, useLocation } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, ExternalLink, Upload, FileText, CheckCircle2, UserPlus, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, Layers } from "lucide-react";
+import { useParams, useLocation, useSearch } from "wouter";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { LikesHiddenBadge } from "@/components/likes-hidden-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -14,7 +15,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import {
@@ -26,10 +28,12 @@ import {
   type ExtractAction,
 } from "@/lib/extension-bridge";
 import { isValidHexColor, getInitials } from "@/lib/utils";
+import { postPosters } from "@/lib/instagram";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry, TrackingJob } from "@shared/schema";
 import { Link } from "wouter";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
+import { ChangeUsernameDialog } from "@/components/change-username-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
 import { PersonDialog } from "@/components/person-dialog";
 import { LinkPersonDialog } from "@/components/link-person-dialog";
@@ -41,6 +45,7 @@ import { StoriesTab } from "@/components/stories-tab";
 import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
 import { InsightsTab } from "@/components/insights-tab";
 import { SocialAccountRow } from "@/components/social-account-row";
+import { AccountTracking } from "@/components/account-tracking";
 import {
   Dialog,
   DialogContent,
@@ -48,10 +53,22 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export default function SocialAccountProfile() {
   const { uuid } = useParams<{ uuid: string }>();
   const [location, navigate] = useLocation();
+  // The path alone misses a ?postId change on this same page, e.g. from the history tab.
+  const search = useSearch();
   const { toast } = useToast();
   const VALID_TABS = ["account", "follow", "posts", "stories", "messages", "history", "insights"];
 
@@ -87,23 +104,49 @@ export default function SocialAccountProfile() {
     window.history.replaceState(null, "", newUrl);
   };
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isChangeUsernameOpen, setIsChangeUsernameOpen] = useState(false);
   const [isLinkFollowingOpen, setIsLinkFollowingOpen] = useState(false);
-  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [isCreatePersonOpen, setIsCreatePersonOpen] = useState(false);
   const [isLinkPersonOpen, setIsLinkPersonOpen] = useState(false);
-  const [selectedInstagramFile, setSelectedInstagramFile] = useState<File | null>(null);
-  const [instagramImportType, setInstagramImportType] = useState<"followers" | "following">("followers");
-  const [isAddPostOpen, setIsAddPostOpen] = useState(false);
   const [isEditPostOpen, setIsEditPostOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [isPostDetailOpen, setIsPostDetailOpen] = useState(false);
   const [selectedPost, setSelectedPost] = useState<SocialAccountPost | null>(null);
   const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const postIdParam = params.get("postId");
+    if (postIdParam && (!selectedPost || selectedPost.id !== postIdParam)) {
+      fetch(`/api/social-account-posts/${postIdParam}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((post) => {
+          if (post) {
+            setSelectedPost(post);
+            setIsPostDetailOpen(true);
+            if (post.postType === "story" && activeTab !== "stories") {
+              handleTabChange("stories");
+            } else if (post.postType !== "story" && activeTab !== "posts") {
+              handleTabChange("posts");
+            }
+          }
+        })
+        .catch(console.error);
+    }
+  }, [location, search, selectedPost?.id, activeTab]);
 
   const { data: account, isLoading, isError, error } = useQuery<SocialAccountWithCurrentProfile>({
     queryKey: ["/api/social-accounts", uuid],
     enabled: !!uuid,
   });
+
+  const [profileImgSrc, setProfileImgSrc] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    setProfileImgSrc(account?.currentProfile?.imageUrlHq ?? account?.currentProfile?.imageUrl ?? null);
+  }, [account?.currentProfile?.imageUrlHq, account?.currentProfile?.imageUrl]);
 
   const { data: owner } = useQuery<Person>({
     queryKey: account?.ownerUuid ? [`/api/people/${account.ownerUuid}`] : [],
@@ -136,6 +179,8 @@ export default function SocialAccountProfile() {
     const username = account?.username;
     if (!username) return;
 
+    const actionLabel = action === "graph" ? "followers & following" : action === "account" ? "account info" : action;
+
     try {
       await requestExtraction(
         appSettings?.[EXTENSION_ID_SETTING] ?? "",
@@ -145,7 +190,9 @@ export default function SocialAccountProfile() {
       );
       toast({
         title: "Extraction Started",
-        description: `The extension is extracting @${username}. The result will appear under Extension Imports.`,
+        description: actionLabel
+          ? `The extension is extracting ${actionLabel} for @${username}. The result will appear under Extension Imports.`
+          : `The extension is extracting @${username}. The result will appear under Extension Imports.`,
       });
     } catch (err) {
       const unavailable = err instanceof ExtensionUnavailableError;
@@ -217,13 +264,118 @@ export default function SocialAccountProfile() {
   const followingTotal = followingData?.pages[0]?.total ?? 0;
 
   // Query posts for this social account
-  const { data: allPosts } = useQuery<SocialAccountPost[]>({
-    queryKey: ["/api/social-accounts", uuid, "posts"],
+  const { data: allPosts, isLoading: isPostsLoading } = useQuery<SocialAccountPost[]>({
+    queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"],
     enabled: !!uuid,
   });
+  type PostSortOption = "newest" | "oldest" | "popular";
+  const [postSort, setPostSort] = useState<PostSortOption>(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const s = params.get("postSort") || params.get("sort");
+      if (s === "oldest" || s === "popular") return s;
+    }
+    return "newest";
+  });
+
+  const handleSortChange = (newSort: PostSortOption) => {
+    setPostSort(newSort);
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (newSort === "newest") {
+        params.delete("postSort");
+        params.delete("sort");
+      } else {
+        params.set("postSort", newSort);
+      }
+      const searchStr = params.toString();
+      const newUrl = `${window.location.pathname}${searchStr ? `?${searchStr}` : ""}`;
+      window.history.replaceState(null, "", newUrl);
+    }
+  };
+
+  const getPostTime = (p: SocialAccountPost): number => {
+    const raw = p.postedAt ?? p.createdAt;
+    if (!raw) return 0;
+    const time = new Date(raw).getTime();
+    return isNaN(time) ? 0 : time;
+  };
+
   // Stories share the table with posts (post_type "story") but get their own tab.
-  const posts = allPosts?.filter((p) => p.postType !== "story");
+  // By default, posts are ordered newest first.
+  const posts = useMemo(() => {
+    const raw = allPosts?.filter((p) => p.postType !== "story") ?? [];
+    return [...raw].sort((a, b) => {
+      const diff = getPostTime(b) - getPostTime(a);
+      if (diff !== 0) return diff;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [allPosts]);
+
+  const sortedPosts = useMemo(() => {
+    return [...posts].sort((a, b) => {
+      if (postSort === "oldest") {
+        const diff = getPostTime(a) - getPostTime(b);
+        if (diff !== 0) return diff;
+        return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      }
+      if (postSort === "popular") {
+        const likeDiff = (b.likeCount ?? 0) - (a.likeCount ?? 0);
+        if (likeDiff !== 0) return likeDiff;
+        return getPostTime(b) - getPostTime(a);
+      }
+      // default: newest
+      const diff = getPostTime(b) - getPostTime(a);
+      if (diff !== 0) return diff;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [posts, postSort]);
+
   const stories = allPosts?.filter((p) => p.postType === "story") ?? [];
+
+  // Tracking jobs query to detect when a posts check is queued or running
+  const jobsKey = [`/api/social-accounts/${uuid}/tracking-jobs`];
+  const { data: trackingJobs } = useQuery<TrackingJob[]>({
+    queryKey: jobsKey,
+    enabled: !!uuid,
+    refetchInterval: (query) => {
+      const data = query.state.data as TrackingJob[] | undefined;
+      const hasOpen = data?.some((j) => j.status === "queued" || j.status === "running");
+      return hasOpen ? 2_000 : 30_000;
+    },
+  });
+
+  const isPostsQueued = trackingJobs?.some(
+    (j) => j.kind === "posts" && (j.status === "queued" || j.status === "running")
+  );
+
+  const prevPostsQueuedRef = useRef(false);
+  useEffect(() => {
+    if (prevPostsQueuedRef.current && !isPostsQueued) {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"] });
+    }
+    prevPostsQueuedRef.current = !!isPostsQueued;
+  }, [isPostsQueued, uuid]);
+
+  const retrievePostsMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/social-accounts/${uuid}/tracking-jobs`, { kind: "posts" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: jobsKey });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"] });
+      toast({
+        title: "Queued",
+        description: "A posts check will run on the next tracking run.",
+      });
+    },
+    onError: (e: Error) => {
+      toast({
+        title: "Could not retrieve posts",
+        description: e.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   // Recent journal entries, for the "profile image updated" line in the info dialog
   const { data: recentHistory } = useQuery<{ items: SocialAccountHistoryEntry[] }>({
@@ -273,6 +425,7 @@ export default function SocialAccountProfile() {
         title: "Success",
         description: "Social account deleted successfully",
       });
+      setIsDeleteDialogOpen(false);
       navigate("/social-accounts");
     },
     onError: () => {
@@ -281,6 +434,7 @@ export default function SocialAccountProfile() {
         description: "Failed to delete social account",
         variant: "destructive",
       });
+      setIsDeleteDialogOpen(false);
     },
   });
 
@@ -289,7 +443,7 @@ export default function SocialAccountProfile() {
       return await apiRequest("DELETE", `/api/social-account-posts/${postId}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"] });
       toast({
         title: "Success",
         description: "Post deleted successfully",
@@ -303,74 +457,6 @@ export default function SocialAccountProfile() {
       });
     },
   });
-
-  const importInstagramMutation = useMutation({
-    mutationFn: async ({ file, accountId, importType }: { file: File; accountId: string; importType: "followers" | "following" }) => {
-      const formData = new FormData();
-      formData.append("csv", file);
-      formData.append("accountId", accountId);
-      formData.append("importType", importType);
-
-      const response = await fetch("/api/import-instagram", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to import Instagram data");
-      }
-
-      return response.json();
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid] });
-
-      toast({
-        title: "Instagram Import Successful",
-        description: `Successfully imported ${data.imported} accounts${data.updated > 0 ? ` (${data.updated} updated)` : ""}${data.skippedRows > 0 ? ` (${data.skippedRows} rows skipped due to formatting issues)` : ""}`,
-      });
-
-      setSelectedInstagramFile(null);
-      const fileInput = document.getElementById("modal-instagram-file-input") as HTMLInputElement;
-      if (fileInput) {
-        fileInput.value = "";
-      }
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Instagram Import Failed",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const handleInstagramFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      if (!file.name.endsWith(".csv")) {
-        toast({
-          title: "Invalid File",
-          description: "Please select a CSV file",
-          variant: "destructive",
-        });
-        return;
-      }
-      setSelectedInstagramFile(file);
-    }
-  };
-
-  const handleInstagramImport = () => {
-    if (selectedInstagramFile && account?.id) {
-      importInstagramMutation.mutate({
-        file: selectedInstagramFile,
-        accountId: account.id,
-        importType: instagramImportType,
-      });
-    }
-  };
 
   if (isLoading) {
     return (
@@ -430,6 +516,11 @@ export default function SocialAccountProfile() {
     ? socialAccountTypes?.find(t => t.id === account.typeId) 
     : null;
 
+  const cleanUsername = account.username ? account.username.replace(/^@/, "") : "";
+  const directInstagramUrl = account.currentProfile?.accountUrl?.includes("instagram.com")
+    ? (account.currentProfile.accountUrl.startsWith("http") ? account.currentProfile.accountUrl : `https://${account.currentProfile.accountUrl}`)
+    : `https://www.instagram.com/${cleanUsername}/`;
+
 
   const formatDateTime = (dateInput: Date | string | null | undefined): string => {
     if (!dateInput) return "—";
@@ -453,14 +544,12 @@ export default function SocialAccountProfile() {
   // The journal already says which entries changed the image, so this is the
   // newest of those rather than a walk over every stored version.
   const getImageLastChangedAt = (): Date | null => {
-    const entry = recentHistory?.items.find((e) => e.profileFieldsChanged.includes("image"));
+    // A resolution upgrade of the same picture ("improved") is not a change of picture.
+    const entry = recentHistory?.items.find(
+      (e) => e.profileFieldsChanged.includes("image") && e.imageChange !== "improved",
+    );
     return entry ? new Date(entry.detectedAt) : null;
   };
-
-  const isFullImport = Boolean(
-    account.internalAccountCreationType &&
-    /full|backup|meta|archive/i.test(account.internalAccountCreationType)
-  );
 
   const getMostRecentImport = () => {
     const imports: { date: Date; type: string }[] = [];
@@ -484,14 +573,6 @@ export default function SocialAccountProfile() {
   };
 
   const mostRecentImport = getMostRecentImport();
-
-  const getMostRecentImportDate = (): Date | null => {
-    const dates = [account.latestImportFollowers, account.latestImportFollowing]
-      .filter(Boolean)
-      .map((d) => new Date(d!));
-    if (dates.length === 0) return null;
-    return dates.reduce((a, b) => (a.getTime() > b.getTime() ? a : b));
-  };
 
   const getMostRecentActionDate = (): Date | null => {
     const candidates = [
@@ -522,19 +603,50 @@ export default function SocialAccountProfile() {
           </Button>
 
           {activeTab !== "account" && (
-            <Avatar className="w-9 h-9 shrink-0">
-              {account.currentProfile?.imageUrl && (
-                <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
-              )}
-              <AvatarFallback className="text-xs">
-                {getInitials(account.username)}
-              </AvatarFallback>
-            </Avatar>
+            <a
+              href={directInstagramUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open direct Instagram page"
+              className="hover:opacity-80 transition-opacity shrink-0"
+              data-testid="link-header-profile-avatar"
+            >
+              <Avatar className="w-9 h-9">
+                {(account.currentProfile?.imageUrlHq || account.currentProfile?.imageUrl) && (
+                  <AvatarImage
+                    src={account.currentProfile?.imageUrlHq ?? account.currentProfile?.imageUrl ?? undefined}
+                    fallbackSrc={account.currentProfile?.imageUrl ?? undefined}
+                    alt={account.username}
+                  />
+                )}
+                <AvatarFallback className="text-xs">
+                  {getInitials(account.username)}
+                </AvatarFallback>
+              </Avatar>
+            </a>
           )}
 
           <div className="min-w-0">
             <h1 className="text-sm font-bold truncate leading-none flex items-center gap-1.5" data-testid="text-account-username">
-              {account.username}
+              <span>{account.username}</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 text-muted-foreground hover:text-foreground shrink-0"
+                asChild
+                data-testid="button-external-instagram"
+              >
+                <a
+                  href={directInstagramUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  title="Open direct Instagram page"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  <span className="sr-only">Open direct Instagram page</span>
+                </a>
+              </Button>
               {accountType && (
                 <Link href={`/social-accounts?type=${accountType.id}`}>
                   <Badge 
@@ -575,6 +687,10 @@ export default function SocialAccountProfile() {
                 <Edit2 className="h-4 w-4 mr-2" />
                 Edit Account
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setIsChangeUsernameOpen(true)} data-testid="button-change-username">
+                <AtSign className="h-4 w-4 mr-2" />
+                Change Username
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setIsInfoDialogOpen(true)} data-testid="button-account-info">
                 <Info className="h-4 w-4 mr-2" />
                 Account Info
@@ -582,7 +698,7 @@ export default function SocialAccountProfile() {
               {account.currentProfile?.accountUrl && (
                 <DropdownMenuItem onClick={() => window.open(account.currentProfile?.accountUrl ?? undefined, "_blank")} data-testid="button-goto-profile">
                   <ExternalLink className="h-4 w-4 mr-2" />
-                  View Original Profile
+                  {accountType?.name ? `See on ${accountType.name}` : "See on Platform"}
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem onClick={() => navigate(`/social-graph-3d?view=social&selected=${account.id}`)} data-testid="button-open-in-graph">
@@ -590,20 +706,22 @@ export default function SocialAccountProfile() {
                 Open in Graph
               </DropdownMenuItem>
               {accountType?.name?.toLowerCase() === "instagram" && (
-                <>
-                  <DropdownMenuItem onClick={() => setIsImportDialogOpen(true)} data-testid="button-import-instagram">
-                    <Upload className="h-4 w-4 mr-2" />
-                    Import Instagram CSV
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleExtract("account")} data-testid="button-extract-account">
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger data-testid="button-extract-menu">
                     <RefreshCw className="h-4 w-4 mr-2" />
-                    Extract Updated Account Info
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleExtract("graph")} data-testid="button-extract-graph">
-                    <Users className="h-4 w-4 mr-2" />
-                    Extract Followers &amp; Following
-                  </DropdownMenuItem>
-                </>
+                    Extract
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-52">
+                    <DropdownMenuItem onClick={() => handleExtract("graph")} data-testid="button-extract-graph">
+                      <Users className="h-4 w-4 mr-2" />
+                      Followers &amp; Following
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleExtract("account")} data-testid="button-extract-account">
+                      <Info className="h-4 w-4 mr-2" />
+                      Account Info
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem 
@@ -796,9 +914,29 @@ export default function SocialAccountProfile() {
                       </Badge>
                     )}
                   </div>
-                  <p className="text-sm font-medium text-muted-foreground">
-                    @{account.username}
-                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-sm font-medium text-muted-foreground" data-testid="text-account-main-username">
+                      @{account.username}
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 text-muted-foreground hover:text-foreground shrink-0"
+                      asChild
+                      data-testid="button-profile-brief-external-instagram"
+                    >
+                      <a
+                        href={directInstagramUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        title="Open direct Instagram page"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span className="sr-only">Open direct Instagram page</span>
+                      </a>
+                    </Button>
+                  </div>
                   {account.currentProfile?.bio && (
                     <p className="text-sm text-foreground/80 whitespace-pre-wrap pt-1" data-testid="text-account-bio-summary">
                       {account.currentProfile.bio}
@@ -820,11 +958,16 @@ export default function SocialAccountProfile() {
                   <Button 
                     variant="outline" 
                     className="h-20 flex flex-col gap-1.5 items-center justify-center text-xs" 
-                    onClick={() => setIsAddPostOpen(true)}
-                    data-testid="action-btn-add-post"
+                    onClick={() => retrievePostsMutation.mutate()}
+                    disabled={retrievePostsMutation.isPending || isPostsQueued}
+                    data-testid="action-btn-retrieve-posts"
                   >
-                    <Plus className="h-4 w-4 text-primary" />
-                    Add Post
+                    {retrievePostsMutation.isPending || isPostsQueued ? (
+                      <Loader2 className="h-4 w-4 text-primary animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4 text-primary" />
+                    )}
+                    {isPostsQueued ? "Posts Queued" : "Retrieve Posts"}
                   </Button>
                   <Button 
                     variant="outline" 
@@ -846,88 +989,8 @@ export default function SocialAccountProfile() {
                   </Button>
                 </div>
 
-                {/* Summaries: Followers & Following Overview */}
+                {/* Summaries: Posts & Stories side by side */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Followers Overview */}
-                  <Card className="p-4 space-y-3 shadow-none">
-                    <h3 className="font-semibold text-sm flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <Users className="h-4 w-4 text-muted-foreground" />
-                        Followers ({account.latestState?.followerCount || followersTotal || 0})
-                      </span>
-                      <Button variant="ghost" size="sm" onClick={() => handleTabChange("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
-                    </h3>
-                    {followers.length > 0 ? (
-                      <div className="space-y-2 text-xs">
-                        {followers.slice(0, 3).map((f) => (
-                          <div key={f.id} className="flex items-center justify-between border-b pb-1.5 last:border-0 last:pb-0">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <Avatar className="w-6 h-6 shrink-0">
-                                {f.currentProfile?.imageUrl && (
-                                  <AvatarImage src={f.currentProfile.imageUrl} alt={f.username} />
-                                )}
-                                <AvatarFallback className="text-[9px]">
-                                  {getInitials(f.username)}
-                                </AvatarFallback>
-                              </Avatar>
-                              <Link href={`/social-accounts/${f.id}`} className="font-medium hover:underline truncate">
-                                {f.username}
-                              </Link>
-                            </div>
-                            {f.currentProfile?.nickname && (
-                              <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
-                                {f.currentProfile.nickname}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-muted-foreground italic">No followers recorded.</p>
-                    )}
-                  </Card>
-
-                  {/* Following Overview */}
-                  <Card className="p-4 space-y-3 shadow-none">
-                    <h3 className="font-semibold text-sm flex items-center justify-between">
-                      <span className="flex items-center gap-1.5">
-                        <Users className="h-4 w-4 text-muted-foreground" />
-                        Following ({account.latestState?.followingCount || followingTotal || 0})
-                      </span>
-                      <Button variant="ghost" size="sm" onClick={() => handleTabChange("follow")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
-                    </h3>
-                    {followingList.length > 0 ? (
-                      <div className="space-y-2 text-xs">
-                        {followingList.slice(0, 3).map((f) => (
-                          <div key={f.id} className="flex items-center justify-between border-b pb-1.5 last:border-0 last:pb-0">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <Avatar className="w-6 h-6 shrink-0">
-                                {f.currentProfile?.imageUrl && (
-                                  <AvatarImage src={f.currentProfile.imageUrl} alt={f.username} />
-                                )}
-                                <AvatarFallback className="text-[9px]">
-                                  {getInitials(f.username)}
-                                </AvatarFallback>
-                              </Avatar>
-                              <Link href={`/social-accounts/${f.id}`} className="font-medium hover:underline truncate">
-                                {f.username}
-                              </Link>
-                            </div>
-                            {f.currentProfile?.nickname && (
-                              <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
-                                {f.currentProfile.nickname}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-muted-foreground italic">Not following anyone yet.</p>
-                    )}
-                  </Card>
-                </div>
-
-                {/* Summaries: Posts Overview */}
                 <Card className="p-4 space-y-3 shadow-none">
                   <h3 className="font-semibold text-sm flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
@@ -936,7 +999,13 @@ export default function SocialAccountProfile() {
                     </span>
                     <Button variant="ghost" size="sm" onClick={() => handleTabChange("posts")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
                   </h3>
-                  {posts && posts.length > 0 ? (
+                  {isPostsLoading ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {Array.from({ length: 4 }).map((_, i) => (
+                        <Skeleton key={i} className="aspect-square rounded-md w-full" />
+                      ))}
+                    </div>
+                  ) : posts && posts.length > 0 ? (
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {posts.slice(0, 4).map((post) => {
                         let images: string[] = [];
@@ -977,7 +1046,6 @@ export default function SocialAccountProfile() {
                   )}
                 </Card>
 
-                {/* Summaries: Stories Overview */}
                 <Card className="p-4 space-y-3 shadow-none">
                   <h3 className="font-semibold text-sm flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
@@ -995,8 +1063,8 @@ export default function SocialAccountProfile() {
                     </Button>
                   </h3>
                   {stories && stories.length > 0 ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2">
-                      {stories.slice(0, 6).map((story) => {
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {stories.slice(0, 4).map((story) => {
                         let images: string[] = [];
                         try {
                           images = story.content ? JSON.parse(story.content) : [];
@@ -1030,6 +1098,7 @@ export default function SocialAccountProfile() {
                     <p className="text-xs text-muted-foreground italic">No stories recorded yet.</p>
                   )}
                 </Card>
+                </div>
 
                 {/* Summaries: Activity & Import Info */}
                 <Card className="p-4 space-y-3 shadow-none">
@@ -1037,16 +1106,21 @@ export default function SocialAccountProfile() {
                     <span>Activity &amp; Import History</span>
                     <Button variant="ghost" size="sm" onClick={() => setIsInfoDialogOpen(true)} className="text-[11px] h-6 px-2 text-primary hover:text-primary">Details</Button>
                   </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                     <div>
                       <span className="text-muted-foreground block mb-0.5 text-[10px] uppercase font-bold tracking-wider">Account Creation</span>
-                      <p className="font-medium">{formatYearMonth(account.internalAccountCreationDate)}</p>
+                      <p className="font-medium" data-testid="text-details-creation-date">{formatYearMonth(account.joinedAt)}</p>
+                      <p className="text-[11px] text-muted-foreground">Reported by Instagram</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground block mb-0.5 text-[10px] uppercase font-bold tracking-wider">First Import</span>
+                      <p className="font-medium" data-testid="text-details-first-import">{formatDateTime(account.internalAccountCreationDate)}</p>
                       <p className="text-[11px] text-muted-foreground">Type: {account.internalAccountCreationType || "User"}</p>
                     </div>
                     <div>
-                      <span className="text-muted-foreground block mb-0.5 text-[10px] uppercase font-bold tracking-wider">Latest Import</span>
-                      <p className="font-medium">{formatDateTime(getMostRecentImportDate())}</p>
-                      <p className="text-[11px] text-muted-foreground">Scraped: {formatDateTime(account.lastScrapedAt)}</p>
+                      <span className="text-muted-foreground block mb-0.5 text-[10px] uppercase font-bold tracking-wider">Most Recent Import</span>
+                      <p className="font-medium" data-testid="text-details-most-recent-import">{formatDateTime(mostRecentImport?.date ?? null)}</p>
+                      <p className="text-[11px] text-muted-foreground">Type: {mostRecentImport?.type ?? "—"}</p>
                     </div>
                   </div>
                 </Card>
@@ -1055,12 +1129,26 @@ export default function SocialAccountProfile() {
               {/* Right Column: Large Profile Picture & Details */}
               <div className="w-full lg:w-80 shrink-0 space-y-4">
                 {/* Large Profile Image */}
-                <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden group shadow-sm">
-                  {account.currentProfile?.imageUrl ? (
+                <a
+                  href={directInstagramUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden group shadow-sm block cursor-pointer"
+                  data-testid="link-account-profile-image"
+                  title="Open Instagram profile"
+                >
+                  {profileImgSrc ? (
                     <img
-                      src={account.currentProfile.imageUrl}
+                      src={profileImgSrc}
                       alt={account.username}
-                      className="w-full h-full object-cover"
+                      onError={() => {
+                        if (account.currentProfile?.imageUrl && profileImgSrc !== account.currentProfile.imageUrl) {
+                          setProfileImgSrc(account.currentProfile.imageUrl);
+                        } else {
+                          setProfileImgSrc(null);
+                        }
+                      }}
+                      className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
                     />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-4xl font-bold bg-primary/10 text-primary">
@@ -1068,24 +1156,40 @@ export default function SocialAccountProfile() {
                     </div>
                   )}
                   <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                    <Button variant="secondary" size="sm" onClick={() => setIsEditDialogOpen(true)}>
-                      Edit Account
+                    <Button variant="secondary" size="sm" className="pointer-events-none gap-1.5 shadow" data-testid="button-goto-instagram">
+                      <SiInstagram className="h-4 w-4" />
+                      Go to Instagram
                     </Button>
                   </div>
-                </div>
+                </a>
 
                 {/* Account Details Card */}
                 <Card className="p-4 space-y-3 text-xs shadow-none">
                   <h3 className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wider block">Account Details</h3>
                   <div className="space-y-2.5">
-                    {/* Username (account type) */}
+                    {/* Username */}
                     <div>
                       <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Username</span>
-                      <div className="flex items-center gap-1.5 font-medium text-foreground">
-                        <span data-testid="text-details-username">@{account.username}</span>
-                        {accountType && (
-                          <span className="text-muted-foreground font-normal" data-testid="text-details-username-type">({accountType.name})</span>
-                        )}
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium text-foreground" data-testid="text-details-username">@{account.username}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-4 w-4 text-muted-foreground hover:text-foreground shrink-0"
+                          asChild
+                          data-testid="button-details-external-instagram"
+                        >
+                          <a
+                            href={directInstagramUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            title="Open direct Instagram page"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span className="sr-only">Open direct Instagram page</span>
+                          </a>
+                        </Button>
                       </div>
                     </div>
 
@@ -1100,16 +1204,25 @@ export default function SocialAccountProfile() {
                     {/* Account type */}
                     <div>
                       <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Account Type</span>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-foreground" data-testid="text-details-account-type">{accountType?.name || "Unknown"}</span>
-                        {accountType && (
-                          <Badge
-                            variant="outline"
-                            className="text-[10px] px-1 py-0 h-4 leading-none"
-                            style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                          >
-                            {accountType.name}
-                          </Badge>
+                      <span className="text-foreground" data-testid="text-details-account-type">{accountType?.name || "Unknown"}</span>
+                    </div>
+
+                    {/* Status (Public / Private) */}
+                    <div>
+                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Status</span>
+                      <div className="flex items-center gap-1.5 mt-0.5" data-testid="text-details-privacy-status">
+                        {account.isPrivate === true ? (
+                          <>
+                            <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                            <span className="text-foreground font-medium">Private</span>
+                          </>
+                        ) : account.isPrivate === false ? (
+                          <>
+                            <Globe className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            <span className="text-foreground">Public</span>
+                          </>
+                        ) : (
+                          <span className="text-muted-foreground">Unknown</span>
                         )}
                       </div>
                     </div>
@@ -1144,35 +1257,8 @@ export default function SocialAccountProfile() {
                       </div>
                     )}
 
-                    {/* Account creation date */}
-                    <div>
-                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Account Creation Date</span>
-                      <span className="text-foreground" data-testid="text-details-creation-date">
-                        {isFullImport && account.internalAccountCreationDate
-                          ? formatDateTime(account.internalAccountCreationDate)
-                          : "Unknown"}
-                      </span>
-                    </div>
-
-                    {/* Last import ({import type}) */}
-                    <div>
-                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Last Import</span>
-                      <span className="text-foreground" data-testid="text-details-last-import">
-                        {account.internalAccountCreationDate
-                          ? `${formatDateTime(account.internalAccountCreationDate)} (${account.internalAccountCreationType || "User"})`
-                          : "—"}
-                      </span>
-                    </div>
-
-                    {/* Most recent import ({import}) */}
-                    <div>
-                      <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Most Recent Import</span>
-                      <span className="text-foreground" data-testid="text-details-most-recent-import">
-                        {mostRecentImport
-                          ? `${formatDateTime(mostRecentImport.date)} (${mostRecentImport.type})`
-                          : "—"}
-                      </span>
-                    </div>
+                    {/* Interest level + Edit tracking (Instagram only) */}
+                    {accountType?.name?.toLowerCase() === "instagram" && <AccountTracking account={account} />}
                   </div>
 
                   {/* Linked Person Section */}
@@ -1263,6 +1349,7 @@ export default function SocialAccountProfile() {
                         id={followerAccount.id}
                         username={followerAccount.username}
                         imageUrl={followerAccount.imageUrl}
+                        imageUrlHq={followerAccount.imageUrlHq}
                         testIdPrefix="follower"
                       />
                     ))}
@@ -1317,6 +1404,7 @@ export default function SocialAccountProfile() {
                         id={followingAccount.id}
                         username={followingAccount.username}
                         imageUrl={followingAccount.imageUrl}
+                        imageUrlHq={followingAccount.imageUrlHq}
                         testIdPrefix="following"
                       />
                     ))}
@@ -1352,21 +1440,62 @@ export default function SocialAccountProfile() {
           {/* Posts Tab */}
           <TabsContent value="posts" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <div className="px-6 py-6">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-semibold">Posts ({posts?.length || 0})</h2>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                <div className="flex flex-wrap items-center gap-4">
+                  <h2 className="text-lg font-semibold">Posts ({posts?.length || 0})</h2>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Sort:</span>
+                    <Select value={postSort} onValueChange={(val: PostSortOption) => handleSortChange(val)}>
+                      <SelectTrigger className="h-8 w-[160px] text-xs" data-testid="select-post-sort">
+                        <SelectValue placeholder="Sort by" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="newest" data-testid="select-item-sort-newest">Newest</SelectItem>
+                        <SelectItem value="oldest" data-testid="select-item-sort-oldest">Oldest</SelectItem>
+                        <SelectItem value="popular" data-testid="select-item-sort-popular">Most Popular</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
                 <Button
                   size="sm"
-                  onClick={() => setIsAddPostOpen(true)}
-                  data-testid="button-add-post"
+                  onClick={() => retrievePostsMutation.mutate()}
+                  disabled={retrievePostsMutation.isPending || isPostsQueued}
+                  data-testid="button-retrieve-posts"
                 >
-                  <Plus className="h-4 w-4" />
-                  Add Post
+                  {retrievePostsMutation.isPending || isPostsQueued ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                      {isPostsQueued ? "Posts Queued" : "Queuing..."}
+                    </>
+                  ) : (
+                    <>
+                      <Download className="h-4 w-4 mr-1.5" />
+                      Retrieve Posts
+                    </>
+                  )}
                 </Button>
               </div>
 
-              {posts && posts.length > 0 ? (
+              {isPostsLoading ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4" data-testid="posts-loading-skeleton">
+                  {Array.from({ length: 10 }).map((_, i) => (
+                    <Card key={i} className="overflow-hidden shadow-none border">
+                      <Skeleton className="aspect-square w-full rounded-none" />
+                      <div className="p-3 space-y-2">
+                        <Skeleton className="h-4 w-3/4" />
+                        <Skeleton className="h-3 w-1/2" />
+                        <div className="flex items-center gap-3 pt-1">
+                          <Skeleton className="h-3 w-8" />
+                          <Skeleton className="h-3 w-8" />
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              ) : sortedPosts && sortedPosts.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                  {posts.map((post) => {
+                  {sortedPosts.map((post) => {
                     let images: string[] = [];
                     try {
                       images = post.content ? JSON.parse(post.content) : [];
@@ -1374,6 +1503,8 @@ export default function SocialAccountProfile() {
                       images = [];
                     }
                     const firstImage = images[0] || null;
+                    // A collab post: the other posters, whichever of them this profile is.
+                    const collaborators = postPosters(post).filter((p) => p.id !== uuid);
 
                     return (
                       <Card
@@ -1403,29 +1534,37 @@ export default function SocialAccountProfile() {
                               {images.length}
                             </div>
                           )}
-                          {post.isDeleted && (
-                            <div className="absolute top-2 left-2">
-                              <Badge variant="destructive" className="text-xs">Deleted</Badge>
-                            </div>
-                          )}
                         </div>
 
                         {/* Post info */}
                         <div className="p-3">
+                          {collaborators.length > 0 && (
+                            <p className="text-xs text-muted-foreground mb-1 truncate" data-testid={`text-post-collab-${post.id}`}>
+                              with {collaborators.map((c) => `@${c.username}`).join(", ")}
+                            </p>
+                          )}
                           {post.description && (
                             <p className="text-sm line-clamp-2 mb-2">
                               {post.description}
                             </p>
                           )}
-                          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                            <span className="flex items-center gap-1">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                            <span className="flex items-center gap-1" data-testid={`text-post-likes-${post.id}`}>
                               <Heart className="h-3 w-3" />
-                              {post.likeCount}
+                              {post.likesHidden ? <LikesHiddenBadge /> : post.likeCount}
                             </span>
                             <span className="flex items-center gap-1">
                               <MessageCircle className="h-3 w-3" />
                               {post.commentCount}
                             </span>
+                            {(post.postedAt || post.createdAt) && (
+                              <span className="ml-auto text-[11px] text-muted-foreground/80" data-testid={`text-post-date-${post.id}`}>
+                                {new Date(post.postedAt ?? post.createdAt).toLocaleDateString()}
+                              </span>
+                            )}
+                            {post.isDeleted && (
+                              <Badge variant="destructive" className="text-[10px] px-1.5 py-0" data-testid={`badge-post-deleted-${post.id}`}>Deleted</Badge>
+                            )}
                           </div>
                         </div>
                       </Card>
@@ -1433,10 +1572,31 @@ export default function SocialAccountProfile() {
                   })}
                 </div>
               ) : (
-                <div className="text-center py-12 text-muted-foreground">
-                  <ImageIcon className="h-12 w-12 mx-auto mb-3 opacity-40" />
-                  <p className="text-sm">No posts yet</p>
-                  <p className="text-xs mt-1">Click "Add Post" to create the first post</p>
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <div className="rounded-full bg-muted/60 p-4 mb-4">
+                    <ImageIcon className="h-10 w-10 text-muted-foreground/50" />
+                  </div>
+                  <h3 className="text-base font-medium text-foreground mb-1">No posts imported yet</h3>
+                  <p className="text-xs text-muted-foreground max-w-sm mb-4">
+                    Retrieve all posts in high quality from this account.
+                  </p>
+                  <Button
+                    onClick={() => retrievePostsMutation.mutate()}
+                    disabled={retrievePostsMutation.isPending || isPostsQueued}
+                    data-testid="button-import-now"
+                  >
+                    {retrievePostsMutation.isPending || isPostsQueued ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                        {isPostsQueued ? "Queued" : "Queuing..."}
+                      </>
+                    ) : (
+                      <>
+                        <Download className="h-4 w-4 mr-1.5" />
+                        Import now
+                      </>
+                    )}
+                  </Button>
                 </div>
               )}
             </div>
@@ -1457,11 +1617,15 @@ export default function SocialAccountProfile() {
             <SocialAccountHistoryTab
               socialAccountId={account.id}
               current={{
+                username: account.username,
                 nickname: account.nickname,
                 bio: account.bio,
                 location: account.location,
                 imageUrl: account.imageUrl,
+                imageUrlHq: account.imageUrlHq,
+                joinedAt: account.joinedAt,
               }}
+              canTrack={accountType?.name?.toLowerCase() === "instagram"}
             />
           </TabsContent>
 
@@ -1477,141 +1641,19 @@ export default function SocialAccountProfile() {
         account={account}
       />
 
+      <ChangeUsernameDialog
+        open={isChangeUsernameOpen}
+        onOpenChange={setIsChangeUsernameOpen}
+        account={account}
+        accountType={accountType}
+      />
+
       <LinkFollowingAccountsDialog
         open={isLinkFollowingOpen}
         onOpenChange={setIsLinkFollowingOpen}
         accountUuid={uuid!}
         linkedAccountIds={followIds?.followingIds || []}
       />
-
-      <Dialog open={isImportDialogOpen} onOpenChange={(open) => {
-        setIsImportDialogOpen(open);
-        if (!open) {
-          setSelectedInstagramFile(null);
-          importInstagramMutation.reset();
-          const fileInput = document.getElementById("modal-instagram-file-input") as HTMLInputElement;
-          if (fileInput) {
-            fileInput.value = "";
-          }
-        }
-      }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <SiInstagram className="h-5 w-5" />
-              Instagram Import
-            </DialogTitle>
-            <DialogDescription>
-              Import followers or following data for {account.username}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between rounded-md border p-4">
-              <div className="space-y-0.5">
-                <Label htmlFor="modal-import-type-toggle" className="text-base font-medium">
-                  Import Type
-                </Label>
-                <p className="text-sm text-muted-foreground">
-                  {instagramImportType === "followers" ? "Import accounts that follow you" : "Import accounts you follow"}
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={instagramImportType === "followers" ? "text-foreground font-medium" : "text-muted-foreground"}>
-                  Followers
-                </span>
-                <Switch
-                  id="modal-import-type-toggle"
-                  checked={instagramImportType === "following"}
-                  onCheckedChange={(checked) => setInstagramImportType(checked ? "following" : "followers")}
-                  data-testid="switch-modal-import-type"
-                />
-                <span className={instagramImportType === "following" ? "text-foreground font-medium" : "text-muted-foreground"}>
-                  Following
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="modal-instagram-file-input">Select CSV File</Label>
-              <div className="flex items-center gap-3">
-                <Input
-                  id="modal-instagram-file-input"
-                  type="file"
-                  accept=".csv"
-                  onChange={handleInstagramFileChange}
-                  disabled={importInstagramMutation.isPending}
-                  data-testid="input-modal-instagram-file"
-                  className="cursor-pointer"
-                />
-              </div>
-              {selectedInstagramFile && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <FileText className="h-4 w-4" />
-                  <span data-testid="text-modal-selected-filename">{selectedInstagramFile.name}</span>
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Button
-                onClick={handleInstagramImport}
-                disabled={!selectedInstagramFile || importInstagramMutation.isPending}
-                data-testid="button-modal-import-instagram"
-                className="gap-2"
-              >
-                {importInstagramMutation.isPending ? (
-                  <>
-                    <div className="h-4 w-4 border-2 border-background border-t-transparent rounded-full animate-spin" />
-                    Importing...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="h-4 w-4" />
-                    Import {instagramImportType === "followers" ? "Followers" : "Following"}
-                  </>
-                )}
-              </Button>
-
-              {selectedInstagramFile && !importInstagramMutation.isPending && (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setSelectedInstagramFile(null);
-                    const fileInput = document.getElementById("modal-instagram-file-input") as HTMLInputElement;
-                    if (fileInput) {
-                      fileInput.value = "";
-                    }
-                  }}
-                  data-testid="button-modal-clear-file"
-                >
-                  Clear
-                </Button>
-              )}
-            </div>
-
-            {importInstagramMutation.isSuccess && importInstagramMutation.data && (
-              <div className="rounded-md bg-primary/10 border border-primary/20 p-4">
-                <div className="flex items-start gap-3">
-                  <CheckCircle2 className="h-5 w-5 text-primary mt-0.5" />
-                  <div className="space-y-1">
-                    <p className="font-medium" data-testid="text-modal-import-success">
-                      Instagram Import Complete
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Imported {importInstagramMutation.data.imported} account{importInstagramMutation.data.imported !== 1 ? "s" : ""}
-                      {importInstagramMutation.data.updated > 0 && (
-                        <span className="ml-1">
-                          ({importInstagramMutation.data.updated} updated)
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <PersonDialog
         open={isCreatePersonOpen}
@@ -1634,17 +1676,21 @@ export default function SocialAccountProfile() {
         currentPersonId={account.ownerUuid}
       />
 
-      <PostDialog
-        open={isAddPostOpen}
-        onOpenChange={setIsAddPostOpen}
-        socialAccountId={uuid!}
-      />
-
       {selectedPost && (
         <>
           <PostDetailDialog
             open={isPostDetailOpen}
-            onOpenChange={setIsPostDetailOpen}
+            onOpenChange={(open) => {
+              setIsPostDetailOpen(open);
+              if (!open && typeof window !== "undefined") {
+                const params = new URLSearchParams(window.location.search);
+                if (params.has("postId")) {
+                  params.delete("postId");
+                  const searchStr = params.toString();
+                  window.history.replaceState(null, "", `${window.location.pathname}${searchStr ? `?${searchStr}` : ""}`);
+                }
+              }
+            }}
             post={selectedPost}
             onEdit={() => {
               setIsPostDetailOpen(false);
@@ -1679,7 +1725,7 @@ export default function SocialAccountProfile() {
               <div className="flex justify-between gap-4">
                 <span className="text-muted-foreground shrink-0">Account created</span>
                 <span className="text-right font-medium" data-testid="info-account-created">
-                  {formatYearMonth(account?.internalAccountCreationDate)}
+                  {formatYearMonth(account?.joinedAt)}
                 </span>
               </div>
               <div className="flex justify-between gap-4">
@@ -1691,7 +1737,7 @@ export default function SocialAccountProfile() {
               <div className="flex justify-between gap-4">
                 <span className="text-muted-foreground shrink-0">Most recent import</span>
                 <span className="text-right font-medium" data-testid="info-latest-import">
-                  {formatDateTime(getMostRecentImportDate())}
+                  {formatDateTime(mostRecentImport?.date ?? null)}
                 </span>
               </div>
               <div className="flex justify-between gap-4">
@@ -1743,6 +1789,7 @@ export default function SocialAccountProfile() {
                             id={a.id}
                             username={a.username}
                             imageUrl={a.imageUrl}
+                            imageUrlHq={a.imageUrlHq}
                             testIdPrefix="followers-only"
                             onNavigate={() => setIsCompareOpen(false)}
                           />
@@ -1766,6 +1813,7 @@ export default function SocialAccountProfile() {
                             id={a.id}
                             username={a.username}
                             imageUrl={a.imageUrl}
+                            imageUrlHq={a.imageUrlHq}
                             testIdPrefix="following-only"
                             onNavigate={() => setIsCompareOpen(false)}
                           />

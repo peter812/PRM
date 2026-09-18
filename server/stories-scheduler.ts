@@ -7,14 +7,20 @@
 // logged in, reports which @username it is logged in as, and answers before it
 // begins; the stories themselves arrive later on the /api/v1/stories routes.
 //
+// The same importer also runs *tracking* in a morning window: PRM claims the
+// accounts whose interest level makes them due (account-tracking-plan.md §2.3),
+// mints a run of kind 'tracking' and asks the service's POST /track to work
+// through them. Both kinds share the token, the run rows and the backoff.
+//
 // Everything here is instance-wide (story_importers / app_settings), not per user.
 import crypto from "crypto";
-import { desc, eq, gt, inArray, and } from "drizzle-orm";
+import { desc, eq, gt, inArray, and, lt } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
 import { runAsSystem } from "./access";
 import { log } from "./vite";
-import { storyImporters, storyScrapeRuns, type StoryImporter } from "@shared/schema";
+import { storyImporters, storyScrapeRuns, trackingJobs, type StoryImporter } from "@shared/schema";
+import { claimTrackingJobs, failUnfinishedJobs, postSettings, releaseTrackingJobs, type ClaimedJob } from "./tracking";
 
 export const STORIES_IMAGE_STORAGE_KEY = "stories_image_storage"; // "local" | "s3" — global, applies to every importer
 
@@ -22,6 +28,11 @@ export const DEFAULT_WINDOW = "19:30-22:30";
 const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_MS = 48 * 60 * 60 * 1000;
 const TICK_MS = 60_000;
+/** A manual run's budget: at least an hour, and time enough for a big batch — under the token's 6 h TTL. */
+const manualBudgetMinutes = (jobs: number) => Math.min(Math.max(60, jobs * 2), 300);
+const UNREACHABLE_RETRY_MS = 15 * 60_000;
+/** The service said already_running to a manual kick: it is wrapping up (or on a stories run). Ask again shortly. */
+const BUSY_RETRY_MS = 60_000;
 
 export function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -53,17 +64,38 @@ export function storiesServiceUrl(importer: Pick<StoryImporter, "serviceUrl">): 
   return url && !/^https?:\/\//i.test(url) ? `http://${url}` : url;
 }
 
-/** Roll the importer's next run time: today if the window is still ahead, otherwise tomorrow. */
-async function planNextRun(importer: StoryImporter, from: Date): Promise<Date> {
-  const window = parseWindow(importer.runWindow);
+/** Headers for a call to the importer's service: the shared secret, when one is set. */
+export function storiesServiceHeaders(importer: Pick<StoryImporter, "serviceSecret">): Record<string, string> {
+  const secret = importer.serviceSecret.trim();
+  return secret ? { "x-stories-secret": secret } : {};
+}
+
+type RunKind = "stories" | "tracking";
+
+/** Roll the importer's next run of `kind`: today if its window is still ahead, otherwise tomorrow. */
+async function planNextRun(importer: StoryImporter, from: Date, kind: RunKind): Promise<Date> {
+  const window = parseWindow(kind === "stories" ? importer.runWindow : importer.trackingWindow);
   let at = randomTimeInWindow(from, window);
   if (at.getTime() <= from.getTime()) {
     const tomorrow = new Date(from);
     tomorrow.setDate(tomorrow.getDate() + 1);
     at = randomTimeInWindow(tomorrow, window);
   }
-  await db.update(storyImporters).set({ nextRunAt: at }).where(eq(storyImporters.id, importer.id));
+  await db
+    .update(storyImporters)
+    .set(kind === "stories" ? { nextRunAt: at } : { nextTrackingRunAt: at })
+    .where(eq(storyImporters.id, importer.id));
   return at;
+}
+
+/** Whether a run PRM minted for the importer is still going, as far as PRM knows: its manifest hasn't closed it and its token is live. */
+async function hasRunInFlight(importerId: string, now: Date): Promise<boolean> {
+  const [row] = await db
+    .select({ id: storyScrapeRuns.id })
+    .from(storyScrapeRuns)
+    .where(and(eq(storyScrapeRuns.importerId, importerId), inArray(storyScrapeRuns.status, ["starting", "running"]), gt(storyScrapeRuns.tokenExpiresAt, now)))
+    .limit(1);
+  return Boolean(row);
 }
 
 /** The importer's last run that got as far as the scraper (not a PRM-side skip / unreachable). */
@@ -80,12 +112,40 @@ async function lastScraperRun(importerId: string) {
   return row;
 }
 
+export type RunStart = { runId: string; status: string; error: string | null; username: string | null };
+
 /**
  * Mint a run and ask the importer's service to start it. Returns the run's
  * status after the service answered (or failed to). Safe to call from the
  * settings page's "Run now" and from the nightly tick alike.
  */
-export async function triggerStoriesRun(importer: StoryImporter): Promise<{ runId: string; status: string; error: string | null; username: string | null }> {
+export const triggerStoriesRun = (importer: StoryImporter): Promise<RunStart> =>
+  startRun(importer, "stories", () => ({ videos: importer.downloadVideos }));
+
+/**
+ * A tracking run: put the claimed jobs under the freshly minted run, then ask
+ * the service's POST /track to work them. A declined start releases them again.
+ */
+export async function triggerTrackingRun(importer: StoryImporter, jobs: ClaimedJob[], budgetMinutes: number): Promise<RunStart> {
+  let result: RunStart;
+  try {
+    result = await startRun(importer, "tracking", async (runId) => {
+      await db.update(trackingJobs).set({ runId }).where(inArray(trackingJobs.id, jobs.map((j) => j.id)));
+      return { jobs, budgetMinutes, posts: await postSettings() };
+    });
+  } catch (err) {
+    await releaseTrackingJobs(jobs);
+    throw err;
+  }
+  if (result.status !== "running") await releaseTrackingJobs(jobs);
+  return result;
+}
+
+async function startRun(
+  importer: StoryImporter,
+  kind: RunKind,
+  extra: (runId: string) => Record<string, unknown> | Promise<Record<string, unknown>>,
+): Promise<RunStart> {
   const apiUrl = storiesServiceUrl(importer);
   const runId = crypto.randomUUID();
   const token = crypto.randomBytes(32).toString("hex");
@@ -93,6 +153,7 @@ export async function triggerStoriesRun(importer: StoryImporter): Promise<{ runI
   await db.insert(storyScrapeRuns).values({
     id: runId,
     importerId: importer.id,
+    kind,
     status: "starting",
     startedAt,
     tokenHash: hashToken(token),
@@ -104,10 +165,10 @@ export async function triggerStoriesRun(importer: StoryImporter): Promise<{ runI
   let username: string | null = null;
   try {
     if (!apiUrl) throw new Error("Stories service URL is not set");
-    const res = await fetch(`${apiUrl}/run`, {
+    const res = await fetch(`${apiUrl}/${kind === "stories" ? "run" : "track"}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ runId, token, videos: importer.downloadVideos }),
+      headers: { "content-type": "application/json", ...storiesServiceHeaders(importer) },
+      body: JSON.stringify({ runId, token, ...(await extra(runId)) }),
       // The service opens Instagram before answering; give it time to load.
       signal: AbortSignal.timeout(120_000),
     });
@@ -132,14 +193,39 @@ export async function triggerStoriesRun(importer: StoryImporter): Promise<{ runI
     await db.update(storyScrapeRuns).set({ status, scrapedFrom: username }).where(eq(storyScrapeRuns.id, runId));
     if (username) await db.update(storyImporters).set({ lastUsername: username }).where(eq(storyImporters.id, importer.id));
   }
-  log(`[Stories] ${importer.label}: run ${runId}: ${status}${username ? ` as @${username}` : ""}${error ? ` — ${error}` : ""}`);
+  log(`[Stories] ${importer.label}: ${kind} run ${runId}: ${status}${username ? ` as @${username}` : ""}${error ? ` — ${error}` : ""}`);
   return { runId, status, error, username };
 }
 
-async function tickImporter(importer: StoryImporter, now: Date): Promise<void> {
+/** When the importer's rate-limit backoff ends — shared by both kinds, it is the same Instagram account — or null. */
+export async function rateLimitedUntil(importerId: string): Promise<Date | null> {
+  const last = await lastScraperRun(importerId);
+  if (last?.status !== "rate_limited") return null;
+  const until = new Date(last.startedAt.getTime() + RATE_LIMIT_BACKOFF_MS);
+  return until.getTime() > Date.now() ? until : null;
+}
+
+/**
+ * Whether this run should be skipped: the rate-limit backoff or the random day
+ * off. Records a `skipped` run when it is.
+ */
+async function skipToday(importer: StoryImporter, kind: RunKind, now: Date): Promise<boolean> {
+  let skipReason: string | null = null;
+  if (await rateLimitedUntil(importer.id)) {
+    skipReason = "rate limited on the previous run; backing off 48 h";
+  } else if (Math.random() < importer.skipDayProbability) {
+    skipReason = "random day off";
+  }
+  if (!skipReason) return false;
+  await db.insert(storyScrapeRuns).values({ id: crypto.randomUUID(), importerId: importer.id, kind, status: "skipped", startedAt: now, finishedAt: now, error: skipReason });
+  log(`[Stories] ${importer.label}: skipping ${kind}: ${skipReason}`);
+  return true;
+}
+
+async function tickStories(importer: StoryImporter, now: Date): Promise<void> {
   const next = importer.nextRunAt;
   if (!next || Number.isNaN(next.getTime())) {
-    const at = await planNextRun(importer, now);
+    const at = await planNextRun(importer, now, "stories");
     log(`[Stories] ${importer.label}: next run planned for ${at.toLocaleString()}`);
     return;
   }
@@ -149,30 +235,121 @@ async function tickImporter(importer: StoryImporter, now: Date): Promise<void> {
   const nextDay = new Date(now);
   nextDay.setDate(nextDay.getDate() + Math.min(Math.max(importer.runEveryDays, 1), 30));
   nextDay.setHours(0, 0, 0, 0);
-  const planned = await planNextRun(importer, nextDay);
+  const planned = await planNextRun(importer, nextDay, "stories");
   log(`[Stories] ${importer.label}: next run planned for ${planned.toLocaleString()}`);
 
-  const last = await lastScraperRun(importer.id);
-  let skipReason: string | null = null;
-  if (last?.status === "rate_limited" && now.getTime() - last.startedAt.getTime() < RATE_LIMIT_BACKOFF_MS) {
-    skipReason = "rate limited on the previous run; backing off 48 h";
-  } else if (Math.random() < importer.skipDayProbability) {
-    skipReason = "random day off";
-  }
-  if (skipReason) {
-    await db.insert(storyScrapeRuns).values({ id: crypto.randomUUID(), importerId: importer.id, status: "skipped", startedAt: now, finishedAt: now, error: skipReason });
-    log(`[Stories] ${importer.label}: skipping tonight: ${skipReason}`);
+  if (await skipToday(importer, "stories", now)) return;
+  await triggerStoriesRun(importer);
+}
+
+async function tickTracking(importer: StoryImporter, now: Date): Promise<void> {
+  if (!importer.trackingEnabled) return;
+  const next = importer.nextTrackingRunAt;
+  if (!next || Number.isNaN(next.getTime())) {
+    const at = await planNextRun(importer, now, "tracking");
+    log(`[Stories] ${importer.label}: next tracking run planned for ${at.toLocaleString()}`);
     return;
   }
-  await triggerStoriesRun(importer);
+  if (next.getTime() > now.getTime()) return;
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(0, 0, 0, 0);
+  const planned = await planNextRun(importer, tomorrow, "tracking");
+  log(`[Stories] ${importer.label}: next tracking run planned for ${planned.toLocaleString()}`);
+
+  if (await skipToday(importer, "tracking", now)) return;
+
+  const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs);
+  if (jobs.length === 0) {
+    log(`[Stories] ${importer.label}: nothing due for tracking`);
+    return;
+  }
+  // The run must end inside the window; whatever it doesn't reach stays due.
+  const minutesLeft = parseWindow(importer.trackingWindow)[1] - (now.getHours() * 60 + now.getMinutes());
+  const result = await triggerTrackingRun(importer, jobs, Math.max(minutesLeft, 15));
+  // Busy with a stories run or a login window: try again in half an hour if the window allows.
+  if (result.status === "already_running" && minutesLeft > 45) {
+    await db.update(storyImporters).set({ nextTrackingRunAt: new Date(now.getTime() + 30 * 60_000) }).where(eq(storyImporters.id, importer.id));
+  }
+}
+
+/** The importer manual jobs go to: tracking-enabled first, then enabled, then any with a service URL. */
+export async function manualImporter(): Promise<StoryImporter | null> {
+  const importers = await db
+    .select()
+    .from(storyImporters)
+    .orderBy(desc(storyImporters.trackingEnabled), desc(storyImporters.enabled), storyImporters.createdAt);
+  return importers.find((i) => i.serviceUrl?.trim()) ?? importers[0] ?? null;
+}
+
+/**
+ * Manual jobs don't wait for the morning when an importer can take them now: a
+ * busy one answers already_running and the jobs simply wait for the run that
+ * ends to kick them again. Each run takes at most `tracking_max_jobs`, so a
+ * batch of hundreds drains as a chain of runs, one straight after another —
+ * until the queue is empty, the service is unreachable (retried later), or
+ * Instagram rate-limits the account (then nothing until the backoff ends).
+ * Debounced so a burst of clicks on the account page becomes one run. While a
+ * run PRM knows about is still going, the kick waits for its manifest (which
+ * kicks again) rather than minting a run the service would only decline; if
+ * the service declines anyway it is retried in a minute, never dropped — a
+ * dropped kick is a batch stuck at "queued" with nothing left to wake it.
+ */
+let manualKick: NodeJS.Timeout | null = null;
+export function kickManualTrackingJobs(delayMs = 250): void {
+  if (manualKick) clearTimeout(manualKick);
+  manualKick = setTimeout(() => {
+    manualKick = null;
+    runAsSystem(async () => {
+      const importer = await manualImporter();
+      if (!importer) return;
+      const until = await rateLimitedUntil(importer.id);
+      if (until) {
+        log(`[Stories] ${importer.label}: manual jobs wait for the rate-limit backoff (until ${until.toLocaleString()})`);
+        return;
+      }
+      if (await hasRunInFlight(importer.id, new Date())) return;
+      const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs, { manualOnly: true });
+      if (jobs.length === 0) return;
+      const result = await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs.length));
+      if (result.status === "unreachable") kickManualTrackingJobs(UNREACHABLE_RETRY_MS);
+      else if (result.status === "already_running") kickManualTrackingJobs(BUSY_RETRY_MS);
+    }).catch((err) => log(`[Stories] manual tracking run: ${err instanceof Error ? err.message : err}`));
+  }, delayMs);
+}
+
+/** A run just ended: whatever manual jobs are still queued go next. */
+export function kickManualTrackingJobsAfterRun(): void {
+  kickManualTrackingJobs();
+}
+
+/**
+ * A run whose manifest never came (the service died mid-run) would otherwise
+ * stay "running" forever, and with it its jobs — and no manifest means nothing
+ * kicks the next manual run, so a draining batch would stall. Once the run's
+ * token has expired the service can't deliver anyway: close it out.
+ */
+async function reapStaleRuns(now: Date): Promise<void> {
+  const stale = await db
+    .update(storyScrapeRuns)
+    .set({ status: "error", error: "no manifest before the run's token expired", finishedAt: now, tokenHash: null, tokenExpiresAt: null })
+    .where(and(inArray(storyScrapeRuns.status, ["starting", "running"]), lt(storyScrapeRuns.tokenExpiresAt, now)))
+    .returning({ id: storyScrapeRuns.id, kind: storyScrapeRuns.kind });
+  for (const run of stale) {
+    log(`[Stories] ${run.kind} run ${run.id} never finished; closing it out`);
+    if (run.kind === "tracking") await failUnfinishedJobs(run.id, "error");
+  }
+  if (stale.length) kickManualTrackingJobsAfterRun();
 }
 
 /** Every enabled importer is independent: a slow service answering one must not hold up the others. */
 async function tick(): Promise<void> {
+  const now = new Date();
+  await reapStaleRuns(now);
   const importers = await db.select().from(storyImporters).where(eq(storyImporters.enabled, true));
   if (importers.length === 0) return;
-  const now = new Date();
-  const results = await Promise.allSettled(importers.map((i) => tickImporter(i, now)));
+  const results = await Promise.allSettled(importers.map((i) => tickStories(i, now).then(() => tickTracking(i, now))));
   results.forEach((r, idx) => {
     if (r.status === "rejected") log(`[Stories] ${importers[idx].label}: ${r.reason instanceof Error ? r.reason.message : r.reason}`);
   });
@@ -201,7 +378,9 @@ export async function runForToken(token: string | undefined): Promise<{ id: stri
   return row ?? null;
 }
 
-/** Where story images and videos go; "s3" or "local". */
-export async function storiesStorageMode(): Promise<"s3" | "local"> {
-  return (await storage.getAppSetting(STORIES_IMAGE_STORAGE_KEY)) === "s3" ? "s3" : "local";
+/** Where story images and videos go; "s3", "prm-s3", or "local". */
+export async function storiesStorageMode(): Promise<"s3" | "prm-s3" | "local"> {
+  const mode = await storage.getAppSetting(STORIES_IMAGE_STORAGE_KEY);
+  if (mode === "s3" || mode === "prm-s3") return mode;
+  return "local";
 }

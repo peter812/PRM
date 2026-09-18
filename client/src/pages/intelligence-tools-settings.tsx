@@ -189,7 +189,7 @@ export default function IntelligenceToolsSettingsPage() {
   ];
 
   return (
-    <div className="container max-w-full md:max-w-3xl py-6 md:py-10 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">
+    <div className="container max-w-full py-6 md:py-10 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">
       {/* Execution mode — top of the page per spec. */}
       <Card>
         <CardHeader>

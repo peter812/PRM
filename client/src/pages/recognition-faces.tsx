@@ -81,7 +81,7 @@ export default function RecognitionFacesPage() {
             <div className="space-y-1">
               <p className="text-destructive font-medium">Invalid or missing API key</p>
               <p className="text-muted-foreground">
-                PRM-Face rejected the request. Please{" "}
+                PRM-Compute rejected the request. Please{" "}
                 <Link href="/settings/recognition" className="underline text-foreground hover:text-foreground/80">
                   regenerate your API key
                 </Link>{" "}

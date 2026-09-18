@@ -39,6 +39,8 @@ function getTaskLabel(type: string): string {
       return "Transfer Images to Local";
     case "transfer_images_to_s3":
       return "Transfer Images to S3";
+    case "backfill_profile_image_tiers":
+      return "Backfill Profile Image Tiers";
     case "import_social":
       return "Social Extraction Import";
     case "import_instagram":
@@ -121,6 +123,13 @@ function TaskResultDisplay({ task }: { task: Task }) {
         <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
           Transferred: {result.transferred}, Failed: {result.failed}, Total: {result.total}
           {result.cancelled && " (cancelled)"}
+        </span>
+      );
+    }
+    if (task.type === "backfill_profile_image_tiers") {
+      return (
+        <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
+          Moved: {result.moved}, Already 150px: {result.already_lq}, Missing: {result.missing}, Skipped: {result.skipped}, Failed: {result.failed}, Total: {result.total}
         </span>
       );
     }
@@ -291,8 +300,8 @@ export default function TasksSettingsPage() {
   };
 
   return (
-    <div className="container max-w-full md:max-w-3xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="flex items-center justify-between gap-4 flex-wrap mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="flex items-center justify-between gap-4 flex-wrap mb-6 max-w-3xl">
         <div className="space-y-2">
           <h1 className="text-2xl font-semibold" data-testid="text-tasks-title">Tasks</h1>
           <p className="text-muted-foreground">
@@ -313,7 +322,7 @@ export default function TasksSettingsPage() {
         </Button>
       </div>
 
-      <div className="space-y-6">
+      <div className="settings-cards-grid">
         <Card data-testid="card-available-tasks">
           <CardHeader>
             <CardTitle className="text-lg">Available Tasks</CardTitle>

@@ -1,8 +1,9 @@
 import { storage } from "./storage";
 import { db } from "./db";
 import { syncEntityInBackground } from "./vector-universal";
-import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3 } from "./s3";
-import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally } from "./local-storage";
+import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3, deleteMediaFromS3, ObjectMissingError, listS3ObjectKeys, deleteS3ObjectKey, s3KeyFromUrl } from "./s3";
+import { uploadImageToPrmS3, deleteImageFromPrmS3, uploadMediaToPrmS3, deleteMediaFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer, listPrmS3ObjectKeys, deletePrmS3ObjectKey, normalizePrmS3Key } from "./prm-s3";
+import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally, deleteMediaLocally, isLocalMediaUrl } from "./local-storage";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
 import { parseSmsBackup } from "./sms-import";
@@ -15,9 +16,11 @@ import {
   INSTAGRAM_USER_AGENT,
   getImageDimensions,
   fetchProfileImage,
-  shouldReplaceProfileImage,
-  storeProfileImage,
-  getCurrentProfileImageUrl,
+  classifyProfileImage,
+  applyProfileImageVerdict,
+  getCurrentProfileImageUrls,
+  backfillProfileImageTiers,
+  type ProfileImageOutcome,
 } from "./profile-image";
 import {
   applySnapshot,
@@ -30,7 +33,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, and, isNotNull, inArray } from "drizzle-orm";
+import { eq, and, isNotNull, isNull, inArray } from "drizzle-orm";
 import Papa from "papaparse";
 import { sseManager } from "./middleware/sse";
 
@@ -103,8 +106,8 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
 
   const fetched = await fetchProfileImage(imageUrl);
 
-  const currentImageUrl = await getCurrentProfileImageUrl(socialAccountId);
-  const verdict = await shouldReplaceProfileImage(currentImageUrl, fetched);
+  const current = await getCurrentProfileImageUrls(socialAccountId);
+  const verdict = await classifyProfileImage(current, fetched);
   if (!verdict.replace) {
     log(`[ImageWorker] Skipping download for ${socialAccountId} — ${verdict.reason}`);
     return JSON.stringify({ skipped: true, reason: verdict.reason, socialAccountId });
@@ -117,7 +120,7 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     return JSON.stringify({ skipped: true, reason: "cancelled", socialAccountId });
   }
 
-  const { cdnUrl, photoId } = await storeProfileImage(fetched, socialAccountId);
+  const outcome = await applyProfileImageVerdict(socialAccountId, current, fetched, verdict);
 
   // Re-check cancellation again after upload before persisting changes
   const postUploadTask = await storage.getImageTaskById(imageTaskId);
@@ -126,15 +129,21 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     return JSON.stringify({ skipped: true, reason: "cancelled_post_upload", socialAccountId });
   }
 
-  await recordProfileImageChange(socialAccountId, cdnUrl, currentImageUrl);
+  await recordProfileImageChange(socialAccountId, outcome);
 
   // Link the photo to this image task
-  await db.update(imageTasks).set({ photoId }).where(eq(imageTasks.id, imageTaskId));
+  await db.update(imageTasks).set({ photoId: outcome.photoId }).where(eq(imageTasks.id, imageTaskId));
 
   // Automatically pass in the image to any linked person who doesn't have an image
   await autoPassInImageForSocialAccount(socialAccountId);
 
-  return JSON.stringify({ cdnUrl, socialAccountId, photoId, widthPx: fetched.dims?.width ?? null });
+  return JSON.stringify({
+    cdnUrl: outcome.imageUrlHq ?? outcome.imageUrl,
+    socialAccountId,
+    photoId: outcome.photoId,
+    imageChange: outcome.imageChange,
+    widthPx: fetched.dims?.width ?? null,
+  });
 }
 
 async function processAnalyzeImgFull(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
@@ -253,60 +262,21 @@ export function triggerImageTaskWorker() {
   runImageTaskWorkerLoop();
 }
 
+/** Legacy task type; nothing creates these any more. Same pipeline as the image worker. */
 async function processGetImgTask(payload: {
   socialAccountId: string;
   imageUrl: string;
 }): Promise<string> {
   const { socialAccountId, imageUrl } = payload;
-
-  const tmpDir = os.tmpdir();
-  const tmpFile = path.join(tmpDir, `task_img_${Date.now()}_${Math.random().toString(36).slice(2)}`);
-
-  try {
-    const response = await fetch(imageUrl, {
-      headers: {
-        "User-Agent": INSTAGRAM_USER_AGENT,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to download image: HTTP ${response.status} ${response.statusText}`);
-    }
-
-    const contentType = response.headers.get("content-type") || "image/jpeg";
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
-    const tmpFilePath = `${tmpFile}.${ext}`;
-
-    fs.writeFileSync(tmpFilePath, buffer);
-
-    const cdnUrl = await uploadImageToS3(buffer, `instagram_profile.${ext}`, contentType);
-
-    try {
-      fs.unlinkSync(tmpFilePath);
-    } catch {
-    }
-
-    // Same single writer as every other image path, so the change is journalled.
-    await recordProfileImageChange(
-      socialAccountId,
-      cdnUrl,
-      await getCurrentProfileImageUrl(socialAccountId),
-    );
-
-    return JSON.stringify({ cdnUrl, socialAccountId });
-  } catch (error) {
-    try {
-      const files = fs.readdirSync(tmpDir).filter(f => f.startsWith(path.basename(tmpFile)));
-      for (const f of files) {
-        fs.unlinkSync(path.join(tmpDir, f));
-      }
-    } catch {
-    }
-    throw error;
+  const fetched = await fetchProfileImage(imageUrl);
+  const current = await getCurrentProfileImageUrls(socialAccountId);
+  const verdict = await classifyProfileImage(current, fetched);
+  if (!verdict.replace) {
+    return JSON.stringify({ skipped: true, reason: verdict.reason, socialAccountId });
   }
+  const outcome = await applyProfileImageVerdict(socialAccountId, current, fetched, verdict);
+  await recordProfileImageChange(socialAccountId, outcome);
+  return JSON.stringify({ cdnUrl: outcome.imageUrlHq ?? outcome.imageUrl, socialAccountId, imageChange: outcome.imageChange });
 }
 
 async function processRefreshFollowerCount(payload: {
@@ -618,7 +588,6 @@ async function processExportXmlTask(taskId: string, payload: {
     xml += `      <description>${escapeXml(post.description || "")}</description>\n`;
     xml += `      <like_count>${escapeXml(post.likeCount)}</like_count>\n`;
     xml += `      <comment_count>${escapeXml(post.commentCount)}</comment_count>\n`;
-    xml += `      <comments>${escapeXml(post.comments || "")}</comments>\n`;
     xml += `      <mentioned_accounts>${escapeXml(post.mentionedAccounts || "")}</mentioned_accounts>\n`;
     xml += `      <face_ids>${escapeXml(post.faceIds || "")}</face_ids>\n`;
     xml += `      <is_deleted>${escapeXml(post.isDeleted)}</is_deleted>\n`;
@@ -850,10 +819,10 @@ async function processImportXmlTask(taskId: string, payload: {
 }): Promise<string> {
   let xmlText = payload.xml || "";
   if (!xmlText && payload.filePath) {
-    const fullPath = path.isAbsolute(payload.filePath)
-      ? payload.filePath
-      : path.join(process.cwd(), payload.filePath);
-    if (fs.existsSync(fullPath)) {
+    const backupsDir = path.resolve(process.cwd(), "backups");
+    const safeFilename = path.basename(payload.filePath.replace(/\\/g, "/"));
+    const fullPath = path.resolve(backupsDir, safeFilename);
+    if (fullPath.startsWith(backupsDir + path.sep) && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
       xmlText = fs.readFileSync(fullPath, "utf8");
     }
   }
@@ -1282,7 +1251,6 @@ async function processImportXmlTask(taskId: string, payload: {
       const description = unescapeXml(parseXmlTag("description", block));
       const likeCount = parseInt(parseXmlTag("like_count", block)) || 0;
       const commentCount = parseInt(parseXmlTag("comment_count", block)) || 0;
-      const comments = unescapeXml(parseXmlTag("comments", block));
       const mentionedAccounts = unescapeXml(parseXmlTag("mentioned_accounts", block));
       const faceIds = unescapeXml(parseXmlTag("face_ids", block));
       const isDeleted = parseXmlTag("is_deleted", block) === "true";
@@ -1298,7 +1266,7 @@ async function processImportXmlTask(taskId: string, payload: {
         id, socialAccountId: mappedAccountId, postType,
         content: content || null, description: description || null,
         likeCount, commentCount,
-        comments: comments || null, mentionedAccounts: mentionedAccounts || null,
+        mentionedAccounts: mentionedAccounts || null,
         faceIds: faceIds || null,
         isDeleted,
         postedAt: postedAtStr ? new Date(postedAtStr) : null,
@@ -1685,101 +1653,224 @@ async function processMassRefreshFollowerCount(taskId: string): Promise<string> 
   return JSON.stringify({ refreshed: allAccounts.length, skipped: 0, total: allAccounts.length, followEdges: allFollows.length });
 }
 
-async function processTransferImagesToLocal(taskId: string): Promise<string> {
+function getStorageProvider(url: string): "local" | "prm-s3" | "s3" {
+  if (isLocalImageUrl(url) || isLocalMediaUrl(url)) return "local";
+  if (isPrmS3ImageUrl(url)) return "prm-s3";
+  return "s3";
+}
+
+/** Image url references in the database whose file lives in `provider`, one entry per row/column. */
+async function getImageUrlsIn(provider: "local" | "s3" | "prm-s3") {
   const allUrls = await storage.getAllImageUrls();
-  const s3Urls = allUrls.filter(u => !isLocalImageUrl(u.url) && !u.url.includes("instagram.com"));
+
+  // Also include any photos records whose location matches `provider`
+  const photoRows = await db.select({ id: photos.id, location: photos.location }).from(photos);
+  for (const pr of photoRows) {
+    if (pr.location && !allUrls.some(u => u.url === pr.location)) {
+      allUrls.push({ table: "photos", id: pr.id, column: "location", url: pr.location });
+    }
+  }
+
+  return allUrls.filter(
+    u => getStorageProvider(u.url) === provider && !u.url.includes("instagram.com") && !u.url.includes("fbcdn.net")
+  );
+}
+
+/** Runs `fn` over `items` with a pool of workers; `shouldStop` is polled once per pool-width of items. */
+async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>, shouldStop?: () => Promise<boolean>): Promise<boolean> {
+  let next = 0;
+  let stopped = false;
+  const worker = async () => {
+    while (!stopped) {
+      const i = next++;
+      if (i >= items.length) return;
+      if (shouldStop && i % concurrency === 0 && await shouldStop()) {
+        stopped = true;
+        return;
+      }
+      await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return stopped;
+}
+
+/**
+ * Moves every database-referenced image from one store to another, then
+ * sweeps the source bucket so nothing is left behind: objects no row points
+ * at any more (orphans from earlier partial transfers) are deleted, and
+ * references whose object is already gone are cleared. Only objects still
+ * referenced after a failed transfer survive the sweep.
+ */
+async function processTransferImages(
+  taskId: string,
+  payload: { from: "local" | "s3" | "prm-s3"; to: "local" | "s3" | "prm-s3"; concurrency?: number }
+): Promise<string> {
+  const { from, to } = payload;
+  const matchingUrls = await getImageUrlsIn(from);
+
+  // Group by unique URL so each distinct image file is transferred once
+  const urlMap = new Map<string, Array<{ table: string; id: string; column: string; url: string }>>();
+  for (const entry of matchingUrls) {
+    if (!urlMap.has(entry.url)) {
+      urlMap.set(entry.url, []);
+    }
+    urlMap.get(entry.url)!.push(entry);
+  }
+
+  const distinctUrls = Array.from(urlMap.keys());
   let transferred = 0;
+  let missing = 0;
   let failed = 0;
+  let done = 0;
   const errors: string[] = [];
 
-  for (const entry of s3Urls) {
-    if (await isTaskCancelled(taskId)) {
-      return JSON.stringify({ transferred, failed, total: s3Urls.length, cancelled: true, errors });
-    }
+  // Each transfer is dominated by round-trips to the remote store, so run a
+  // pool of workers pulling from a shared cursor rather than one at a time.
+  const concurrency = Math.min(Math.max(payload.concurrency ?? 100, 1), 200);
 
+  const transferOne = async (oldUrl: string) => {
+    const entries = urlMap.get(oldUrl) || [];
     try {
-      const response = await fetch(entry.url);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      // 1. Download buffer from source
+      const { buffer, mimeType } = await fetchImageBuffer(oldUrl);
+      const isMedia = mimeType.startsWith("video/") || mimeType.startsWith("audio/");
+      const ext = isMedia
+        ? (oldUrl.split("?")[0].split(".").pop() || "mp4")
+        : mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
+
+      // 2. Upload to destination
+      let newUrl: string;
+      if (to === "local") {
+        newUrl = isMedia
+          ? await uploadMediaLocally(buffer, `transferred.${ext}`, mimeType)
+          : await uploadImageLocally(buffer, `transferred.${ext}`, mimeType);
+      } else if (to === "prm-s3") {
+        newUrl = isMedia
+          ? await uploadMediaToPrmS3(buffer, `transferred.${ext}`, mimeType)
+          : await uploadImageToPrmS3(buffer, `transferred.${ext}`, mimeType);
+      } else {
+        newUrl = isMedia
+          ? await uploadMediaToS3(buffer, `transferred.${ext}`, mimeType)
+          : await uploadImageToS3(buffer, `transferred.${ext}`, mimeType);
       }
-      const contentType = response.headers.get("content-type") || "image/jpeg";
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
 
-      const localUrl = await uploadImageLocally(buffer, `transferred.${ext}`, contentType);
-      await storage.updateImageUrl(entry.table, entry.id, entry.column, entry.url, localUrl);
-      await storage.updatePhotoLocation(entry.url, localUrl).catch(() => {});
+      // 3. Update database references
+      for (const entry of entries) {
+        if (entry.table === "photos") {
+          await storage.updatePhotoLocation(oldUrl, newUrl);
+        } else {
+          await storage.updateImageUrl(entry.table, entry.id, entry.column, oldUrl, newUrl);
+        }
+      }
+      await storage.updatePhotoLocation(oldUrl, newUrl).catch(() => {});
 
+      // 4. Delete from source
       try {
-        await deleteImageFromS3(entry.url);
+        if (from === "local") {
+          await (isMedia ? deleteMediaLocally(oldUrl) : deleteImageLocally(oldUrl));
+        } else if (from === "prm-s3") {
+          await (isMedia ? deleteMediaFromPrmS3(oldUrl) : deleteImageFromPrmS3(oldUrl));
+        } else {
+          await (isMedia ? deleteMediaFromS3(oldUrl) : deleteImageFromS3(oldUrl));
+        }
       } catch (delErr) {
-        log(`[TaskWorker] Warning: could not delete S3 image after transfer: ${entry.url}`);
+        log(`[TaskWorker] Warning: could not delete ${from} image after transfer: ${oldUrl}`);
       }
 
       transferred++;
     } catch (err) {
-      failed++;
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`${entry.table}/${entry.id}: ${msg}`);
-      log(`[TaskWorker] Failed to transfer image to local: ${entry.url} - ${msg}`);
+      if (err instanceof ObjectMissingError) {
+        // The file is already gone, so the reference can never resolve again.
+        // Clear it where the column allows; photos/faces/posts are reported instead.
+        missing++;
+        for (const entry of entries) {
+          if (entry.table === "photos" || entry.table === "faces" || entry.table === "social_account_posts") {
+            errors.push(`${entry.table}.${entry.column} ${entry.id}: ${msg}`);
+            continue;
+          }
+          await storage.updateImageUrl(entry.table, entry.id, entry.column, oldUrl, null)
+            .catch(e => errors.push(`${entry.table}.${entry.column} ${entry.id}: could not clear: ${e instanceof Error ? e.message : String(e)}`));
+        }
+        return;
+      }
+      failed++;
+      errors.push(`${oldUrl}: ${msg}`);
+      log(`[TaskWorker] Failed to transfer image from ${from} to ${to}: ${oldUrl} - ${msg}`);
     }
+  };
 
-    await new Promise(resolve => setTimeout(resolve, 200));
+  const cancelled = await runPool(distinctUrls, concurrency, async (url) => {
+    await transferOne(url);
+    done++;
+    if (done % 25 === 0 || done === distinctUrls.length) {
+      const pct = Math.round((done / distinctUrls.length) * 90);
+      await storage.updateTaskProgress(taskId, pct, `${transferred}/${distinctUrls.length} transferred`);
+    }
+  }, () => isTaskCancelled(taskId));
+
+  // Sweep: delete every object left in the source bucket that no row still
+  // points at. Local storage is not swept.
+  let swept = 0;
+  let kept = 0;
+  if (!cancelled && from !== "local") {
+    await storage.updateTaskProgress(taskId, 90, `Sweeping ${from} for leftover files…`);
+    const keyFromUrl = from === "s3" ? s3KeyFromUrl : normalizePrmS3Key;
+    const stillReferenced = new Set((await getImageUrlsIn(from)).map(u => keyFromUrl(u.url)));
+    const allKeys = from === "s3" ? await listS3ObjectKeys() : await listPrmS3ObjectKeys();
+    const orphanKeys = allKeys.filter(k => !stillReferenced.has(k));
+    kept = allKeys.length - orphanKeys.length;
+    const deleteKey = from === "s3" ? deleteS3ObjectKey : deletePrmS3ObjectKey;
+    await runPool(orphanKeys, concurrency, async (key) => {
+      try {
+        await deleteKey(key);
+        swept++;
+      } catch (err) {
+        errors.push(`sweep ${key}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+    log(`[TaskWorker] Swept ${from}: deleted ${swept}/${orphanKeys.length} orphaned objects, ${kept} still referenced`);
   }
 
-  return JSON.stringify({ transferred, failed, total: s3Urls.length, errors });
+  return JSON.stringify({ transferred, missing, failed, total: distinctUrls.length, swept, leftInSource: kept, cancelled: cancelled || undefined, errors });
+}
+
+async function processTransferImagesToLocal(taskId: string): Promise<string> {
+  return processTransferImages(taskId, { from: "s3", to: "local" });
 }
 
 async function processTransferImagesToS3(taskId: string): Promise<string> {
-  const allUrls = await storage.getAllImageUrls();
-  const localUrls = allUrls.filter(u => isLocalImageUrl(u.url) && !u.url.includes("instagram.com"));
-  let transferred = 0;
-  let failed = 0;
+  return processTransferImages(taskId, { from: "local", to: "s3" });
+}
+
+/**
+ * Accounts from before image tiers may hold a 1080 in image_url. Moves each to
+ * image_url_hq with a fresh 150 webp in image_url (profile-image-tiers-plan.md §6).
+ */
+async function processBackfillProfileImageTiers(taskId: string): Promise<string> {
+  const accounts = await db
+    .select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq })
+    .from(socialAccounts)
+    .where(and(isNotNull(socialAccounts.imageUrl), isNull(socialAccounts.imageUrlHq)));
+  const counts = { moved: 0, already_lq: 0, missing: 0, skipped: 0, failed: 0 };
   const errors: string[] = [];
 
-  const UPLOADS_DIR = path.join(process.cwd(), "uploads");
-
-  for (const entry of localUrls) {
+  for (const [i, account] of accounts.entries()) {
     if (await isTaskCancelled(taskId)) {
-      return JSON.stringify({ transferred, failed, total: localUrls.length, cancelled: true, errors });
+      return JSON.stringify({ ...counts, total: accounts.length, cancelled: true, errors });
     }
-
     try {
-      const fileName = entry.url.split("/api/images/").pop();
-      if (!fileName) throw new Error("Invalid local URL");
-
-      const filePath = path.join(UPLOADS_DIR, path.basename(fileName));
-      if (!fs.existsSync(filePath)) {
-        throw new Error("Local file not found");
-      }
-
-      const buffer = fs.readFileSync(filePath);
-      const ext = path.extname(filePath).replace(".", "") || "jpg";
-      const mimeType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
-
-      const s3Url = await uploadImageToS3(buffer, `transferred.${ext}`, mimeType);
-      await storage.updateImageUrl(entry.table, entry.id, entry.column, entry.url, s3Url);
-      await storage.updatePhotoLocation(entry.url, s3Url).catch(() => {});
-
-      try {
-        await deleteImageLocally(entry.url);
-      } catch (delErr) {
-        log(`[TaskWorker] Warning: could not delete local image after transfer: ${entry.url}`);
-      }
-
-      transferred++;
+      counts[await backfillProfileImageTiers(account)]++;
     } catch (err) {
-      failed++;
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`${entry.table}/${entry.id}: ${msg}`);
-      log(`[TaskWorker] Failed to transfer image to S3: ${entry.url} - ${msg}`);
+      counts.failed++;
+      if (errors.length < 20) errors.push(`${account.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
-
-    await new Promise(resolve => setTimeout(resolve, 200));
+    if (i % 25 === 0) {
+      await storage.updateTaskProgress(taskId, Math.round((i / accounts.length) * 100), `${i}/${accounts.length} accounts checked`);
+    }
   }
-
-  return JSON.stringify({ transferred, failed, total: localUrls.length, errors });
+  return JSON.stringify({ ...counts, total: accounts.length, errors });
 }
 
 async function processImportInstagram(taskId: string, payload: {
@@ -2381,9 +2472,12 @@ const handleOf = (row: any): string =>
  * statements regardless of size, which is also what lets the whole ingest sit inside
  * a single transaction.
  */
-async function resolveScrapedAccounts(
+export async function resolveScrapedAccounts(
   rows: any[],
   typeId: string | null,
+  // A system-context caller (a tracking run) names the owner explicitly; the
+  // extension import runs as the user, so it is stamped from the ambient context.
+  owner: { createdByUserId: number | null; creationType: string } = { createdByUserId: actingUserId(), creationType: "PRM-chrome import" },
 ): Promise<Map<string, string>> {
   const byHandle = new Map<string, any>();
   for (const row of rows) {
@@ -2419,8 +2513,8 @@ async function resolveScrapedAccounts(
           ownerUuid: null,
           // Without this the row lands with a null creator, which visibleShared()
           // reads as public — a 10k import would publish 10k accounts to every user.
-          createdByUserId: actingUserId() ?? undefined,
-          internalAccountCreationType: "PRM-chrome import",
+          createdByUserId: owner.createdByUserId ?? undefined,
+          internalAccountCreationType: owner.creationType,
           nickname: row.full_name || row.displayName || null,
           accountUrl: `https://instagram.com/${handle}`,
         };
@@ -2473,13 +2567,13 @@ export async function processImportSocial(
   //    changed is part of what this import records. Instagram's urls are signed and
   //    rotate every scrape, so only the bytes can answer that.
   await storage.updateTaskProgress(taskId, 10, "Checking profile image...");
-  let imageUrl: string | undefined;
+  let image: ProfileImageOutcome | undefined;
   if (record.accountImageUrl?.trim()) {
     try {
       const fetched = await fetchProfileImage(record.accountImageUrl);
-      const verdict = await shouldReplaceProfileImage(mainAccount.imageUrl, fetched);
+      const verdict = await classifyProfileImage(mainAccount, fetched);
       if (verdict.replace) {
-        imageUrl = (await storeProfileImage(fetched, mainAccount.id)).cdnUrl;
+        image = await applyProfileImageVerdict(mainAccount.id, mainAccount, fetched, verdict);
       }
     } catch (e) {
       // A dead CDN link must not sink the whole import; the rest of the pull is fine.
@@ -2552,7 +2646,7 @@ export async function processImportSocial(
       bio: record.accountBio || undefined,
       location: record.accountLocationArea || undefined,
       accountUrl: `https://instagram.com/${mainUsername}`,
-      imageUrl,
+      image,
       externalImageUrl: record.accountImageUrl || undefined,
       reportedFollowersCount: record.accountFollowersCount ?? undefined,
       reportedFollowingCount: record.accountFollowingCount ?? undefined,
@@ -3847,12 +3941,21 @@ async function processNextTask(): Promise<boolean> {
           result = await processMassRefreshFollowerCount(task.id);
           break;
         }
+        case "transfer_images": {
+          const payload = JSON.parse(task.payload);
+          result = await processTransferImages(task.id, payload);
+          break;
+        }
         case "transfer_images_to_local": {
           result = await processTransferImagesToLocal(task.id);
           break;
         }
         case "transfer_images_to_s3": {
           result = await processTransferImagesToS3(task.id);
+          break;
+        }
+        case "backfill_profile_image_tiers": {
+          result = await processBackfillProfileImageTiers(task.id);
           break;
         }
         case "import_social": {

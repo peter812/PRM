@@ -60,8 +60,8 @@ export default function AdminSettingsPage() {
   };
 
   return (
-    <div className="p-8 max-w-4xl mx-auto space-y-6">
-      <div>
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">
+      <div className="max-w-3xl">
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <Shield className="h-6 w-6 text-primary" />
           Admin Settings
@@ -71,7 +71,8 @@ export default function AdminSettingsPage() {
         </p>
       </div>
 
-      <Card>
+      <div className="settings-cards-grid">
+        <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="space-y-1">
@@ -106,6 +107,7 @@ export default function AdminSettingsPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

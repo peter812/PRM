@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { nanoid } from "nanoid";
+import { newUploadName, isSafeUploadExtension, type UploadKind } from "./upload-names";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 
@@ -8,30 +8,14 @@ if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-const SAFE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "heic", "heif"]);
-const SAFE_MIMETYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif"]);
+function writeUpload(kind: UploadKind, buffer: Buffer, originalFilename: string, mimeType: string): string {
+  const { fileName } = newUploadName(kind, originalFilename, mimeType);
+  fs.writeFileSync(path.join(UPLOADS_DIR, fileName), buffer);
+  return fileName;
+}
 
-export async function uploadImageLocally(
-  buffer: Buffer,
-  originalFilename: string,
-  mimeType: string
-): Promise<string> {
-  const cleanMimeType = mimeType.toLowerCase();
-  if (!SAFE_MIMETYPES.has(cleanMimeType)) {
-    throw new Error("Invalid or unsafe image MIME type");
-  }
-
-  let fileExtension = originalFilename.split(".").pop()?.toLowerCase() || "jpg";
-  if (!SAFE_EXTENSIONS.has(fileExtension)) {
-    fileExtension = "jpg";
-  }
-
-  const fileName = `${nanoid()}.${fileExtension}`;
-  const filePath = path.join(UPLOADS_DIR, fileName);
-
-  fs.writeFileSync(filePath, buffer);
-
-  return `/api/images/${fileName}`;
+export async function uploadImageLocally(buffer: Buffer, originalFilename: string, mimeType: string): Promise<string> {
+  return `/api/images/${writeUpload("image", buffer, originalFilename, mimeType)}`;
 }
 
 export async function deleteImageLocally(imageUrl: string): Promise<void> {
@@ -64,39 +48,8 @@ export function isLocalImageUrl(url: string): boolean {
 // Served via GET /api/media/:filename, which supports HTTP Range requests so
 // <video>/<audio> elements can seek.
 
-const SAFE_MEDIA_EXTENSIONS = new Set(["mp4", "m4a", "mp3", "webm", "mov", "ogg", "wav"]);
-const SAFE_MEDIA_MIMETYPES = new Set([
-  "video/mp4",
-  "video/webm",
-  "video/quicktime",
-  "audio/mp4",
-  "audio/mpeg",
-  "audio/ogg",
-  "audio/wav",
-  "audio/x-m4a",
-]);
-
-export async function uploadMediaLocally(
-  buffer: Buffer,
-  originalFilename: string,
-  mimeType: string
-): Promise<string> {
-  const cleanMimeType = mimeType.toLowerCase();
-  if (!SAFE_MEDIA_MIMETYPES.has(cleanMimeType)) {
-    throw new Error("Invalid or unsafe media MIME type");
-  }
-
-  let fileExtension = originalFilename.split(".").pop()?.toLowerCase() || "mp4";
-  if (!SAFE_MEDIA_EXTENSIONS.has(fileExtension)) {
-    fileExtension = "mp4";
-  }
-
-  const fileName = `${nanoid()}.${fileExtension}`;
-  const filePath = path.join(UPLOADS_DIR, fileName);
-
-  fs.writeFileSync(filePath, buffer);
-
-  return `/api/media/${fileName}`;
+export async function uploadMediaLocally(buffer: Buffer, originalFilename: string, mimeType: string): Promise<string> {
+  return `/api/media/${writeUpload("media", buffer, originalFilename, mimeType)}`;
 }
 
 export async function deleteMediaLocally(mediaUrl: string): Promise<void> {
@@ -114,8 +67,7 @@ export async function deleteMediaLocally(mediaUrl: string): Promise<void> {
 
 export function getLocalMediaPath(fileName: string): string | null {
   const safeName = path.basename(fileName);
-  const fileExtension = safeName.split(".").pop()?.toLowerCase() || "";
-  if (!SAFE_MEDIA_EXTENSIONS.has(fileExtension)) {
+  if (!isSafeUploadExtension("media", safeName.split(".").pop() || "")) {
     return null;
   }
   const filePath = path.join(UPLOADS_DIR, safeName);

@@ -22,7 +22,8 @@ import { uploadImageLocally, uploadMediaLocally } from "../local-storage";
 import { uploadImageToS3, uploadMediaToS3 } from "../s3";
 import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, isAdminRole, type StoryImporter } from "@shared/schema";
 import { generateDeterministicUuid } from "./social-media";
-import { DEFAULT_WINDOW, runForToken, storiesServiceUrl, storiesStorageMode, triggerStoriesRun } from "../stories-scheduler";
+import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceUrl, storiesStorageMode, triggerStoriesRun } from "../stories-scheduler";
+import { failUnfinishedJobs } from "../tracking";
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 // A story video (≤ 60 s) is usually 3–15 MB; the scraper skips anything over its own cap (50 MB by default).
@@ -88,7 +89,7 @@ const checkStoriesSchema = z.object({
 });
 
 /** The run whose live token is on the request, or null with a 401 already sent. */
-async function authedRun(req: Request, res: Response): Promise<{ id: string } | null> {
+export async function authedRun(req: Request, res: Response): Promise<{ id: string } | null> {
   const token = req.headers["x-stories-token"];
   if (typeof token === "string") {
     const run = await runAsSystem(() => runForToken(token));
@@ -377,6 +378,8 @@ export function registerStories(app: Express) {
   app.delete("/api/stories/runs/:id", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
+      await failUnfinishedJobs(id, "run_deleted");
+      kickManualTrackingJobsAfterRun();
       const result = await db.delete(storyScrapeRuns).where(eq(storyScrapeRuns.id, id)).returning({ id: storyScrapeRuns.id });
       if (!result.length) {
         return res.status(404).json({ error: "Run not found" });
@@ -399,6 +402,8 @@ export function registerStories(app: Express) {
         return res.status(400).json({ error: "Invalid request, ids array required", issues: parsed.error.issues });
       }
       const { ids } = parsed.data;
+      await Promise.all(ids.map((id) => failUnfinishedJobs(id, "run_deleted")));
+      kickManualTrackingJobsAfterRun();
       const result = await db.delete(storyScrapeRuns).where(inArray(storyScrapeRuns.id, ids)).returning({ id: storyScrapeRuns.id });
       res.json({ ok: true, deletedCount: result.length });
     } catch (error) {

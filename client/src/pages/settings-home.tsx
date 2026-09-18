@@ -5,7 +5,6 @@ import {
   Scan,
   BrainCircuit,
   Database,
-  Radar,
   ChevronRight,
   ImageIcon,
   Users,
@@ -37,12 +36,6 @@ type VectorSettings = {
   qdrantUrl: string;
   collectionName: string;
   embeddingModel: string;
-};
-
-type OsintSettings = {
-  enabled: boolean;
-  apiUrl: string;
-  hasApiKey: boolean;
 };
 
 type TestResult = {
@@ -214,12 +207,6 @@ function ImportExportCard() {
       icon: ImageIcon,
       url: "/import-export/image-pass-in",
     },
-    {
-      title: "Instagram XML Transfer",
-      description: "XML transfers between CRM instances.",
-      icon: Camera,
-      url: "/import-export/instagram-xml",
-    },
   ];
 
   return (
@@ -253,18 +240,18 @@ function ImportExportCard() {
 }
 
 export default function SettingsHomePage() {
-  // 1. PRM-face
-  const { data: prmFaceSettings } = useQuery<PrmFaceSettings>({
-    queryKey: ["/api/prm-face/settings"],
+  // 1. PRM-compute
+  const { data: prmComputeSettings } = useQuery<PrmFaceSettings>({
+    queryKey: ["/api/prm-compute/settings"],
   });
-  const { data: prmFaceTest, isLoading: isLoadingPrmFaceTest } = useQuery<TestResult>({
-    queryKey: ["prm-face-test"],
+  const { data: prmComputeTest, isLoading: isLoadingPrmComputeTest } = useQuery<TestResult>({
+    queryKey: ["prm-compute-test"],
     queryFn: async () => {
-      const res = await fetch("/api/prm-face/test", { method: "POST" });
+      const res = await fetch("/api/prm-compute/test", { method: "POST" });
       if (!res.ok) throw new Error("Connection test failed");
       return res.json();
     },
-    enabled: !!prmFaceSettings?.apiUrl,
+    enabled: !!prmComputeSettings?.apiUrl,
   });
 
   // 2. Ollama
@@ -295,31 +282,16 @@ export default function SettingsHomePage() {
     enabled: !!vectorSettings?.qdrantUrl && vectorSettings?.enabled,
   });
 
-  // 4. PRM-osint
-  const { data: osintSettings } = useQuery<OsintSettings>({
-    queryKey: ["/api/osint/settings"],
-  });
-  const { data: osintTest, isLoading: isLoadingOsintTest } = useQuery<{ ok: boolean; tools?: any[]; error?: string }>({
-    queryKey: ["osint-test"],
-    queryFn: async () => {
-      const res = await fetch("/api/osint/test", { method: "POST" });
-      const data = await res.json();
-      return data;
-    },
-    enabled: !!osintSettings?.apiUrl && osintSettings?.enabled,
-    retry: false,
-  });
-
   // Status mapping functions
-  const prmFaceStatus = (() => {
-    if (!prmFaceSettings?.apiUrl) return { status: "grey" as const, text: "Not Setup" };
-    if (isLoadingPrmFaceTest) return { status: "loading" as const, text: "Testing..." };
-    if (!prmFaceTest) return { status: "loading" as const, text: "Initializing..." };
-    if (!prmFaceTest.ok) return { status: "red" as const, text: "Not Working", details: prmFaceTest.message };
-    if (prmFaceTest.message?.includes("setup has not been completed") || !prmFaceSettings.hasApiKey) {
-      return { status: "yellow" as const, text: "Setup Required", details: prmFaceTest.message };
+  const prmComputeStatus = (() => {
+    if (!prmComputeSettings?.apiUrl) return { status: "grey" as const, text: "Not Setup" };
+    if (isLoadingPrmComputeTest) return { status: "loading" as const, text: "Testing..." };
+    if (!prmComputeTest) return { status: "loading" as const, text: "Initializing..." };
+    if (!prmComputeTest.ok) return { status: "red" as const, text: "Not Working", details: prmComputeTest.message };
+    if (prmComputeTest.message?.includes("setup has not been completed") || !prmComputeSettings.hasApiKey) {
+      return { status: "yellow" as const, text: "Setup Required", details: prmComputeTest.message };
     }
-    return { status: "green" as const, text: "Online", details: prmFaceTest.message };
+    return { status: "green" as const, text: "Online", details: prmComputeTest.message };
   })();
 
   const ollamaStatus = (() => {
@@ -344,17 +316,6 @@ export default function SettingsHomePage() {
     return { status: "green" as const, text: "Online", details: vectorTest.message };
   })();
 
-  const osintStatus = (() => {
-    if (!osintSettings?.enabled || !osintSettings?.apiUrl) return { status: "grey" as const, text: "Not Setup" };
-    if (isLoadingOsintTest) return { status: "loading" as const, text: "Testing..." };
-    if (!osintTest) return { status: "loading" as const, text: "Initializing..." };
-    if (osintTest.ok === false || osintTest.error) {
-      return { status: "red" as const, text: "Not Working", details: osintTest.error || "Unable to contact OSINT server" };
-    }
-    const count = osintTest.tools?.length ?? 0;
-    return { status: "green" as const, text: "Online", details: `Connected. ${count} tool${count === 1 ? "" : "s"} available.` };
-  })();
-
   return (
     <div className="container max-w-full md:max-w-6xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="space-y-2 mb-6">
@@ -371,12 +332,12 @@ export default function SettingsHomePage() {
         {/* Column 1: Microservices */}
         <div className="space-y-4 flex flex-col">
           <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">Microservices & Services</h2>
-          <div className="space-y-4 flex-1 flex flex-col justify-between">
+          <div className="space-y-4 flex-1 flex flex-col justify-start">
             <ServiceCard
-              name="PRM-face"
-              status={prmFaceStatus.status}
-              statusText={prmFaceStatus.text}
-              details={prmFaceStatus.details}
+              name="PRM-compute"
+              status={prmComputeStatus.status}
+              statusText={prmComputeStatus.text}
+              details={prmComputeStatus.details}
               link="/recognition"
               icon={Scan}
             />
@@ -395,14 +356,6 @@ export default function SettingsHomePage() {
               details={qdrantStatus.details}
               link="/vector"
               icon={Database}
-            />
-            <ServiceCard
-              name="PRM-osint"
-              status={osintStatus.status}
-              statusText={osintStatus.text}
-              details={osintStatus.details}
-              link="/osint"
-              icon={Radar}
             />
           </div>
         </div>

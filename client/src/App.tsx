@@ -49,6 +49,7 @@ const PrmFaceDemo = lazy(() => import("@/pages/prm-face-demo"));
 const PrmFaceSaveDemo = lazy(() => import("@/pages/prm-face-save-demo"));
 const UnknownFaces = lazy(() => import("@/pages/unknown-faces"));
 const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
+const OcrDemo = lazy(() => import("@/pages/ocr-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
@@ -62,10 +63,51 @@ const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
 const SuperSearchPage = lazy(() => import("@/pages/super-search"));
 const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
 const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-imports"));
+const SocialTrackingPage = lazy(() => import("@/pages/social-tracking"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 
 const SEEN_EXPORTS_KEY = "seen_completed_export_task_ids";
+
+/** True when `src` is a presigned S3 URL whose X-Amz-Date + X-Amz-Expires window has passed. */
+function isExpiredSignedUrl(src: string): boolean {
+  if (!src.includes("X-Amz-Signature")) return false;
+  try {
+    const params = new URL(src, window.location.href).searchParams;
+    const d = params.get("X-Amz-Date");
+    const expires = Number(params.get("X-Amz-Expires"));
+    if (!d || d.length !== 16 || !expires) return false;
+    const signedAt = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +d.slice(9, 11), +d.slice(11, 13), +d.slice(13, 15));
+    return Date.now() > signedAt + expires * 1000 - 60_000;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * PRM-S3 direct mode hands the browser presigned media URLs inside API
+ * responses. If a long-lived tab tries to render one after it has expired,
+ * refetch the data so the server issues fresh URLs (throttled so a page full
+ * of stale images triggers a single refetch).
+ */
+function useSignedMediaRefresh() {
+  useEffect(() => {
+    let lastRefetch = 0;
+    const onError = (e: Event) => {
+      const el = e.target as HTMLElement | null;
+      if (!el || !["IMG", "VIDEO", "AUDIO", "SOURCE"].includes(el.tagName)) return;
+      const src = (el as HTMLMediaElement).currentSrc || (el as HTMLImageElement).src || "";
+      if (!isExpiredSignedUrl(src)) return;
+      const now = Date.now();
+      if (now - lastRefetch < 30_000) return;
+      lastRefetch = now;
+      queryClient.invalidateQueries();
+    };
+    // Media error events don't bubble; capture them at the document.
+    document.addEventListener("error", onError, true);
+    return () => document.removeEventListener("error", onError, true);
+  }, []);
+}
 
 function useExportNotifier() {
   const { user } = useAuth();
@@ -157,6 +199,7 @@ function Router() {
         <ProtectedRoute path="/group/:id" component={GroupProfile} />
         <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
         <ProtectedRoute path="/social-accounts/pending-imports" component={PendingSocialImportsPage} />
+        <ProtectedRoute path="/social-accounts/tracking" component={SocialTrackingPage} />
         <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
         <ProtectedRoute path="/graph" component={Graph} />
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
@@ -175,6 +218,8 @@ function Router() {
         <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
         <ProtectedRoute path="/unknown-faces" component={UnknownFaces} />
         <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
+        <ProtectedRoute path="/ocr-demo" component={OcrDemo} />
+        <ProtectedRoute path="/demos/ocr" component={OcrDemo} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />
@@ -188,7 +233,7 @@ function Router() {
         <ProtectedRoute path="/import-export/social-media" component={() => <Redirect to="/settings/import-export/social-media" />} />
         <ProtectedRoute path="/import-export/messages" component={() => <Redirect to="/settings/import-export/messages" />} />
         <ProtectedRoute path="/import-export/extension-imports" component={() => <Redirect to="/settings/import-export/extension-imports" />} />
-        <ProtectedRoute path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export/instagram-xml" />} />
+        <ProtectedRoute path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export" />} />
         <ProtectedRoute path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export/image-pass-in" />} />
         <ProtectedRoute path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
         <ProtectedRoute path="/osint" component={() => <Redirect to="/settings/osint" />} />
@@ -214,6 +259,7 @@ function AppLayout() {
   const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
   const [isAddPhotoDialogOpen, setIsAddPhotoDialogOpen] = useState(false);
   useExportNotifier();
+  useSignedMediaRefresh();
   const isAuthPage = location === "/auth" || location === "/auth-direct";
   const isWelcomePage = location === "/welcome";
   const isSettingsPage = location.startsWith("/settings");

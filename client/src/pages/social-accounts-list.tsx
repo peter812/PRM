@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2 } from "lucide-react";
+import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -10,6 +10,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -17,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { InterestLevelBadge, InterestLevelSelect } from "@/components/interest-level-badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,8 +38,9 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { getInitials, isValidHexColor } from "@/lib/utils";
-import type { SocialAccount, SocialAccountWithCurrentProfile, Person, SocialAccountType } from "@shared/schema";
+import { cn, getInitials, isValidHexColor } from "@/lib/utils";
+import { INSTAGRAM_TYPE_ID, type SocialAccountWithCurrentProfile, type Person, type SocialAccountType } from "@shared/schema";
+import { RECENT_CHECK_HOURS, TRACKING_KINDS, TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
 
@@ -44,6 +53,32 @@ const VIEW_OPTIONS: { value: ViewMode; label: string; icon: React.ReactNode }[] 
 ];
 
 const PAGE_SIZE = 30;
+
+/** Only Instagram accounts can be tracked, so only they can be picked for a refresh. */
+const trackable = (account: SocialAccountWithCurrentProfile) => account.typeId === INSTAGRAM_TYPE_ID;
+
+function AccountCheckbox({ account, checked, onToggle, className }: {
+  account: SocialAccountWithCurrentProfile;
+  checked: boolean;
+  onToggle: () => void;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn("flex items-center", className)}
+      onClick={(e) => e.stopPropagation()}
+      title={trackable(account) ? undefined : "Only Instagram accounts can be tracked"}
+    >
+      <Checkbox
+        checked={checked}
+        disabled={!trackable(account)}
+        onCheckedChange={onToggle}
+        aria-label={`Select ${account.username}`}
+        data-testid={`checkbox-account-${account.id}`}
+      />
+    </div>
+  );
+}
 
 export default function SocialAccountsList() {
   const [, navigate] = useLocation();
@@ -78,6 +113,7 @@ export default function SocialAccountsList() {
   const urlParams = new URLSearchParams(searchParams);
   const typeIdFromUrl = urlParams.get("type") || "";
   const [selectedTypeId, setSelectedTypeId] = useState(typeIdFromUrl);
+  const [interestLevel, setInterestLevel] = useState("all");
 
   useEffect(() => {
     setSelectedTypeId(typeIdFromUrl);
@@ -101,7 +137,7 @@ export default function SocialAccountsList() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts/paginated", { search: debouncedSearch, typeId: selectedTypeId, followsYou: showFollowsYou }],
+    queryKey: ["/api/social-accounts/paginated", { search: debouncedSearch, typeId: selectedTypeId, followsYou: showFollowsYou, interestLevel }],
     queryFn: async ({ pageParam = 0 }) => {
       const params = new URLSearchParams();
       params.set("offset", String(pageParam));
@@ -110,6 +146,7 @@ export default function SocialAccountsList() {
       if (debouncedSearch) params.set("search", debouncedSearch);
       if (selectedTypeId && selectedTypeId !== "all") params.set("typeId", selectedTypeId);
       if (showFollowsYou) params.set("followsYou", "true");
+      if (interestLevel !== "all") params.set("interestLevel", interestLevel);
       const response = await fetch(`/api/social-accounts/paginated?${params.toString()}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch social accounts");
       return response.json();
@@ -179,6 +216,42 @@ export default function SocialAccountsList() {
     },
   });
 
+  // Selection → queue a tracking batch for the chosen accounts (same batch the
+  // Tracking page uses for "everyone I follow", so its progress shows there).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const selectableIds = accounts.filter(trackable).map((a) => a.id);
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id));
+  const toggleSelect = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
+
+  const refreshMutation = useMutation({
+    mutationFn: async ({ kind, accountIds }: { kind: TrackingKind; accountIds: string[] }) =>
+      (await apiRequest("POST", "/api/tracking/accounts/refresh", { kind, accountIds })).json() as Promise<{ batch: { total: number } | null; skippedRecent: number }>,
+    onSuccess: ({ batch, skippedRecent }, { kind, accountIds }) => {
+      const skipped = skippedRecent > 0 ? ` ${skippedRecent} checked in the last ${RECENT_CHECK_HOURS} hours ${skippedRecent === 1 ? "was" : "were"} skipped.` : "";
+      toast(
+        batch
+          ? {
+              title: `${TRACKING_KIND_LABEL[kind]} queued`,
+              description:
+                batch.total === accountIds.length
+                  ? `${batch.total} ${batch.total === 1 ? "account" : "accounts"} queued.`
+                  : `${batch.total} of ${accountIds.length} accounts queued.${skipped || " The rest already had that check open."}`,
+            }
+          : { title: "Nothing to queue", description: `Every selected account already has that check queued or running.${skipped}` },
+      );
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ["/api/tracking/following"] });
+    },
+    onError: (error: Error) => toast({ title: "Failed to queue", description: error.message, variant: "destructive" }),
+  });
+
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -235,6 +308,7 @@ export default function SocialAccountsList() {
               ))}
             </SelectContent>
           </Select>
+          <InterestLevelSelect value={interestLevel} onChange={setInterestLevel} allowAll className="w-[130px] shrink-0" />
           <div className="flex items-center gap-2 shrink-0">
             <Switch
               id="follows-you"
@@ -275,6 +349,40 @@ export default function SocialAccountsList() {
             Add Account
           </Button>
         </div>
+        {selectedIds.size > 0 && (
+          <div className="flex items-center gap-3 pt-2 flex-wrap" data-testid="selection-bar">
+            <Checkbox
+              checked={allSelected ? true : "indeterminate"}
+              onCheckedChange={toggleSelectAll}
+              aria-label="Select all loaded accounts"
+              data-testid="checkbox-select-all"
+            />
+            <span className="text-sm text-muted-foreground">{selectedIds.size} selected</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" disabled={refreshMutation.isPending} data-testid="button-refresh-selected">
+                  <RefreshCw className={cn("h-4 w-4", refreshMutation.isPending && "animate-spin")} />
+                  Refresh
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {TRACKING_KINDS.map((kind) => (
+                  <DropdownMenuItem
+                    key={kind}
+                    onClick={() => refreshMutation.mutate({ kind, accountIds: Array.from(selectedIds) })}
+                    data-testid={`menu-refresh-${kind}`}
+                  >
+                    {TRACKING_KIND_LABEL[kind]}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())} data-testid="button-clear-selection">
+              Clear
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className={`flex-1 ${viewMode === "details" ? "px-0" : "px-4"} py-3`}>
@@ -286,10 +394,12 @@ export default function SocialAccountsList() {
                 <table className="w-full text-sm" data-testid="table-accounts-details-skeleton">
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 px-3 w-8"></th>
                       <th className="py-2 px-3 font-medium">Username</th>
                       <th className="py-2 px-3 font-medium">Nickname</th>
                       <th className="py-2 px-3 font-medium">Type</th>
                       <th className="py-2 px-3 font-medium">Status</th>
+                      <th className="py-2 px-3 font-medium">Interest</th>
                       <th className="py-2 px-3 font-medium">Followers</th>
                       <th className="py-2 px-3 font-medium">Following</th>
                       <th className="py-2 px-3 font-medium w-10">Link</th>
@@ -299,10 +409,12 @@ export default function SocialAccountsList() {
                   <tbody>
                     {[1, 2, 3, 4, 5].map((i) => (
                       <tr key={i} className="border-b">
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-24" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-20" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-14" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
@@ -401,10 +513,20 @@ export default function SocialAccountsList() {
                 <table className="w-full text-sm" data-testid="table-accounts-details">
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 px-3 w-8">
+                        <Checkbox
+                          checked={allSelected ? true : selectedIds.size > 0 ? "indeterminate" : false}
+                          onCheckedChange={toggleSelectAll}
+                          disabled={selectableIds.length === 0}
+                          aria-label="Select all loaded accounts"
+                          data-testid="checkbox-select-all-header"
+                        />
+                      </th>
                       <th className="py-2 px-3 font-medium">Username</th>
                       <th className="py-2 px-3 font-medium">Nickname</th>
                       <th className="py-2 px-3 font-medium">Type</th>
                       <th className="py-2 px-3 font-medium">Status</th>
+                      <th className="py-2 px-3 font-medium">Interest</th>
                       <th className="py-2 px-3 font-medium">Followers</th>
                       <th className="py-2 px-3 font-medium">Following</th>
                       <th className="py-2 px-3 font-medium w-10">Link</th>
@@ -424,6 +546,9 @@ export default function SocialAccountsList() {
                           onClick={() => navigate(`/social-accounts/${account.id}`)}
                           data-testid={`row-account-${account.id}`}
                         >
+                          <td className="py-2 px-3">
+                            <AccountCheckbox account={account} checked={selectedIds.has(account.id)} onToggle={() => toggleSelect(account.id)} />
+                          </td>
                           <td className="py-2 px-3 font-medium">
                             {account.username}
                           </td>
@@ -452,6 +577,9 @@ export default function SocialAccountsList() {
                                 Follows you
                               </Badge>
                             )}
+                          </td>
+                          <td className="py-2 px-3">
+                            <InterestLevelBadge level={account.interestLevel} className="text-[11px]" />
                           </td>
                           <td className="py-2 px-3 text-muted-foreground">
                             {account.latestState?.followerCount ?? 0}
@@ -531,9 +659,14 @@ export default function SocialAccountsList() {
                         data-testid={`card-account-${account.id}`}
                       >
                         <div className="flex items-center gap-3">
+                          <AccountCheckbox account={account} checked={selectedIds.has(account.id)} onToggle={() => toggleSelect(account.id)} className="self-stretch pr-1" />
                           <Avatar className="w-10 h-10">
-                            {account.currentProfile?.imageUrl && (
-                              <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
+                            {(account.currentProfile?.imageUrlHq || account.currentProfile?.imageUrl) && (
+                              <AvatarImage
+                                src={account.currentProfile?.imageUrlHq ?? account.currentProfile?.imageUrl ?? undefined}
+                                fallbackSrc={account.currentProfile?.imageUrl ?? undefined}
+                                alt={account.username}
+                              />
                             )}
                             <AvatarFallback>
                               {getInitials(account.username)}
@@ -676,9 +809,14 @@ export default function SocialAccountsList() {
                         data-testid={`card-account-${account.id}`}
                       >
                         <div className="flex items-center gap-4">
+                          <AccountCheckbox account={account} checked={selectedIds.has(account.id)} onToggle={() => toggleSelect(account.id)} className="self-stretch pr-1" />
                           <Avatar className="w-16 h-16">
-                            {account.currentProfile?.imageUrl && (
-                              <AvatarImage src={account.currentProfile?.imageUrl} alt={account.username} />
+                            {(account.currentProfile?.imageUrlHq || account.currentProfile?.imageUrl) && (
+                              <AvatarImage
+                                src={account.currentProfile?.imageUrlHq ?? account.currentProfile?.imageUrl ?? undefined}
+                                fallbackSrc={account.currentProfile?.imageUrl ?? undefined}
+                                alt={account.username}
+                              />
                             )}
                             <AvatarFallback className="text-lg">
                               {getInitials(account.username)}
@@ -798,10 +936,12 @@ export default function SocialAccountsList() {
                       <tbody>
                         {[1, 2].map((i) => (
                           <tr key={`loading-${i}`} className="border-b animate-pulse">
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-24" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-20" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-14" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>

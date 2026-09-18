@@ -1616,7 +1616,11 @@ function SocialGraphContent({
                   data-testid="avatar-sidebar-account"
                 >
                   {selectedAccount.currentProfile?.imageUrl ? (
-                    <AvatarImage src={selectedAccount.currentProfile?.imageUrl} alt={selectedAccount.username} />
+                    <AvatarImage
+                      src={selectedAccount.currentProfile.imageUrlHq ?? selectedAccount.currentProfile.imageUrl}
+                      fallbackSrc={selectedAccount.currentProfile.imageUrl ?? undefined}
+                      alt={selectedAccount.username}
+                    />
                   ) : null}
                   <AvatarFallback className="text-lg">
                     {(selectedAccount.currentProfile?.nickname || selectedAccount.username).slice(0, 2).toUpperCase()}

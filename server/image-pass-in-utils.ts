@@ -87,7 +87,8 @@ export async function autoPassInImageForSocialAccount(socialAccountId: string): 
   const account = await storage.getSocialAccountById(socialAccountId);
   if (!account || !account.currentProfile?.imageUrl) return false;
 
-  const imageUrl = account.currentProfile.imageUrl;
+  // Best available copy: the 1080 when we have it, else the 150.
+  const imageUrl = account.currentProfile.imageUrlHq ?? account.currentProfile.imageUrl;
 
   // 1. Check if the social account has an ownerUuid set
   if (account.ownerUuid) {

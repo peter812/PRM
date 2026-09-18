@@ -1,11 +1,11 @@
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Radar, Scan, Sparkles } from "lucide-react";
+import { Radar, Scan, Sparkles, ScanText } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 
 export default function DemosPage() {
-  // OSINT demo pages are only visible when PRM-osint connectivity is configured.
+  // OSINT demo pages are only visible when PRM-Compute is configured.
   const { data: osintStatus } = useQuery<{ configured: boolean }>({
     queryKey: ["/api/osint/status"],
   });
@@ -82,7 +82,19 @@ export default function DemosPage() {
           </Card>
         </Link>
 
-
+        <Link href="/ocr-demo">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ScanText className="h-5 w-5" />
+                OCR Demo
+              </CardTitle>
+              <CardDescription>
+                Extract and locate text from images with bounded line detection.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
       </div>
 
       {osintConfigured && (
@@ -93,7 +105,7 @@ export default function DemosPage() {
               OSINT Tools
             </h2>
             <p className="text-muted-foreground">
-              Run open-source intelligence lookups against a connected PRM-osint server. Each tool
+              Run open-source intelligence lookups against a connected PRM-Compute server. Each tool
               takes a username or email and returns its own structured results.
             </p>
           </div>

@@ -206,11 +206,11 @@ export default function OsintDemoPage() {
           >
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
             <span className="text-muted-foreground">
-              PRM-osint is not enabled or configured. Go to{" "}
-              <Link href="/settings/osint" className="underline underline-offset-2">
-                Settings → OSINT
+              PRM-Compute is not configured. Go to{" "}
+              <Link href="/settings/recognition" className="underline underline-offset-2">
+                Settings → Recognition
               </Link>{" "}
-              to set it up.
+              to set up PRM-Compute.
             </span>
           </div>
         ) : (

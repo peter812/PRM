@@ -95,7 +95,7 @@ export default function RecognitionSettingsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/prm-face/settings"] });
       setSetupCode("");
-      toast({ title: "API key generated", description: "Your PRM-Face API key has been saved securely." });
+      toast({ title: "API key generated", description: "Your PRM-Compute API key has been saved securely." });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to generate API key", description: error.message, variant: "destructive" });
@@ -210,24 +210,24 @@ export default function RecognitionSettingsPage() {
   const hasApiKey = settings?.hasApiKey ?? false;
 
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="space-y-2 mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="space-y-2 mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-recognition-settings-title">
           <Scan className="h-6 w-6" />
-          PRM-Face API
+          PRM-Compute API
         </h1>
         <p className="text-muted-foreground">
-          PRM-Face is a self-hosted facial recognition service. Configure the URL of your PRM-Face server below,
+          PRM-Compute is a self-hosted compute and intelligence service (facial recognition, OCR, and OSINT). Configure the URL of your PRM-Compute server below,
           then use your one-time setup code to generate an API key that links this application to it.
         </p>
       </div>
 
-      <div className="space-y-6">
+      <div className="settings-cards-grid">
         <Card data-testid="card-api-url">
           <CardHeader>
             <CardTitle className="text-lg">API URL</CardTitle>
             <CardDescription>
-              The base URL of your PRM-Face server (e.g. <code className="text-xs bg-muted px-1 rounded">http://localhost:8000</code>).
+              The base URL of your PRM-Compute server (e.g. <code className="text-xs bg-muted px-1 rounded">http://localhost:8000</code>).
               This setting is saved persistently.
             </CardDescription>
           </CardHeader>
@@ -266,7 +266,7 @@ export default function RecognitionSettingsPage() {
               API Key
             </CardTitle>
             <CardDescription>
-              On first startup, PRM-Face prints a one-time setup code to its console
+              On first startup, PRM-Compute prints a one-time setup code to its console
               (<code className="text-xs bg-muted px-1 rounded">[Config] Setup code: ...</code>).
               Paste it here to generate and store an API key for this application.
               The key is stored securely and never displayed again.
@@ -535,9 +535,9 @@ export default function RecognitionSettingsPage() {
       <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
         <AlertDialogContent data-testid="dialog-confirm-reset-all">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete all PRM-Face data?</AlertDialogTitle>
+            <AlertDialogTitle>Delete all PRM-Compute data?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently wipe all images, face records, and recognition data from the PRM-Face server.
+              This will permanently wipe all images, face records, and recognition data from the PRM-Compute server.
               This action <strong>cannot be undone</strong>.
             </AlertDialogDescription>
           </AlertDialogHeader>

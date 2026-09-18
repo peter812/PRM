@@ -50,8 +50,8 @@ export function PostDialog({ open, onOpenChange, socialAccountId, post }: PostDi
   const [imageUrls, setImageUrls] = useState<string[]>([""]);
   const [mentionsByImage, setMentionsByImage] = useState<string[]>([""]);
   const [description, setDescription] = useState("");
-  const [comments, setComments] = useState("");
   const [likeCount, setLikeCount] = useState(0);
+  const [likesHidden, setLikesHidden] = useState(false);
   const [commentCount, setCommentCount] = useState(0);
   const [isDeleted, setIsDeleted] = useState(false);
 
@@ -62,8 +62,8 @@ export function PostDialog({ open, onOpenChange, socialAccountId, post }: PostDi
         const parsedUrls = Array.isArray(urls) && urls.length > 0 ? urls : [""];
         setImageUrls(parsedUrls);
         setDescription(post.description ?? "");
-        setComments(post.comments ?? "");
         setLikeCount(post.likeCount ?? 0);
+        setLikesHidden(post.likesHidden ?? false);
         setCommentCount(post.commentCount ?? 0);
         setIsDeleted(post.isDeleted ?? false);
 
@@ -74,8 +74,8 @@ export function PostDialog({ open, onOpenChange, socialAccountId, post }: PostDi
         setImageUrls([""]);
         setMentionsByImage([""]);
         setDescription("");
-        setComments("");
         setLikeCount(0);
+        setLikesHidden(false);
         setCommentCount(0);
         setIsDeleted(false);
       }
@@ -110,21 +110,21 @@ export function PostDialog({ open, onOpenChange, socialAccountId, post }: PostDi
       const payload = {
         content: filteredUrls.length > 0 ? JSON.stringify(filteredUrls) : null,
         description: description || null,
-        comments: comments || null,
-        likeCount,
+        likeCount: likesHidden ? 0 : likeCount,
+        likesHidden,
         commentCount,
         mentionedAccounts: buildMentionedAccounts(originalIndices),
         isDeleted: isEdit ? isDeleted : false,
       };
 
       if (isEdit && post) {
-        return await apiRequest("PATCH", `/api/social-accounts/${socialAccountId}/posts/${post.id}`, payload);
+        return await apiRequest("PATCH", `/api/social-account-posts/${post.id}`, payload);
       } else {
         return await apiRequest("POST", `/api/social-accounts/${socialAccountId}/posts`, payload);
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", socialAccountId, "posts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", socialAccountId, "posts?includeDeleted=true"] });
       toast({
         title: "Success",
         description: isEdit ? "Post updated successfully" : "Post created successfully",
@@ -241,28 +241,28 @@ export function PostDialog({ open, onOpenChange, socialAccountId, post }: PostDi
             />
           </div>
 
-          {/* Comments */}
-          <div className="space-y-2">
-            <Label htmlFor="post-comments">Comments</Label>
-            <Textarea
-              id="post-comments"
-              placeholder="Add post comments..."
-              value={comments}
-              onChange={(e) => setComments(e.target.value)}
-              data-testid={isEdit ? "textarea-edit-post-comments" : "textarea-post-comments"}
-              className="min-h-[80px]"
-            />
-          </div>
-
           {/* Stats */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="post-likes">Like Count</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="post-likes">Like Count</Label>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="post-likes-hidden" className="text-xs font-normal text-muted-foreground">Likes hidden</Label>
+                  <Switch
+                    id="post-likes-hidden"
+                    checked={likesHidden}
+                    onCheckedChange={setLikesHidden}
+                    data-testid={isEdit ? "switch-edit-likes-hidden" : "switch-likes-hidden"}
+                  />
+                </div>
+              </div>
               <Input
                 id="post-likes"
                 type="number"
                 min={0}
-                value={likeCount}
+                value={likesHidden ? "" : likeCount}
+                placeholder={likesHidden ? "hidden" : undefined}
+                disabled={likesHidden}
                 onChange={(e) => setLikeCount(parseInt(e.target.value) || 0)}
                 data-testid={isEdit ? "input-edit-like-count" : "input-like-count"}
               />

@@ -97,16 +97,16 @@ export default function PoliticalLeaningGame() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't trigger if user is in an input or dialog
-      if (
-        document.activeElement?.tagName === "INPUT" ||
-        document.activeElement?.tagName === "TEXTAREA"
-      ) {
+      const active = document.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
         return;
       }
       if (e.key === "s" || e.key === "S") {
         e.preventDefault();
         handleSkip();
       } else if (e.key === "Enter" && hasInteracted) {
+        // A focused button or link owns Enter; only bare-page Enter means "save".
+        if (active instanceof HTMLButtonElement || active instanceof HTMLAnchorElement) return;
         e.preventDefault();
         handleSave();
       }

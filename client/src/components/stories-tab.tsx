@@ -83,12 +83,26 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
             )}
             {stories.length > 1 && (
               <>
-                <Button variant="ghost" size="icon" className="absolute left-1 top-1/2 -translate-y-1/2 text-white hover:bg-white/20" onClick={prev} disabled={index === 0} data-testid="button-story-prev">
-                  <ChevronLeft className="h-6 w-6" />
-                </Button>
-                <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 -translate-y-1/2 text-white hover:bg-white/20" onClick={next} disabled={index === stories.length - 1} data-testid="button-story-next">
-                  <ChevronRight className="h-6 w-6" />
-                </Button>
+                <button
+                  type="button"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white shadow-md transition-colors hover:bg-black/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+                  onClick={prev}
+                  disabled={index === 0}
+                  data-testid="button-story-prev"
+                  aria-label="Previous story"
+                >
+                  <ChevronLeft className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white shadow-md transition-colors hover:bg-black/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+                  onClick={next}
+                  disabled={index === stories.length - 1}
+                  data-testid="button-story-next"
+                  aria-label="Next story"
+                >
+                  <ChevronRight className="h-5 w-5" />
+                </button>
                 <div className="absolute top-2 left-1/2 -translate-x-1/2 rounded bg-black/60 px-2 py-0.5 text-xs text-white">
                   {index + 1} / {stories.length}
                 </div>

@@ -1,6 +1,7 @@
 import { execSync } from "child_process";
 import { pool } from "./db";
 import { log } from "./vite";
+import { applyMeRule } from "./tracking";
 
 /**
  * Drops all tables in the database
@@ -407,6 +408,7 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
         reported_followers_after INTEGER,
         reported_following_after INTEGER,
         profile_fields_changed TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+        previous_username TEXT,
         previous_nickname TEXT,
         previous_bio TEXT,
         previous_location TEXT,
@@ -431,6 +433,13 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
   // 2a. What the extension reports it finished collecting (contract v2). Null on
   //     payloads from older builds, which the import path still infers scope for.
   await addColumnIfNotExists("pending_social_account_imports", "capture_scope", "TEXT");
+  await addColumnIfNotExists("social_account_history", "previous_username", "TEXT");
+  // 2c. Posts checks journal what they imported and marked deleted.
+  await addColumnIfNotExists("social_account_history", "posts_added", "INTEGER NOT NULL DEFAULT 0");
+  await addColumnIfNotExists("social_account_history", "posts_deleted", "INTEGER NOT NULL DEFAULT 0");
+  // 2d. Profile image tiers (profile-image-tiers-plan.md §2).
+  await addColumnIfNotExists("social_account_history", "previous_image_url_hq", "TEXT");
+  await addColumnIfNotExists("social_account_history", "image_change", "TEXT");
 
   // 2b. Indexes the ingest path depends on.
   //
@@ -567,6 +576,7 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         facial_ids: "JSONB DEFAULT '[]'::jsonb",
+        perceptual_hash: "TEXT",
       },
       notes: {
         image_uuid: "VARCHAR",
@@ -591,6 +601,22 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         is_simple: "BOOLEAN NOT NULL DEFAULT TRUE",
+        // Tracking (account-tracking-plan.md §7)
+        interest_level: "TEXT NOT NULL DEFAULT 'none'",
+        interest_level_manual: "BOOLEAN NOT NULL DEFAULT FALSE",
+        info_every_days: "INTEGER",
+        follows_every_days: "INTEGER",
+        posts_every_days: "INTEGER",
+        info_checked_at: "TIMESTAMP",
+        info_due_at: "TIMESTAMP",
+        follows_checked_at: "TIMESTAMP",
+        follows_due_at: "TIMESTAMP",
+        posts_checked_at: "TIMESTAMP",
+        posts_due_at: "TIMESTAMP",
+        joined_at: "TIMESTAMP",
+        reported_posts_count: "INTEGER",
+        is_private: "BOOLEAN",
+        image_url_hq: "TEXT",
       },
       ai_chats: {
         vector_id: "TEXT",
@@ -637,12 +663,27 @@ async function validateAndSyncSchema(): Promise<void> {
       social_account_posts: {
         metadata: "JSONB",
         scraped_from: "TEXT",
+        likes_hidden: "BOOLEAN NOT NULL DEFAULT false",
+        instagram_pk: "TEXT",
+        coauthor_account_ids: "JSONB NOT NULL DEFAULT '[]'::jsonb",
       },
       story_scrape_runs: {
         token_hash: "TEXT",
         token_expires_at: "TIMESTAMP",
         importer_id: "VARCHAR REFERENCES story_importers(id) ON DELETE SET NULL",
         scraped_from: "TEXT",
+        kind: "TEXT NOT NULL DEFAULT 'stories'",
+      },
+      story_importers: {
+        service_secret: "TEXT NOT NULL DEFAULT ''",
+        tracking_enabled: "BOOLEAN NOT NULL DEFAULT FALSE",
+        tracking_window: "TEXT NOT NULL DEFAULT '07:00-10:00'",
+        tracking_max_jobs: "INTEGER NOT NULL DEFAULT 40",
+        next_tracking_run_at: "TIMESTAMP",
+      },
+      tracking_jobs: {
+        batch_id: "VARCHAR",
+        attempts: "INTEGER NOT NULL DEFAULT 0",
       },
     };
 
@@ -730,6 +771,7 @@ async function validateAndSyncSchema(): Promise<void> {
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         label TEXT NOT NULL,
         service_url TEXT NOT NULL DEFAULT '',
+        service_secret TEXT NOT NULL DEFAULT '',
         enabled BOOLEAN NOT NULL DEFAULT false,
         run_every_days INTEGER NOT NULL DEFAULT 1,
         run_window TEXT NOT NULL DEFAULT '19:30-22:30',
@@ -741,6 +783,37 @@ async function validateAndSyncSchema(): Promise<void> {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS osint_scan_queue_live_uniq ON osint_scan_queue (social_account_id, tool)
         WHERE status IN ('pending','running');
+      CREATE TABLE IF NOT EXISTS tracking_jobs (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        importer_id VARCHAR REFERENCES story_importers(id) ON DELETE SET NULL,
+        run_id VARCHAR REFERENCES story_scrape_runs(id) ON DELETE SET NULL,
+        result JSONB,
+        error TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        started_at TIMESTAMP,
+        finished_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS tracking_jobs_status_idx ON tracking_jobs (status);
+      CREATE INDEX IF NOT EXISTS tracking_jobs_account_idx ON tracking_jobs (social_account_id, created_at);
+      CREATE TABLE IF NOT EXISTS social_post_comments (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        post_id VARCHAR NOT NULL REFERENCES social_account_posts(id) ON DELETE CASCADE,
+        instagram_comment_id TEXT NOT NULL UNIQUE,
+        username TEXT NOT NULL,
+        text TEXT NOT NULL,
+        like_count INTEGER NOT NULL DEFAULT 0,
+        posted_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        updated_at TIMESTAMP NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS social_post_comments_post_id_idx ON social_post_comments (post_id);
+      CREATE INDEX IF NOT EXISTS social_post_comments_username_idx ON social_post_comments (username);
+      ALTER TABLE social_account_posts DROP COLUMN IF EXISTS comments;
     `);
 
     // Check and add missing columns
@@ -756,9 +829,25 @@ async function validateAndSyncSchema(): Promise<void> {
       }
     }
 
-    // Stories: the audit index needs the column the loop above just added.
-    await pool.query(`CREATE INDEX IF NOT EXISTS social_account_posts_scraped_from_idx ON social_account_posts (scraped_from)`);
+    // Posts/stories: these indexes need the columns the loop above just added.
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS social_account_posts_scraped_from_idx ON social_account_posts (scraped_from);
+      CREATE INDEX IF NOT EXISTS social_account_posts_instagram_pk_idx ON social_account_posts (instagram_pk);
+      CREATE INDEX IF NOT EXISTS social_account_posts_coauthor_account_ids_idx ON social_account_posts USING gin (coauthor_account_ids);
+      CREATE INDEX IF NOT EXISTS tracking_jobs_batch_idx ON tracking_jobs (batch_id);
+    `);
     await migrateStorySettingsToImporter();
+
+    // Tracking: due-date indexes need the columns the loop above just added, and
+    // the "me" rule (accounts on either side of a me account start at medium) is
+    // idempotent, so it simply runs on every boot.
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS social_accounts_interest_level_idx ON social_accounts (interest_level);
+      CREATE INDEX IF NOT EXISTS social_accounts_info_due_idx ON social_accounts (info_due_at) WHERE info_due_at IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS social_accounts_follows_due_idx ON social_accounts (follows_due_at) WHERE follows_due_at IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS social_accounts_posts_due_idx ON social_accounts (posts_due_at) WHERE posts_due_at IS NOT NULL;
+    `);
+    await applyMeRule();
 
     // Backfill image_uuid for notes and interactions from the photos table
     // (safe to run repeatedly — only updates rows where image_uuid is still NULL)
@@ -1189,6 +1278,8 @@ async function ensureSsoEmailColumn(): Promise<void> {
   }
 }
 
+const MULTI_USER_MIGRATION_KEY = "multi_user_migration_done";
+
 /**
  * Migrates existing data to the multi-user model (Guides/pathway-to-multi-user.md §3).
  *
@@ -1197,9 +1288,15 @@ async function ensureSsoEmailColumn(): Promise<void> {
  * This cannot live in `schemaDefinitions` because ADD COLUMN ... NOT NULL fails
  * on a table that already has rows — the backfill has to happen in between.
  *
- * Idempotent: safe to run on every boot.
+ * Runs once. The backfill assigns every NULL creator to the primary user, which
+ * is right for pre-multi-user rows but wrong afterwards: system-scraped accounts
+ * and orphaned entities are meant to keep a NULL creator (§6.7).
+ * A flag in app_settings records completion so later boots skip it.
  */
 async function migrateToMultiUser(): Promise<void> {
+  const done = await pool.query(`SELECT 1 FROM app_settings WHERE key = $1`, [MULTI_USER_MIGRATION_KEY]);
+  if (done.rows.length > 0) return;
+
   // The single owner of everything that exists today. Prefer the super admin;
   // then whoever owns the "Me" person; fall back to the lowest user id.
   const primary = await pool.query(`
@@ -1299,6 +1396,10 @@ async function migrateToMultiUser(): Promise<void> {
     [primaryUserId],
   );
 
+  await pool.query(
+    `INSERT INTO app_settings (key, value) VALUES ($1, 'true') ON CONFLICT (key) DO NOTHING`,
+    [MULTI_USER_MIGRATION_KEY],
+  );
   log("Multi-user migration complete");
 }
 

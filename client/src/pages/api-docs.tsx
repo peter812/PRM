@@ -22,7 +22,8 @@ import {
   Terminal,
   Database,
   ArrowUpDown,
-  BookMarked
+  BookMarked,
+  Sparkles
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
@@ -864,6 +865,279 @@ fetch('${baseUrl}/api/upload-image', {
 ]`,
           example: `fetch('${baseUrl}/api/relationship-types')
   .then(res => res.json());`
+        }
+      ]
+    },
+    {
+      id: "vector",
+      name: "Vector Storage & Qdrant",
+      icon: Database,
+      description: "Manage Qdrant vector database integration, Universal Vectorization across 9 entity types, and App Knowledge Base RAG.",
+      endpoints: [
+        {
+          id: "get-vector-settings",
+          method: "GET",
+          path: "/api/vector/settings",
+          summary: "Get vector settings",
+          description: "Retrieve Qdrant connection configuration and embedding model status.",
+          response: `{
+  "enabled": true,
+  "qdrantUrl": "http://localhost:6333",
+  "hasApiKey": false,
+  "collectionName": "prm_daily_notes",
+  "embeddingModel": "nomic-embed-text:latest"
+}`,
+          example: `fetch('${baseUrl}/api/vector/settings')
+  .then(res => res.json());`
+        },
+        {
+          id: "test-vector-connection",
+          method: "POST",
+          path: "/api/vector/test",
+          summary: "Test Qdrant connection",
+          description: "Verify network connectivity and collection health against Qdrant.",
+          response: `{
+  "ok": true,
+  "message": "Connected to Qdrant successfully."
+}`,
+          example: `fetch('${baseUrl}/api/vector/test', { method: 'POST' })
+  .then(res => res.json());`
+        },
+        {
+          id: "universal-search",
+          method: "GET",
+          path: "/api/vector/universal/search",
+          summary: "Super Search (Universal semantic search)",
+          description: "Execute cosine similarity search across people, groups, notes, interactions, social accounts, and images.",
+          queryParams: [
+            { name: "q", type: "string", description: "Search query string", required: true },
+            { name: "type", type: "string", description: "Filter to entity type (person, group, note, etc.)", required: false },
+            { name: "limit", type: "number", description: "Maximum results (default: 20)", required: false },
+            { name: "threshold", type: "number", description: "Minimum cosine similarity score (default: 0.70)", required: false }
+          ],
+          response: `{
+  "results": [
+    {
+      "entityId": "uuid-1",
+      "type": "person",
+      "title": "Jane Doe",
+      "snippet": "Senior AI Researcher at TechLab...",
+      "score": 0.884
+    }
+  ]
+}`,
+          example: `fetch('${baseUrl}/api/vector/universal/search?q=machine%20learning&limit=10')
+  .then(res => res.json());`
+        },
+        {
+          id: "universal-vectorize-all",
+          method: "POST",
+          path: "/api/vector/universal/vectorize-all",
+          summary: "Vectorize all entities",
+          description: "Batch embeds and indexes all unindexed entities into the universal Qdrant collection.",
+          response: `{
+  "ok": true,
+  "processed": 384,
+  "failed": 0,
+  "total": 384,
+  "errors": []
+}`,
+          example: `fetch('${baseUrl}/api/vector/universal/vectorize-all', { method: 'POST' })
+  .then(res => res.json());`
+        },
+        {
+          id: "app-knowledge-search",
+          method: "GET",
+          path: "/api/vector/app-knowledge/search",
+          summary: "Search app knowledge base",
+          description: "Semantic search into PRM documentation for RAG chat assistants.",
+          queryParams: [
+            { name: "q", type: "string", description: "Documentation question or topic", required: true },
+            { name: "limit", type: "number", description: "Maximum results (default: 3)", required: false }
+          ],
+          response: `{
+  "results": [
+    {
+      "title": "APPLICATION DATA EXPORT/IMPORT",
+      "route": "/settings/import-export/application",
+      "content": "Export All Data downloads your entire database...",
+      "score": 0.912
+    }
+  ]
+}`,
+          example: `fetch('${baseUrl}/api/vector/app-knowledge/search?q=how%20to%20export')
+  .then(res => res.json());`
+        }
+      ]
+    },
+    {
+      id: "ai-tools",
+      name: "AI & Intelligence",
+      icon: Sparkles,
+      description: "Ollama LLM chat engine, function-calling tools with execution mode gates, Whisper speech-to-text, and image descriptions.",
+      endpoints: [
+        {
+          id: "ai-verify",
+          method: "POST",
+          path: "/api/ai/verify",
+          summary: "Verify Ollama connection",
+          description: "Tests connectivity to Ollama server and lists installed models.",
+          body: `{
+  "ollamaUrl": "http://localhost:11434"
+}`,
+          response: `{
+  "ok": true,
+  "models": ["llama3.2:latest", "nomic-embed-text:latest"]
+}`,
+          example: `fetch('${baseUrl}/api/ai/verify', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ ollamaUrl: 'http://localhost:11434' })
+}).then(res => res.json());`
+        },
+        {
+          id: "ai-chat-stream",
+          method: "GET",
+          path: "/api/ai/chat/stream",
+          summary: "Stream agentic chat (SSE)",
+          description: "Initiate Server-Sent Events stream for AI chat with multi-step tool calls and thoughts.",
+          queryParams: [
+            { name: "message", type: "string", description: "User message prompt", required: true },
+            { name: "chatId", type: "string", description: "Optional conversation ID", required: false }
+          ],
+          response: `// Server-Sent Events stream:
+// event: thought\\ndata: "Analyzing contact history..."\\n\\n
+// event: chunk\\ndata: "Based on your notes..."\\n\\n
+// event: done\\ndata: {"ok":true}\\n\\n`,
+          example: `const eventSource = new EventSource('${baseUrl}/api/ai/chat/stream?message=hello');
+eventSource.onmessage = (e) => console.log(e.data);`
+        },
+        {
+          id: "ai-transcribe-audio",
+          method: "POST",
+          path: "/api/ai/transcribe-audio",
+          summary: "Transcribe audio (Whisper)",
+          description: "Transcribes an uploaded audio file using the local Whisper service.",
+          body: `// Multipart Form Data:
+// - audio: file (wav, mp3, m4a, webm)
+// - language: string (optional, e.g. "en")`,
+          response: `{
+  "text": "Meeting with Sarah about Q3 roadmap."
+}`,
+          example: `const formData = new FormData();
+formData.append('audio', audioFile);
+fetch('${baseUrl}/api/ai/transcribe-audio', {
+  method: 'POST',
+  body: formData
+}).then(res => res.json());`
+        },
+        {
+          id: "ai-describe-image",
+          method: "POST",
+          path: "/api/ai/describe-image",
+          summary: "Describe image with vision model",
+          description: "Generates semantic captions and label tags for a photo.",
+          body: `// Multipart Form Data:
+// - image: file`,
+          response: `{
+  "description": "Two colleagues collaborating at a whiteboard in an office.",
+  "labels": ["people", "office", "collaboration"]
+}`,
+          example: `const formData = new FormData();
+formData.append('image', imageFile);
+fetch('${baseUrl}/api/ai/describe-image', {
+  method: 'POST',
+  body: formData
+}).then(res => res.json());`
+        }
+      ]
+    },
+    {
+      id: "stories-tracking",
+      name: "Instagram Stories & Tracking",
+      icon: Activity,
+      description: "Query active stories, inspect historical profile version changes, and manage automated tracking.",
+      endpoints: [
+        {
+          id: "get-account-stories",
+          method: "GET",
+          path: "/api/social-accounts/:id/stories",
+          summary: "Get account stories",
+          description: "Retrieve stories recorded for a social profile.",
+          queryParams: [
+            { name: "activeOnly", type: "boolean", description: "Filter to non-expired stories (default: true)", required: false }
+          ],
+          response: `[
+  {
+    "id": "story-uuid-1",
+    "socialAccountId": "account-uuid",
+    "mediaUrl": "/uploads/stories/story1.jpg",
+    "mediaType": "image",
+    "postedAt": "2026-09-16T18:00:00Z",
+    "expiresAt": "2026-09-17T18:00:00Z"
+  }
+]`,
+          example: `fetch('${baseUrl}/api/social-accounts/account-uuid/stories?activeOnly=true')
+  .then(res => res.json());`
+        },
+        {
+          id: "get-account-history",
+          method: "GET",
+          path: "/api/social-accounts/:id/history",
+          summary: "Get profile version history",
+          description: "Returns past snapshots of bios, nicknames, and follower counts.",
+          response: `[
+  {
+    "id": "version-uuid-1",
+    "nickname": "John D",
+    "bio": "Software developer",
+    "followersCount": 1820,
+    "recordedAt": "2026-08-01T12:00:00Z"
+  }
+]`,
+          example: `fetch('${baseUrl}/api/social-accounts/account-uuid/history')
+  .then(res => res.json());`
+        },
+        {
+          id: "get-tracking-accounts",
+          method: "GET",
+          path: "/api/tracking/accounts",
+          summary: "List tracked accounts",
+          description: "Get all accounts configured for automated scraping and audits.",
+          response: `[
+  {
+    "id": "tracking-uuid-1",
+    "socialAccountId": "account-uuid",
+    "interestLevel": "high",
+    "trackStories": true,
+    "intervalHours": 24
+  }
+]`,
+          example: `fetch('${baseUrl}/api/tracking/accounts')
+  .then(res => res.json());`
+        },
+        {
+          id: "create-tracking-account",
+          method: "POST",
+          path: "/api/tracking/accounts",
+          summary: "Configure account tracking",
+          description: "Enroll a social account into recurring automated tracking.",
+          body: `{
+  "socialAccountId": "account-uuid",
+  "interestLevel": "high",
+  "trackStories": true,
+  "intervalHours": 24
+}`,
+          response: `{
+  "id": "tracking-uuid-1",
+  "socialAccountId": "account-uuid",
+  "interestLevel": "high"
+}`,
+          example: `fetch('${baseUrl}/api/tracking/accounts', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ socialAccountId: 'account-uuid', interestLevel: 'high' })
+}).then(res => res.json());`
         }
       ]
     }

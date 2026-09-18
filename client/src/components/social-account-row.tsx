@@ -13,22 +13,33 @@ export function SocialAccountRow({
   id,
   username,
   imageUrl,
+  imageUrlHq,
   testIdPrefix,
   onNavigate,
 }: {
   id: string;
   username: string;
   imageUrl?: string | null;
+  imageUrlHq?: string | null;
   testIdPrefix: string;
   onNavigate?: () => void;
 }) {
+  const primary = imageUrlHq ?? imageUrl;
+  const fallback = imageUrlHq ? imageUrl : undefined;
+
   return (
     <div
       className="flex items-center gap-3 p-2 rounded-md hover-elevate"
       data-testid={`card-${testIdPrefix}-${id}`}
     >
       <Avatar className="w-8 h-8">
-        {imageUrl && <AvatarImage src={imageUrl} alt={username} />}
+        {primary && (
+          <AvatarImage
+            src={primary}
+            fallbackSrc={fallback ?? undefined}
+            alt={username}
+          />
+        )}
         <AvatarFallback className="text-xs">{getInitials(username)}</AvatarFallback>
       </Avatar>
       <Link

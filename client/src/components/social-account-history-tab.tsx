@@ -1,18 +1,38 @@
-import { useState } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
+import { AlertCircle, ChevronDown, Clock, Loader2, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
+import { useImporters } from "@/lib/instagram";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import { SocialAccountHistoryModal, type CurrentProfileValues } from "@/components/social-account-history-modal";
-import type {
-  SocialAccountHistoryEntry,
-  SocialAccountHistoryKind,
-  SocialAccountHistorySummary,
+import { TRACKING_KINDS, TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
+import {
+  PROFILE_IMAGE_CHANGE_LABELS,
+  type ProfileImageChange,
+  type SocialAccountHistoryEntry,
+  type SocialAccountHistoryKind,
+  type SocialAccountHistorySummary,
+  type TrackingJob,
 } from "@shared/schema";
+
+/** Refetch cadence while the tab is open, so PRM Stories results land without a reload. */
+const LIVE_MS = 10_000;
+/** How long a finished-but-failed job stays pinned at the top of the timeline. */
+const FAILED_VISIBLE_MS = 10 * 60_000;
 
 interface PaginatedHistory {
   items: SocialAccountHistoryEntry[];
@@ -37,10 +57,12 @@ const formatDateTime = (value: Date | string) =>
   });
 
 const PROFILE_FIELD_LABELS: Record<string, string> = {
+  username: "username changed",
   nickname: "display name changed",
   bio: "bio changed",
   location: "location changed",
   image: "photo changed",
+  joined: "date joined recorded",
 };
 
 type Part = { text: string; tone: "gain" | "loss" | "neutral" };
@@ -72,12 +94,21 @@ function describeEntry(entry: SocialAccountHistoryEntry): Part[] {
     if (entry.followingLost > 0) parts.push({ text: `−${n(entry.followingLost)} following`, tone: "loss" });
   }
 
+  if (entry.postsAdded > 0) parts.push({ text: `${n(entry.postsAdded)} ${entry.postsAdded === 1 ? "post" : "posts"} imported`, tone: "gain" });
+  if (entry.postsDeleted > 0) parts.push({ text: `${n(entry.postsDeleted)} ${entry.postsDeleted === 1 ? "post" : "posts"} deleted`, tone: "loss" });
+
   for (const field of entry.profileFieldsChanged) {
-    const label = PROFILE_FIELD_LABELS[field];
+    // Image entries carry the tier transition; rows from before that column existed keep the generic label.
+    const label =
+      field === "image" && entry.imageChange
+        ? PROFILE_IMAGE_CHANGE_LABELS[entry.imageChange as ProfileImageChange] ?? PROFILE_FIELD_LABELS.image
+        : PROFILE_FIELD_LABELS[field];
     if (label) parts.push({ text: label, tone: "neutral" });
   }
 
-  if (parts.length === 0) parts.push({ text: "no changes recorded", tone: "neutral" });
+  if (parts.length === 0) {
+    parts.push({ text: entry.captureScope === "posts" ? "posts checked, nothing new" : "no changes recorded", tone: "neutral" });
+  }
   return parts;
 }
 
@@ -103,13 +134,73 @@ const TONE_CLASS: Record<Part["tone"], string> = {
 export function SocialAccountHistoryTab({
   socialAccountId,
   current,
+  canTrack = false,
 }: {
   socialAccountId: string;
   /** The account as it stands today — the "after" side of every profile change. */
   current?: CurrentProfileValues;
+  /** Instagram accounts can be refreshed through PRM Stories; others get no menu. */
+  canTrack?: boolean;
 }) {
   const [kind, setKind] = useState<SocialAccountHistoryKind>("all");
   const [openEntryId, setOpenEntryId] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  const { data: importers } = useImporters();
+  const hasImporter = importers ? importers.length > 0 : true;
+
+  const jobsKey = [`/api/social-accounts/${socialAccountId}/tracking-jobs`];
+  const { data: jobs } = useQuery<TrackingJob[]>({
+    queryKey: jobsKey,
+    enabled: canTrack && !!socialAccountId,
+    refetchInterval: (query) => {
+      const data = query.state.data as TrackingJob[] | undefined;
+      const hasOpen = data?.some((j) => j.status === "queued" || j.status === "running");
+      return hasOpen ? 2_000 : LIVE_MS;
+    },
+  });
+  const openJobs = (jobs ?? []).filter((j) => j.status === "queued" || j.status === "running");
+  const recentFailures = (jobs ?? []).filter(
+    (j) =>
+      (j.status === "failed" || j.status === "skipped") &&
+      j.finishedAt &&
+      Date.now() - new Date(j.finishedAt).getTime() < FAILED_VISIBLE_MS,
+  );
+  const pinnedJobs = [...openJobs, ...recentFailures];
+
+  const prevOpenJobIdsRef = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (!jobs) return;
+    const currentOpenIds = openJobs.map((j) => j.id);
+    if (prevOpenJobIdsRef.current !== null) {
+      const finishedAny = prevOpenJobIdsRef.current.some((id) => !currentOpenIds.includes(id));
+      if (finishedAny) {
+        // The account itself too: it is the "after" side of every profile change.
+        queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", socialAccountId] });
+      }
+    }
+    prevOpenJobIdsRef.current = currentOpenIds;
+  }, [jobs, openJobs, socialAccountId]);
+
+  const queue = useMutation({
+    mutationFn: (jobKind: TrackingKind) =>
+      apiRequest("POST", `/api/social-accounts/${socialAccountId}/tracking-jobs`, { kind: jobKind }),
+    onSuccess: (_r, jobKind) => {
+      queryClient.invalidateQueries({ queryKey: jobsKey });
+      toast({ title: "Queued", description: `${TRACKING_KIND_LABEL[jobKind]} was sent to PRM Stories.` });
+    },
+    onError: (e: Error) => toast({ title: "Not queued", description: e.message, variant: "destructive" }),
+  });
+
+  const cancelJob = useMutation({
+    mutationFn: (jobId: string) =>
+      apiRequest("DELETE", `/api/social-accounts/${socialAccountId}/tracking-jobs/${jobId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: jobsKey });
+      toast({ title: "Removed", description: "The pending check was cancelled." });
+    },
+    onError: (e: Error) => toast({ title: "Failed to cancel", description: e.message, variant: "destructive" }),
+  });
 
   const { data: summary } = useQuery<SocialAccountHistorySummary>({
     queryKey: ["/api/social-accounts", socialAccountId, "history", "summary"],
@@ -119,6 +210,7 @@ export function SocialAccountHistoryTab({
       return res.json();
     },
     enabled: !!socialAccountId,
+    refetchInterval: LIVE_MS,
   });
 
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
@@ -137,6 +229,22 @@ export function SocialAccountHistoryTab({
       enabled: !!socialAccountId,
     });
 
+  // Only the lightweight summary polls: polling an infinite query refetches every
+  // loaded page on each tick. When the summary shows new entries, refresh the list.
+  const summarySigRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!summary) return;
+    const sig = `${summary.direct}|${summary.neighbour}|${summary.baseline}|${summary.lastEntryAt ?? ""}`;
+    if (summarySigRef.current !== null && summarySigRef.current !== sig) {
+      // Every kind's list, not just the visible one: staleTime is Infinity, so a
+      // cached list for another filter would otherwise never catch up.
+      for (const { value } of KINDS) {
+        queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", socialAccountId, "history", value] });
+      }
+    }
+    summarySigRef.current = sig;
+  }, [summary, socialAccountId]);
+
   const entries = data?.pages.flatMap((p) => p.items) ?? [];
   const total = data?.pages[0]?.total ?? 0;
 
@@ -152,6 +260,7 @@ export function SocialAccountHistoryTab({
   return (
     <div className="px-6 py-6 space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
         <div
           className="inline-flex items-center gap-1 rounded-md border p-1"
           data-testid="toggle-history-kind"
@@ -176,6 +285,42 @@ export function SocialAccountHistoryTab({
             Last entry {formatDateTime(summary.lastEntryAt)}
           </p>
         )}
+        </div>
+
+        {canTrack && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" data-testid="button-update-from-stories">
+                Update from PRM Stories
+                <ChevronDown className="h-4 w-4 ml-1" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {!hasImporter && (
+                <>
+                  <DropdownMenuLabel className="font-normal text-xs text-muted-foreground max-w-56">
+                    No PRM Stories importer configured. Add one under Settings → Instagram importers.
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              {TRACKING_KINDS.map((jobKind) => {
+                const inFlight = openJobs.some((j) => j.kind === jobKind);
+                return (
+                  <DropdownMenuItem
+                    key={jobKind}
+                    disabled={!hasImporter || inFlight || queue.isPending}
+                    onSelect={() => queue.mutate(jobKind)}
+                    data-testid={`menu-item-track-${jobKind}`}
+                  >
+                    {TRACKING_KIND_LABEL[jobKind]}
+                    {inFlight && <Loader2 className="h-3 w-3 animate-spin ml-auto" />}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
 
       {isLoading ? (
@@ -184,7 +329,7 @@ export function SocialAccountHistoryTab({
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-24 w-full" />
         </div>
-      ) : entries.length === 0 ? (
+      ) : entries.length === 0 && pinnedJobs.length === 0 ? (
         <p className="text-sm text-muted-foreground italic" data-testid="text-history-empty">
           No history recorded yet.
         </p>
@@ -192,6 +337,10 @@ export function SocialAccountHistoryTab({
         // A single rail down the left keeps chronology legible when direct and
         // neighbour entries are interleaved under "All".
         <div className="relative space-y-3 pl-6 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-px before:bg-border">
+          {pinnedJobs.map((job) => (
+            <PendingJob key={job.id} job={job} onCancel={() => cancelJob.mutate(job.id)} />
+          ))}
+
           {entries.map((entry) =>
             entry.entryKind === "neighbour" ? (
               <NeighbourEntry key={entry.id} entry={entry} />
@@ -210,12 +359,15 @@ export function SocialAccountHistoryTab({
                 size="sm"
                 onClick={() => fetchNextPage()}
                 disabled={isFetchingNextPage}
-                data-testid="button-load-more-history"
+                data-testid="button-history-load-more"
               >
                 {isFetchingNextPage ? (
-                  <><Loader2 className="h-3 w-3 animate-spin mr-1" />Loading...</>
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
+                    Loading…
+                  </>
                 ) : (
-                  "Load more"
+                  "Load older entries"
                 )}
               </Button>
             </div>
@@ -228,6 +380,64 @@ export function SocialAccountHistoryTab({
         current={current}
         onClose={() => setOpenEntryId(null)}
       />
+    </div>
+  );
+}
+
+/** A PRM Stories job that hasn't produced a history entry yet, pinned above the timeline. */
+function PendingJob({ job, onCancel }: { job: TrackingJob; onCancel?: () => void }) {
+  const label = TRACKING_KIND_LABEL[job.kind as TrackingKind] ?? job.kind;
+  const failed = job.status === "failed" || job.status === "skipped";
+  const reason = job.error ?? (job.result as { reason?: string } | null)?.reason;
+  return (
+    <div
+      className={`relative rounded-xl border border-dashed px-4 py-3 text-sm ${
+        failed ? "border-destructive/50 bg-destructive/5" : "bg-muted/40"
+      }`}
+      data-testid={`pending-job-${job.id}`}
+    >
+      <span
+        className={`absolute -left-[1.125rem] top-4 h-2 w-2 rounded-full ring-2 ring-background ${
+          failed ? "bg-destructive" : "bg-primary"
+        }`}
+      />
+      <div className="flex items-center gap-2 flex-wrap">
+        {failed ? (
+          <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+        ) : job.status === "running" ? (
+          <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
+        ) : (
+          <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
+        )}
+        <span className="font-medium">{label}</span>
+        <Badge variant={failed ? "destructive" : "secondary"} className="text-xs">
+          {job.status === "queued"
+            ? "Waiting for PRM Stories"
+            : job.status === "running"
+              ? "Running in PRM Stories"
+              : job.status === "skipped"
+                ? "Skipped"
+                : "Failed"}
+        </Badge>
+        <div className="flex items-center gap-1.5 ml-auto">
+          <span className="text-xs text-muted-foreground">
+            {formatDateTime(job.finishedAt ?? job.startedAt ?? job.createdAt)}
+          </span>
+          {onCancel && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive shrink-0"
+              title="Cancel check"
+              onClick={onCancel}
+              data-testid={`button-cancel-job-${job.id}`}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      </div>
+      {failed && reason && <p className="mt-1 text-xs text-destructive">{reason}</p>}
     </div>
   );
 }
@@ -256,7 +466,9 @@ function DirectEntry({ entry, onOpen }: { entry: SocialAccountHistoryEntry; onOp
           {changedImage && (
             <div className="flex items-center gap-1">
               <Avatar className="w-8 h-8 opacity-60">
-                {entry.previousImageUrl && <AvatarImage src={entry.previousImageUrl} alt="previous" />}
+                {(entry.previousImageUrlHq ?? entry.previousImageUrl) && (
+                  <AvatarImage src={entry.previousImageUrlHq ?? entry.previousImageUrl ?? undefined} alt="previous" />
+                )}
                 <AvatarFallback className="text-[10px]">old</AvatarFallback>
               </Avatar>
               <span className="text-muted-foreground text-xs">→</span>

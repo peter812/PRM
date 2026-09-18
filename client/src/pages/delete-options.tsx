@@ -189,7 +189,7 @@ export default function DeleteOptionsPage() {
       const local = data.local ?? {};
       let description = `Deleted ${local.photosDeleted ?? 0} images, ${local.facesDeleted ?? 0} faces, and cleared face links from ${local.peopleCleared ?? 0} people.`;
       if (data.faceService?.attempted && !data.faceService?.ok) {
-        description += ` Note: PRM-Face reset did not complete (${data.faceService.error ?? "unknown error"}).`;
+        description += ` Note: PRM-Compute reset did not complete (${data.faceService.error ?? "unknown error"}).`;
       }
       toast({
         title: "Images & Faces Reset",
@@ -439,13 +439,13 @@ export default function DeleteOptionsPage() {
   });
 
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-page-title">Delete Options</h1>
         <p className="text-muted-foreground">Manage destructive operations for your data</p>
       </div>
 
-      <div className="space-y-6">
+      <div className="settings-cards-grid">
         {/* Card 1: Data Maintenance */}
         <Card className="border-orange-500/50">
           <CardHeader>
@@ -615,9 +615,9 @@ export default function DeleteOptionsPage() {
             {/* Row 4: Reset Images & Faces */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
               <div className="space-y-1">
-                <h4 className="font-semibold text-sm text-destructive">Reset Images &amp; Faces (PRM-Face)</h4>
+                <h4 className="font-semibold text-sm text-destructive">Reset Images &amp; Faces (PRM-Compute)</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Deletes all recognition images and detected faces from PRM-Face and S3, and clears face links. Profile pictures and avatars are preserved.
+                  Deletes all recognition images and detected faces from PRM-Compute and S3, and clears face links. Profile pictures and avatars are preserved.
                 </p>
               </div>
               <Button
@@ -826,7 +826,7 @@ export default function DeleteOptionsPage() {
               Confirm Images &amp; Faces Reset
             </DialogTitle>
             <DialogDescription>
-              This will permanently delete all recognition images and detected faces from PRM-Face and S3 storage.
+              This will permanently delete all recognition images and detected faces from PRM-Compute and S3 storage.
             </DialogDescription>
           </DialogHeader>
 
@@ -834,7 +834,7 @@ export default function DeleteOptionsPage() {
             <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
               <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
               <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                <li>Every detected face and its cropped image are deleted from PRM-Face and S3 storage</li>
+                <li>Every detected face and its cropped image are deleted from PRM-Compute and S3 storage</li>
                 <li>All recognition-pipeline images (post, interaction, and note photos) are removed from S3 and the database</li>
                 <li>Face links are stripped from all people and social account posts</li>
                 <li>Profile pictures and social avatars are preserved</li>

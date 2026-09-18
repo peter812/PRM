@@ -189,8 +189,8 @@ export default function SocialGraphSettingsPage() {
   const extrasIndex = Math.max(0, EXTRAS_STEPS.indexOf(settings.maxExtras));
 
   return (
-    <div className="container max-w-full md:max-w-3xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">
-      <div className="space-y-2">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">
+      <div className="space-y-2 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-social-graph-settings-title">Social Graph Settings</h1>
         <p className="text-muted-foreground">
           Configure the default behaviour of the social account graph. These options apply
@@ -200,8 +200,9 @@ export default function SocialGraphSettingsPage() {
         </p>
       </div>
 
-      {/* Mode */}
-      <Card>
+      <div className="settings-cards-grid">
+        {/* Mode */}
+        <Card>
         <CardHeader>
           <CardTitle>Mode</CardTitle>
           <CardDescription>The view the graph opens in by default.</CardDescription>
@@ -663,6 +664,7 @@ export default function SocialGraphSettingsPage() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       <div className="flex flex-wrap gap-2">
         <Button onClick={handleSave} data-testid="button-save-graph-defaults">

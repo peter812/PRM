@@ -42,8 +42,8 @@ export default function ExperimentalFeaturesPage() {
   const imagesTabEnabled = settings?.images_tab_enabled !== "false"; // Defaults to true
 
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-experimental-features-title">
           Experimental Features
         </h1>
@@ -52,7 +52,7 @@ export default function ExperimentalFeaturesPage() {
         </p>
       </div>
 
-      <div className="space-y-4">
+      <div className="settings-cards-grid">
         {/* Switch for Demos section */}
         <Card>
           <CardHeader>

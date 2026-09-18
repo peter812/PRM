@@ -745,3 +745,21 @@
     margin-left: 50px;
   }
 }
+
+/* Settings pages multi-column responsive layout */
+.settings-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 460px), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.settings-cards-grid > * {
+  min-width: 0;
+}
+
+@media (min-width: 768px) {
+  .settings-cards-grid {
+    gap: 1.5rem;
+  }
+}

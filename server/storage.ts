@@ -29,6 +29,8 @@ import {
   socialFollows,
   socialNetworkChanges,
   socialAccountPosts,
+  socialProfileVersions,
+  socialPostComments,
   photos,
   faces,
   imageQuestions,
@@ -77,6 +79,7 @@ import {
   type RelationshipWithPerson,
   type User,
   type InsertUser,
+  type StorageMode,
   type Group,
   type InsertGroup,
   type SubGroup,
@@ -104,9 +107,13 @@ import {
   type SocialAccountHistorySummary,
   type SocialAccountHistoryDelta,
   type HistoryAccountRef,
+  type HistoryPostRef,
   type SocialAccountWithCurrentProfile,
   type SocialAccountPost,
   type InsertSocialAccountPost,
+  type SocialPostComment,
+  type SocialPostCommentWithAccount,
+  INSTAGRAM_TYPE_ID,
   tasks,
   type Task,
   type InsertTask,
@@ -146,12 +153,21 @@ import {
 import { computeFamilyLabels } from "./family-relations-helper";
 import { visibleShared, ownedByCurrentUser, currentAccess, actingUserId } from "./access";
 import { db, pool } from "./db";
-import { eq, or, and, ilike, sql, inArray, notInArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
+import { eq, ne, or, and, ilike, sql, inArray, notInArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { deleteImageLocally, isLocalImageUrl } from "./local-storage";
 import { deleteImageFromS3 } from "./s3";
+import { deleteImageFromPrmS3, isPrmS3ImageUrl } from "./prm-s3";
 import { syncEntityInBackground, deleteEntityVector } from "./vector-universal";
+
+function safeActingUserId(): number | undefined {
+  try {
+    return actingUserId();
+  } catch {
+    return undefined;
+  }
+}
 
 const PostgresSessionStore = connectPg(session);
 
@@ -333,10 +349,11 @@ export interface IStorage {
   getUserCount(): Promise<number>;
   updateUserPerson(userId: number, person: Partial<InsertPerson>): Promise<void>;
   getMePerson(userId: number): Promise<PersonWithRelations | undefined>;
-  getImageStorageMode(userId: number): Promise<string>;
-  setImageStorageMode(userId: number, mode: string): Promise<void>;
+  getImageStorageMode(userId: number): Promise<StorageMode>;
+  setImageStorageMode(userId: number, mode: StorageMode): Promise<void>;
   getAllImageUrls(): Promise<Array<{ table: string; id: string; column: string; url: string }>>;
-  updateImageUrl(table: string, id: string, column: string, oldUrl: string, newUrl: string): Promise<void>;
+  /** newUrl null clears a dead reference; only the nullable image columns accept it. */
+  updateImageUrl(table: string, id: string, column: string, oldUrl: string, newUrl: string | null): Promise<void>;
 
   // API Key operations
   getAllApiKeys(userId: number): Promise<ApiKey[]>;
@@ -399,6 +416,7 @@ export interface IStorage {
     searchQuery?: string;
     typeId?: string;
     followsAccountIds?: string[];
+    interestLevel?: string;
   }): Promise<SocialAccountWithCurrentProfile[]>;
   getSocialAccountById(id: string): Promise<SocialAccountWithCurrentProfile | undefined>;
   getSocialAccountsByIds(ids: string[]): Promise<SocialAccountWithCurrentProfile[]>;
@@ -458,6 +476,7 @@ export interface IStorage {
   createPost(post: InsertSocialAccountPost): Promise<SocialAccountPost>;
   updatePost(id: string, post: Partial<InsertSocialAccountPost>): Promise<SocialAccountPost | undefined>;
   deletePost(id: string): Promise<void>;
+  getCommentsByPostId(postId: string): Promise<SocialPostCommentWithAccount[]>;
 
   // Flow operations (unified timeline)
   getFlowData(personId: string, limit: number, cursor?: string): Promise<FlowResponse>;
@@ -701,6 +720,10 @@ function pendingImportFilter(options: PendingImportFilter) {
 
   return conditions.length > 0 ? and(...conditions) : undefined;
 }
+
+/** Posts an account is on: as the primary poster or as a coauthor of a collab post. */
+export const postedBy = (socialAccountId: string) =>
+  or(eq(socialAccountPosts.socialAccountId, socialAccountId), sql`${socialAccountPosts.coauthorAccountIds} @> ${JSON.stringify([socialAccountId])}::jsonb`)!;
 
 export class DatabaseStorage implements IStorage {
   sessionStore: session.Store;
@@ -1231,9 +1254,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createPerson(insertPerson: InsertPerson): Promise<Person> {
+    const createdByUserId =
+      insertPerson.createdByUserId ??
+      insertPerson.userId ??
+      safeActingUserId() ??
+      undefined;
     const data = {
-      createdByUserId: insertPerson.createdByUserId ?? actingUserId() ?? undefined,
       ...insertPerson,
+      createdByUserId,
     };
     if (data.phone !== undefined) {
       data.phone = cleanPhoneNumberForStorage(data.phone);
@@ -1515,9 +1543,11 @@ export class DatabaseStorage implements IStorage {
   async createInteraction(
     insertInteraction: InsertInteraction
   ): Promise<Interaction> {
+    const createdByUserId =
+      insertInteraction.createdByUserId ?? safeActingUserId() ?? undefined;
     const data = {
-      createdByUserId: insertInteraction.createdByUserId ?? actingUserId() ?? undefined,
       ...insertInteraction,
+      createdByUserId,
     };
     const [interaction] = await db
       .insert(interactions)
@@ -1544,9 +1574,11 @@ export class DatabaseStorage implements IStorage {
 
   // Relationship operations
   async createRelationship(insertRelationship: InsertRelationship): Promise<Relationship> {
+    const createdByUserId =
+      insertRelationship.createdByUserId ?? safeActingUserId() ?? undefined;
     const data = {
-      createdByUserId: insertRelationship.createdByUserId ?? actingUserId() ?? undefined,
       ...insertRelationship,
+      createdByUserId,
     };
     const [relationship] = await db
       .insert(relationships)
@@ -2443,12 +2475,12 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getImageStorageMode(userId: number): Promise<string> {
+  async getImageStorageMode(userId: number): Promise<StorageMode> {
     const [user] = await db.select({ imageStorageMode: users.imageStorageMode }).from(users).where(eq(users.id, userId));
-    return user?.imageStorageMode || "s3";
+    return (user?.imageStorageMode as StorageMode) || "s3";
   }
 
-  async setImageStorageMode(userId: number, mode: string): Promise<void> {
+  async setImageStorageMode(userId: number, mode: StorageMode): Promise<void> {
     await db.update(users).set({ imageStorageMode: mode }).where(eq(users.id, userId));
   }
 
@@ -2475,15 +2507,62 @@ export class DatabaseStorage implements IStorage {
       if (row.imageUrl) results.push({ table: "groups", id: row.id, column: "imageUrl", url: row.imageUrl });
     }
 
-    const socialAccountRows = await db.select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl }).from(socialAccounts);
+    const socialAccountRows = await db
+      .select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq })
+      .from(socialAccounts);
     for (const row of socialAccountRows) {
       if (row.imageUrl) results.push({ table: "social_accounts", id: row.id, column: "imageUrl", url: row.imageUrl });
+      if (row.imageUrlHq) results.push({ table: "social_accounts", id: row.id, column: "imageUrlHq", url: row.imageUrlHq });
+    }
+
+    const versionRows = await db
+      .select({ id: socialProfileVersions.id, imageUrl: socialProfileVersions.imageUrl })
+      .from(socialProfileVersions);
+    for (const row of versionRows) {
+      if (row.imageUrl) results.push({ table: "social_profile_versions", id: row.id, column: "imageUrl", url: row.imageUrl });
+    }
+
+    const historyRows = await db
+      .select({ id: socialAccountHistory.id, previousImageUrl: socialAccountHistory.previousImageUrl, previousImageUrlHq: socialAccountHistory.previousImageUrlHq })
+      .from(socialAccountHistory);
+    for (const row of historyRows) {
+      if (row.previousImageUrl) results.push({ table: "social_account_history", id: row.id, column: "previousImageUrl", url: row.previousImageUrl });
+      if (row.previousImageUrlHq) results.push({ table: "social_account_history", id: row.id, column: "previousImageUrlHq", url: row.previousImageUrlHq });
+    }
+
+    const faceRows = await db.select({ id: faces.id, s3Url: faces.s3Url }).from(faces);
+    for (const row of faceRows) {
+      if (row.s3Url) results.push({ table: "faces", id: row.id, column: "s3Url", url: row.s3Url });
+    }
+
+    // Posts hold a JSON array of image urls in `content` and an optional
+    // video url under metadata.videoUrl; report one entry per url.
+    const postRows = await db
+      .select({ id: socialAccountPosts.id, content: socialAccountPosts.content, videoUrl: sql<string | null>`${socialAccountPosts.metadata}->>'videoUrl'` })
+      .from(socialAccountPosts);
+    for (const row of postRows) {
+      if (row.content) {
+        try {
+          const urls = JSON.parse(row.content);
+          if (Array.isArray(urls)) {
+            for (const url of urls) {
+              if (typeof url === "string" && url) results.push({ table: "social_account_posts", id: row.id, column: "content", url });
+            }
+          }
+        } catch {
+          // Not a JSON array; nothing to transfer.
+        }
+      }
+      if (row.videoUrl) results.push({ table: "social_account_posts", id: row.id, column: "videoUrl", url: row.videoUrl });
     }
 
     return results;
   }
 
-  async updateImageUrl(table: string, id: string, column: string, oldUrl: string, newUrl: string): Promise<void> {
+  async updateImageUrl(table: string, id: string, column: string, oldUrl: string, newUrl: string | null): Promise<void> {
+    if (newUrl === null && (table === "faces" || table === "social_account_posts")) {
+      throw new Error(`${table}.${column} cannot be cleared`);
+    }
     switch (table) {
       case "people":
         await db.update(people).set({ imageUrl: newUrl }).where(eq(people.id, id));
@@ -2498,7 +2577,37 @@ export class DatabaseStorage implements IStorage {
         await db.update(groups).set({ imageUrl: newUrl }).where(eq(groups.id, id));
         break;
       case "social_accounts":
-        await db.update(socialAccounts).set({ imageUrl: newUrl }).where(eq(socialAccounts.id, id));
+        await db
+          .update(socialAccounts)
+          .set(column === "imageUrlHq" ? { imageUrlHq: newUrl } : { imageUrl: newUrl })
+          .where(eq(socialAccounts.id, id));
+        break;
+      case "social_profile_versions":
+        await db.update(socialProfileVersions).set({ imageUrl: newUrl }).where(eq(socialProfileVersions.id, id));
+        break;
+      case "social_account_history":
+        await db
+          .update(socialAccountHistory)
+          .set(column === "previousImageUrlHq" ? { previousImageUrlHq: newUrl } : { previousImageUrl: newUrl })
+          .where(eq(socialAccountHistory.id, id));
+        break;
+      case "faces":
+        await db.update(faces).set({ s3Url: newUrl! }).where(eq(faces.id, id));
+        break;
+      case "social_account_posts":
+        // A post can hold several urls that transfer concurrently, so rewrite
+        // in SQL rather than read-modify-write to avoid losing updates.
+        if (column === "videoUrl") {
+          await db
+            .update(socialAccountPosts)
+            .set({ metadata: sql`jsonb_set(${socialAccountPosts.metadata}, '{videoUrl}', to_jsonb(${newUrl!}::text))` })
+            .where(eq(socialAccountPosts.id, id));
+        } else {
+          await db
+            .update(socialAccountPosts)
+            .set({ content: sql`replace(${socialAccountPosts.content}, ${oldUrl}, ${newUrl!})` })
+            .where(eq(socialAccountPosts.id, id));
+        }
         break;
     }
   }
@@ -2740,9 +2849,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createGroup(insertGroup: InsertGroup): Promise<Group> {
+    const createdByUserId =
+      insertGroup.createdByUserId ?? safeActingUserId() ?? undefined;
     const data = {
-      createdByUserId: insertGroup.createdByUserId ?? actingUserId() ?? undefined,
       ...insertGroup,
+      createdByUserId,
     };
     const [group] = await db.insert(groups).values(data).returning();
     return group;
@@ -3212,6 +3323,7 @@ export class DatabaseStorage implements IStorage {
         bio: account.bio,
         accountUrl: account.accountUrl,
         imageUrl: account.imageUrl,
+        imageUrlHq: account.imageUrlHq,
         externalImageUrl: account.externalImageUrl,
         detectedAt: account.lastScrapedAt ?? account.internalAccountCreationDate,
         isCurrent: true,
@@ -3277,9 +3389,14 @@ export class DatabaseStorage implements IStorage {
     searchQuery?: string;
     typeId?: string;
     followsAccountIds?: string[];
+    interestLevel?: string;
   }): Promise<SocialAccountWithCurrentProfile[]> {
-    const { offset, limit, searchQuery, typeId, followsAccountIds } = options;
+    const { offset, limit, searchQuery, typeId, followsAccountIds, interestLevel } = options;
     const conditions = [];
+
+    if (interestLevel) {
+      conditions.push(eq(socialAccounts.interestLevel, interestLevel));
+    }
 
     if (searchQuery) {
       const query = `%${searchQuery}%`;
@@ -3511,11 +3628,15 @@ export class DatabaseStorage implements IStorage {
       const duplicates = sorted.slice(1);
       
       for (const dup of duplicates) {
-        // 1. Update posts
+        // 1. Update posts, as primary poster and as coauthor
         await db
           .update(socialAccountPosts)
           .set({ socialAccountId: keptAccount.id })
           .where(eq(socialAccountPosts.socialAccountId, dup.id));
+        await db
+          .update(socialAccountPosts)
+          .set({ coauthorAccountIds: sql`(${socialAccountPosts.coauthorAccountIds} - ${dup.id}) || ${JSON.stringify([keptAccount.id])}::jsonb` })
+          .where(sql`${socialAccountPosts.coauthorAccountIds} @> ${JSON.stringify([dup.id])}::jsonb`);
           
         // 2. Re-point the journal. social_account_history cascades on delete, so
         //    without this the duplicate's history would be destroyed rather than
@@ -3889,12 +4010,38 @@ export class DatabaseStorage implements IStorage {
         username: socialAccounts.username,
         nickname: socialAccounts.nickname,
         imageUrl: socialAccounts.imageUrl,
+        imageUrlHq: socialAccounts.imageUrlHq,
       })
       .from(socialAccounts)
       .where(and(inArray(socialAccounts.id, unique), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
 
     const byId = new Map(rows.map(r => [r.id, r]));
     return ids.map(id => byId.get(id)).filter((r): r is HistoryAccountRef => !!r);
+  }
+
+  /** Thumbnails for a delta's post ids, in the delta's order; posts the caller cannot see drop out. */
+  private async hydratePostRefs(ids: string[]): Promise<HistoryPostRef[]> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) return [];
+
+    const rows = await db
+      .select({
+        id: socialAccountPosts.id,
+        socialAccountId: socialAccountPosts.socialAccountId,
+        content: socialAccountPosts.content,
+        description: socialAccountPosts.description,
+        postedAt: socialAccountPosts.postedAt,
+      })
+      .from(socialAccountPosts)
+      .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountPosts.socialAccountId))
+      .where(and(inArray(socialAccountPosts.id, unique), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
+
+    const byId = new Map<string, HistoryPostRef>(rows.map(r => {
+      let thumbnailUrl: string | null = null;
+      try { thumbnailUrl = (JSON.parse(r.content ?? "[]") as string[])[0] ?? null; } catch { /* not a url list */ }
+      return [r.id, { id: r.id, socialAccountId: r.socialAccountId, thumbnailUrl, description: r.description, postedAt: r.postedAt }];
+    }));
+    return ids.map(id => byId.get(id)).filter((r): r is HistoryPostRef => !!r);
   }
 
   async getSocialAccountHistory(
@@ -3943,11 +4090,16 @@ export class DatabaseStorage implements IStorage {
         followingLost: socialAccountHistory.followingLost,
         reportedFollowersAfter: socialAccountHistory.reportedFollowersAfter,
         reportedFollowingAfter: socialAccountHistory.reportedFollowingAfter,
+        postsAdded: socialAccountHistory.postsAdded,
+        postsDeleted: socialAccountHistory.postsDeleted,
         profileFieldsChanged: socialAccountHistory.profileFieldsChanged,
         previousNickname: socialAccountHistory.previousNickname,
+        previousUsername: socialAccountHistory.previousUsername,
         previousBio: socialAccountHistory.previousBio,
         previousLocation: socialAccountHistory.previousLocation,
         previousImageUrl: socialAccountHistory.previousImageUrl,
+        previousImageUrlHq: socialAccountHistory.previousImageUrlHq,
+        imageChange: socialAccountHistory.imageChange,
       })
       .from(socialAccountHistory)
       .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountHistory.socialAccountId))
@@ -4010,12 +4162,19 @@ export class DatabaseStorage implements IStorage {
       return { total: visible.length, items: visible.slice(listOffset, listOffset + listLimit) };
     };
 
+    const posts = async (key: "postsAdded" | "postsDeleted") => {
+      const visible = await this.hydratePostRefs(ids[key] ?? []);
+      return { total: visible.length, items: visible.slice(listOffset, listOffset + listLimit) };
+    };
+
     return {
       ...entry,
       followersAddedList: await list("followersAdded"),
       followersLostList: await list("followersLost"),
       followingAddedList: await list("followingAdded"),
       followingLostList: await list("followingLost"),
+      postsAddedList: await posts("postsAdded"),
+      postsDeletedList: await posts("postsDeleted"),
     };
   }
 
@@ -4579,7 +4738,7 @@ export class DatabaseStorage implements IStorage {
 
   // Social account post operations
   async getPostsBySocialAccountId(socialAccountId: string, includeDeleted: boolean = false): Promise<SocialAccountPost[]> {
-    const conditions = [eq(socialAccountPosts.socialAccountId, socialAccountId)];
+    const conditions = [postedBy(socialAccountId)];
     if (!includeDeleted) {
       conditions.push(eq(socialAccountPosts.isDeleted, false));
     }
@@ -4587,7 +4746,7 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(socialAccountPosts)
       .where(and(...conditions))
-      .orderBy(desc(socialAccountPosts.createdAt));
+      .orderBy(desc(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt})`));
   }
 
   async getAllPosts(): Promise<SocialAccountPost[]> {
@@ -4625,6 +4784,44 @@ export class DatabaseStorage implements IStorage {
 
   async deletePost(id: string): Promise<void> {
     await db.delete(socialAccountPosts).where(eq(socialAccountPosts.id, id));
+  }
+
+  async getCommentsByPostId(postId: string): Promise<SocialPostCommentWithAccount[]> {
+    const comments = await db
+      .select()
+      .from(socialPostComments)
+      .where(eq(socialPostComments.postId, postId))
+      .orderBy(asc(socialPostComments.postedAt));
+
+    if (comments.length === 0) return [];
+
+    const usernames = Array.from(new Set(comments.map((c) => c.username.toLowerCase())));
+    const accounts = await db
+      .select({ id: socialAccounts.id, username: socialAccounts.username, imageUrl: socialAccounts.imageUrl })
+      .from(socialAccounts)
+      .where(
+        and(
+          inArray(sql`LOWER(${socialAccounts.username})`, usernames),
+          eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)
+        )
+      );
+
+    const accountMap = new Map<string, { id: string; imageUrl: string | null }>();
+    for (const acc of accounts) {
+      const lower = acc.username.toLowerCase();
+      if (!accountMap.has(lower)) {
+        accountMap.set(lower, { id: acc.id, imageUrl: acc.imageUrl });
+      }
+    }
+
+    return comments.map((c) => {
+      const acc = accountMap.get(c.username.toLowerCase());
+      return {
+        ...c,
+        accountId: acc?.id ?? null,
+        accountImageUrl: acc?.imageUrl ?? null,
+      };
+    });
   }
 
   // Photo operations
@@ -4697,13 +4894,53 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getPhotoParent(subImageId: string): Promise<Photo | undefined> {
-    // Find a photo whose faceUuids JSONB array contains an entry with this subImagePhotoId
+    const subImage = await this.getPhotoById(subImageId);
+    if (subImage) {
+      // 1. Check ogMetadata.derivedFromPhotoId
+      const derivedFromId = (subImage.ogMetadata as any)?.derivedFromPhotoId;
+      if (derivedFromId) {
+        const parent = await this.getPhotoById(derivedFromId);
+        if (parent) return parent;
+      }
+
+      // 2. If it's a profile image (profile_image:<socialAccountId>), find parent HQ photo
+      if (subImage.prmLocation?.startsWith("profile_image:")) {
+        const saId = subImage.prmLocation.replace("profile_image:", "").trim();
+        const [hqPhoto] = await db
+          .select()
+          .from(photos)
+          .where(
+            and(
+              eq(photos.prmLocation, subImage.prmLocation),
+              eq(photos.isSubImage, false),
+              ne(photos.id, subImage.id)
+            )
+          )
+          .orderBy(desc(photos.widthPx))
+          .limit(1);
+        if (hqPhoto) return hqPhoto;
+
+        const sa = await this.getSocialAccountById(saId);
+        if (sa?.currentProfile?.imageUrlHq) {
+          const parentByLoc = await this.getPhotoByLocation(sa.currentProfile.imageUrlHq);
+          if (parentByLoc) return parentByLoc;
+        }
+
+        // Prefer 1080 version (with the 150 as a backup)
+        // If no HQ photo exists, return the subImage (150 version) itself as the backup
+        return subImage;
+      }
+    }
+
+    // 3. Find a photo whose faceUuids JSONB array contains an entry with this subImagePhotoId
     const [photo] = await db
       .select()
       .from(photos)
       .where(sql`${photos.faceUuids} @> ${JSON.stringify([{ subImagePhotoId: subImageId }])}::jsonb`)
       .limit(1);
-    return photo || undefined;
+    if (photo) return photo;
+
+    return subImage || undefined;
   }
 
   // Image task operations
@@ -5001,7 +5238,7 @@ export class DatabaseStorage implements IStorage {
       db.select({ imageUrl: notes.imageUrl, imageUuid: notes.imageUuid }).from(notes),
       db.select({ imageUrl: interactions.imageUrl, imageUuid: interactions.imageUuid }).from(interactions),
       db.select({ imageUrl: groups.imageUrl }).from(groups),
-      db.select({ imageUrl: socialAccounts.imageUrl, externalImageUrl: socialAccounts.externalImageUrl }).from(socialAccounts),
+      db.select({ imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq, externalImageUrl: socialAccounts.externalImageUrl }).from(socialAccounts),
       db.select({ content: socialAccountPosts.content }).from(socialAccountPosts),
     ]);
 
@@ -5017,6 +5254,7 @@ export class DatabaseStorage implements IStorage {
     for (const r of groupRows) if (r.imageUrl) activeUrls.add(r.imageUrl);
     for (const r of profileRows) {
       if (r.imageUrl) activeUrls.add(r.imageUrl);
+      if (r.imageUrlHq) activeUrls.add(r.imageUrlHq);
       if (r.externalImageUrl) activeUrls.add(r.externalImageUrl);
     }
     for (const r of postRows) {
@@ -5043,9 +5281,8 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Pass 2: Mark sub-images (face crops) active if their parent is active.
-    // A sub-image has isSubImage = true. In the parent photo's faceUuids jsonb array,
-    // we find entries like { subImagePhotoId: string }
+    // Pass 2: Mark sub-images (face crops) active if their parent is active,
+    // and mark parent photos active if their sub-images are active.
     for (const photo of allPhotos) {
       if (photo.faceUuids && activePhotoIds.has(photo.id)) {
         const faceArr = photo.faceUuids as Array<{ subImagePhotoId?: string }>;
@@ -5055,6 +5292,12 @@ export class DatabaseStorage implements IStorage {
               activePhotoIds.add(item.subImagePhotoId);
             }
           }
+        }
+      }
+      if (activePhotoIds.has(photo.id)) {
+        const derivedFromId = (photo.ogMetadata as any)?.derivedFromPhotoId;
+        if (derivedFromId) {
+          activePhotoIds.add(derivedFromId);
         }
       }
     }
@@ -5071,6 +5314,9 @@ export class DatabaseStorage implements IStorage {
       try {
         if (isLocalImageUrl(orphan.location)) {
           await deleteImageLocally(orphan.location);
+          filesDeleted++;
+        } else if (isPrmS3ImageUrl(orphan.location)) {
+          await deleteImageFromPrmS3(orphan.location);
           filesDeleted++;
         } else if (orphan.location.includes(process.env.S3_BUCKET || '')) {
           await deleteImageFromS3(orphan.location);
@@ -5125,6 +5371,9 @@ export class DatabaseStorage implements IStorage {
       try {
         if (isLocalImageUrl(photo.location)) {
           await deleteImageLocally(photo.location);
+          filesDeleted++;
+        } else if (isPrmS3ImageUrl(photo.location)) {
+          await deleteImageFromPrmS3(photo.location);
           filesDeleted++;
         } else if (photo.location.includes(process.env.S3_BUCKET || "")) {
           await deleteImageFromS3(photo.location);

@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, Share2, ChevronRight, ImageIcon, Camera, Archive, Chrome, MessageSquare } from "lucide-react";
+import { Users, ChevronRight, ImageIcon, Archive, Chrome, MessageSquare } from "lucide-react";
 
 const importExportSections = [
   {
@@ -16,12 +16,6 @@ const importExportSections = [
     url: "/settings/import-export/contacts",
   },
   {
-    title: "Social Media",
-    description: "Import follower and following data from social media platforms like Instagram. Connect imported accounts to your existing social profiles.",
-    icon: Share2,
-    url: "/settings/import-export/social-media",
-  },
-  {
     title: "Messages",
     description: "Import SMS, MMS, and RCS conversations from an SMS Backup & Restore XML export. Threads are matched to people by phone number.",
     icon: MessageSquare,
@@ -34,18 +28,6 @@ const importExportSections = [
     url: "/settings/import-export/extension-imports",
   },
   {
-    title: "Instagram XML Transfer",
-    description: "Export and import Instagram accounts via XML files for internal data transfer between CRM instances.",
-    icon: Camera,
-    url: "/settings/import-export/instagram-xml",
-  },
-  {
-    title: "Instagram Stories",
-    description: "Collect the stories of everyone your Instagram accounts follow on a schedule, log in to Instagram through a live browser window, and review what each run found.",
-    icon: Camera,
-    url: "/settings/import-export/stories",
-  },
-  {
     title: "Image Pass In",
     description: "Automatically fill in missing profile images by pulling them from linked social accounts. People without a profile picture will inherit an image from their first social account that has one.",
     icon: ImageIcon,
@@ -55,15 +37,15 @@ const importExportSections = [
 
 export default function ImportExportHome() {
   return (
-    <div className="container max-w-full md:max-w-2xl py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
-      <div className="space-y-2 mb-6">
+    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+      <div className="space-y-2 mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-import-export-title">Import & Export</h1>
         <p className="text-muted-foreground">
           Manage your data by importing contacts and social media connections, or export your entire application for backup.
         </p>
       </div>
 
-      <div className="flex flex-col gap-4">
+      <div className="settings-cards-grid">
         {importExportSections.map((section) => (
           <Link key={section.title} href={section.url} className="block">
             <Card className="hover-elevate cursor-pointer" data-testid={`card-${section.title.toLowerCase().replace(/\s+/g, '-')}`}>

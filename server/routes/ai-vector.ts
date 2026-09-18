@@ -32,6 +32,7 @@ import {
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
+import { uploadImageToPrmS3, deleteImageFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer } from "../prm-s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
@@ -96,11 +97,32 @@ export function registerRoutes(app: Express) {
     // ── PRM-Face integration ──────────────────────────────────────────────────
   
     async function getPrmFaceSetting(key: string): Promise<string | null> {
+      if (key === "prm_face_api_url" || key === "prm_compute_api_url") {
+        const val = await storage.getAppSetting("prm_compute_api_url");
+        if (val) return val;
+        return storage.getAppSetting("prm_face_api_url");
+      }
+      if (key === "prm_face_api_key" || key === "prm_compute_api_key") {
+        const val = await storage.getAppSetting("prm_compute_api_key");
+        if (val) return val;
+        return storage.getAppSetting("prm_face_api_key");
+      }
+      if (key === "prm_face_key_id" || key === "prm_compute_key_id") {
+        const val = await storage.getAppSetting("prm_compute_key_id");
+        if (val) return val;
+        return storage.getAppSetting("prm_face_key_id");
+      }
       return storage.getAppSetting(key);
     }
   
     async function setPrmFaceSetting(key: string, value: string): Promise<void> {
       await storage.setAppSetting(key, value);
+      if (key === "prm_face_api_url") await storage.setAppSetting("prm_compute_api_url", value);
+      if (key === "prm_compute_api_url") await storage.setAppSetting("prm_face_api_url", value);
+      if (key === "prm_face_api_key") await storage.setAppSetting("prm_compute_api_key", value);
+      if (key === "prm_compute_api_key") await storage.setAppSetting("prm_face_api_key", value);
+      if (key === "prm_face_key_id") await storage.setAppSetting("prm_compute_key_id", value);
+      if (key === "prm_compute_key_id") await storage.setAppSetting("prm_face_key_id", value);
     }
   
     /** Strip any trailing slashes so URL + "/path" never produces a double-slash. */
@@ -108,22 +130,22 @@ export function registerRoutes(app: Express) {
       return url.replace(/\/+$/, "");
     }
   
-    app.get("/api/prm-face/settings", async (req, res) => {
+    app.get(["/api/prm-face/settings", "/api/prm-compute/settings"], async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const apiUrl = await getPrmFaceSetting("prm_face_api_url") ?? "";
-        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+        const apiUrl = await getPrmFaceSetting("prm_compute_api_url") ?? "";
+        const apiKey = await getPrmFaceSetting("prm_compute_api_key");
         res.json({ apiUrl, hasApiKey: !!apiKey });
       } catch (error) {
-        console.error("Error fetching PRM-Face settings:", error);
+        console.error("Error fetching PRM-Compute settings:", error);
         res.status(500).json({ error: "Failed to fetch settings" });
       }
     });
   
-    app.get("/api/prm-face/reveal-key", async (req, res) => {
+    app.get(["/api/prm-face/reveal-key", "/api/prm-compute/reveal-key"], async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const apiKey = await getPrmFaceSetting("prm_face_api_key");
+        const apiKey = await getPrmFaceSetting("prm_compute_api_key");
         if (!apiKey) return res.status(404).json({ error: "No API key configured." });
         res.json({ apiKey });
       } catch (error) {
@@ -131,27 +153,27 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/prm-face/settings", async (req, res) => {
+    app.post(["/api/prm-face/settings", "/api/prm-compute/settings"], async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const { apiUrl } = req.body;
       if (typeof apiUrl !== "string" || !apiUrl.trim()) {
         return res.status(400).json({ error: "apiUrl is required" });
       }
       try {
-        await setPrmFaceSetting("prm_face_api_url", apiUrl.trim());
+        await setPrmFaceSetting("prm_compute_api_url", apiUrl.trim());
         res.json({ success: true });
       } catch (error) {
-        console.error("Error saving PRM-Face API URL:", error);
+        console.error("Error saving PRM-Compute API URL:", error);
         res.status(500).json({ error: "Failed to save API URL" });
       }
     });
   
-    app.post("/api/prm-face/generate-key", async (req, res) => {
+    app.post(["/api/prm-face/generate-key", "/api/prm-compute/generate-key"], async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const { setupCode, label } = req.body;
       if (!setupCode) return res.status(400).json({ error: "setupCode is required" });
   
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      const apiUrl = await getPrmFaceSetting("prm_compute_api_url");
       if (!apiUrl) return res.status(400).json({ error: "API URL is not configured" });
   
       try {
@@ -167,17 +189,17 @@ export function registerRoutes(app: Express) {
   
         if (!response.ok) {
           const errBody = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${errBody}` });
+          return res.status(response.status).json({ error: `PRM-Compute error: ${errBody}` });
         }
   
         const data = await response.json() as { api_key: string; key_id: string; message?: string };
-        await setPrmFaceSetting("prm_face_api_key", data.api_key);
-        await setPrmFaceSetting("prm_face_key_id", data.key_id);
+        await setPrmFaceSetting("prm_compute_api_key", data.api_key);
+        await setPrmFaceSetting("prm_compute_key_id", data.key_id);
   
         res.json({ success: true, message: "API key generated and stored successfully." });
       } catch (error: any) {
-        console.error("Error generating PRM-Face API key:", error);
-        res.status(500).json({ error: `Failed to contact PRM-Face server: ${error.message}` });
+        console.error("Error generating PRM-Compute API key:", error);
+        res.status(500).json({ error: `Failed to contact PRM-Compute server: ${error.message}` });
       }
     });
 
@@ -284,17 +306,8 @@ export function registerRoutes(app: Express) {
     });
 
     async function getImageBuffer(location: string): Promise<Buffer> {
-      if (isLocalImageUrl(location)) {
-        const localPath = getLocalImagePath(location);
-        if (!localPath) throw new Error("Invalid local image path");
-        return fs.promises.readFile(localPath);
-      } else {
-        const response = await fetch(location);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch image from ${location}: status ${response.status}`);
-        }
-        return Buffer.from(await response.arrayBuffer());
-      }
+      const { buffer } = await fetchImageBuffer(location);
+      return buffer;
     }
 
     async function describeImageWithOllama(photoId: string): Promise<string> {
@@ -346,7 +359,7 @@ export function registerRoutes(app: Express) {
         method: "POST",
         headers,
         body: JSON.stringify({ model, prompt, images: [imageBase64], stream: false }),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(120000),
       });
 
       if (!response.ok) {
@@ -383,6 +396,12 @@ export function registerRoutes(app: Express) {
         let imageUrl: string;
         if (storageMode === "local") {
           imageUrl = await uploadImageLocally(
+            req.file.buffer,
+            req.file.originalname,
+            req.file.mimetype
+          );
+        } else if (storageMode === "prm-s3") {
+          imageUrl = await uploadImageToPrmS3(
             req.file.buffer,
             req.file.originalname,
             req.file.mimetype
@@ -676,30 +695,12 @@ export function registerRoutes(app: Express) {
         // 1. Fetch the image file into a buffer
         let buffer: Buffer;
         let mimeType = "image/jpeg";
-        
-        if (isLocalImageUrl(photo.location)) {
-          const fileName = photo.location.split("/api/images/").pop();
-          if (!fileName) {
-            return res.status(400).json({ error: "Invalid local image path" });
-          }
-          const filePath = getLocalImagePath(fileName);
-          if (!filePath) {
-            return res.status(404).json({ error: "Local photo file not found" });
-          }
-          buffer = fs.readFileSync(filePath);
-          // Simple extension-based mime type detection
-          const ext = path.extname(filePath).toLowerCase();
-          if (ext === ".png") mimeType = "image/png";
-          else if (ext === ".webp") mimeType = "image/webp";
-        } else {
-          // S3 or external URL
-          const imgRes = await fetch(photo.location);
-          if (!imgRes.ok) {
-            return res.status(500).json({ error: `Failed to download image from S3: ${imgRes.statusText}` });
-          }
-          const arrayBuffer = await imgRes.arrayBuffer();
-          buffer = Buffer.from(arrayBuffer);
-          mimeType = imgRes.headers.get("content-type") || "image/jpeg";
+        try {
+          const fetched = await fetchImageBuffer(photo.location);
+          buffer = fetched.buffer;
+          mimeType = fetched.mimeType;
+        } catch (fetchErr: any) {
+          return res.status(500).json({ error: `Failed to retrieve photo buffer: ${fetchErr.message}` });
         }
 
         // 2. Send image to PRM-Face microservice img/add
@@ -785,10 +786,10 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/prm-face/test", async (req, res) => {
+    app.post(["/api/prm-face/test", "/api/prm-compute/test"], async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
   
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      const apiUrl = await getPrmFaceSetting("prm_compute_api_url");
       if (!apiUrl) return res.json({ ok: false, message: "API URL is not configured." });
   
       try {
@@ -796,15 +797,15 @@ export function registerRoutes(app: Express) {
           signal: AbortSignal.timeout(8000),
         });
         if (!response.ok) {
-          return res.json({ ok: false, message: `PRM-Face responded with status ${response.status}.` });
+          return res.json({ ok: false, message: `PRM-Compute responded with status ${response.status}.` });
         }
         const data = await response.json() as { setup_completed: boolean };
         const msg = data.setup_completed
-          ? "PRM-Face is online and fully set up."
-          : "PRM-Face is online but setup has not been completed yet — generate an API key first.";
+          ? "PRM-Compute is online and fully set up."
+          : "PRM-Compute is online but setup has not been completed yet — generate an API key first.";
         res.json({ ok: true, message: msg });
       } catch (error: any) {
-        res.json({ ok: false, message: `Could not reach PRM-Face server: ${error.message}` });
+        res.json({ ok: false, message: `Could not reach PRM-Compute server: ${error.message}` });
       }
     });
   
@@ -1505,13 +1506,20 @@ export function registerRoutes(app: Express) {
         const model = (req.body.model as string | undefined) || savedModel || "llava";
         const savedPrompt = (await getOllamaSetting("ollama_prompt")) ?? "";
         const prompt = (req.body.prompt as string | undefined) || savedPrompt || "Return 2 sentences explaining what is happening in this image.";
+        const system = (req.body.system as string | undefined) || undefined;
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 60000);
+        const timeout = setTimeout(() => controller.abort(), 120000);
         try {
           const resp = await fetch(`${base}/api/generate`, {
             method: "POST",
             headers,
-            body: JSON.stringify({ model, prompt, images: [imageBase64], stream: false }),
+            body: JSON.stringify({
+              model,
+              prompt,
+              ...(system ? { system } : {}),
+              images: [imageBase64],
+              stream: false,
+            }),
             signal: controller.signal,
           });
           clearTimeout(timeout);
@@ -1525,7 +1533,7 @@ export function registerRoutes(app: Express) {
         } catch (err: any) {
           clearTimeout(timeout);
           if (err.name === "AbortError") {
-            res.status(504).json({ error: "Request timed out after 60 seconds." });
+            res.status(504).json({ error: "Request timed out after 120 seconds." });
           } else {
             res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
           }
@@ -3757,18 +3765,6 @@ Respond with ONLY a JSON array, no other text.`;
       }
     });
 
-    // Delete all AI chats
-    app.delete("/api/ai-chats", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        await db.delete(aiChats);
-        res.json({ success: true });
-      } catch (error: any) {
-        console.error("Error deleting all chats:", error);
-        res.status(500).json({ error: `Failed to delete chats: ${error.message}` });
-      }
-    });
-
     // ========================
     // New Face Recognition Proxy Endpoints
     // ========================
@@ -4282,4 +4278,46 @@ Respond with ONLY a JSON array, no other text.`;
         res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
       }
     });
+
+    // OCR: Extract text from image via PRM-Compute
+    const handleOcr = async (req: any, res: any) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (!req.file) return res.status(400).json({ error: "No image provided" });
+
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Compute API URL is not configured." });
+
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Compute API key is not configured." });
+
+      try {
+        const formData = new FormData();
+        const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "image/jpeg" });
+        formData.append("image", blob, req.file.originalname || "image.jpg");
+        if (req.body.min_score !== undefined && req.body.min_score !== "") {
+          formData.append("min_score", String(req.body.min_score));
+        }
+
+        const response = await fetch(`${prmBase(apiUrl)}/api/ocr`, {
+          method: "POST",
+          headers: { "X-API-Key": apiKey },
+          body: formData,
+          signal: AbortSignal.timeout(45000),
+        });
+
+        if (!response.ok) {
+          const errBody = await response.text();
+          return res.status(response.status).json({ error: `PRM-Compute OCR error: ${errBody}` });
+        }
+
+        const data = await response.json();
+        res.json(data);
+      } catch (error: any) {
+        console.error("Error calling PRM-Compute OCR:", error);
+        res.status(500).json({ error: `Failed to contact PRM-Compute server: ${error.message}` });
+      }
+    };
+
+    app.post("/api/prm-face/ocr", upload.single("image"), handleOcr);
+    app.post("/api/ocr", upload.single("image"), handleOcr);
 }

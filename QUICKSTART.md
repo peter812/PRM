@@ -128,6 +128,42 @@ Copy the connection string to your `.env`.
 
 ---
 
+## Vector Storage Setup (Qdrant & Ollama)
+
+Qdrant powers PRM's semantic Super Search, daily notes vectorization, and AI App Knowledge Base.
+
+### 1. Start Qdrant with Docker
+
+```bash
+docker run -d \
+  --name qdrant \
+  -p 6333:6333 \
+  -p 6334:6334 \
+  -v qdrant_storage:/qdrant/storage:z \
+  --restart unless-stopped \
+  qdrant/qdrant:latest
+```
+
+### 2. Pull Embedding Model (Ollama)
+
+Make sure Ollama is installed and running, then pull the recommended embedding model:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+### 3. Connect in PRM
+
+1. Open PRM and go to **Settings → Vector Storage** (`/settings/vector`).
+2. Toggle **Enable Vector Storage** to **ON**.
+3. Set Server URL to `http://localhost:6333` and click **Test connection**.
+4. Select `nomic-embed-text` under **Embedding Model** and click **Save model**.
+5. Enable **Universal Vectorization** and click **Vectorize Everything Now** to index all entities for Super Search.
+
+*For detailed snippets and API examples, see the [Qdrant User Guide](Guides/qdrant-user-guide.md).*
+
+---
+
 ## IDE Setup
 
 ### VS Code (Recommended)

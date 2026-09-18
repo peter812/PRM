@@ -30,14 +30,17 @@ import {
   FAMILY_RELATIONSHIP_CATEGORIES,
   type FamilyRelationshipType,
   type UserRole,
+  type User,
   userRoleSchema,
   canManageUser,
   canAssignRole,
 } from "@shared/schema";
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
+import { uploadImageToPrmS3, deleteImageFromPrmS3, getPrmS3ObjectStream, getPrmS3PublicUrl, PRM_S3_PRESIGN_WINDOW_SECONDS, isPrmS3ImageUrl } from "../prm-s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl, getLocalMediaPath } from "../local-storage";
 import { hashPassword, requireAuth, requireAdmin, publicUser, authenticateExtensionToken } from "../auth";
+import { runAsUser } from "../access";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { syncEntityInBackground } from "../vector-universal";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -97,6 +100,7 @@ function isPublicApiPath(path: string): boolean {
   if (path.startsWith("/v1/scrape-results")) return true;
   if (path.startsWith("/v1/account-status")) return true;
   if (path.startsWith("/v1/stories")) return true;
+  if (path.startsWith("/v1/tracking")) return true; // run-token auth in routes/tracking.ts
   return false;
 }
 
@@ -134,22 +138,81 @@ export function registerRoutes(app: Express) {
 
       res.sendFile(filePath);
     });
-  
+
+    // Serve PRM-S3 images (authenticated).
+    // Proxy mode streams the object through this server over the internal
+    // endpoint. In direct mode API responses already carry presigned public
+    // URLs, so this route is only a safety net for stale clients: redirect
+    // to the presigned URL rather than proxying the bytes.
+    app.get("/api/prm-s3/images/:filename", async (req, res) => {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const safeName = path.basename(req.params.filename);
+        const key = `images/${safeName}`;
+        const publicUrl = await getPrmS3PublicUrl(key);
+        if (publicUrl) {
+          // A presigned URL is valid for at least one signing window.
+          res.setHeader("Cache-Control", `private, max-age=${PRM_S3_PRESIGN_WINDOW_SECONDS - 600}`);
+          return res.redirect(302, publicUrl);
+        }
+        const { stream, contentType, contentLength, etag } = await getPrmS3ObjectStream(key);
+        if (etag) res.setHeader("ETag", etag);
+        if (contentLength) res.setHeader("Content-Length", contentLength);
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        stream.pipe(res);
+      } catch (err: any) {
+        res.status(404).json({ error: "Image not found on PRM-S3" });
+      }
+    });
+
+    // Serve PRM-S3 media (authenticated); same proxy/direct split as images.
+    app.get("/api/prm-s3/media/:filename", async (req, res) => {
+      if (!req.isAuthenticated()) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const safeName = path.basename(req.params.filename);
+        const key = `media/${safeName}`;
+        const publicUrl = await getPrmS3PublicUrl(key);
+        if (publicUrl) {
+          res.setHeader("Cache-Control", `private, max-age=${PRM_S3_PRESIGN_WINDOW_SECONDS - 600}`);
+          return res.redirect(302, publicUrl);
+        }
+        const { stream, contentType, contentLength, etag } = await getPrmS3ObjectStream(key);
+        if (etag) res.setHeader("ETag", etag);
+        if (contentLength) res.setHeader("Content-Length", contentLength);
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        stream.pipe(res);
+      } catch (err: any) {
+        res.status(404).json({ error: "Media not found on PRM-S3" });
+      }
+    });
+
     // Image upload endpoint
     app.post("/api/upload-image", upload.single("image"), async (req, res) => {
       try {
         if (!req.file) {
           return res.status(400).json({ error: "No image file provided" });
         }
-  
+
         let storageMode = "s3";
         if (req.isAuthenticated() && req.user) {
           storageMode = await storage.getImageStorageMode(req.user.id);
         }
-  
+
         let imageUrl: string;
         if (storageMode === "local") {
           imageUrl = await uploadImageLocally(
+            req.file.buffer,
+            req.file.originalname,
+            req.file.mimetype
+          );
+        } else if (storageMode === "prm-s3") {
+          imageUrl = await uploadImageToPrmS3(
             req.file.buffer,
             req.file.originalname,
             req.file.mimetype
@@ -247,6 +310,8 @@ export function registerRoutes(app: Express) {
   
         if (isLocalImageUrl(imageUrl)) {
           await deleteImageLocally(imageUrl);
+        } else if (isPrmS3ImageUrl(imageUrl)) {
+          await deleteImageFromPrmS3(imageUrl);
         } else {
           await deleteImageFromS3(imageUrl);
         }
@@ -957,7 +1022,6 @@ export function registerRoutes(app: Express) {
           xml += `      <description>${escapeXml(post.description || "")}</description>\n`;
           xml += `      <like_count>${escapeXml(post.likeCount)}</like_count>\n`;
           xml += `      <comment_count>${escapeXml(post.commentCount)}</comment_count>\n`;
-          xml += `      <comments>${escapeXml(post.comments || "")}</comments>\n`;
           xml += `      <mentioned_accounts>${escapeXml(post.mentionedAccounts || "")}</mentioned_accounts>\n`;
           xml += `      <face_ids>${escapeXml(post.faceIds || "")}</face_ids>\n`;
           xml += `      <is_deleted>${escapeXml(post.isDeleted)}</is_deleted>\n`;
@@ -1787,7 +1851,6 @@ export function registerRoutes(app: Express) {
             const description = unescapeXml(parseXmlTag("description", block));
             const likeCount = parseInt(parseXmlTag("like_count", block)) || 0;
             const commentCount = parseInt(parseXmlTag("comment_count", block)) || 0;
-            const comments = unescapeXml(parseXmlTag("comments", block));
             const mentionedAccounts = unescapeXml(parseXmlTag("mentioned_accounts", block));
             const faceIds = unescapeXml(parseXmlTag("face_ids", block));
             const isDeleted = parseXmlTag("is_deleted", block) === "true";
@@ -1806,7 +1869,6 @@ export function registerRoutes(app: Express) {
               description: description || null,
               likeCount,
               commentCount,
-              comments: comments || null,
               mentionedAccounts: mentionedAccounts || null,
               faceIds: faceIds || null,
               isDeleted,
@@ -2139,6 +2201,7 @@ export function registerRoutes(app: Express) {
     });
   
     app.post("/api/setup/initialize", async (req, res) => {
+      let createdUser: User | null = null;
       try {
         const userCount = await storage.getUserCount();
         
@@ -2157,21 +2220,25 @@ export function registerRoutes(app: Express) {
         });
   
         const user = await storage.createUser(validatedData);
+        createdUser = user;
         
         // Create a person entry for the new user
         const [firstName, ...lastNameParts] = (user.name || user.username).split(' ');
         const lastName = lastNameParts.join(' ') || '';
         
-        await storage.createPerson({
-          userId: user.id,
-          firstName: firstName,
-          lastName: lastName,
-          email: '',
-          phone: null,
-          company: null,
-          title: null,
-          tags: [],
-          imageUrl: null,
+        await runAsUser(user.id, user.role, async () => {
+          await storage.createPerson({
+            userId: user.id,
+            firstName: firstName,
+            lastName: lastName,
+            email: '',
+            phone: null,
+            company: null,
+            title: null,
+            tags: [],
+            imageUrl: null,
+            createdByUserId: user.id,
+          });
         });
         
         // Disable user creation now that an account has been created
@@ -2186,6 +2253,13 @@ export function registerRoutes(app: Express) {
           res.status(201).json(publicUser(user, req.session));
         });
       } catch (error) {
+        if (createdUser) {
+          try {
+            await storage.deleteUser(createdUser.id);
+          } catch (cleanupError) {
+            console.error("Error cleaning up user after failed setup:", cleanupError);
+          }
+        }
         console.error("Error initializing setup:", error);
         res.status(400).json({ error: "Failed to initialize setup" });
       }
@@ -3148,6 +3222,12 @@ export function registerRoutes(app: Express) {
           "stories_skip_day_probability",
           "stories_image_storage",
           "stories_next_run_at",
+          "tracking_level_defaults",
+          "tracking_skip_recent",
+          "posts_import_comments",
+          "posts_comment_limit",
+          "posts_scan_limit",
+          "posts_download_videos",
         ];
         const settings: Record<string, string | null> = {};
         for (const key of keys) {

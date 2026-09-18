@@ -40,6 +40,8 @@ function getTaskLabel(type: string): string {
       return "Transfer Images to Local";
     case "transfer_images_to_s3":
       return "Transfer Images to S3";
+    case "backfill_profile_image_tiers":
+      return "Backfill Profile Image Tiers";
     case "import_social":
       return "Social Extraction Import";
     case "import_instagram":

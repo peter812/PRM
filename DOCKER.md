@@ -114,6 +114,49 @@ npm run db:push --force
 3. **Access the application:**
    Open your browser to `http://localhost:5000`
 
+---
+
+## Vector Storage Setup (Qdrant)
+
+To enable semantic Super Search and daily note vectorization, run a Qdrant container:
+
+### Option A: Standalone Docker Container
+
+```bash
+docker run -d \
+  --name qdrant \
+  -p 6333:6333 \
+  -p 6334:6334 \
+  -v qdrant_data:/qdrant/storage:z \
+  --restart unless-stopped \
+  qdrant/qdrant:latest
+```
+
+### Option B: Docker Compose Service
+
+Add Qdrant to your `docker-compose.yml`:
+
+```yaml
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      people_net:
+        ipv4_address: 10.5.0.14
+```
+
+And add `qdrant_data:` to your `volumes:` section. Inside PRM **Settings → Vector Storage**, set Server URL to `http://qdrant:6333`.
+
+For detailed snippets and API examples, see the [Qdrant User Guide](Guides/qdrant-user-guide.md).
+
+---
+
 ## Management Commands
 
 ### Docker Compose

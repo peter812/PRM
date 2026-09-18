@@ -53,7 +53,16 @@ async function comparePasswords(supplied: string, stored: string): Promise<boole
 }
 
 export function setupAuth(app: Express) {
-  const sessionSecret = process.env.SESSION_SECRET || "prm-default-session-secret-change-in-prod";
+  const isProduction = process.env.NODE_ENV === "production";
+  const defaultDevSecret = "prm-default-session-secret-change-in-prod";
+
+  if (isProduction) {
+    if (!process.env.SESSION_SECRET || !process.env.SESSION_SECRET.trim() || process.env.SESSION_SECRET === defaultDevSecret) {
+      throw new Error("SESSION_SECRET must be set to a secure, unique value in production.");
+    }
+  }
+
+  const sessionSecret = process.env.SESSION_SECRET || defaultDevSecret;
   const sessionSettings: session.SessionOptions = {
     secret: sessionSecret,
     resave: false,

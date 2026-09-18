@@ -1,13 +1,18 @@
 import { storage } from "./storage";
 import { db } from "./db";
-import { socialAccounts } from "@shared/schema";
+import { photos, socialAccounts, users } from "@shared/schema";
+import type { Photo, ProfileImageChange, StorageMode } from "@shared/schema";
 import { uploadImageToS3 } from "./s3";
-import { uploadImageLocally } from "./local-storage";
+import { uploadImageToPrmS3, fetchImageBuffer, isStoredImageUrl } from "./prm-s3";
+import { uploadImageLocally, isLocalImageUrl, getLocalImagePath } from "./local-storage";
 import { syncEntityInBackground } from "./vector-universal";
-import { eq } from "drizzle-orm";
+import { currentAccess } from "./access";
+import { asc, eq } from "drizzle-orm";
 import crypto from "crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
+import fs from "node:fs";
+import sharp from "sharp";
 
 /**
  * Downloading, hashing and storing an Instagram profile picture.
@@ -17,10 +22,62 @@ import net from "node:net";
  * storage-mode-aware upload. Two other copies existed and neither did all three.
  * Both the image-task worker and the inline path in processImportSocial now call
  * these, so the rules live in exactly one place.
+ *
+ * Instagram serves the same picture at two sizes: a 150px thumbnail on every
+ * follower/following scrape and a 1080px original on a profile-info fetch. Both
+ * are kept (social_accounts.image_url / image_url_hq), and a perceptual hash
+ * tells a bigger copy of the same picture from a new picture, so the journal can
+ * say "improved" rather than "changed". See profile-image-tiers-plan.md.
  */
 
 export const INSTAGRAM_USER_AGENT =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1";
+
+export type ImageTier = "lq" | "hq";
+
+/** 150 and 320 are Instagram's thumbnail sizes; 640 and 1080 are the "full" picture. */
+const HQ_MIN_WIDTH = 320;
+
+export const tierOf = (dims: { width: number } | null): ImageTier =>
+  dims && dims.width >= HQ_MIN_WIDTH ? "hq" : "lq";
+
+/** The size every list view renders; an HQ copy is cut down to this when no LQ arrived. */
+const THUMBNAIL_PX = 150;
+
+/**
+ * Difference hash: 9×8 greyscale, each bit is "left pixel brighter than right".
+ * Size-invariant by construction, which is exactly the 150-vs-1080 question.
+ */
+export async function perceptualHash(buffer: Buffer): Promise<string> {
+  const { data } = await sharp(buffer)
+    .greyscale()
+    .resize(9, 8, { fit: "fill" })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  let bits = 0n;
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      bits = (bits << 1n) | (data[row * 9 + col] > data[row * 9 + col + 1] ? 1n : 0n);
+    }
+  }
+  return bits.toString(16).padStart(16, "0");
+}
+
+function hammingDistance(a: string, b: string): number {
+  let x = BigInt(`0x${a}`) ^ BigInt(`0x${b}`);
+  let n = 0;
+  while (x) {
+    n += Number(x & 1n);
+    x >>= 1n;
+  }
+  return n;
+}
+
+/** Re-encodes and resizes land well under this; a different picture lands well over. */
+const SAME_PICTURE_MAX_DISTANCE = 10;
+
+export const samePicture = (a: string, b: string): boolean =>
+  hammingDistance(a, b) <= SAME_PICTURE_MAX_DISTANCE;
 
 export function getImageDimensions(buffer: Buffer): { width: number; height: number } | null {
   try {
@@ -68,6 +125,8 @@ export interface FetchedProfileImage {
   ext: string;
   fileHash: string;
   dims: { width: number; height: number } | null;
+  tier: ImageTier;
+  perceptualHash: string;
   /** Response headers plus the source url, recorded on the photos row. */
   ogMetadata: Record<string, unknown>;
 }
@@ -105,7 +164,7 @@ function isPrivateAddress(ip: string): boolean {
   }
   const v6 = ip.toLowerCase();
   if (v6.startsWith("::ffff:")) return isPrivateAddress(v6.slice(7));
-  return v6 === "::1" || v6.startsWith("fc") || v6.startsWith("fd") || v6.startsWith("fe80");
+  return v6 === "::1" || v6 === "::" || v6.startsWith("fc") || v6.startsWith("fd") || v6.startsWith("fe80");
 }
 
 /** Throws unless `raw` is an https url on an allowed CDN host that resolves publicly. */
@@ -116,6 +175,9 @@ async function assertFetchableImageUrl(raw: string): Promise<string> {
   }
   if (!ALLOWED_IMAGE_HOSTS.some((re) => re.test(url.hostname))) {
     throw new Error(`Refusing to fetch image from disallowed host ${url.hostname}`);
+  }
+  if (net.isIP(url.hostname) && isPrivateAddress(url.hostname)) {
+    throw new Error(`Refusing to fetch image from private/internal IP ${url.hostname}`);
   }
   for (const { address } of await dns.lookup(url.hostname, { all: true })) {
     if (isPrivateAddress(address)) {
@@ -187,75 +249,195 @@ export async function fetchProfileImage(imageUrl: string): Promise<FetchedProfil
   const contentType = response.headers.get("content-type") || "image/jpeg";
   const buffer = await readCapped(response);
 
+  // Lightweight on purpose — response headers and the source url only, so it can be
+  // recorded for every stored file without an extra round-trip.
+  return profileImageFromBuffer(buffer, contentType, imageUrl, {
+    contentLength: response.headers.get("content-length"),
+    lastModified: response.headers.get("last-modified"),
+    etag: response.headers.get("etag"),
+  });
+}
+
+/** Bytes that arrived some other way (prm-stories uploads them) in the shape the guards below expect. */
+export async function profileImageFromBuffer(
+  buffer: Buffer,
+  contentType: string,
+  sourceUrl?: string,
+  headers: Record<string, string | null> = {},
+): Promise<FetchedProfileImage> {
+  const dims = getImageDimensions(buffer);
   return {
     buffer,
     contentType,
     ext: contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg",
     fileHash: crypto.createHash("sha256").update(buffer).digest("hex"),
-    dims: getImageDimensions(buffer),
-    // Lightweight on purpose — response headers and the source url only, so it can be
-    // recorded for every stored file without an extra round-trip.
-    ogMetadata: {
-      sourceUrl: imageUrl,
-      contentType,
-      contentLength: response.headers.get("content-length"),
-      lastModified: response.headers.get("last-modified"),
-      etag: response.headers.get("etag"),
-      fetchedAt: new Date().toISOString(),
-    },
+    dims,
+    tier: tierOf(dims),
+    perceptualHash: await perceptualHash(buffer),
+    ogMetadata: { sourceUrl: sourceUrl ?? null, contentType, ...headers, fetchedAt: new Date().toISOString() },
   };
 }
 
+/** The two urls an account holds, in the shape both the row and `currentProfile` carry. */
+export interface ProfileImageUrls {
+  imageUrl: string | null;
+  imageUrlHq: string | null;
+}
+
 export type ProfileImageVerdict =
-  | { replace: true }
-  | { replace: false; reason: "same_hash" | "lower_resolution" };
+  | { replace: false; reason: "same_hash" | "same_picture" | "lower_resolution" }
+  | {
+      replace: true;
+      imageChange: ProfileImageChange;
+      /** Case D: a bigger copy of the picture we hold — the existing 150 is kept as-is. */
+      keepLq: boolean;
+    };
 
 /**
- * Whether a freshly fetched image should replace the account's current one.
- *
- * Instagram's profile-picture urls are signed and rotate on every scrape, so the
- * url says nothing about whether the picture changed — only the bytes do. A
- * lower-resolution fetch of the same picture is also rejected, since Instagram
- * serves several sizes and a later scrape landing on a smaller one would
- * otherwise degrade what we already hold.
+ * Instagram's CDN filename (`…/123_456_789_n.jpg`) is the same across sizes and
+ * changes with the picture; a match is a free "same picture" before any pixels.
  */
-export async function shouldReplaceProfileImage(
-  currentImageUrl: string | null | undefined,
-  fetched: FetchedProfileImage,
-): Promise<ProfileImageVerdict> {
-  if (!currentImageUrl) return { replace: true };
-
-  const existing = await storage.getPhotoByLocation(currentImageUrl);
-  if (!existing) return { replace: true };
-
-  if (existing.fileHash === fetched.fileHash) return { replace: false, reason: "same_hash" };
-  if (existing.widthPx && fetched.dims && fetched.dims.width <= existing.widthPx) {
-    return { replace: false, reason: "lower_resolution" };
+function cdnFilename(sourceUrl: unknown): string | null {
+  if (typeof sourceUrl !== "string") return null;
+  try {
+    return new URL(sourceUrl).pathname.split("/").pop() || null;
+  } catch {
+    return null;
   }
-  return { replace: true };
+}
+
+/** Bytes of a stored image, from whichever backend holds it. */
+export async function readStoredImage(location: string): Promise<Buffer | null> {
+  if (!isStoredImageUrl(location)) {
+    return null;
+  }
+  try {
+    const { buffer } = await fetchImageBuffer(location);
+    return buffer;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Uploads a fetched image to whichever backend the user has configured and
- * registers it in the photos table. Returns the stable url to store on the account.
+ * The photos row's perceptual hash, computing and persisting it for rows written
+ * before the column existed. Null when the bytes are gone.
+ */
+async function ensurePerceptualHash(photo: Photo): Promise<string | null> {
+  if (photo.perceptualHash) return photo.perceptualHash;
+  const buffer = await readStoredImage(photo.location);
+  if (!buffer) return null;
+  const hash = await perceptualHash(buffer);
+  if (hash) {
+    await db.update(photos).set({ perceptualHash: hash }).where(eq(photos.id, photo.id));
+  }
+  return hash;
+}
+
+/**
+ * Whose storage-mode setting a profile picture follows: the acting user, else
+ * the account's creator (prm-stories' tracking routes run as system), else the
+ * oldest user. Never `getAllUsers()[0]`: that is heap order, which moved after
+ * a user changed their mode and sent 650 HQ pictures to the wrong bucket.
+ */
+async function profileImageStorageMode(socialAccountId: string): Promise<StorageMode> {
+  let userId = currentAccess()?.userId ?? null;
+  if (userId === null) {
+    const [account] = await db
+      .select({ createdByUserId: socialAccounts.createdByUserId })
+      .from(socialAccounts)
+      .where(eq(socialAccounts.id, socialAccountId));
+    userId = account?.createdByUserId ?? null;
+  }
+  if (userId === null) {
+    const [user] = await db.select({ id: users.id }).from(users).orderBy(asc(users.id)).limit(1);
+    userId = user?.id ?? null;
+  }
+  return userId === null ? "s3" : storage.getImageStorageMode(userId);
+}
+
+/** Uploads to the configured backend. A failed upload fails the import; it never lands in another bucket. */
+async function uploadProfileImageBytes(buffer: Buffer, filename: string, contentType: string, socialAccountId: string): Promise<string> {
+  const mode = await profileImageStorageMode(socialAccountId);
+  if (mode === "local") return uploadImageLocally(buffer, filename, contentType);
+  if (mode === "prm-s3") return uploadImageToPrmS3(buffer, filename, contentType);
+  return uploadImageToS3(buffer, filename, contentType);
+}
+
+/**
+ * Whether a freshly fetched image should replace what the account holds, and
+ * how the journal should describe it (profile-image-tiers-plan.md §4).
+ *
+ * Instagram's profile-picture urls are signed and rotate on every scrape, so the
+ * url says nothing about whether the picture changed — only the bytes do. Same
+ * bytes, or the same picture at the same or a lower size, is a skip. The same
+ * picture at a higher size is an "improvement"; anything else is a new picture,
+ * labelled by the tiers it moved between.
+ */
+export async function classifyProfileImage(
+  current: ProfileImageUrls,
+  fetched: FetchedProfileImage,
+): Promise<ProfileImageVerdict> {
+  const best = current.imageUrlHq ?? current.imageUrl;
+  if (!best) {
+    return { replace: true, imageChange: fetched.tier === "hq" ? "added_hq" : "added_lq", keepLq: false };
+  }
+
+  const bestPhoto = await storage.getPhotoByLocation(best);
+  const lqPhoto = current.imageUrl && current.imageUrl !== best
+    ? await storage.getPhotoByLocation(current.imageUrl)
+    : null;
+  if ([bestPhoto, lqPhoto].some((p) => p?.fileHash === fetched.fileHash)) {
+    return { replace: false, reason: "same_hash" };
+  }
+
+  // Rows from before tiers may hold a 1080 in image_url; the photos row knows, the column doesn't.
+  const currentTier: ImageTier = bestPhoto?.widthPx
+    ? tierOf({ width: bestPhoto.widthPx })
+    : current.imageUrlHq ? "hq" : "lq";
+
+  let same = false;
+  if (bestPhoto) {
+    const bestName = cdnFilename((bestPhoto.ogMetadata as Record<string, unknown> | null)?.sourceUrl);
+    const fetchedName = cdnFilename(fetched.ogMetadata.sourceUrl);
+    if (bestName && fetchedName && bestName === fetchedName) {
+      same = true;
+    } else {
+      const hash = await ensurePerceptualHash(bestPhoto);
+      same = hash !== null && samePicture(hash, fetched.perceptualHash);
+    }
+  }
+
+  if (currentTier === "lq") {
+    if (fetched.tier === "lq") {
+      return same
+        ? { replace: false, reason: "same_picture" }
+        : { replace: true, imageChange: "updated_lq", keepLq: false };
+    }
+    return same
+      ? { replace: true, imageChange: "improved", keepLq: true }
+      : { replace: true, imageChange: "updated_lq_to_hq", keepLq: false };
+  }
+  if (fetched.tier === "lq") {
+    return same
+      ? { replace: false, reason: "lower_resolution" }
+      : { replace: true, imageChange: "updated_hq_to_lq", keepLq: false };
+  }
+  return same
+    ? { replace: false, reason: "same_picture" }
+    : { replace: true, imageChange: "updated_hq", keepLq: false };
+}
+
+
+/**
+ * Uploads a fetched image and registers it in the photos table. Returns the
+ * stable url to store on the account.
  */
 export async function storeProfileImage(
   fetched: FetchedProfileImage,
   socialAccountId: string,
 ): Promise<{ cdnUrl: string; photoId: string }> {
-  const filename = `instagram_profile.${fetched.ext}`;
-
-  let cdnUrl: string;
-  try {
-    const user = (await storage.getAllUsers())[0];
-    const mode = user ? await storage.getImageStorageMode(user.id) : "s3";
-    cdnUrl =
-      mode === "local"
-        ? await uploadImageLocally(fetched.buffer, filename, fetched.contentType)
-        : await uploadImageToS3(fetched.buffer, filename, fetched.contentType);
-  } catch {
-    cdnUrl = await uploadImageToS3(fetched.buffer, filename, fetched.contentType);
-  }
+  const cdnUrl = await uploadProfileImageBytes(fetched.buffer, `instagram_profile.${fetched.ext}`, fetched.contentType, socialAccountId);
 
   const photo = await storage.insertPhoto({
     location: cdnUrl,
@@ -264,6 +446,7 @@ export async function storeProfileImage(
     fileHash: fetched.fileHash,
     widthPx: fetched.dims?.width ?? null,
     heightPx: fetched.dims?.height ?? null,
+    perceptualHash: fetched.perceptualHash,
     ogMetadata: fetched.ogMetadata,
   });
 
@@ -272,11 +455,157 @@ export async function storeProfileImage(
   return { cdnUrl, photoId: photo.id };
 }
 
-/** The account's current image url, for the comparison above. */
-export async function getCurrentProfileImageUrl(socialAccountId: string): Promise<string | null> {
+/**
+ * The 150px webp every list renders, cut from an HQ copy. A sub-image of the
+ * photo it came from, so the image page still resolves it and dedupe sees its hash.
+ */
+export async function storeProfileThumbnail(
+  hqBuffer: Buffer,
+  socialAccountId: string,
+  derivedFromPhotoId: string | null,
+): Promise<string> {
+  const buffer = await sharp(hqBuffer)
+    .resize(THUMBNAIL_PX, THUMBNAIL_PX, { fit: "cover" })
+    .webp({ quality: 82 })
+    .toBuffer();
+  const cdnUrl = await uploadProfileImageBytes(buffer, "instagram_profile_150.webp", "image/webp", socialAccountId);
+
+  await storage.insertPhoto({
+    location: cdnUrl,
+    prmLocation: `profile_image:${socialAccountId}`,
+    isSubImage: true,
+    fileHash: crypto.createHash("sha256").update(buffer).digest("hex"),
+    widthPx: THUMBNAIL_PX,
+    heightPx: THUMBNAIL_PX,
+    perceptualHash: await perceptualHash(buffer),
+    ogMetadata: { derivedFromPhotoId, contentType: "image/webp", fetchedAt: new Date().toISOString() },
+  });
+
+  return cdnUrl;
+}
+
+/** What a replacement leaves on the account, plus how the journal describes it. */
+export interface ProfileImageOutcome {
+  imageUrl: string;
+  imageUrlHq: string | null;
+  imageChange: ProfileImageChange;
+  photoId: string;
+}
+
+/**
+ * Stores the fetched image — and its 150 thumbnail when no LQ copy would remain —
+ * and says what the account's two urls become. Does not touch the account row:
+ * the caller writes that together with the journal entry.
+ */
+export async function applyProfileImageVerdict(
+  socialAccountId: string,
+  current: ProfileImageUrls,
+  fetched: FetchedProfileImage,
+  verdict: Extract<ProfileImageVerdict, { replace: true }>,
+  /** When the bytes are already in storage (a manual upload), the row to reuse. */
+  stored?: { cdnUrl: string; photoId: string },
+): Promise<ProfileImageOutcome> {
+  const { cdnUrl, photoId } = stored ?? (await storeProfileImage(fetched, socialAccountId));
+  const { imageChange } = verdict;
+
+  if (fetched.tier === "lq") {
+    // A new picture only known at 150: whatever HQ we held is of the old picture.
+    return { imageUrl: cdnUrl, imageUrlHq: null, imageChange, photoId };
+  }
+  const imageUrl = verdict.keepLq && current.imageUrl
+    ? current.imageUrl
+    : await storeProfileThumbnail(fetched.buffer, socialAccountId, photoId);
+  return { imageUrl, imageUrlHq: cdnUrl, imageChange, photoId };
+}
+
+/**
+ * A picture someone uploaded by hand (already in storage via /api/upload-image),
+ * run through the same classifier as a scrape so a 1080 gets its 150 and the
+ * journal says what happened. Null means leave the account as it is: the
+ * picture is one we already hold, or its bytes could not be read back.
+ */
+export async function ingestManualProfileImage(
+  socialAccountId: string,
+  current: ProfileImageUrls,
+  imageUrl: string,
+): Promise<ProfileImageOutcome | null> {
+  let fetched: FetchedProfileImage | null = null;
+  const isStored = isStoredImageUrl(imageUrl);
+
+  if (isStored) {
+    const buffer = await readStoredImage(imageUrl);
+    if (!buffer) return null;
+    const contentType = imageUrl.endsWith(".png") ? "image/png" : imageUrl.endsWith(".webp") ? "image/webp" : "image/jpeg";
+    fetched = await profileImageFromBuffer(buffer, contentType);
+  } else {
+    // External URL: must pass SSRF validation and host allowlist with chunked size caps and timeouts
+    try {
+      fetched = await fetchProfileImage(imageUrl);
+    } catch {
+      return null;
+    }
+  }
+
+  const verdict = await classifyProfileImage(current, fetched);
+  if (!verdict.replace) return null;
+
+  if (!isStored) {
+    // Store external profile image into PRM storage
+    const stored = await storeProfileImage(fetched, socialAccountId);
+    return applyProfileImageVerdict(socialAccountId, current, fetched, verdict, { cdnUrl: stored.cdnUrl, photoId: stored.photoId });
+  }
+
+  const facts = {
+    prmLocation: `profile_image:${socialAccountId}`,
+    fileHash: fetched.fileHash,
+    widthPx: fetched.dims?.width ?? null,
+    heightPx: fetched.dims?.height ?? null,
+    perceptualHash: fetched.perceptualHash,
+  };
+  let photo = await storage.getPhotoByLocation(imageUrl);
+  if (photo) {
+    await db.update(photos).set(facts).where(eq(photos.id, photo.id));
+  } else {
+    photo = await storage.insertPhoto({ location: imageUrl, isSubImage: false, ogMetadata: fetched.ogMetadata, ...facts });
+  }
+  return applyProfileImageVerdict(socialAccountId, current, fetched, verdict, { cdnUrl: imageUrl, photoId: photo.id });
+}
+
+/** The account's current urls, for the classifier. */
+export async function getCurrentProfileImageUrls(socialAccountId: string): Promise<ProfileImageUrls> {
   const [row] = await db
-    .select({ imageUrl: socialAccounts.imageUrl })
+    .select({ imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq })
     .from(socialAccounts)
     .where(eq(socialAccounts.id, socialAccountId));
-  return row?.imageUrl ?? null;
+  return { imageUrl: row?.imageUrl ?? null, imageUrlHq: row?.imageUrlHq ?? null };
+}
+
+/**
+ * Normalises one account written before tiers existed: a 1080 sitting in
+ * image_url moves to image_url_hq and a 150 webp takes its place. Nothing about
+ * the picture changed, so no journal entry. Returns what it did.
+ */
+export async function backfillProfileImageTiers(
+  account: { id: string } & ProfileImageUrls,
+): Promise<"moved" | "already_lq" | "missing" | "skipped"> {
+  if (!account.imageUrl || account.imageUrlHq) return "skipped";
+
+  const photo = await storage.getPhotoByLocation(account.imageUrl);
+  let widthPx = photo?.widthPx ?? null;
+  let buffer: Buffer | null = null;
+  if (!widthPx) {
+    buffer = await readStoredImage(account.imageUrl);
+    if (!buffer) return "missing";
+    widthPx = getImageDimensions(buffer)?.width ?? (await sharp(buffer).metadata()).width ?? null;
+  }
+  if (tierOf(widthPx ? { width: widthPx } : null) === "lq") return "already_lq";
+
+  buffer ??= await readStoredImage(account.imageUrl);
+  if (!buffer) return "missing";
+  const thumbUrl = await storeProfileThumbnail(buffer, account.id, photo?.id ?? null);
+  await db
+    .update(socialAccounts)
+    .set({ imageUrl: thumbUrl, imageUrlHq: account.imageUrl })
+    .where(eq(socialAccounts.id, account.id));
+  return "moved";
 }

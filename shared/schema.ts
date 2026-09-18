@@ -46,10 +46,13 @@ export const users = pgTable("users", {
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
   ssoEmail: text("sso_email"),
-  imageStorageMode: text("image_storage_mode").notNull().default("s3"),
+  imageStorageMode: text("image_storage_mode").$type<StorageMode>().notNull().default("s3"),
   role: text("role").$type<UserRole>().notNull().default("user"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export type StorageMode = "prm-s3" | "s3" | "local";
+export const STORAGE_MODES: [StorageMode, ...StorageMode[]] = ["prm-s3", "s3", "local"];
 
 /**
  * Instance roles, least to most privileged.
@@ -373,6 +376,8 @@ export const subGroups = pgTable("sub_groups", {
   index("sub_groups_members_gin_idx").using("gin", t.members),
 ]);
 
+export const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
+
 // Social account types table
 export const socialAccountTypes = pgTable("social_account_types", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -397,7 +402,9 @@ export const socialAccounts = pgTable("social_accounts", {
   nickname: text("nickname"),
   bio: text("bio"),
   accountUrl: text("account_url"),
-  imageUrl: text("image_url"),                        // PRM/S3 url — stable, safe to render
+  imageUrl: text("image_url"),                        // PRM/S3 url of the 150px copy — every list view
+  imageUrlHq: text("image_url_hq"),                   // PRM/S3 url of the 1080px copy; null until a
+                                                      // profile-info fetch delivers one (profile-image.ts)
   externalImageUrl: text("external_image_url"),       // last signed Instagram url: a lead for the
                                                       // image worker to follow, never a display source
   location: text("location"),
@@ -414,6 +421,25 @@ export const socialAccounts = pgTable("social_accounts", {
   isSimple: boolean("is_simple").notNull().default(true),
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
+  // ── Tracking (account-tracking-plan.md §1–2) ──
+  // How much we care, and so how often prm-stories re-checks this account.
+  interestLevel: text("interest_level").notNull().default("none"),
+  // Set when a person picked the level, so the "me" rule never overrides a choice.
+  interestLevelManual: boolean("interest_level_manual").notNull().default(false),
+  // Per-account cadence overrides in days; null inherits the level's default.
+  infoEveryDays: integer("info_every_days"),
+  followsEveryDays: integer("follows_every_days"),
+  postsEveryDays: integer("posts_every_days"),
+  // *_due_at is the scheduler's only per-account state; null when the level is none.
+  infoCheckedAt: timestamp("info_checked_at"),
+  infoDueAt: timestamp("info_due_at"),
+  followsCheckedAt: timestamp("follows_checked_at"),
+  followsDueAt: timestamp("follows_due_at"),
+  postsCheckedAt: timestamp("posts_checked_at"),
+  postsDueAt: timestamp("posts_due_at"),
+  joinedAt: timestamp("joined_at"), // first of the month Instagram's About dialog reports
+  reportedPostsCount: integer("reported_posts_count"),
+  isPrivate: boolean("is_private"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("social_accounts_username_idx").on(t.username),
@@ -421,6 +447,10 @@ export const socialAccounts = pgTable("social_accounts", {
   index("social_accounts_owner_uuid_idx").on(t.ownerUuid),
   index("social_accounts_group_id_idx").on(t.groupId),
   index("social_accounts_type_id_idx").on(t.typeId),
+  index("social_accounts_interest_level_idx").on(t.interestLevel),
+  index("social_accounts_info_due_idx").on(t.infoDueAt).where(sql`info_due_at IS NOT NULL`),
+  index("social_accounts_follows_due_idx").on(t.followsDueAt).where(sql`follows_due_at IS NOT NULL`),
+  index("social_accounts_posts_due_idx").on(t.postsDueAt).where(sql`posts_due_at IS NOT NULL`),
 ]);
 
 // Social profile versions table (Visual Identity History)
@@ -464,7 +494,7 @@ export const socialAccountHistory = pgTable("social_account_history", {
   // Which directions the scrape actually captured, and so which ones are authoritative
   // enough to delete edges from. A profile-only refresh must never read as an unfollow
   // of everyone.
-  captureScope: text("capture_scope").notNull().default("none"), // 'both'|'followers'|'following'|'profile'|'none'
+  captureScope: text("capture_scope").notNull().default("none"), // 'both'|'followers'|'following'|'profile'|'posts'|'none'
   // First real capture of this account. The delta lists are still written — you want to
   // know who the first five thousand were — but the UI reads them as "5,000 captured"
   // rather than "+5,000 gained", so growth never opens with a fabricated spike.
@@ -487,14 +517,24 @@ export const socialAccountHistory = pgTable("social_account_history", {
   followingLost: integer("following_lost").notNull().default(0),
   reportedFollowersAfter: integer("reported_followers_after"),
   reportedFollowingAfter: integer("reported_following_after"),
+  // A posts check: how many posts it imported and how many it marked deleted.
+  // No "after" — the grid is scanned newest-first to a limit, so no run knows
+  // the whole count.
+  postsAdded: integer("posts_added").notNull().default(0),
+  postsDeleted: integer("posts_deleted").notNull().default(0),
 
   // Which profile fields changed here. The UI reads this, not the nullness of the
   // previous* columns below.
   profileFieldsChanged: text("profile_fields_changed").array().notNull().default(sql`ARRAY[]::text[]`),
+  previousUsername: text("previous_username"),
   previousNickname: text("previous_nickname"),
   previousBio: text("previous_bio"),
   previousLocation: text("previous_location"),
   previousImageUrl: text("previous_image_url"),   // a stable PRM/S3 url, so the modal renders it directly
+  previousImageUrlHq: text("previous_image_url_hq"),
+  // How the picture moved between tiers — one of ProfileImageChange. Null on rows
+  // written before tiers existed; "image" in profileFieldsChanged still marks them.
+  imageChange: text("image_change"),
 
   // The account ids behind the counts above, as
   // { followersAdded, followersLost, followingAdded, followingLost }.
@@ -539,13 +579,15 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
 // Social account posts table
 export const socialAccountPosts = pgTable("social_account_posts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }), // the primary poster: Instagram's listed author
+  coauthorAccountIds: jsonb("coauthor_account_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // secondary posters on a collab post, social account ids
   postType: text("post_type").notNull().default("post"), // 'post', 'story', 'reel', etc.
+  instagramPk: text("instagram_pk"), // Instagram's media id for posts scraped by prm-stories; null for stories and older rows
   content: text("content"), // JSON-stringified array of CDN image URLs, e.g. '["https://cdn.example.com/img1.jpg"]', or null
   description: text("description"),
-  likeCount: integer("like_count").notNull().default(0),
+  likeCount: integer("like_count").notNull().default(0), // 0 while likesHidden
+  likesHidden: boolean("likes_hidden").notNull().default(false), // the poster turned off the like count; likeCount is 0 then
   commentCount: integer("comment_count").notNull().default(0),
-  comments: text("comments"), // JSON string with post comments data
   mentionedAccounts: text("mentioned_accounts"), // JSON array of {imageIndex: number, accounts: string[]} objects, e.g. '[{"imageIndex":0,"accounts":["user1"]}]'
   faceIds: text("face_ids"), // JSON array of arrays of face UUIDs, one entry per image, e.g. '[["uuid1","uuid2"],["uuid3"]]'
   isDeleted: boolean("is_deleted").notNull().default(false),
@@ -558,6 +600,26 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   index("social_account_posts_social_account_id_idx").on(t.socialAccountId),
   index("social_account_posts_posted_at_idx").on(t.postedAt),
   index("social_account_posts_scraped_from_idx").on(t.scrapedFrom),
+  index("social_account_posts_instagram_pk_idx").on(t.instagramPk),
+  index("social_account_posts_coauthor_account_ids_idx").using("gin", t.coauthorAccountIds),
+]);
+
+// Comments under a social account post. Text-only (a gif or sticker arrives as
+// whatever text form the scraper gives it). `id` is the PRM UUID; the
+// Instagram id is kept separately so re-scrapes upsert instead of duplicating.
+export const socialPostComments = pgTable("social_post_comments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  postId: varchar("post_id").notNull().references(() => socialAccountPosts.id, { onDelete: "cascade" }),
+  instagramCommentId: text("instagram_comment_id").notNull().unique(),
+  username: text("username").notNull(),
+  text: text("text").notNull(),
+  likeCount: integer("like_count").notNull().default(0),
+  postedAt: timestamp("posted_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("social_post_comments_post_id_idx").on(t.postId),
+  index("social_post_comments_username_idx").on(t.username),
 ]);
 
 // Extension sessions table - holds authenticated Chrome extension sessions
@@ -610,6 +672,7 @@ export const photos = pgTable("photos", {
   fileHash: text("file_hash"), // SHA-256 hash of the file contents for deduplication
   widthPx: integer("width_px"), // Image width in pixels
   heightPx: integer("height_px"), // Image height in pixels
+  perceptualHash: text("perceptual_hash"), // 64-bit dHash as hex; same picture at any size hashes alike
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
 }, (table) => ({
@@ -896,6 +959,7 @@ export const storyImporters = pgTable("story_importers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   label: text("label").notNull(),
   serviceUrl: text("service_url").notNull().default(""),
+  serviceSecret: text("service_secret").notNull().default(""), // sent as x-stories-secret; the service checks it when it has one configured
   enabled: boolean("enabled").notNull().default(false),
   runEveryDays: integer("run_every_days").notNull().default(1),
   runWindow: text("run_window").notNull().default("19:30-22:30"), // "HH:MM-HH:MM", PRM server local time
@@ -903,12 +967,18 @@ export const storyImporters = pgTable("story_importers", {
   downloadVideos: boolean("download_videos").notNull().default(false),
   nextRunAt: timestamp("next_run_at"), // the scheduler's only state per importer
   lastUsername: text("last_username"), // the @username the service reported on its last run
+  // Morning tracking runs (account-tracking-plan.md §2.3), scheduled apart from stories.
+  trackingEnabled: boolean("tracking_enabled").notNull().default(false),
+  trackingWindow: text("tracking_window").notNull().default("07:00-10:00"),
+  trackingMaxJobs: integer("tracking_max_jobs").notNull().default(40),
+  nextTrackingRunAt: timestamp("next_tracking_run_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 export const storyScrapeRuns = pgTable("story_scrape_runs", {
   id: varchar("id").primaryKey(),
   importerId: varchar("importer_id").references(() => storyImporters.id, { onDelete: "set null" }),
+  kind: text("kind").notNull().default("stories"), // 'stories' | 'tracking'; a tracking run's `items` are job summaries
   // starting | running | completed | skipped | needs_login | checkpoint | no_username | rate_limited | parse_failed | error | unreachable | already_running
   status: text("status").notNull(),
   startedAt: timestamp("started_at").notNull(),
@@ -921,6 +991,33 @@ export const storyScrapeRuns = pgTable("story_scrape_runs", {
   tokenExpiresAt: timestamp("token_expires_at"),
 }, (t) => [
   index("story_scrape_runs_started_idx").on(t.startedAt),
+]);
+
+// One account check for prm-stories to run: the queue and the log in one table.
+// Schedule rows are minted when an importer's morning run claims due accounts;
+// manual rows are minted from the account page and wait for the next run.
+export const trackingJobs = pgTable("tracking_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(), // TrackingKind
+  origin: text("origin").notNull(), // 'schedule' | 'manual'
+  status: text("status").notNull().default("queued"), // queued | running | completed | failed | skipped
+  requestedBy: integer("requested_by").references(() => users.id, { onDelete: "set null" }),
+  importerId: varchar("importer_id").references(() => storyImporters.id, { onDelete: "set null" }),
+  runId: varchar("run_id").references(() => storyScrapeRuns.id, { onDelete: "set null" }),
+  /** Jobs queued together from the Tracking page share one id, so the page can show that batch's progress. */
+  batchId: varchar("batch_id"),
+  /** Times the job was handed to a service. A run that never reached a manual job hands it back until this hits MAX_JOB_ATTEMPTS. */
+  attempts: integer("attempts").notNull().default(0),
+  result: jsonb("result"), // per-kind counts, or { reason } for skipped / failed
+  error: text("error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+}, (t) => [
+  index("tracking_jobs_status_idx").on(t.status),
+  index("tracking_jobs_account_idx").on(t.socialAccountId, t.createdAt),
+  index("tracking_jobs_batch_idx").on(t.batchId),
 ]);
 
 // Relations
@@ -1078,10 +1175,18 @@ export const socialNetworkChangesRelations = relations(socialNetworkChanges, ({ 
   }),
 }));
 
-export const socialAccountPostsRelations = relations(socialAccountPosts, ({ one }) => ({
+export const socialAccountPostsRelations = relations(socialAccountPosts, ({ one, many }) => ({
   socialAccount: one(socialAccounts, {
     fields: [socialAccountPosts.socialAccountId],
     references: [socialAccounts.id],
+  }),
+  comments: many(socialPostComments),
+}));
+
+export const socialPostCommentsRelations = relations(socialPostComments, ({ one }) => ({
+  post: one(socialAccountPosts, {
+    fields: [socialPostComments.postId],
+    references: [socialAccountPosts.id],
   }),
 }));
 
@@ -1436,6 +1541,8 @@ export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
   role: true,
+}).extend({
+  imageStorageMode: z.enum(STORAGE_MODES).optional(),
 });
 
 export const insertGroupSchema = createInsertSchema(groups).omit({
@@ -1509,7 +1616,17 @@ export const insertSocialNetworkChangeSchema = createInsertSchema(socialNetworkC
   detectedAt: true,
 });
 
-export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPosts).omit({
+export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPosts)
+  .omit({
+    id: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    coauthorAccountIds: z.array(z.string()).optional(),
+  });
+
+export const insertSocialPostCommentSchema = createInsertSchema(socialPostComments).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
@@ -1603,6 +1720,7 @@ export type InsertInsight = typeof insights.$inferInsert;
 export type OsintScanQueueRow = typeof osintScanQueue.$inferSelect;
 export type StoryScrapeRun = typeof storyScrapeRuns.$inferSelect;
 export type StoryImporter = typeof storyImporters.$inferSelect;
+export type TrackingJob = typeof trackingJobs.$inferSelect;
 
 // Types
 export type User = typeof users.$inferSelect;
@@ -1692,10 +1810,13 @@ export interface SocialAccountHistoryDelta {
   followersLost?: string[];
   followingAdded?: string[];
   followingLost?: string[];
+  /** Post ids, on a captureScope 'posts' entry. */
+  postsAdded?: string[];
+  postsDeleted?: string[];
 }
 
 /** Which profile fields a history entry can report as changed. */
-export type SocialProfileField = "nickname" | "bio" | "location" | "image";
+export type SocialProfileField = "username" | "nickname" | "bio" | "location" | "image";
 
 /** Which entries a history listing asks for. Note the British spelling of the kind. */
 export type SocialAccountHistoryKind = "direct" | "neighbour" | "all";
@@ -1706,7 +1827,25 @@ export type HistoryAccountRef = {
   username: string;
   nickname: string | null;
   imageUrl: string | null;
+  imageUrlHq: string | null;
 };
+
+/**
+ * How a profile picture moved between tiers (profile-image-tiers-plan.md §4).
+ * LQ is the 150px copy every list renders; HQ is the 1080px copy the profile
+ * page and graph sidebar prefer. "improved" is the same picture at a higher
+ * resolution — not a change to the picture, so it does not move "last changed".
+ */
+export const PROFILE_IMAGE_CHANGE_LABELS = {
+  added_lq: "profile image added (LQ)",
+  added_hq: "profile image added (HQ)",
+  updated_lq: "profile image updated (LQ)",
+  improved: "profile image improved",
+  updated_lq_to_hq: "profile image updated (LQ → HQ)",
+  updated_hq_to_lq: "profile image updated (HQ → LQ)",
+  updated_hq: "profile image updated (HQ)",
+} as const;
+export type ProfileImageChange = keyof typeof PROFILE_IMAGE_CHANGE_LABELS;
 
 /**
  * A listed history entry: the journal row without `delta`, which is TOASTed and
@@ -1721,6 +1860,17 @@ export type SocialAccountHistoryEntry = Omit<SocialAccountHistory, "delta"> & {
 /** One page of resolved account ids out of an entry's `delta`. */
 export type HistoryAccountList = { total: number; items: HistoryAccountRef[] };
 
+/** Just enough of a post to render it as a thumbnail that opens the post. */
+export type HistoryPostRef = {
+  id: string;
+  socialAccountId: string;
+  thumbnailUrl: string | null;
+  description: string | null;
+  postedAt: Date | string | null;
+};
+
+export type HistoryPostList = { total: number; items: HistoryPostRef[] };
+
 /**
  * A single entry with its `delta` resolved into accounts. The lists are named
  * apart from the scalar counts they page through, so one name never carries two
@@ -1731,6 +1881,8 @@ export type SocialAccountHistoryDetail = SocialAccountHistoryEntry & {
   followersLostList: HistoryAccountList;
   followingAddedList: HistoryAccountList;
   followingLostList: HistoryAccountList;
+  postsAddedList: HistoryPostList;
+  postsDeletedList: HistoryPostList;
 };
 
 export type SocialAccountHistorySummary = {
@@ -1759,8 +1911,15 @@ export type InsertSocialNetworkChange = z.infer<typeof insertSocialNetworkChange
 export type SocialAccountPost = typeof socialAccountPosts.$inferSelect;
 export type InsertSocialAccountPost = z.infer<typeof insertSocialAccountPostSchema>;
 
+export type SocialPostComment = typeof socialPostComments.$inferSelect;
+export type InsertSocialPostComment = z.infer<typeof insertSocialPostCommentSchema>;
+export type SocialPostCommentWithAccount = SocialPostComment & {
+  accountId?: string | null;
+  accountImageUrl?: string | null;
+};
+
 export type SocialAccountWithCurrentProfile = SocialAccount & {
-  currentProfile: SocialProfileVersion | null;
+  currentProfile: (SocialProfileVersion & { imageUrlHq: string | null }) | null;
   latestState: SocialNetworkState | null;
   latestImportFollowers?: Date | string | null;
   latestImportFollowing?: Date | string | null;
