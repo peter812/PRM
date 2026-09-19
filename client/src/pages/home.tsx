@@ -254,20 +254,14 @@ function RecentPeopleContent() {
 }
 
 function RecentSocialContent() {
-  const { data, isLoading } = useQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts"],
+  const { data: recent = [], isLoading } = useQuery<SocialAccountWithCurrentProfile[]>({
+    queryKey: ["/api/social-accounts/paginated", { sortBy: "recent", limit: 5, full: "true" }],
+    queryFn: async () => {
+      const res = await fetch("/api/social-accounts/paginated?sortBy=recent&limit=5&offset=0&full=true");
+      if (!res.ok) throw new Error("Failed to load recent social accounts");
+      return res.json();
+    },
   });
-
-  const recent = useMemo(() => {
-    if (!data) return [];
-    return [...data]
-      .sort((a, b) => {
-        const aT = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const bT = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return bT - aT;
-      })
-      .slice(0, 5);
-  }, [data]);
 
   if (isLoading) {
     return (

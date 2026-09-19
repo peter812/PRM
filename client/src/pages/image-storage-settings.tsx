@@ -10,6 +10,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { HardDrive, Cloud, Server, ArrowRightLeft, Loader2, ImageIcon, Images, TriangleAlert, Database, Trash2, Wrench, CheckCircle2, XCircle } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 
 type StorageMode = "prm-s3" | "s3" | "local";
 
@@ -59,6 +60,7 @@ type DeleteOrphansResult = {
 
 export default function ImageStorageSettingsPage() {
   const { toast } = useToast();
+  const { isAdmin } = useAuth();
 
   // Dialog state
   const [transferConfirm, setTransferConfirm] = useState<{ from: StorageMode; to: StorageMode; count: number } | null>(null);
@@ -85,6 +87,7 @@ export default function ImageStorageSettingsPage() {
 
   const { data: prmS3Config } = useQuery<PrmS3ConfigResponse>({
     queryKey: ["/api/image-storage/prm-s3/settings"],
+    enabled: isAdmin,
   });
 
   useEffect(() => {
@@ -295,7 +298,8 @@ export default function ImageStorageSettingsPage() {
       <div className="space-y-2 mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-image-storage-title">Image Storage</h1>
         <p className="text-muted-foreground">
-          Configure where uploaded images are stored and transfer images between PRM-S3, Standard S3, and Local storage.
+          Where every image and video the app stores goes — uploads, profile pictures, posts, stories and
+          message attachments. {isAdmin ? "Changing it or moving images between backends affects all users." : "Only admins can change this."}
         </p>
       </div>
 
@@ -304,11 +308,11 @@ export default function ImageStorageSettingsPage() {
         <Card data-testid="card-storage-mode">
           <CardHeader>
             <CardTitle className="text-lg">Storage Mode</CardTitle>
-            <CardDescription>Choose where new image uploads will be stored.</CardDescription>
+            <CardDescription>Where new images and videos are stored, app-wide.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center gap-4 flex-wrap">
-              <Select value={currentMode} onValueChange={(val) => handleModeChange(val as StorageMode)} disabled={setModeMutation.isPending}>
+              <Select value={currentMode} onValueChange={(val) => handleModeChange(val as StorageMode)} disabled={!isAdmin || setModeMutation.isPending}>
                 <SelectTrigger className="w-[220px]" data-testid="select-storage-mode">
                   <SelectValue />
                 </SelectTrigger>
@@ -367,7 +371,8 @@ export default function ImageStorageSettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Card 2: PRM-S3 Server Configuration */}
+        {/* Card 2: PRM-S3 Server Configuration (admins only; the endpoint is admin-gated) */}
+        {isAdmin && (
         <Card data-testid="card-prm-s3-config">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
@@ -508,6 +513,7 @@ export default function ImageStorageSettingsPage() {
             </div>
           </CardContent>
         </Card>
+        )}
 
         {/* Card 3: Image Statistics */}
         <Card data-testid="card-image-stats">
@@ -555,7 +561,9 @@ export default function ImageStorageSettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Card 4: Transfer Images */}
+        {/* Cards 4-5: Transfer and maintenance (admins only; the endpoints are admin-gated) */}
+        {isAdmin && (
+        <>
         <Card data-testid="card-transfer-images">
           <CardHeader>
             <CardTitle className="text-lg">Transfer Images</CardTitle>
@@ -817,6 +825,8 @@ export default function ImageStorageSettingsPage() {
             </div>
           </CardContent>
         </Card>
+        </>
+        )}
       </div>
 
       {/* Transfer Dialog */}

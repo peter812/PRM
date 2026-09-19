@@ -53,6 +53,7 @@ const OcrDemo = lazy(() => import("@/pages/ocr-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
+const AccountCreationTimelinePage = lazy(() => import("@/pages/account-creation-timeline"));
 const GamesPage = lazy(() => import("@/pages/games"));
 const DescribeMePage = lazy(() => import("@/pages/describe-me"));
 const PoliticalLeaningGamePage = lazy(() => import("@/pages/political-leaning-game"));
@@ -124,7 +125,7 @@ function useExportNotifier() {
   const { data: tasks } = useQuery<{ id: string; type: string; status: string; result?: string }[]>({
     queryKey: ["/api/tasks/current"],
     enabled: !!user,
-    refetchInterval: 4000,
+    // Polling is driven by TaskTrackerModal (same query key, adaptive interval)
     select: (data) => data.map(t => ({ id: t.id, type: t.type, status: t.status, result: (t as any).result })),
   });
 
@@ -210,6 +211,7 @@ function Router() {
         <ProtectedRoute path="/account-matching" component={AccountMatching} />
         <ProtectedRoute path="/demos" component={DemosPage} />
         <ProtectedRoute path="/demos/osint/:tool" component={OsintDemoPage} />
+        <ProtectedRoute path="/demos/account-timeline" component={AccountCreationTimelinePage} />
         <ProtectedRoute path="/games" component={GamesPage} />
         <ProtectedRoute path="/describe-me" component={DescribeMePage} />
         <ProtectedRoute path="/games/political-leaning" component={PoliticalLeaningGamePage} />

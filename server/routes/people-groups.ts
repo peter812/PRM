@@ -38,7 +38,7 @@ import {
 import multer from "multer";
 import { uploadImageToS3, deleteImageFromS3 } from "../s3";
 import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { visibleShared } from "../access";
+import { visibleShared, ownedByCurrentUser } from "../access";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -469,24 +469,28 @@ export function registerRoutes(app: Express) {
           return res.json(person.notes || []);
         }
         
-        // Otherwise, get all notes across all people
-        const allPeople = await storage.getAllPeople();
-        const allNotes: any[] = [];
-        
-        for (const person of allPeople) {
-          const personWithDetails = await storage.getPersonById(person.id);
-          if (personWithDetails?.notes) {
-            allNotes.push(...personWithDetails.notes.map(note => ({
-              ...note,
-              personId: person.id,
-              personName: `${person.firstName} ${person.lastName}`,
-            })));
-          }
-        }
-        
-        // Sort by creation date, newest first
-        allNotes.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        
+        // Otherwise, get all notes across all people with a single SQL query
+        const noteConditions = [ownedByCurrentUser(notes.userId)];
+        const personVisible = visibleShared(people.visibility, people.createdByUserId);
+        if (personVisible) noteConditions.push(personVisible);
+
+        const noteRows = await db
+          .select({
+            note: notes,
+            firstName: people.firstName,
+            lastName: people.lastName,
+          })
+          .from(notes)
+          .innerJoin(people, eq(notes.personId, people.id))
+          .where(and(...noteConditions))
+          .orderBy(desc(notes.createdAt));
+
+        const allNotes = noteRows.map(({ note, firstName, lastName }) => ({
+          ...note,
+          personId: note.personId,
+          personName: `${firstName} ${lastName}`.trim(),
+        }));
+
         res.json(allNotes);
       } catch (error) {
         console.error("Error fetching notes:", error);

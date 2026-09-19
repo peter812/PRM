@@ -240,7 +240,7 @@ async function addColumnIfNotExists(
 /**
  * Instagram stories used to be configured by flat app_settings keys for a single
  * scraper. Turn those into the first story_importers row, attach the runs made
- * under them, and drop the keys. stories_image_storage stays: it is still global.
+ * under them, and drop the keys.
  */
 async function migrateStorySettingsToImporter(): Promise<void> {
   const keys = [
@@ -277,6 +277,32 @@ async function migrateStorySettingsToImporter(): Promise<void> {
     log("Migrated Instagram stories settings into story_importers");
   }
   await pool.query(`DELETE FROM app_settings WHERE key = ANY($1)`, [keys]);
+}
+
+/**
+ * Image storage used to be chosen per user (users.image_storage_mode) with a
+ * separate global choice for stories (stories_image_storage). Background
+ * workers ran as no user and picked whichever user came first, so uploads
+ * landed in backends nobody had chosen. Now one app setting decides; it is
+ * seeded from the super admin's choice, and both old settings are dropped.
+ */
+async function migrateImageStorageModeToAppSetting(): Promise<void> {
+  if (!(await columnExists("users", "image_storage_mode"))) return;
+  const { rows } = await pool.query(
+    `SELECT image_storage_mode FROM users
+     ORDER BY CASE role WHEN 'super_admin' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, id
+     LIMIT 1`,
+  );
+  const mode = rows[0]?.image_storage_mode;
+  if (mode === "prm-s3" || mode === "s3" || mode === "local") {
+    await pool.query(
+      `INSERT INTO app_settings (key, value) VALUES ('image_storage_mode', $1) ON CONFLICT (key) DO NOTHING`,
+      [mode],
+    );
+  }
+  await pool.query(`ALTER TABLE users DROP COLUMN image_storage_mode`);
+  await pool.query(`DELETE FROM app_settings WHERE key = 'stories_image_storage'`);
+  log(`Moved image storage mode to app setting (${mode ?? "unset"})`);
 }
 
 /**
@@ -550,7 +576,6 @@ async function validateAndSyncSchema(): Promise<void> {
     const schemaDefinitions: Record<string, Record<string, string>> = {
       users: {
         sso_email: "TEXT",
-        image_storage_mode: "TEXT NOT NULL DEFAULT 's3'",
       },
       people: {
         social_account_uuids: "TEXT[]",
@@ -837,6 +862,7 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS tracking_jobs_batch_idx ON tracking_jobs (batch_id);
     `);
     await migrateStorySettingsToImporter();
+    await migrateImageStorageModeToAppSetting();
 
     // Tracking: due-date indexes need the columns the loop above just added, and
     // the "me" rule (accounts on either side of a me account start at medium) is

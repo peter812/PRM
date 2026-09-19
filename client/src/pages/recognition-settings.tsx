@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,7 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders } from "lucide-react";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders, ScanText, Download } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -196,6 +197,58 @@ export default function RecognitionSettingsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update configuration", description: error.message, variant: "destructive" });
+    },
+  });
+
+  type OcrModel = {
+    id: string;
+    label: string;
+    description: string;
+    downloaded: boolean;
+    downloading: boolean;
+    error: string | null;
+    active: boolean;
+    device: "cuda" | "cpu";
+  };
+
+  const [ocrModel, setOcrModel] = useState<string>("");
+
+  const { data: ocrModels } = useQuery<{ models: OcrModel[] }>({
+    queryKey: ["/api/prm-face/ocr/models"],
+    enabled: !!settings?.hasApiKey,
+    // Poll while a download is in flight so the buttons flip to "Downloaded".
+    refetchInterval: (query) => (query.state.data?.models.some((m) => m.downloading) ? 2000 : false),
+  });
+
+  useEffect(() => {
+    const active = ocrModels?.models.find((m) => m.active);
+    if (active) setOcrModel(active.id);
+  }, [ocrModels]);
+
+  const downloadOcrModelMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("POST", `/api/prm-face/ocr/models/${id}/download`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/ocr/models"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to start download", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const saveOcrModelMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/prm-face/ocr/config", { model: ocrModel });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/ocr/models"] });
+      toast({ title: "OCR model updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update OCR model", description: error.message, variant: "destructive" });
     },
   });
 
@@ -453,6 +506,92 @@ export default function RecognitionSettingsPage() {
                 ) : null}
                 Save Configuration
               </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {hasApiKey && (
+          <Card data-testid="card-ocr">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <ScanText className="h-4 w-4" />
+                OCR
+              </CardTitle>
+              <CardDescription>
+                Choose which PaddleOCR (PP-OCRv5) model PRM-Compute uses to read text from images.
+                {ocrModels && (
+                  <>
+                    {" "}Inference runs on{" "}
+                    <span className="font-medium text-foreground" data-testid="text-ocr-device">
+                      {ocrModels.models[0]?.device === "cuda" ? "GPU (CUDA)" : "CPU"}
+                    </span>.
+                  </>
+                )}
+                Download a model before selecting it; the first OCR request otherwise waits for the download.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="ocr-model">Active OCR Model</Label>
+                <div className="flex gap-2">
+                  <Select value={ocrModel} onValueChange={setOcrModel}>
+                    <SelectTrigger id="ocr-model" className="flex-1" data-testid="select-ocr-model">
+                      <SelectValue placeholder="Select a model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ocrModels?.models.map((m) => (
+                        <SelectItem key={m.id} value={m.id} data-testid={`option-ocr-model-${m.id}`}>
+                          {m.label}{m.downloaded ? "" : " (not downloaded)"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    onClick={() => saveOcrModelMutation.mutate()}
+                    disabled={saveOcrModelMutation.isPending || !ocrModel || ocrModels?.models.find((m) => m.active)?.id === ocrModel}
+                    data-testid="button-save-ocr-model"
+                  >
+                    {saveOcrModelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {ocrModels?.models.map((m) => (
+                  <div
+                    key={m.id}
+                    className="flex items-center justify-between gap-4 rounded-md border p-3"
+                    data-testid={`row-ocr-model-${m.id}`}
+                  >
+                    <div className="space-y-0.5 min-w-0">
+                      <p className="text-sm font-medium">{m.label}</p>
+                      <p className="text-xs text-muted-foreground">{m.description}</p>
+                      {m.error && <p className="text-xs text-destructive">Download failed: {m.error}</p>}
+                    </div>
+                    {m.downloaded ? (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground shrink-0">
+                        <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-500" />
+                        Downloaded
+                      </span>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
+                        onClick={() => downloadOcrModelMutation.mutate(m.id)}
+                        disabled={m.downloading || downloadOcrModelMutation.isPending}
+                        data-testid={`button-download-ocr-model-${m.id}`}
+                      >
+                        {m.downloading ? (
+                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Downloading…</>
+                        ) : (
+                          <><Download className="h-4 w-4 mr-2" />Download</>
+                        )}
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </CardContent>
           </Card>
         )}

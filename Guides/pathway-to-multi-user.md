@@ -368,7 +368,7 @@ Toggling does **not** retroactively delete other users' caches / references; it 
 
 ### 6.3 Storage / S3 / Face crops
 
-- `imageStorageMode` is already per-user (`users.image_storage_mode`). Confirm that the `local-storage.ts` and `s3.ts` paths correctly segregate uploads — prefix S3 keys with `u<userId>/` for user-private images/crops and `shared/` for shared ones.
+- Image storage mode is app-wide (`app_settings.image_storage_mode`, admin-set; it was per-user until background workers sent uploads to the wrong bucket). Confirm that the `local-storage.ts` and `s3.ts` paths correctly segregate uploads — prefix S3 keys with `u<userId>/` for user-private images/crops and `shared/` for shared ones.
 - Ensure cropped face images (used in unknown face queues) inherit user prefix structures if the parent photo is private.
 
 ### 6.4 Logging and audit

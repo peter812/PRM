@@ -617,6 +617,7 @@ export default function PersonProfile() {
                     <PersonSocialAccountsChips
                       personId={person.id}
                       socialAccountUuids={person.socialAccountUuids || []}
+                      initialAccounts={person.socialAccounts}
                       onUpdate={() => {
                         queryClient.invalidateQueries({
                           queryKey: ["/api/people", person.id],

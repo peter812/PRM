@@ -77,15 +77,19 @@ export default function OcrDemoPage() {
 
   const isConfigured = !!(settings?.apiUrl && settings?.hasApiKey);
 
-  // Query Ollama settings for default vision model and prompt
+  // Query Ollama settings for the text model and prompt
   const { data: ollamaSettings } = useQuery<{
     enabled?: boolean;
     apiUrl?: string;
     model?: string;
+    textModel?: string;
     prompt?: string;
   }>({
     queryKey: ["/api/ollama/settings"],
   });
+
+  // Prefer the standard text generation model; fall back to the vision model.
+  const aiModel = ollamaSettings?.textModel || ollamaSettings?.model;
 
   useEffect(() => {
     if (ollamaSettings?.prompt && !systemPrompt) {
@@ -104,12 +108,21 @@ export default function OcrDemoPage() {
     try {
       const formData = new FormData();
       formData.append("image", imageFile);
+      const ocrText = ocrResult?.text?.trim();
+      const prompt = ocrText
+        ? `${systemPrompt.trim()}
+
+OCR-extracted text from this image:
+${ocrText}`
+        : systemPrompt.trim();
+      if (prompt) {
+        formData.append("prompt", prompt);
+      }
       if (systemPrompt.trim()) {
-        formData.append("prompt", systemPrompt.trim());
         formData.append("system", systemPrompt.trim());
       }
-      if (ollamaSettings?.model) {
-        formData.append("model", ollamaSettings.model);
+      if (aiModel) {
+        formData.append("model", aiModel);
       }
 
       const res = await fetch("/api/ollama/describe", {
@@ -118,7 +131,14 @@ export default function OcrDemoPage() {
         credentials: "include",
       });
 
-      const data = await res.json();
+      const raw = await res.text();
+      let data: { description?: string; error?: string } = {};
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        // Non-JSON body means a proxy (not this server) answered — e.g. nginx 413/504.
+        throw new Error(`Server error ${res.status} ${res.statusText}: non-JSON response (${raw.slice(0, 80).replace(/\s+/g, " ")}…)`);
+      }
       if (!res.ok) {
         throw new Error(data.error || `Server error ${res.status}`);
       }
@@ -686,12 +706,12 @@ export default function OcrDemoPage() {
                   AI Image Identification
                 </CardTitle>
                 <CardDescription>
-                  Run this image through the vision model using your system prompt to identify and describe what is in the image.
+                  Run this image through the vision model using your system prompt. The OCR-extracted text above is appended to the prompt so the model can use it.
                 </CardDescription>
               </div>
-              {ollamaSettings?.model && (
+              {aiModel && (
                 <Badge variant="outline" className="font-mono text-xs self-start sm:self-auto">
-                  {ollamaSettings.model}
+                  {aiModel}
                 </Badge>
               )}
             </CardHeader>

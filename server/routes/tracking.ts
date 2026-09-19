@@ -16,15 +16,13 @@ import { postedBy, storage } from "../storage";
 import { requireAuth } from "../auth";
 import { runAsSystem, visibleShared } from "../access";
 import { sseManager } from "../middleware/sse";
-import { uploadImageLocally, uploadMediaLocally } from "../local-storage";
-import { uploadImageToS3, uploadMediaToS3 } from "../s3";
-import { uploadImageToPrmS3, uploadMediaToPrmS3 } from "../prm-s3";
+import { uploadImage, uploadMedia } from "../image-storage";
 import { syncEntityInBackground } from "../vector-universal";
 import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
 import { TRACKING_KINDS, type TrackingKind } from "@shared/interest-level";
 import { generateDeterministicUuid } from "./social-media";
 import { authedRun } from "./stories";
-import { kickManualTrackingJobs, manualImporter, rateLimitedUntil, storiesStorageMode } from "../stories-scheduler";
+import { kickManualTrackingJobs, manualImporter, rateLimitedUntil } from "../stories-scheduler";
 import { applySnapshot, recordPostsCapture, type CaptureScope } from "../social-account-history";
 import { profileImageFromBuffer, classifyProfileImage, applyProfileImageVerdict, type ProfileImageOutcome } from "../profile-image";
 import { resolveScrapedAccounts } from "../task-worker";
@@ -153,16 +151,8 @@ async function jobFor(req: Request, res: Response): Promise<{ job: TrackingJob; 
   return row;
 }
 
-async function storeMedia(buffer: Buffer, name: string, mime: string, kind: "image" | "video"): Promise<string> {
-  const mode = await storiesStorageMode();
-  if (kind === "video") {
-    if (mode === "local") return uploadMediaLocally(buffer, name, mime);
-    if (mode === "prm-s3") return uploadMediaToPrmS3(buffer, name, mime);
-    return uploadMediaToS3(buffer, name, mime);
-  }
-  if (mode === "local") return uploadImageLocally(buffer, name, mime);
-  if (mode === "prm-s3") return uploadImageToPrmS3(buffer, name, mime);
-  return uploadImageToS3(buffer, name, mime);
+function storeMedia(buffer: Buffer, name: string, mime: string, kind: "image" | "video"): Promise<string> {
+  return kind === "video" ? uploadMedia(buffer, name, mime) : uploadImage(buffer, name, mime);
 }
 
 /** The `meta` field of a multipart body, parsed against `schema`; null with a 400 sent when it isn't valid. */

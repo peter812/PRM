@@ -16,13 +16,10 @@
 import crypto from "crypto";
 import { desc, eq, gt, inArray, and, lt } from "drizzle-orm";
 import { db } from "./db";
-import { storage } from "./storage";
 import { runAsSystem } from "./access";
 import { log } from "./vite";
 import { storyImporters, storyScrapeRuns, trackingJobs, type StoryImporter } from "@shared/schema";
 import { claimTrackingJobs, failUnfinishedJobs, postSettings, releaseTrackingJobs, type ClaimedJob } from "./tracking";
-
-export const STORIES_IMAGE_STORAGE_KEY = "stories_image_storage"; // "local" | "s3" — global, applies to every importer
 
 export const DEFAULT_WINDOW = "19:30-22:30";
 const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
@@ -378,9 +375,3 @@ export async function runForToken(token: string | undefined): Promise<{ id: stri
   return row ?? null;
 }
 
-/** Where story images and videos go; "s3", "prm-s3", or "local". */
-export async function storiesStorageMode(): Promise<"s3" | "prm-s3" | "local"> {
-  const mode = await storage.getAppSetting(STORIES_IMAGE_STORAGE_KEY);
-  if (mode === "s3" || mode === "prm-s3") return mode;
-  return "local";
-}

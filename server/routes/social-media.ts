@@ -3,7 +3,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { postedBy, storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialFollows, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -34,6 +34,7 @@ import multer from "multer";
 import { deleteImageFromS3 } from "../s3";
 import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl } from "../prm-s3";
 import { deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
+import { getImageStorageMode, setImageStorageMode, isStorageMode } from "../image-storage";
 import { hashPassword, requireAuth, requireAdmin } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { queueOsintScansForMeAccount } from "../osint-scan-queue";
@@ -116,6 +117,15 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    app.get("/api/social-accounts/joined-histogram", async (_req, res) => {
+      try {
+        res.json(await storage.getSocialAccountJoinedHistogram());
+      } catch (error) {
+        console.error("Error fetching joined histogram:", error);
+        res.status(500).json({ error: "Failed to fetch joined histogram" });
+      }
+    });
+
     app.get("/api/social-accounts/paginated", async (req, res) => {
       try {
         const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
@@ -124,6 +134,7 @@ export function registerRoutes(app: Express) {
         const typeId = req.query.typeId as string | undefined;
         const followsYou = req.query.followsYou === "true";
         const full = req.query.full === "true";
+        const sortBy = req.query.sortBy as string | undefined;
   
         let followsAccountIds: string[] | undefined;
   
@@ -150,6 +161,7 @@ export function registerRoutes(app: Express) {
           typeId: typeId || undefined,
           followsAccountIds,
           interestLevel: (req.query.interestLevel as string) || undefined,
+          sortBy,
         });
 
         if (full) {
@@ -735,25 +747,8 @@ export function registerRoutes(app: Express) {
         const { id } = req.params;
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
-        const followerIds = await storage.getFollowerIds(id);
-
-        if (followerIds.length === 0) {
-          return res.json({ items: [], total: 0, page, limit });
-        }
-
-        const total = followerIds.length;
-        const start = (page - 1) * limit;
-        const pageIds = followerIds.slice(start, start + limit);
-
-        const followerAccounts = [];
-        for (const followerId of pageIds) {
-          const account = await storage.getSocialAccountById(followerId);
-          if (account) {
-            followerAccounts.push(account);
-          }
-        }
-
-        res.json({ items: followerAccounts, total, page, limit });
+        const { items, total } = await storage.getFollowersPage(id, (page - 1) * limit, limit);
+        res.json({ items, total, page, limit });
       } catch (error) {
         console.error("Error fetching followers:", error);
         res.status(500).json({ error: "Failed to fetch followers" });
@@ -765,25 +760,8 @@ export function registerRoutes(app: Express) {
         const { id } = req.params;
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
-        const followingIds = await storage.getFollowingIds(id);
-
-        if (followingIds.length === 0) {
-          return res.json({ items: [], total: 0, page, limit });
-        }
-
-        const total = followingIds.length;
-        const start = (page - 1) * limit;
-        const pageIds = followingIds.slice(start, start + limit);
-
-        const followingAccounts = [];
-        for (const followingId of pageIds) {
-          const account = await storage.getSocialAccountById(followingId);
-          if (account) {
-            followingAccounts.push(account);
-          }
-        }
-
-        res.json({ items: followingAccounts, total, page, limit });
+        const { items, total } = await storage.getFollowingPage(id, (page - 1) * limit, limit);
+        res.json({ items, total, page, limit });
       } catch (error) {
         console.error("Error fetching following:", error);
         res.status(500).json({ error: "Failed to fetch following" });
@@ -802,6 +780,31 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error fetching follow ids:", error);
         res.status(500).json({ error: "Failed to fetch follow ids" });
+      }
+    });
+
+    // Consolidated endpoint returning all account IDs that the current user's accounts follow
+    app.get("/api/me/following-ids", async (req, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "Not authenticated" });
+        }
+        const mePerson = await storage.getMePerson(req.user.id);
+        const meAccountIds = mePerson?.socialAccountUuids || [];
+        if (meAccountIds.length === 0) {
+          return res.json([]);
+        }
+
+        const follows = await db
+          .selectDistinct({ followedId: socialFollows.followedId })
+          .from(socialFollows)
+          .where(inArray(socialFollows.followerId, meAccountIds));
+
+        const followingIds = follows.map((f) => f.followedId);
+        res.json(followingIds);
+      } catch (error) {
+        console.error("Error fetching me following ids:", error);
+        res.status(500).json({ error: "Failed to fetch following ids" });
       }
     });
 
@@ -1901,13 +1904,15 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // Image storage settings
+    // Image storage settings. The mode and stats are readable by everyone (the
+    // settings page shows them); choosing a backend, configuring PRM-S3 and
+    // moving images between backends are admin actions.
     app.get("/api/image-storage/mode", async (req, res) => {
       if (!req.isAuthenticated() || !req.user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
       try {
-        const mode = await storage.getImageStorageMode(req.user.id);
+        const mode = await getImageStorageMode();
         const hasS3Creds = !!(process.env.S3_ENDPOINT && process.env.S3_ACCESS_KEY && process.env.S3_SECRET_KEY && process.env.S3_BUCKET);
         const prmS3Config = await getPrmS3Config();
         res.json({ mode, hasS3Creds, hasPrmS3Creds: prmS3Config.isConfigured });
@@ -1917,16 +1922,13 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.put("/api/image-storage/mode", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.put("/api/image-storage/mode", requireAdmin, async (req, res) => {
       try {
         const { mode } = req.body;
-        if (mode !== "s3" && mode !== "prm-s3" && mode !== "local") {
+        if (!isStorageMode(mode)) {
           return res.status(400).json({ error: "Invalid storage mode. Must be 'prm-s3', 's3', or 'local'" });
         }
-        await storage.setImageStorageMode(req.user.id, mode);
+        await setImageStorageMode(mode);
         res.json({ success: true, mode });
       } catch (error) {
         console.error("Error setting image storage mode:", error);
@@ -1934,10 +1936,7 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.get("/api/image-storage/prm-s3/settings", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.get("/api/image-storage/prm-s3/settings", requireAdmin, async (req, res) => {
       try {
         const config = await getPrmS3Config();
         res.json({
@@ -1956,10 +1955,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/prm-s3/settings", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/prm-s3/settings", requireAdmin, async (req, res) => {
       try {
         const { endpoint, publicEndpoint, deliveryMode, bucket, region, accessKeyId, secretAccessKey } = req.body;
         if (deliveryMode !== undefined && deliveryMode !== "direct" && deliveryMode !== "proxy") {
@@ -1982,10 +1978,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/prm-s3/test", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/prm-s3/test", requireAdmin, async (req, res) => {
       try {
         const result = await testPrmS3Connection();
         res.json(result);
@@ -1994,10 +1987,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/transfer", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/transfer", requireAdmin, async (req, res) => {
       try {
         const { from, to, concurrency } = req.body;
         const validModes = ["local", "s3", "prm-s3"];
@@ -2005,10 +1995,10 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "Invalid transfer options. 'from' and 'to' must be distinct storage providers ('local', 's3', 'prm-s3')" });
         }
         const task = await storage.createTask({
-          userId: req.user.id,
+          userId: req.user!.id,
           type: "transfer_images",
           status: "pending",
-          payload: JSON.stringify({ userId: req.user.id, from, to, concurrency: Number(concurrency) || undefined }),
+          payload: JSON.stringify({ userId: req.user!.id, from, to, concurrency: Number(concurrency) || undefined }),
         });
         triggerTaskWorker();
         res.json(task);
@@ -2018,16 +2008,13 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/image-storage/transfer-to-local", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/transfer-to-local", requireAdmin, async (req, res) => {
       try {
         const task = await storage.createTask({
-          userId: req.user.id,
+          userId: req.user!.id,
           type: "transfer_images_to_local",
           status: "pending",
-          payload: JSON.stringify({ userId: req.user.id }),
+          payload: JSON.stringify({ userId: req.user!.id }),
         });
         triggerTaskWorker();
         res.json(task);
@@ -2037,16 +2024,13 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/image-storage/backfill-profile-image-tiers", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/backfill-profile-image-tiers", requireAdmin, async (req, res) => {
       try {
         const task = await storage.createTask({
-          userId: req.user.id,
+          userId: req.user!.id,
           type: "backfill_profile_image_tiers",
           status: "pending",
-          payload: JSON.stringify({ userId: req.user.id }),
+          payload: JSON.stringify({ userId: req.user!.id }),
         });
         triggerTaskWorker();
         res.json(task);
@@ -2056,16 +2040,13 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/transfer-to-s3", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
+    app.post("/api/image-storage/transfer-to-s3", requireAdmin, async (req, res) => {
       try {
         const task = await storage.createTask({
-          userId: req.user.id,
+          userId: req.user!.id,
           type: "transfer_images_to_s3",
           status: "pending",
-          payload: JSON.stringify({ userId: req.user.id }),
+          payload: JSON.stringify({ userId: req.user!.id }),
         });
         triggerTaskWorker();
         res.json(task);

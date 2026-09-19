@@ -8,7 +8,7 @@ interface RateLimitEntry {
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
 const WINDOW_MS = 60 * 1000; // 1 minute window
-const MAX_REQUESTS = 100; // 100 requests per window
+const MAX_REQUESTS = 600; // 600 requests per window (~10/s; the SPA polls several endpoints every 2.5-10s)
 
 function getClientKey(req: Request): string {
   // Use user ID if authenticated, otherwise fall back to IP

@@ -3,8 +3,9 @@ import { Phone, ExternalLink, MicOff, FileX, X, Instagram } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MessageAttachment, MessageMetadata } from "@shared/schema";
 
-// Image loaded by photo UUID via the photos API
-function MessageImage({ photoId }: { photoId: string }) {
+// Image by photo UUID. The message payload embeds the serving URL; the photos
+// API is only hit for messages that predate that field.
+function MessageImage({ photoId, location }: { photoId: string; location?: string }) {
   const { data: photo } = useQuery<{ id: string; location: string }>({
     queryKey: [`/api/photos/${photoId}`],
     queryFn: async () => {
@@ -12,6 +13,8 @@ function MessageImage({ photoId }: { photoId: string }) {
       if (!res.ok) throw new Error("Failed to fetch photo");
       return await res.json();
     },
+    enabled: !location,
+    initialData: location ? { id: photoId, location } : undefined,
   });
 
   if (!photo?.location) {
@@ -165,7 +168,7 @@ export function MessageBubble({ msg, isSelf, senderName, hideSender, timestamp, 
         {msg.imageUuids && msg.imageUuids.length > 0 && (
           <div className="mt-2.5 grid gap-1.5 grid-cols-1 sm:grid-cols-2">
             {msg.imageUuids.map((uuid: string) => (
-              <MessageImage key={uuid} photoId={uuid} />
+              <MessageImage key={uuid} photoId={uuid} location={msg.imageLocations?.[uuid]} />
             ))}
           </div>
         )}

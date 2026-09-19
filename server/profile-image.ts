@@ -1,13 +1,12 @@
 import { storage } from "./storage";
 import { db } from "./db";
-import { photos, socialAccounts, users } from "@shared/schema";
-import type { Photo, ProfileImageChange, StorageMode } from "@shared/schema";
-import { uploadImageToS3 } from "./s3";
-import { uploadImageToPrmS3, fetchImageBuffer, isStoredImageUrl } from "./prm-s3";
-import { uploadImageLocally, isLocalImageUrl, getLocalImagePath } from "./local-storage";
+import { photos, socialAccounts } from "@shared/schema";
+import type { Photo, ProfileImageChange } from "@shared/schema";
+import { fetchImageBuffer, isStoredImageUrl } from "./prm-s3";
+import { isLocalImageUrl, getLocalImagePath } from "./local-storage";
+import { uploadImage } from "./image-storage";
 import { syncEntityInBackground } from "./vector-universal";
-import { currentAccess } from "./access";
-import { asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import crypto from "crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
@@ -335,36 +334,6 @@ async function ensurePerceptualHash(photo: Photo): Promise<string | null> {
 }
 
 /**
- * Whose storage-mode setting a profile picture follows: the acting user, else
- * the account's creator (prm-stories' tracking routes run as system), else the
- * oldest user. Never `getAllUsers()[0]`: that is heap order, which moved after
- * a user changed their mode and sent 650 HQ pictures to the wrong bucket.
- */
-async function profileImageStorageMode(socialAccountId: string): Promise<StorageMode> {
-  let userId = currentAccess()?.userId ?? null;
-  if (userId === null) {
-    const [account] = await db
-      .select({ createdByUserId: socialAccounts.createdByUserId })
-      .from(socialAccounts)
-      .where(eq(socialAccounts.id, socialAccountId));
-    userId = account?.createdByUserId ?? null;
-  }
-  if (userId === null) {
-    const [user] = await db.select({ id: users.id }).from(users).orderBy(asc(users.id)).limit(1);
-    userId = user?.id ?? null;
-  }
-  return userId === null ? "s3" : storage.getImageStorageMode(userId);
-}
-
-/** Uploads to the configured backend. A failed upload fails the import; it never lands in another bucket. */
-async function uploadProfileImageBytes(buffer: Buffer, filename: string, contentType: string, socialAccountId: string): Promise<string> {
-  const mode = await profileImageStorageMode(socialAccountId);
-  if (mode === "local") return uploadImageLocally(buffer, filename, contentType);
-  if (mode === "prm-s3") return uploadImageToPrmS3(buffer, filename, contentType);
-  return uploadImageToS3(buffer, filename, contentType);
-}
-
-/**
  * Whether a freshly fetched image should replace what the account holds, and
  * how the journal should describe it (profile-image-tiers-plan.md §4).
  *
@@ -437,7 +406,7 @@ export async function storeProfileImage(
   fetched: FetchedProfileImage,
   socialAccountId: string,
 ): Promise<{ cdnUrl: string; photoId: string }> {
-  const cdnUrl = await uploadProfileImageBytes(fetched.buffer, `instagram_profile.${fetched.ext}`, fetched.contentType, socialAccountId);
+  const cdnUrl = await uploadImage(fetched.buffer, `instagram_profile.${fetched.ext}`, fetched.contentType);
 
   const photo = await storage.insertPhoto({
     location: cdnUrl,
@@ -468,7 +437,7 @@ export async function storeProfileThumbnail(
     .resize(THUMBNAIL_PX, THUMBNAIL_PX, { fit: "cover" })
     .webp({ quality: 82 })
     .toBuffer();
-  const cdnUrl = await uploadProfileImageBytes(buffer, "instagram_profile_150.webp", "image/webp", socialAccountId);
+  const cdnUrl = await uploadImage(buffer, "instagram_profile_150.webp", "image/webp");
 
   await storage.insertPhoto({
     location: cdnUrl,

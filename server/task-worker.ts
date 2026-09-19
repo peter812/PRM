@@ -4,6 +4,7 @@ import { syncEntityInBackground } from "./vector-universal";
 import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3, deleteMediaFromS3, ObjectMissingError, listS3ObjectKeys, deleteS3ObjectKey, s3KeyFromUrl } from "./s3";
 import { uploadImageToPrmS3, deleteImageFromPrmS3, uploadMediaToPrmS3, deleteMediaFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer, listPrmS3ObjectKeys, deletePrmS3ObjectKey, normalizePrmS3Key } from "./prm-s3";
 import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally, deleteMediaLocally, isLocalMediaUrl } from "./local-storage";
+import { uploadImage, uploadMedia } from "./image-storage";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
 import { parseSmsBackup } from "./sms-import";
@@ -2129,7 +2130,6 @@ async function importOneDmThread(
   const importMedia = options.importMedia !== false;
 
   const parsed: ParsedThread = loadThreadFolder(threadFolder);
-  const storageMode = await storage.getImageStorageMode(userId);
   const importUuid = crypto.randomUUID();
   const importDate = new Date();
 
@@ -2345,10 +2345,7 @@ async function importOneDmThread(
         const fileName = path.basename(filePath).includes(".")
           ? path.basename(filePath)
           : `${path.basename(filePath)}.${ext}`;
-        const imageUrl =
-          storageMode === "local"
-            ? await uploadImageLocally(buffer, fileName, mime)
-            : await uploadImageToS3(buffer, fileName, mime);
+        const imageUrl = await uploadImage(buffer, fileName, mime);
         const photo = await storage.insertPhoto({
           location: imageUrl,
           prmLocation: `message:${message.id}`,
@@ -2372,10 +2369,7 @@ async function importOneDmThread(
         }
         const buffer = fs.readFileSync(filePath);
         const mimeType = mediaMimeForFile(media.kind, filePath);
-        const url =
-          storageMode === "local"
-            ? await uploadMediaLocally(buffer, path.basename(filePath), mimeType)
-            : await uploadMediaToS3(buffer, path.basename(filePath), mimeType);
+        const url = await uploadMedia(buffer, path.basename(filePath), mimeType);
         attachments.push({
           type: media.kind,
           url,
@@ -2957,17 +2951,6 @@ async function processMultiImageDownload(
     error?: string;
   }> = [];
 
-  // Determine storage mode once
-  let storageMode: "local" | "s3" = "s3";
-  try {
-    const user = (await storage.getAllUsers())[0];
-    if (user) {
-      storageMode = (await storage.getImageStorageMode(user.id)) as "local" | "s3";
-    }
-  } catch (err) {
-    log(`[TaskWorker] Error getting image storage mode: ${err}`);
-  }
-
   // Helper to process a single image
   const downloadImage = async (item: MultiImageDownloadItem) => {
     const { url, uuid, prmLocation, isSubImage, metadata, ogMetadata: providedOgMetadata } = item;
@@ -3009,13 +2992,7 @@ async function processMultiImageDownload(
       const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
       const dims = getImageDimensions(buffer);
 
-      // Upload
-      let cdnUrl: string;
-      if (storageMode === "local") {
-        cdnUrl = await uploadImageLocally(buffer, `image.${ext}`, contentType);
-      } else {
-        cdnUrl = await uploadImageToS3(buffer, `image.${ext}`, contentType);
-      }
+      const cdnUrl = await uploadImage(buffer, `image.${ext}`, contentType);
 
       // Insert photo
       const photo = await storage.insertPhoto({

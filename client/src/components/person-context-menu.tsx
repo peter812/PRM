@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, GitBranch, Check, MoreVertical, Loader2 } from "lucide-react";
@@ -43,12 +43,16 @@ export interface PersonLike {
 
 export function usePersonMeRelationship(personId: string, currentPerson?: PersonLike) {
   const [isHovered, setIsHovered] = useState(false);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [optimisticTypeId, setOptimisticTypeId] = useState<string | null | undefined>(undefined);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
   const handleHover = useCallback(() => {
-    setIsHovered(true);
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = setTimeout(() => {
+      setIsHovered(true);
+    }, 250);
   }, []);
 
   // Lazy query for "Me" user (cached for 60s)

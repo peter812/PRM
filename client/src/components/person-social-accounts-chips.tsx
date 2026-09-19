@@ -11,27 +11,32 @@ import { LinkSocialAccountDialog } from "./link-social-account-dialog";
 interface PersonSocialAccountsChipsProps {
   personId: string;
   socialAccountUuids: string[];
+  initialAccounts?: SocialAccountWithCurrentProfile[];
   onUpdate?: () => void;
 }
 
 export function PersonSocialAccountsChips({
   personId,
   socialAccountUuids,
+  initialAccounts,
   onUpdate,
 }: PersonSocialAccountsChipsProps) {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
-  const { data: linkedAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
+  // When the parent already has the accounts (person payload), use them directly so a
+  // refetched parent stays in sync; only fall back to the by-ids call otherwise.
+  const { data: fetchedAccounts = [] } = useQuery<SocialAccountWithCurrentProfile[]>({
     queryKey: ["/api/social-accounts/by-ids", socialAccountUuids],
     queryFn: async () => {
       if (socialAccountUuids.length === 0) return [];
       const res = await apiRequest("POST", "/api/social-accounts/by-ids", { ids: socialAccountUuids });
       return res.json();
     },
-    enabled: socialAccountUuids.length > 0,
+    enabled: socialAccountUuids.length > 0 && !initialAccounts,
   });
+  const linkedAccounts = initialAccounts ?? fetchedAccounts;
 
   const removeMutation = useMutation({
     mutationFn: async (accountIdToRemove: string) => {

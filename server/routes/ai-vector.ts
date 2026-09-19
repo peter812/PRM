@@ -31,9 +31,10 @@ import {
   type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
-import { uploadImageToS3, deleteImageFromS3 } from "../s3";
-import { uploadImageToPrmS3, deleteImageFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer } from "../prm-s3";
-import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
+import { deleteImageFromS3 } from "../s3";
+import { deleteImageFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer } from "../prm-s3";
+import { deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
+import { uploadImage } from "../image-storage";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -261,6 +262,48 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    // OCR model presets: list/download the PP-OCRv5 mobile ("little") and
+    // server ("big") models and pick which one /api/ocr uses. Thin proxies to
+    // PRM-Compute's /api/ocr/models and /api/ocr/config.
+    const proxyOcr = async (
+      req: any,
+      res: any,
+      path: string,
+      init: { method?: string; body?: unknown } = {},
+    ) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Compute API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM-Compute API key is not configured." });
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}${path}`, {
+          method: init.method ?? "GET",
+          headers: { "x-api-key": apiKey, ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}) },
+          body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM-Compute error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM-Compute: ${error.message}` });
+      }
+    };
+
+    app.get("/api/prm-face/ocr/models", (req, res) => proxyOcr(req, res, "/api/ocr/models"));
+    app.post("/api/prm-face/ocr/models/:model/download", (req, res) =>
+      proxyOcr(req, res, `/api/ocr/models/${encodeURIComponent(req.params.model)}/download`, { method: "POST" }),
+    );
+    app.get("/api/prm-face/ocr/config", (req, res) => proxyOcr(req, res, "/api/ocr/config"));
+    app.post("/api/prm-face/ocr/config", (req, res) => {
+      const { model } = req.body ?? {};
+      if (typeof model !== "string" || !model) return res.status(400).json({ error: "model is required." });
+      return proxyOcr(req, res, "/api/ocr/config", { method: "POST", body: { model } });
+    });
+
     // Delete all recognition-pipeline images & faces and reset PRM-Face.
     // Wipes face crops + faces rows on the PRM-Face side, then deletes pipeline
     // photos (posts/interactions/notes — NOT profile avatars) and their S3
@@ -388,31 +431,7 @@ export function registerRoutes(app: Express) {
       if (!req.file) return res.status(400).json({ error: "No image file provided" });
 
       try {
-        let storageMode = "s3";
-        if (req.user) {
-          storageMode = await storage.getImageStorageMode(req.user.id);
-        }
-
-        let imageUrl: string;
-        if (storageMode === "local") {
-          imageUrl = await uploadImageLocally(
-            req.file.buffer,
-            req.file.originalname,
-            req.file.mimetype
-          );
-        } else if (storageMode === "prm-s3") {
-          imageUrl = await uploadImageToPrmS3(
-            req.file.buffer,
-            req.file.originalname,
-            req.file.mimetype
-          );
-        } else {
-          imageUrl = await uploadImageToS3(
-            req.file.buffer,
-            req.file.originalname,
-            req.file.mimetype
-          );
-        }
+        const imageUrl = await uploadImage(req.file.buffer, req.file.originalname, req.file.mimetype);
 
         const prmLocation = (req.body?.prmLocation as string) || "unknown";
         const photo = await storage.insertPhoto({ location: imageUrl, prmLocation, isSubImage: false });
@@ -4296,6 +4315,10 @@ Respond with ONLY a JSON array, no other text.`;
         formData.append("image", blob, req.file.originalname || "image.jpg");
         if (req.body.min_score !== undefined && req.body.min_score !== "") {
           formData.append("min_score", String(req.body.min_score));
+        }
+        // Optional preset override ("v5-mobile" | "v5-server"); defaults to the configured one.
+        if (req.body.model) {
+          formData.append("model", String(req.body.model));
         }
 
         const response = await fetch(`${prmBase(apiUrl)}/api/ocr`, {

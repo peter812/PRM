@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
+import { useMutation } from "@tanstack/react-query";
 import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, HelpCircle, Loader2, LogIn, Play, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,7 +22,7 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
-import { IMPORTERS_KEY, RUNS_KEY, sessionFromRuns, useImporters, useStoryRuns, type Importer, type Settings, type StoryRun } from "@/lib/instagram";
+import { IMPORTERS_KEY, RUNS_KEY, sessionFromRuns, useImporters, useStoryRuns, type Importer, type StoryRun } from "@/lib/instagram";
 
 function HowToCard({ defaultOpen }: { defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -435,46 +436,9 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
 }
 
 
-/** Settings shared by every importer. */
-function StorageCard({ settings }: { settings: Settings }) {
-  const { isAdmin } = useAuth();
-  const { toast } = useToast();
-  const save = useMutation({
-    mutationFn: async (value: string) => apiRequest("POST", "/api/settings", { key: "stories_image_storage", value }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/settings"] }),
-    onError: (error: Error) => toast({ title: "Failed to save setting", description: error.message, variant: "destructive" }),
-  });
-
-  return (
-    <Card className="mb-6">
-      <CardHeader>
-        <CardTitle className="text-base">Storage</CardTitle>
-        <CardDescription>Where the images and videos every importer sends should go. Only admins can change this.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-2 md:max-w-xs">
-          <Label htmlFor="stories-storage">Image and video storage</Label>
-          <Select
-            value={settings.stories_image_storage === "s3" ? "s3" : "local"}
-            disabled={!isAdmin}
-            onValueChange={(v) => save.mutate(v)}
-          >
-            <SelectTrigger id="stories-storage" data-testid="select-stories-storage"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="local">Local disk</SelectItem>
-              <SelectItem value="s3">S3</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 export default function InstagramImportersPage() {
   const { isAdmin } = useAuth();
   const { toast } = useToast();
-  const { data: settings } = useQuery<Settings>({ queryKey: ["/api/settings"] });
   const { data: runs = [] } = useStoryRuns();
   const { data: importers = [] } = useImporters();
   const [importerToDelete, setImporterToDelete] = useState<Importer | null>(null);
@@ -538,8 +502,10 @@ export default function InstagramImportersPage() {
         </div>
       )}
 
-      {settings && <StorageCard settings={settings} />}
-
+      <p className="text-sm text-muted-foreground mb-6">
+        Story images and videos go to the app-wide image storage, set under{" "}
+        <Link href="~/settings/image-storage" className="text-primary hover:underline">Settings → Image Storage</Link>.
+      </p>
 
       <AlertDialog open={!!importerToDelete} onOpenChange={(open) => !open && setImporterToDelete(null)}>
         <AlertDialogContent data-testid="dialog-delete-importer">

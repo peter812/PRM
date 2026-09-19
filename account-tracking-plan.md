@@ -339,8 +339,8 @@ PRM sends its Posts settings (§5.4) with every tracking run:
 All routes live in a new `server/routes/tracking.ts`, authenticated with the
 run token (`authedRun` from `stories.ts`, moved to a shared helper); a job id
 in the path must belong to that run. Everything runs as system, like stories.
-Media goes through `stories_image_storage` (local/S3), which the settings page
-now labels "Instagram media storage".
+Media goes through the app-wide image storage mode (`server/image-storage.ts`,
+set on Settings → Image Storage).
 
 | Route | Body | Effect |
 |---|---|---|

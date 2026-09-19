@@ -18,11 +18,10 @@ import { db } from "../db";
 import { storage } from "../storage";
 import { requireAdmin } from "../auth";
 import { runAsSystem } from "../access";
-import { uploadImageLocally, uploadMediaLocally } from "../local-storage";
-import { uploadImageToS3, uploadMediaToS3 } from "../s3";
+import { uploadImage, uploadMedia } from "../image-storage";
 import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, isAdminRole, type StoryImporter } from "@shared/schema";
 import { generateDeterministicUuid } from "./social-media";
-import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceUrl, storiesStorageMode, triggerStoriesRun } from "../stories-scheduler";
+import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
@@ -202,13 +201,9 @@ export function registerStories(app: Express) {
 
         const buffer = image.buffer;
         const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
-        const mode = await storiesStorageMode();
         let imageUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
         if (!imageUrl) {
-          const mime = image.mimetype || "image/jpeg";
-          imageUrl = mode === "s3"
-            ? await uploadImageToS3(buffer, `${cleanStoryPk}.jpg`, mime)
-            : await uploadImageLocally(buffer, `${cleanStoryPk}.jpg`, mime);
+          imageUrl = await uploadImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
         }
 
         // The video is a bonus on top of the cover frame: if storing it fails the story is still kept.
@@ -216,9 +211,7 @@ export function registerStories(app: Express) {
         if (video) {
           try {
             const mime = video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4";
-            metadata.videoUrl = mode === "s3"
-              ? await uploadMediaToS3(video.buffer, `${cleanStoryPk}.mp4`, mime)
-              : await uploadMediaLocally(video.buffer, `${cleanStoryPk}.mp4`, mime);
+            metadata.videoUrl = await uploadMedia(video.buffer, `${cleanStoryPk}.mp4`, mime);
           } catch (err) {
             console.error(`Story ${cleanStoryPk}: video not stored:`, err);
             metadata.videoError = err instanceof Error ? err.message : String(err);

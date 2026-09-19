@@ -33,7 +33,8 @@ story here?".
   instance-wide (no `user_id`); ingest runs as system. Settings are admin-only
   `app_settings` keys (`stories_enabled`, `stories_api_url`,
   `stories_run_window`, `stories_run_every_days`,
-  `stories_skip_day_probability`, `stories_image_storage`).
+  `stories_skip_day_probability`; `stories_image_storage` has since been folded
+  into the app-wide `image_storage_mode`).
 - **Login from the settings page**: `POST /api/stories/login` (admin) asks the
   scraper's `POST /login` to open Instagram in a visible Chrome window on its
   profile. The page lives under
@@ -63,7 +64,8 @@ story here?".
   #1 and attaches existing runs). Each row is one prm-stories install (its
   own `STORIES_PORT`, profile and login) with its own `service_url`,
   `run_every_days`, `run_window`, `skip_day_probability`, `enabled`,
-  `next_run_at` and `download_videos`. `stories_image_storage` stays global.
+  `next_run_at` and `download_videos`. Media storage follows the app-wide
+  `image_storage_mode`.
   The scheduler ticks every importer independently (`Promise.allSettled`);
   `story_scrape_runs.importer_id` says which card a run belongs to
   (`ON DELETE SET NULL`, so history survives a removed card). The settings
@@ -393,8 +395,7 @@ The column already anticipates it (`shared/schema.ts:540`). Add:
   until phase 2 overwrites it with the LLM description.
 
 The image itself goes through the existing photo path: store bytes per the
-user's `image_storage_mode` (`uploadImageLocally` / `uploadImageToS3`,
-`server/task-worker.ts:2260`), `storage.insertPhoto({ location, prmLocation:
+app-wide `image_storage_mode` (`uploadImage` in `server/image-storage.ts`), `storage.insertPhoto({ location, prmLocation:
 "post:<postId>", fileHash, widthPx, heightPx, ogMetadata: { source:
 "instagram-story", storyPk, takenAt } })`. `photos.fileHash` dedupes a story
 that is a repost of an image already in PRM. The `post:<id>` `prmLocation`

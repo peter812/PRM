@@ -46,7 +46,6 @@ export const users = pgTable("users", {
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
   ssoEmail: text("sso_email"),
-  imageStorageMode: text("image_storage_mode").$type<StorageMode>().notNull().default("s3"),
   role: text("role").$type<UserRole>().notNull().default("user"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -1541,8 +1540,6 @@ export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
   role: true,
-}).extend({
-  imageStorageMode: z.enum(STORAGE_MODES).optional(),
 });
 
 export const insertGroupSchema = createInsertSchema(groups).omit({
@@ -2070,6 +2067,7 @@ export type PersonWithRelations = Person & {
   subGroups?: SubGroup[];
   relationships: RelationshipWithPerson[];
   schooling?: Schooling | null;
+  socialAccounts?: SocialAccountWithCurrentProfile[];
 };
 
 export type GroupWithNotes = Group & {

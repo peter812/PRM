@@ -160,37 +160,20 @@ export default function SocialAccountsList() {
 
   const accounts = data?.pages.flat() || [];
 
-  const { data: user } = useQuery<{ id: number; username: string; personId: string }>({
-    queryKey: ["/api/user"],
-  });
-
-  const { data: mePerson } = useQuery<Person>({
-    queryKey: user?.personId ? [`/api/people/${user.personId}`] : [],
-    enabled: !!user?.personId,
-  });
-
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
   });
 
-  const meAccountIds = mePerson?.socialAccountUuids || [];
-
-  // Union of all accounts my own accounts follow — used for the "Follows you"
+  // Consolidated query of all accounts my own accounts follow — used for the "Follows you"
   // badge (an account "follows you" when one of your accounts appears in its
   // followers, i.e. when it appears in your accounts' following lists).
   const { data: meFollowingIds } = useQuery<string[]>({
-    queryKey: ["/api/social-accounts", "me-following", ...meAccountIds],
+    queryKey: ["/api/me/following-ids"],
     queryFn: async () => {
-      const results = await Promise.all(
-        meAccountIds.map(async (meId) => {
-          const res = await fetch(`/api/social-accounts/${meId}/follow-ids`);
-          if (!res.ok) return { followingIds: [] as string[] };
-          return res.json() as Promise<{ followingIds: string[] }>;
-        })
-      );
-      return results.flatMap((r) => r.followingIds || []);
+      const res = await fetch("/api/me/following-ids");
+      if (!res.ok) return [];
+      return res.json();
     },
-    enabled: meAccountIds.length > 0,
   });
   const meFollowingSet = new Set(meFollowingIds || []);
 

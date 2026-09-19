@@ -36,9 +36,10 @@ import {
   canAssignRole,
 } from "@shared/schema";
 import multer from "multer";
-import { uploadImageToS3, deleteImageFromS3 } from "../s3";
-import { uploadImageToPrmS3, deleteImageFromPrmS3, getPrmS3ObjectStream, getPrmS3PublicUrl, PRM_S3_PRESIGN_WINDOW_SECONDS, isPrmS3ImageUrl } from "../prm-s3";
-import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl, getLocalMediaPath } from "../local-storage";
+import { deleteImageFromS3 } from "../s3";
+import { deleteImageFromPrmS3, getPrmS3ObjectStream, getPrmS3PublicUrl, PRM_S3_PRESIGN_WINDOW_SECONDS, isPrmS3ImageUrl } from "../prm-s3";
+import { deleteImageLocally, getLocalImagePath, isLocalImageUrl, getLocalMediaPath } from "../local-storage";
+import { uploadImage } from "../image-storage";
 import { hashPassword, requireAuth, requireAdmin, publicUser, authenticateExtensionToken } from "../auth";
 import { runAsUser } from "../access";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
@@ -199,31 +200,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "No image file provided" });
         }
 
-        let storageMode = "s3";
-        if (req.isAuthenticated() && req.user) {
-          storageMode = await storage.getImageStorageMode(req.user.id);
-        }
-
-        let imageUrl: string;
-        if (storageMode === "local") {
-          imageUrl = await uploadImageLocally(
-            req.file.buffer,
-            req.file.originalname,
-            req.file.mimetype
-          );
-        } else if (storageMode === "prm-s3") {
-          imageUrl = await uploadImageToPrmS3(
-            req.file.buffer,
-            req.file.originalname,
-            req.file.mimetype
-          );
-        } else {
-          imageUrl = await uploadImageToS3(
-            req.file.buffer,
-            req.file.originalname,
-            req.file.mimetype
-          );
-        }
+        const imageUrl = await uploadImage(req.file.buffer, req.file.originalname, req.file.mimetype);
   
         // Register in photos table — callers pass prmLocation to identify where this image is used
         const prmLocation = (req.body?.prmLocation as string) || "unknown";
@@ -3220,7 +3197,6 @@ export function registerRoutes(app: Express) {
           "stories_run_window",
           "stories_run_every_days",
           "stories_skip_day_probability",
-          "stories_image_storage",
           "stories_next_run_at",
           "tracking_level_defaults",
           "tracking_skip_recent",

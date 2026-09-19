@@ -224,7 +224,7 @@ export default function SocialAccountProfile() {
       const loaded = (lastPage.page - 1) * lastPage.limit + lastPage.items.length;
       return loaded < lastPage.total ? lastPage.page + 1 : undefined;
     },
-    enabled: !!uuid,
+    enabled: !!uuid && activeTab === "follow",
   });
 
   const {
@@ -244,7 +244,7 @@ export default function SocialAccountProfile() {
       const loaded = (lastPage.page - 1) * lastPage.limit + lastPage.items.length;
       return loaded < lastPage.total ? lastPage.page + 1 : undefined;
     },
-    enabled: !!uuid,
+    enabled: !!uuid && activeTab === "follow",
   });
 
   // Full follower/following id lists for membership checks and the link dialog
@@ -263,10 +263,10 @@ export default function SocialAccountProfile() {
   const followingList = followingData?.pages.flatMap((p) => p.items) ?? [];
   const followingTotal = followingData?.pages[0]?.total ?? 0;
 
-  // Query posts for this social account
+  // Query posts for this social account lazily when posts or stories tab is active
   const { data: allPosts, isLoading: isPostsLoading } = useQuery<SocialAccountPost[]>({
     queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"],
-    enabled: !!uuid,
+    enabled: !!uuid && (activeTab === "posts" || activeTab === "stories" || isPostDetailOpen),
   });
   type PostSortOption = "newest" | "oldest" | "popular";
   const [postSort, setPostSort] = useState<PostSortOption>(() => {
@@ -337,7 +337,7 @@ export default function SocialAccountProfile() {
   const jobsKey = [`/api/social-accounts/${uuid}/tracking-jobs`];
   const { data: trackingJobs } = useQuery<TrackingJob[]>({
     queryKey: jobsKey,
-    enabled: !!uuid,
+    enabled: !!uuid && (activeTab === "posts" || activeTab === "stories"),
     refetchInterval: (query) => {
       const data = query.state.data as TrackingJob[] | undefined;
       const hasOpen = data?.some((j) => j.status === "queued" || j.status === "running");
