@@ -1,6 +1,7 @@
 import { Link } from "wouter";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/utils";
+import { withImageSize } from "@shared/image-size";
 
 /**
  * An account as a row: avatar plus a link to its profile.
@@ -13,19 +14,16 @@ export function SocialAccountRow({
   id,
   username,
   imageUrl,
-  imageUrlHq,
   testIdPrefix,
   onNavigate,
 }: {
   id: string;
   username: string;
   imageUrl?: string | null;
-  imageUrlHq?: string | null;
   testIdPrefix: string;
   onNavigate?: () => void;
 }) {
-  const primary = imageUrlHq ?? imageUrl;
-  const fallback = imageUrlHq ? imageUrl : undefined;
+  const avatarSrc = withImageSize(imageUrl, 64);
 
   return (
     <div
@@ -33,10 +31,9 @@ export function SocialAccountRow({
       data-testid={`card-${testIdPrefix}-${id}`}
     >
       <Avatar className="w-8 h-8">
-        {primary && (
+        {avatarSrc && (
           <AvatarImage
-            src={primary}
-            fallbackSrc={fallback ?? undefined}
+            src={avatarSrc}
             alt={username}
           />
         )}

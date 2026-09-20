@@ -18,7 +18,7 @@ import { db } from "../db";
 import { storage } from "../storage";
 import { requireAdmin } from "../auth";
 import { runAsSystem } from "../access";
-import { uploadImage, uploadMedia } from "../image-storage";
+import { uploadStoryImage, uploadMedia } from "../prm-s3";
 import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, isAdminRole, type StoryImporter } from "@shared/schema";
 import { generateDeterministicUuid } from "./social-media";
 import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
@@ -204,7 +204,7 @@ export function registerStories(app: Express) {
         const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
         let imageUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
         if (!imageUrl) {
-          imageUrl = await uploadImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
+          imageUrl = await uploadStoryImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
         }
 
         // The video is a bonus on top of the cover frame: if storing it fails the story is still kept.

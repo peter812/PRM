@@ -1,14 +1,17 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, ListBucketsCommand, CreateBucketCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
-import { newUploadName, type UploadKind } from "./upload-names";
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadBucketCommand, ListBucketsCommand, CreateBucketCommand, ListObjectsV2Command, CopyObjectCommand } from "@aws-sdk/client-s3";
+import { withImageSize, type ImageSize } from "@shared/image-size";
+import { newUploadName, type UploadKind, type ImageCategory } from "./upload-names";
 import crypto from "crypto";
 import { Readable } from "stream";
-import fs from "fs";
-import path from "path";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { storage } from "./storage";
-import { isLocalImageUrl, getLocalImagePath, isLocalMediaUrl, getLocalMediaPath } from "./local-storage";
-import { isS3ImageUrl, getS3ObjectBuffer, ObjectMissingError, STORAGE_KEY_PREFIXES } from "./s3";
+
+/** The only key prefixes this app writes; deletes and sweeps never reach outside them. */
+export const STORAGE_KEY_PREFIXES = ["images/", "profiles/", "posts/", "stories/", "media/", "faces/"];
+
+/** A referenced object that no longer exists in PRM-S3: dead, not retryable. */
+export class ObjectMissingError extends Error {}
 
 // PRM-S3 is reachable at two addresses (see PRM-s3/config.example.toml):
 //   ENDPOINT        internal/LAN address used by this server and other tools
@@ -150,6 +153,7 @@ export async function setPrmS3Config(config: {
   presignedUrlCache.clear();
   presignedUrlCacheWindow = "";
   signingKeyCache.clear();
+  healthCache = null;
 }
 
 /**
@@ -213,11 +217,18 @@ function getSigningKey(secretAccessKey: string, scopeDate: string, region: strin
 }
 
 /**
- * Presigned GET URL for `key` on the public endpoint. The signing time is
+ * Presigned GET URL for `key` on the public endpoint (or `opts.endpoint`,
+ * e.g. the internal one for server-side fetches). The signing time is
  * rounded down to PRM_S3_PRESIGN_WINDOW_SECONDS, so the result is stable
  * within a window and valid for at least one more window (TTL - window).
+ * An empty key signs the bucket itself; `opts.query` adds signed parameters
+ * (e.g. `{ stats: "" }` for the PRM-S3 bucket stats extension).
  */
-export function presignPrmS3PublicUrl(cfg: PrmS3Config, key: string, nowMs: number = Date.now()): string {
+export function presignPrmS3PublicUrl(
+  cfg: PrmS3Config,
+  key: string,
+  { endpoint = cfg.publicEndpoint, nowMs = Date.now(), query: extraQuery = {} }: { endpoint?: string; nowMs?: number; query?: Record<string, string> } = {},
+): string {
   const windowStart = Math.floor(nowMs / 1000 / PRM_S3_PRESIGN_WINDOW_SECONDS) * PRM_S3_PRESIGN_WINDOW_SECONDS;
   const amzDate = new Date(windowStart * 1000).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
 
@@ -225,16 +236,19 @@ export function presignPrmS3PublicUrl(cfg: PrmS3Config, key: string, nowMs: numb
     presignedUrlCache.clear();
     presignedUrlCacheWindow = amzDate;
   }
-  const cached = presignedUrlCache.get(key);
+  const cacheKey = `${endpoint}|${key}|${JSON.stringify(extraQuery)}`;
+  const cached = presignedUrlCache.get(cacheKey);
   if (cached) return cached;
 
   const scopeDate = amzDate.slice(0, 8);
   const scope = `${scopeDate}/${cfg.region}/s3/aws4_request`;
-  const base = new URL(normalizeEndpointUrl(cfg.publicEndpoint, "https"));
+  const defaultScheme = endpoint && endpoint === cfg.publicEndpoint ? "https" : "http";
+  const base = new URL(normalizeEndpointUrl(endpoint, defaultScheme));
   const basePath = base.pathname.replace(/\/+$/, "");
-  const canonicalUri = `${basePath}/${[cfg.bucket, ...key.split("/")].map(uriEncode).join("/")}`;
+  const canonicalUri = `${basePath}/${[cfg.bucket, ...(key ? key.split("/") : [])].map(uriEncode).join("/")}`;
 
   const query = [
+    ...Object.entries(extraQuery),
     ["X-Amz-Algorithm", "AWS4-HMAC-SHA256"],
     ["X-Amz-Credential", `${cfg.accessKeyId}/${scope}`],
     ["X-Amz-Date", amzDate],
@@ -253,8 +267,49 @@ export function presignPrmS3PublicUrl(cfg: PrmS3Config, key: string, nowMs: numb
     .digest("hex");
 
   const url = `${base.protocol}//${base.host}${canonicalUri}?${query}&X-Amz-Signature=${signature}`;
-  if (presignedUrlCache.size < PRESIGNED_URL_CACHE_MAX) presignedUrlCache.set(key, url);
+  if (presignedUrlCache.size < PRESIGNED_URL_CACHE_MAX) presignedUrlCache.set(cacheKey, url);
   return url;
+}
+
+export type PrmS3BucketStats = {
+  objects: number;
+  images: number;
+  videos: number;
+  variants: number;
+  objectBytes: number;
+  variantBytes: number;
+};
+
+/** Object and baked-variant counts for the whole bucket (PRM-S3 `?stats` extension). */
+export async function getPrmS3BucketStats(): Promise<PrmS3BucketStats> {
+  const cfg = await getPrmS3Config();
+  const res = await fetch(presignPrmS3PublicUrl(cfg, "", { endpoint: cfg.endpoint, query: { stats: "" } }));
+  if (!res.ok) throw new Error(`PRM-S3 stats failed: ${res.status} ${await res.text()}`);
+  return (await res.json()) as PrmS3BucketStats;
+}
+
+export async function copyPrmS3ObjectInPlace(key: string, contentType: string = "image/jpeg"): Promise<void> {
+  const { client, bucket } = await getPrmS3Client();
+  await client.send(
+    new CopyObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      CopySource: `${bucket}/${key}`,
+      MetadataDirective: "REPLACE",
+      ContentType: contentType,
+    }),
+  );
+}
+
+export async function isPrmS3VariantBaked(key: string, size: ImageSize = 64): Promise<{ baked: boolean; contentType: string }> {
+  const cfg = await getPrmS3Config();
+  const url = withImageSize(presignPrmS3PublicUrl(cfg, key, { endpoint: cfg.endpoint }), size);
+  const res = await fetch(url, { method: "HEAD" });
+  const ct = res.headers.get("content-type") || "";
+  return {
+    baked: res.ok && ct.includes("image/webp"),
+    contentType: ct,
+  };
 }
 
 /**
@@ -304,8 +359,29 @@ export async function testPrmS3Connection(): Promise<{ ok: boolean; message: str
   }
 }
 
-async function putObject(kind: UploadKind, buffer: Buffer, originalFilename: string, mimeType: string): Promise<string> {
-  const { key } = newUploadName(kind, originalFilename, mimeType);
+// Health is polled by every open browser tab; one probe per window serves
+// them all, and the probe is bounded so a dead host can't hang the request.
+const HEALTH_CACHE_MS = 10_000;
+const HEALTH_PROBE_TIMEOUT_MS = 5_000;
+let healthCache: { at: number; result: { ok: boolean; message: string } } | null = null;
+
+/** Cheap liveness probe of the configured PRM-S3 bucket for the UI's status indicator. */
+export async function checkPrmS3Health(): Promise<{ ok: boolean; message: string }> {
+  if (healthCache && Date.now() - healthCache.at < HEALTH_CACHE_MS) return healthCache.result;
+  let result: { ok: boolean; message: string };
+  try {
+    const { client, bucket, endpoint } = await getPrmS3Client();
+    await client.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS) });
+    result = { ok: true, message: `Connected to PRM-S3 at ${endpoint}` };
+  } catch (error: any) {
+    result = { ok: false, message: error?.message || "PRM-S3 is unreachable" };
+  }
+  healthCache = { at: Date.now(), result };
+  return result;
+}
+
+async function putObject(kind: UploadKind, buffer: Buffer, originalFilename: string, mimeType: string, category?: ImageCategory): Promise<string> {
+  const { key } = newUploadName(kind, originalFilename, mimeType, category);
   const { client, bucket } = await getPrmS3Client();
   await ensureBucketExists(client, bucket);
   await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: buffer, ContentType: mimeType }));
@@ -320,19 +396,69 @@ export function uploadMediaToPrmS3(buffer: Buffer, originalFilename: string, mim
   return putObject("media", buffer, originalFilename, mimeType);
 }
 
+export const uploadImage = uploadImageToPrmS3;
+export const uploadMedia = uploadMediaToPrmS3;
+
+export function uploadStoryImage(buffer: Buffer, filename: string, mime: string): Promise<string> {
+  return putObject("image", buffer, filename, mime, "story");
+}
+export function uploadPostImage(buffer: Buffer, filename: string, mime: string): Promise<string> {
+  return putObject("image", buffer, filename, mime, "post");
+}
+export function uploadProfileImage(buffer: Buffer, filename: string, mime: string): Promise<string> {
+  return putObject("image", buffer, filename, mime, "profile");
+}
+
+export async function putPrmS3Object(keyOrUrl: string, buffer: Buffer, mimeType: string): Promise<string> {
+  const key = normalizePrmS3Key(keyOrUrl);
+  if (key.includes("..") || !STORAGE_KEY_PREFIXES.some((p) => key.startsWith(p))) {
+    throw new Error(`Access denied: Can only write objects under ${STORAGE_KEY_PREFIXES.join(", ")}`);
+  }
+  const { client, bucket } = await getPrmS3Client();
+  await ensureBucketExists(client, bucket);
+  await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: buffer, ContentType: mimeType }));
+  return `/api/prm-s3/${key}`;
+}
+
+/**
+ * Tells PRM-compute the face-crop bucket may have changed. Compute reads the
+ * PRM-S3 credentials straight from app_settings (its DB is this one), so this
+ * only pings POST /api/face/storage/reload; nothing is sent in the body.
+ */
+export async function syncFaceCropStorage(): Promise<void> {
+  const apiUrl = (await storage.getAppSetting("prm_compute_api_url")) || (await storage.getAppSetting("prm_face_api_url"));
+  const apiKey = (await storage.getAppSetting("prm_compute_api_key")) || (await storage.getAppSetting("prm_face_api_key"));
+  if (!apiUrl || !apiKey) return;
+
+  await setPrmS3Config(await getPrmS3Config());
+
+  try {
+    const response = await fetch(`${apiUrl.replace(/\/+$/, "")}/api/face/storage/reload`, {
+      method: "POST",
+      headers: { "X-API-Key": apiKey },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) {
+      console.error(`syncFaceCropStorage: PRM-compute rejected PRM-S3 storage: ${await response.text()}`);
+    }
+  } catch (err: any) {
+    console.error(`syncFaceCropStorage: could not reach PRM-compute: ${err.message}`);
+  }
+}
+
 export function normalizePrmS3Key(keyOrUrl: string): string {
-  const proxy = keyOrUrl.match(/^\/api\/prm-s3\/(images|media|faces)\/([^/?#]+)/);
+  const proxy = keyOrUrl.match(/^\/api\/prm-s3\/(images|profiles|posts|stories|media|faces)\/([^/?#]+)/);
   if (proxy) return `${proxy[1]}/${proxy[2]}`;
   // Absolute (possibly presigned) urls and bare keys under any prefix we write.
   // Anchored on the object name so a bucket also called "images" isn't taken
   // for the prefix (http://host/images/faces/x.jpg -> faces/x.jpg).
-  const match = keyOrUrl.match(/(?:^|\/)(images|media|faces)\/([^/?#]+)(?=[?#]|$)/);
+  const match = keyOrUrl.match(/(?:^|\/)(images|profiles|posts|stories|media|faces)\/([^/?#]+)(?=[?#]|$)/);
   return match ? `${match[1]}/${match[2]}` : keyOrUrl;
 }
 
 export async function deleteImageFromPrmS3(imageUrl: string): Promise<void> {
   const key = normalizePrmS3Key(imageUrl);
-  if (key.includes("..") || (!key.startsWith("images/") && !key.startsWith("faces/"))) {
+  if (key.includes("..") || !STORAGE_KEY_PREFIXES.some(p => key.startsWith(p))) {
     throw new Error("Access denied: Can only delete objects in images/ or faces/ folder");
   }
   const { client, bucket } = await getPrmS3Client();
@@ -354,11 +480,11 @@ export async function deleteMediaFromPrmS3(mediaUrl: string): Promise<void> {
   }));
 }
 
-/** Every object key in the PRM-S3 bucket under STORAGE_KEY_PREFIXES. */
-export async function listPrmS3ObjectKeys(): Promise<string[]> {
+/** Every object key in the PRM-S3 bucket under prefixes (defaults to STORAGE_KEY_PREFIXES). */
+export async function listPrmS3ObjectKeys(prefixes: readonly string[] | string[] = STORAGE_KEY_PREFIXES): Promise<string[]> {
   const { client, bucket } = await getPrmS3Client();
   const keys: string[] = [];
-  for (const Prefix of STORAGE_KEY_PREFIXES) {
+  for (const Prefix of prefixes) {
     let ContinuationToken: string | undefined;
     do {
       const res = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix, ContinuationToken }));
@@ -432,8 +558,7 @@ export function isPrmS3ImageUrl(url: string): boolean {
 }
 
 export function isStoredImageUrl(url: string): boolean {
-  if (!url) return false;
-  return isLocalImageUrl(url) || isPrmS3ImageUrl(url) || isS3ImageUrl(url);
+  return isPrmS3ImageUrl(url);
 }
 
 const MAX_EXTERNAL_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -523,30 +648,11 @@ async function readCappedBuffer(response: Response, maxBytes: number = MAX_EXTER
 export async function fetchImageBuffer(location: string): Promise<{ buffer: Buffer; mimeType: string }> {
   if (!location) throw new Error("Empty image location");
 
-  // 1. Local storage
-  if (isLocalImageUrl(location)) {
-    const fileName = location.split("/api/images/").pop() || "";
-    const filePath = getLocalImagePath(fileName);
-    if (!filePath || !fs.existsSync(filePath)) {
-      throw new ObjectMissingError(`Local image not found: ${fileName}`);
-    }
-    const buffer = fs.readFileSync(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const mimeType = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
-    return { buffer, mimeType };
-  }
-
-  // 2. PRM-S3 storage
   if (isPrmS3ImageUrl(location)) {
     return await getPrmS3ObjectBuffer(location);
   }
 
-  // 3. Our standard S3 bucket, read with credentials (objects are not public)
-  if (isS3ImageUrl(location)) {
-    return await getS3ObjectBuffer(location);
-  }
-
-  // 4. External URL (SSRF-guarded, redirect-checked, timed out, and capped)
+  // External URL (SSRF-guarded, redirect-checked, timed out, and capped)
   let targetUrl = await assertSafeExternalUrl(location);
   let res: Response;
 

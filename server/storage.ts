@@ -152,12 +152,11 @@ import {
 import { computeFamilyLabels } from "./family-relations-helper";
 import { visibleShared, ownedByCurrentUser, currentAccess, actingUserId } from "./access";
 import { db, pool } from "./db";
+import { legacyHqImageUrls } from "./db-init";
 import { eq, ne, or, and, ilike, sql, inArray, notInArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
-import { deleteImageLocally, isLocalImageUrl } from "./local-storage";
-import { deleteImageFromS3 } from "./s3";
-import { deleteImageFromPrmS3, isPrmS3ImageUrl } from "./prm-s3";
+import { deleteImageFromPrmS3, isPrmS3ImageUrl, deletePrmS3ObjectKey, normalizePrmS3Key } from "./prm-s3";
 import { syncEntityInBackground, deleteEntityVector } from "./vector-universal";
 
 function safeActingUserId(): number | undefined {
@@ -429,7 +428,12 @@ export interface IStorage {
   createSocialAccount(account: InsertSocialAccount): Promise<SocialAccountWithCurrentProfile>;
   updateSocialAccount(id: string, account: Partial<InsertSocialAccount>): Promise<SocialAccount | undefined>;
   deleteSocialAccount(id: string): Promise<void>;
-  deleteAllSocialAccounts(): Promise<number>;
+  deleteAllSocialAccounts(options?: { deleteMedia?: boolean }): Promise<{
+    deleted: number;
+    deletedPosts?: number;
+    deletedPhotos?: number;
+    deletedFiles?: number;
+  }>;
   removeDuplicateSocialAccounts(): Promise<number>;
 
   // V1 Social account search/bulk operations
@@ -2439,9 +2443,9 @@ export class DatabaseStorage implements IStorage {
       db.select({ id: notes.id, imageUrl: notes.imageUrl }).from(notes),
       db.select({ id: interactions.id, imageUrl: interactions.imageUrl }).from(interactions),
       db.select({ id: groups.id, imageUrl: groups.imageUrl }).from(groups),
-      db.select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq }).from(socialAccounts),
+      db.select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl }).from(socialAccounts),
       db.select({ id: socialProfileVersions.id, imageUrl: socialProfileVersions.imageUrl }).from(socialProfileVersions),
-      db.select({ id: socialAccountHistory.id, previousImageUrl: socialAccountHistory.previousImageUrl, previousImageUrlHq: socialAccountHistory.previousImageUrlHq }).from(socialAccountHistory),
+      db.select({ id: socialAccountHistory.id, previousImageUrl: socialAccountHistory.previousImageUrl }).from(socialAccountHistory),
       db.select({ id: faces.id, s3Url: faces.s3Url }).from(faces),
       db.select({ id: socialAccountPosts.id, content: socialAccountPosts.content, videoUrl: sql<string | null>`${socialAccountPosts.metadata}->>'videoUrl'` }).from(socialAccountPosts),
     ]);
@@ -2464,7 +2468,6 @@ export class DatabaseStorage implements IStorage {
 
     for (const row of socialAccountRows) {
       if (row.imageUrl) results.push({ table: "social_accounts", id: row.id, column: "imageUrl", url: row.imageUrl });
-      if (row.imageUrlHq) results.push({ table: "social_accounts", id: row.id, column: "imageUrlHq", url: row.imageUrlHq });
     }
 
     for (const row of versionRows) {
@@ -2473,7 +2476,6 @@ export class DatabaseStorage implements IStorage {
 
     for (const row of historyRows) {
       if (row.previousImageUrl) results.push({ table: "social_account_history", id: row.id, column: "previousImageUrl", url: row.previousImageUrl });
-      if (row.previousImageUrlHq) results.push({ table: "social_account_history", id: row.id, column: "previousImageUrlHq", url: row.previousImageUrlHq });
     }
 
     for (const row of faceRows) {
@@ -2519,19 +2521,13 @@ export class DatabaseStorage implements IStorage {
         await db.update(groups).set({ imageUrl: newUrl }).where(eq(groups.id, id));
         break;
       case "social_accounts":
-        await db
-          .update(socialAccounts)
-          .set(column === "imageUrlHq" ? { imageUrlHq: newUrl } : { imageUrl: newUrl })
-          .where(eq(socialAccounts.id, id));
+        await db.update(socialAccounts).set({ imageUrl: newUrl }).where(eq(socialAccounts.id, id));
         break;
       case "social_profile_versions":
         await db.update(socialProfileVersions).set({ imageUrl: newUrl }).where(eq(socialProfileVersions.id, id));
         break;
       case "social_account_history":
-        await db
-          .update(socialAccountHistory)
-          .set(column === "previousImageUrlHq" ? { previousImageUrlHq: newUrl } : { previousImageUrl: newUrl })
-          .where(eq(socialAccountHistory.id, id));
+        await db.update(socialAccountHistory).set({ previousImageUrl: newUrl }).where(eq(socialAccountHistory.id, id));
         break;
       case "faces":
         await db.update(faces).set({ s3Url: newUrl! }).where(eq(faces.id, id));
@@ -3265,7 +3261,7 @@ export class DatabaseStorage implements IStorage {
         bio: account.bio,
         accountUrl: account.accountUrl,
         imageUrl: account.imageUrl,
-        imageUrlHq: account.imageUrlHq,
+        isHqImage: account.isHqImage ?? false,
         externalImageUrl: account.externalImageUrl,
         detectedAt: account.lastScrapedAt ?? account.internalAccountCreationDate,
         isCurrent: true,
@@ -3529,15 +3525,139 @@ export class DatabaseStorage implements IStorage {
     await db.delete(socialAccounts).where(and(eq(socialAccounts.id, id), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
   }
 
-  async deleteAllSocialAccounts(): Promise<number> {
+  async deleteAllSocialAccounts(options: { deleteMedia?: boolean } = {}): Promise<{
+    deleted: number;
+    deletedPosts?: number;
+    deletedPhotos?: number;
+    deletedFiles?: number;
+  }> {
+    const { deleteMedia = false } = options;
+
     const allAccounts = await db.select().from(socialAccounts);
     const count = allAccounts.length;
+    if (count === 0) {
+      return { deleted: 0, deletedPosts: 0, deletedPhotos: 0, deletedFiles: 0 };
+    }
 
+    const allPosts = await db.select().from(socialAccountPosts);
+    const postIds = allPosts.map(p => p.id);
+
+    let deletedPhotos = 0;
+    let deletedFiles = 0;
+
+    if (deleteMedia) {
+      const urlsToDelete = new Set<string>();
+
+      // 1. Current profile image URLs
+      for (const acc of allAccounts) {
+        if (acc.imageUrl) urlsToDelete.add(acc.imageUrl);
+      }
+
+      // 2. Past profile image URLs from history
+      const historyRows = await db
+        .select({ previousImageUrl: socialAccountHistory.previousImageUrl })
+        .from(socialAccountHistory)
+        .where(isNotNull(socialAccountHistory.previousImageUrl));
+      for (const h of historyRows) {
+        if (h.previousImageUrl) urlsToDelete.add(h.previousImageUrl);
+      }
+
+      // 3. Post images and videos from all posts (posts, carousels, reels, stories, deleted posts)
+      for (const post of allPosts) {
+        if (post.content) {
+          try {
+            const parsed = JSON.parse(post.content);
+            if (Array.isArray(parsed)) {
+              for (const u of parsed) {
+                if (typeof u === "string" && u) urlsToDelete.add(u);
+              }
+            } else if (typeof parsed === "string") {
+              urlsToDelete.add(parsed);
+            }
+          } catch {
+            urlsToDelete.add(post.content);
+          }
+        }
+        if (post.metadata && typeof post.metadata === "object") {
+          const meta = post.metadata as Record<string, unknown>;
+          if (typeof meta.videoUrl === "string" && meta.videoUrl) {
+            urlsToDelete.add(meta.videoUrl);
+          }
+        }
+      }
+
+      // 4. Find all photos rows associated with these social accounts and posts
+      const accountIds = allAccounts.map(a => a.id);
+      const profileLocations = accountIds.map(id => `profile_image:${id}`);
+      const socialProfileLocations = accountIds.map(id => `social_profile_image:${id}`);
+      const postLocations = postIds.map(id => `post:${id}`);
+      const allTargetLocations = [...profileLocations, ...socialProfileLocations, ...postLocations];
+
+      const photosToDelete: Photo[] = [];
+      const batchSize = 500;
+      for (let i = 0; i < allTargetLocations.length; i += batchSize) {
+        const batch = allTargetLocations.slice(i, i + batchSize);
+        const found = await db.select().from(photos).where(inArray(photos.prmLocation, batch));
+        photosToDelete.push(...found);
+      }
+
+      // Also grab any photos with instagram sources that might not have matched exact post/profile location
+      const igPhotos = await db.select().from(photos).where(
+        sql`${photos.ogMetadata}->>'source' IN ('instagram-post', 'instagram-story')`
+      );
+      for (const p of igPhotos) {
+        if (!photosToDelete.some(existing => existing.id === p.id)) {
+          photosToDelete.push(p);
+        }
+      }
+
+      for (const photo of photosToDelete) {
+        if (photo.location) urlsToDelete.add(photo.location);
+      }
+
+      // 5. Delete all collected URLs from PRM-S3
+      for (const rawUrl of urlsToDelete) {
+        if (isPrmS3ImageUrl(rawUrl)) {
+          try {
+            const key = normalizePrmS3Key(rawUrl);
+            await deletePrmS3ObjectKey(key);
+            deletedFiles++;
+          } catch (err: any) {
+            console.warn(`[storage] deleteAllSocialAccounts: error deleting file ${rawUrl}:`, err?.message || err);
+          }
+        }
+      }
+
+      // 6. Delete photos rows from DB (faces & image_questions cascade automatically)
+      if (photosToDelete.length > 0) {
+        const photoIds = photosToDelete.map(p => p.id);
+        for (let i = 0; i < photoIds.length; i += batchSize) {
+          const idBatch = photoIds.slice(i, i + batchSize);
+          await db.delete(photos).where(inArray(photos.id, idBatch));
+        }
+        deletedPhotos = photosToDelete.length;
+      }
+    }
+
+    // 7. Delete vector points for deleted social accounts
+    for (const acc of allAccounts) {
+      if (acc.vectorId) {
+        void deleteEntityVector("social_account", acc.vectorId);
+      }
+    }
+
+    // 8. Clear people social account links
     await db.update(people).set({ socialAccountUuids: [] });
 
+    // 9. Delete social accounts (cascades to posts, post comments, history, follows, etc.)
     await db.delete(socialAccounts);
 
-    return count;
+    return {
+      deleted: count,
+      deletedPosts: allPosts.length,
+      deletedPhotos,
+      deletedFiles,
+    };
   }
 
   async removeDuplicateSocialAccounts(): Promise<number> {
@@ -3982,7 +4102,7 @@ export class DatabaseStorage implements IStorage {
         username: socialAccounts.username,
         nickname: socialAccounts.nickname,
         imageUrl: socialAccounts.imageUrl,
-        imageUrlHq: socialAccounts.imageUrlHq,
+        isHqImage: socialAccounts.isHqImage,
       })
       .from(socialAccounts)
       .where(and(inArray(socialAccounts.id, unique), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
@@ -4070,7 +4190,6 @@ export class DatabaseStorage implements IStorage {
         previousBio: socialAccountHistory.previousBio,
         previousLocation: socialAccountHistory.previousLocation,
         previousImageUrl: socialAccountHistory.previousImageUrl,
-        previousImageUrlHq: socialAccountHistory.previousImageUrlHq,
         imageChange: socialAccountHistory.imageChange,
       })
       .from(socialAccountHistory)
@@ -4885,7 +5004,6 @@ export class DatabaseStorage implements IStorage {
 
       // 2. If it's a profile image (profile_image:<socialAccountId>), find parent HQ photo
       if (subImage.prmLocation?.startsWith("profile_image:")) {
-        const saId = subImage.prmLocation.replace("profile_image:", "").trim();
         const [hqPhoto] = await db
           .select()
           .from(photos)
@@ -4899,12 +5017,6 @@ export class DatabaseStorage implements IStorage {
           .orderBy(desc(photos.widthPx))
           .limit(1);
         if (hqPhoto) return hqPhoto;
-
-        const sa = await this.getSocialAccountById(saId);
-        if (sa?.currentProfile?.imageUrlHq) {
-          const parentByLoc = await this.getPhotoByLocation(sa.currentProfile.imageUrlHq);
-          if (parentByLoc) return parentByLoc;
-        }
 
         // Prefer 1080 version (with the 150 as a backup)
         // If no HQ photo exists, return the subImage (150 version) itself as the backup
@@ -5290,9 +5402,11 @@ export class DatabaseStorage implements IStorage {
       db.select({ imageUrl: notes.imageUrl, imageUuid: notes.imageUuid }).from(notes),
       db.select({ imageUrl: interactions.imageUrl, imageUuid: interactions.imageUuid }).from(interactions),
       db.select({ imageUrl: groups.imageUrl }).from(groups),
-      db.select({ imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq, externalImageUrl: socialAccounts.externalImageUrl }).from(socialAccounts),
+      db.select({ imageUrl: socialAccounts.imageUrl, externalImageUrl: socialAccounts.externalImageUrl }).from(socialAccounts),
       db.select({ content: socialAccountPosts.content }).from(socialAccountPosts),
     ]);
+    // The 1080s still parked in the retired _hq columns are active until the tier migration moves them.
+    const legacyHq = await legacyHqImageUrls();
 
     for (const r of peopleRows) if (r.imageUrl) activeUrls.add(r.imageUrl);
     for (const r of noteRows) {
@@ -5306,9 +5420,10 @@ export class DatabaseStorage implements IStorage {
     for (const r of groupRows) if (r.imageUrl) activeUrls.add(r.imageUrl);
     for (const r of profileRows) {
       if (r.imageUrl) activeUrls.add(r.imageUrl);
-      if (r.imageUrlHq) activeUrls.add(r.imageUrlHq);
       if (r.externalImageUrl) activeUrls.add(r.externalImageUrl);
     }
+    for (const r of legacyHq.accounts) activeUrls.add(r.imageUrlHq);
+    for (const r of legacyHq.history) activeUrls.add(r.previousImageUrlHq);
     for (const r of postRows) {
       if (r.content) {
         try {
@@ -5362,16 +5477,10 @@ export class DatabaseStorage implements IStorage {
     const deletedPhotosList: Array<{ id: string; location: string; vectorId: string | null }> = [];
 
     for (const orphan of orphans) {
-      // Try to delete physical file from local or S3
+      // Delete the physical file; external (non-PRM-S3) locations have nothing to delete
       try {
-        if (isLocalImageUrl(orphan.location)) {
-          await deleteImageLocally(orphan.location);
-          filesDeleted++;
-        } else if (isPrmS3ImageUrl(orphan.location)) {
+        if (isPrmS3ImageUrl(orphan.location)) {
           await deleteImageFromPrmS3(orphan.location);
-          filesDeleted++;
-        } else if (orphan.location.includes(process.env.S3_BUCKET || '')) {
-          await deleteImageFromS3(orphan.location);
           filesDeleted++;
         }
       } catch (err) {
@@ -5429,6 +5538,11 @@ export class DatabaseStorage implements IStorage {
         .returning({ id: people.id })
     ).length;
 
+    await db
+      .update(socialAccounts)
+      .set({ personfaceUuid: null })
+      .where(isNotNull(socialAccounts.personfaceUuid));
+
     const postsCleared = (
       await db
         .update(socialAccountPosts)
@@ -5467,14 +5581,8 @@ export class DatabaseStorage implements IStorage {
     let filesDeleted = 0;
     for (const photo of pipelinePhotos) {
       try {
-        if (isLocalImageUrl(photo.location)) {
-          await deleteImageLocally(photo.location);
-          filesDeleted++;
-        } else if (isPrmS3ImageUrl(photo.location)) {
+        if (isPrmS3ImageUrl(photo.location)) {
           await deleteImageFromPrmS3(photo.location);
-          filesDeleted++;
-        } else if (photo.location.includes(process.env.S3_BUCKET || "")) {
-          await deleteImageFromS3(photo.location);
           filesDeleted++;
         }
       } catch (err) {

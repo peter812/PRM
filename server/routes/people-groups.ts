@@ -36,10 +36,9 @@ import {
   deriveLineageRole,
 } from "@shared/schema";
 import multer from "multer";
-import { uploadImageToS3, deleteImageFromS3 } from "../s3";
-import { uploadImageLocally, deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
 import { visibleShared, ownedByCurrentUser } from "../access";
 import { hashPassword, requireAuth } from "../auth";
+import { deleteImageFromPrmS3, isPrmS3ImageUrl } from "../prm-s3";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -667,13 +666,13 @@ export function registerRoutes(app: Express) {
         // Get interaction to check for image
         const [interaction] = await db.select().from(interactions).where(eq(interactions.id, id));
         
-        // Delete image from S3 if it exists
-        if (interaction?.imageUrl) {
+        // Delete image from PRM-S3 if it exists and is stored in PRM-S3
+        if (interaction?.imageUrl && isPrmS3ImageUrl(interaction.imageUrl)) {
           try {
-            await deleteImageFromS3(interaction.imageUrl);
+            await deleteImageFromPrmS3(interaction.imageUrl);
           } catch (error) {
-            console.error("Error deleting interaction image from S3:", error);
-            // Continue with deletion even if S3 deletion fails
+            console.error("Error deleting interaction image from PRM-S3:", error);
+            // Continue with deletion even if PRM-S3 deletion fails
           }
         }
         

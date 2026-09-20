@@ -760,7 +760,9 @@ function formatIdle(seconds: number) {
 // "Run on existing" queues the unprocessed backlog through the image task queue.
 type AutoRecognitionKind = "profile" | "post" | "story";
 type AutoRecognitionJob = "face" | "ocr" | "transcribe";
-type AutoRecognitionSettings = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>>;
+type AutoRecognitionSettings = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>> & {
+  profileLink?: { minFacePct: number };
+};
 type BackfillCounts = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, number>>>;
 
 const AUTO_RECOGNITION_SECTIONS: { kind: AutoRecognitionKind; title: string; noun: string; jobs: { job: AutoRecognitionJob; label: string; hint: string }[] }[] = [
@@ -784,15 +786,19 @@ const JOB_NOUN: Record<AutoRecognitionJob, string> = { face: "facial recognition
 function AutoRecognitionCard() {
   const { toast } = useToast();
   const [pendingBackfill, setPendingBackfill] = useState<{ kind: AutoRecognitionKind; job: AutoRecognitionJob; count: number } | null>(null);
+  const [minFacePct, setMinFacePct] = useState("");
 
   const { data: settings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
+  useEffect(() => {
+    if (settings?.profileLink) setMinFacePct(String(settings.profileLink.minFacePct));
+  }, [settings?.profileLink?.minFacePct]);
   const { data: counts, isFetching: countsLoading } = useQuery<BackfillCounts>({
     queryKey: ["/api/recognition/auto/backfill-counts"],
     refetchInterval: 30000,
   });
 
   const saveMutation = useMutation({
-    mutationFn: async (update: Partial<AutoRecognitionSettings>) => {
+    mutationFn: async (update: Partial<AutoRecognitionSettings> | { profileLink: { minFacePct: number } }) => {
       const res = await apiRequest("POST", "/api/recognition/auto", update);
       return res.json() as Promise<AutoRecognitionSettings>;
     },
@@ -801,6 +807,23 @@ function AutoRecognitionCard() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update setting", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const associateMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/recognition/auto/associate-profile-faces");
+      return res.json() as Promise<{ examined: number; linked: number; skipped: Record<string, number> }>;
+    },
+    onSuccess: ({ examined, linked, skipped }) => {
+      const skippedText = Object.entries(skipped).map(([reason, n]) => `${n} ${reason.replace(/_/g, " ")}`).join(", ");
+      toast({
+        title: examined ? `Linked ${linked} of ${examined} account${examined === 1 ? "" : "s"}` : "Nothing to associate",
+        description: skippedText ? `Skipped: ${skippedText}.` : examined ? undefined : "Every recognised profile picture is already linked, or has not been recognised yet.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to associate", description: error.message, variant: "destructive" });
     },
   });
 
@@ -867,6 +890,55 @@ function AutoRecognitionCard() {
                 </div>
               );
             })}
+            {section.kind === "profile" && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <p className="text-sm font-medium">Accounts and faces</p>
+                  <p className="text-xs text-muted-foreground">
+                    Link each already-recognised profile picture with one face to its account, without running recognition again.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={associateMutation.isPending}
+                  onClick={() => associateMutation.mutate()}
+                  data-testid="button-associate-profile-faces"
+                >
+                  {associateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Associate"}
+                </Button>
+              </div>
+            )}
+            {section.kind === "profile" && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="profile-link-min-face-pct" className="text-sm font-medium">Min face size to link the account</Label>
+                  <p className="text-xs text-muted-foreground">
+                    A profile picture with exactly one face at least this big (% of the image's shorter side)
+                    is taken to show the account holder, so that face is linked to the account.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Input
+                    id="profile-link-min-face-pct"
+                    type="number"
+                    min={1}
+                    max={100}
+                    className="w-20"
+                    value={minFacePct}
+                    onChange={(e) => setMinFacePct(e.target.value)}
+                    onBlur={() => {
+                      const pct = Number(minFacePct);
+                      if (pct > 0 && pct <= 100 && pct !== settings?.profileLink?.minFacePct) saveMutation.mutate({ profileLink: { minFacePct: pct } });
+                    }}
+                    disabled={!settings || saveMutation.isPending}
+                    data-testid="input-profile-link-min-face-pct"
+                  />
+                  <span className="text-sm text-muted-foreground">%</span>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </CardContent>

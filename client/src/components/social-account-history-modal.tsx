@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { SocialAccountRow } from "@/components/social-account-row";
 import { Link } from "wouter";
 import type { HistoryAccountList, HistoryPostList, SocialAccountHistoryDetail } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 
 /** The account's values today, which is what a previous* value is a change away from. */
 export interface CurrentProfileValues {
@@ -25,7 +26,6 @@ export interface CurrentProfileValues {
   bio?: string | null;
   location?: string | null;
   imageUrl?: string | null;
-  imageUrlHq?: string | null;
   joinedAt?: Date | string | null;
 }
 
@@ -112,17 +112,16 @@ export function SocialAccountHistoryModal({
                 <Section title={entry.imageChange === "improved" ? "Profile image improved" : "Profile image"}>
                   <div className="flex items-center gap-4">
                     {entry.imageChange === "improved" ? (
-                      // Same picture, better copy: the 150 it had against the 1080 it has now.
-                      <>
-                        <ImageSide label="LQ" url={entry.previousImageUrl} />
-                        <span className="text-muted-foreground">→</span>
-                        <ImageSide label="HQ" url={current?.imageUrlHq} fallbackUrl={current?.imageUrl} />
-                      </>
+                      <ImageSide
+                        label="150 → 1080"
+                        url={withImageSize(current?.imageUrl ?? entry.previousImageUrl, "max")}
+                        fallbackUrl={withImageSize(current?.imageUrl ?? entry.previousImageUrl, 150)}
+                      />
                     ) : (
                       <>
-                        <ImageSide label="Before" url={entry.previousImageUrlHq} fallbackUrl={entry.previousImageUrl} />
+                        <ImageSide label="Before" url={withImageSize(entry.previousImageUrl, 150)} />
                         <span className="text-muted-foreground">→</span>
-                        <ImageSide label="Now" url={current?.imageUrlHq} fallbackUrl={current?.imageUrl} />
+                        <ImageSide label="Now" url={withImageSize(current?.imageUrl, 150)} />
                       </>
                     )}
                   </div>
@@ -220,16 +219,13 @@ function ImageSide({
   url?: string | null;
   fallbackUrl?: string | null;
 }) {
-  const primary = url ?? fallbackUrl;
-  const fallback = url ? fallbackUrl : undefined;
-
   return (
     <div className="flex flex-col items-center gap-1">
       <Avatar className="w-14 h-14">
-        {primary && (
+        {url && (
           <AvatarImage
-            src={primary}
-            fallbackSrc={fallback ?? undefined}
+            src={url}
+            fallbackSrc={fallbackUrl ?? undefined}
             alt={label}
           />
         )}
@@ -349,7 +345,6 @@ function AccountList({
             id={account.id}
             username={account.username}
             imageUrl={account.imageUrl}
-            imageUrlHq={account.imageUrlHq}
             testIdPrefix={`history-${testId}`}
             onNavigate={onNavigate}
           />
@@ -392,7 +387,7 @@ function PostSection({
               data-testid={`link-history-${testId}-${post.id}`}
             >
               {post.thumbnailUrl ? (
-                <img src={post.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                <img src={withImageSize(post.thumbnailUrl, 150)} alt="" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <ImageIcon className="h-5 w-5 text-muted-foreground/40" />

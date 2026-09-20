@@ -19,7 +19,7 @@ import { getPrmS3Config, presignPrmS3PublicUrl, normalizeEndpointUrl, type PrmS3
  * rewrite adds no PRM-S3 traffic and no DB reads per response.
  */
 
-const PROXY_PATH_RE = /\/api\/prm-s3\/(images|media|faces)\/([A-Za-z0-9_.-]+)/g;
+const PROXY_PATH_RE = /\/api\/prm-s3\/(images|profiles|posts|stories|media|faces)\/([A-Za-z0-9_.-]+)/g;
 
 // JSON endpoints whose payloads must keep raw storage paths.
 const EXCLUDED_PREFIXES = ["/api/image-storage/"];
@@ -67,6 +67,8 @@ export function rewriteProxyPathsToPublicUrls(body: unknown, cfg: PrmS3Config): 
   );
 }
 
+const PROXY_SIZED_RE = /\/api\/prm-s3\/(images|profiles|posts|stories|media|faces)\/([A-Za-z0-9_.-]+)(?:[?&]s=[^\s"'\\<>]+)/g;
+
 let inboundRe: RegExp | null = null;
 let inboundReKey = "";
 
@@ -77,16 +79,20 @@ function getInboundRegex(cfg: PrmS3Config): RegExp {
     const prefix = `${base.protocol}//${base.host}${base.pathname.replace(/\/+$/, "")}/${cfg.bucket}`;
     const escaped = prefix.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
     // The query stops at whitespace, quotes or a backslash (URLs inside JSON-encoded strings).
-    inboundRe = new RegExp(`${escaped}/(images|media|faces)/([A-Za-z0-9_.-]+)(?:\\?X-Amz-[^\\s"'\\\\<>]*)?`, "g");
+    // Swallows SigV4 parameters and any ?s= / &s= size parameters.
+    inboundRe = new RegExp(`${escaped}/(images|profiles|posts|stories|media|faces)/([A-Za-z0-9_.-]+)(?:\\?[^\\s"'\\\\<>]*)?`, "g");
     inboundReKey = key;
   }
   return inboundRe;
 }
 
 export function normalizePublicUrlsToProxyPaths(body: unknown, cfg: PrmS3Config): unknown {
-  if (!cfg.publicEndpoint) return body;
-  const re = getInboundRegex(cfg);
-  return mapStrings(body, `/${cfg.bucket}/`, (s) => s.replace(re, "/api/prm-s3/$1/$2"));
+  let result = body;
+  if (cfg.publicEndpoint) {
+    const re = getInboundRegex(cfg);
+    result = mapStrings(result, `/${cfg.bucket}/`, (s) => s.replace(re, "/api/prm-s3/$1/$2"));
+  }
+  return mapStrings(result, "/api/prm-s3/", (s) => s.replace(PROXY_SIZED_RE, "/api/prm-s3/$1/$2"));
 }
 
 export async function prmS3DirectMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {

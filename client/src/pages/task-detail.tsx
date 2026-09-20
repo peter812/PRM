@@ -16,9 +16,8 @@ function getTaskLabel(type: string): string {
     case "refresh_follower_count": return "Follower Count Refresh";
     case "mass_refresh_follower_count": return "Mass Follower Count Refresh";
     case "get_img": return "Image Download";
-    case "transfer_images_to_local": return "Transfer Images to Local";
-    case "transfer_images_to_s3": return "Transfer Images to S3";
-    case "backfill_profile_image_tiers": return "Backfill Profile Image Tiers";
+    case "migrate_profile_image_tiers": return "Migrate Profile Image Tiers";
+    case "bake_image_variants": return "Bake Image Variants";
     case "import_social": return "Social Extraction Import";
     case "import_instagram": return "Instagram Import";
     case "import_instagram_backup": return "Instagram Backup Import";

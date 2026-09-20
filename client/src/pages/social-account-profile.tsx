@@ -1,6 +1,6 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation, useSearch } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe, ScanFace } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ import { isValidHexColor, getInitials } from "@/lib/utils";
 import { postPosters } from "@/lib/instagram";
 import { useMutation } from "@tanstack/react-query";
 import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry, TrackingJob } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 import { Link } from "wouter";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ChangeUsernameDialog } from "@/components/change-username-dialog";
@@ -39,6 +40,7 @@ import { PersonDialog } from "@/components/person-dialog";
 import { LinkPersonDialog } from "@/components/link-person-dialog";
 import { PostDialog } from "@/components/post-dialog";
 import { PostDetailDialog } from "@/components/post-detail-dialog";
+import { ProfilePhotoDialog } from "@/components/profile-photo-dialog";
 import { SiInstagram } from "react-icons/si";
 import { MessagesTab } from "@/components/messages-tab";
 import { StoriesTab } from "@/components/stories-tab";
@@ -143,10 +145,11 @@ export default function SocialAccountProfile() {
   });
 
   const [profileImgSrc, setProfileImgSrc] = useState<string | null | undefined>(undefined);
+  const [profilePhotoOpen, setProfilePhotoOpen] = useState(false);
 
   useEffect(() => {
-    setProfileImgSrc(account?.currentProfile?.imageUrlHq ?? account?.currentProfile?.imageUrl ?? null);
-  }, [account?.currentProfile?.imageUrlHq, account?.currentProfile?.imageUrl]);
+    setProfileImgSrc(account?.currentProfile?.imageUrl ?? null);
+  }, [account?.currentProfile?.imageUrl]);
 
   const { data: owner } = useQuery<Person>({
     queryKey: account?.ownerUuid ? [`/api/people/${account.ownerUuid}`] : [],
@@ -612,10 +615,9 @@ export default function SocialAccountProfile() {
               data-testid="link-header-profile-avatar"
             >
               <Avatar className="w-9 h-9">
-                {(account.currentProfile?.imageUrlHq || account.currentProfile?.imageUrl) && (
+                {account.currentProfile?.imageUrl && (
                   <AvatarImage
-                    src={account.currentProfile?.imageUrlHq ?? account.currentProfile?.imageUrl ?? undefined}
-                    fallbackSrc={account.currentProfile?.imageUrl ?? undefined}
+                    src={withImageSize(account.currentProfile.imageUrl, 64)}
                     alt={account.username}
                   />
                 )}
@@ -1026,7 +1028,7 @@ export default function SocialAccountProfile() {
                             }}
                           >
                             {firstImage ? (
-                              <img src={firstImage} alt="Post thumbnail" className="w-full h-full object-cover" />
+                              <img src={withImageSize(firstImage, 360)} alt="Post thumbnail" className="w-full h-full object-cover" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center">
                                 <ImageIcon className="h-6 w-6 text-muted-foreground/40" />
@@ -1081,7 +1083,7 @@ export default function SocialAccountProfile() {
                             data-testid={`overview-story-${story.id}`}
                           >
                             {firstImage ? (
-                              <img src={firstImage} alt="Story thumbnail" className="w-full h-full object-cover" />
+                              <img src={withImageSize(firstImage, 360)} alt="Story thumbnail" className="w-full h-full object-cover" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center">
                                 <ImageIcon className="h-6 w-6 text-muted-foreground/40" />
@@ -1139,15 +1141,9 @@ export default function SocialAccountProfile() {
                 >
                   {profileImgSrc ? (
                     <img
-                      src={profileImgSrc}
+                      src={withImageSize(profileImgSrc, "max")}
                       alt={account.username}
-                      onError={() => {
-                        if (account.currentProfile?.imageUrl && profileImgSrc !== account.currentProfile.imageUrl) {
-                          setProfileImgSrc(account.currentProfile.imageUrl);
-                        } else {
-                          setProfileImgSrc(null);
-                        }
-                      }}
+                      onError={() => setProfileImgSrc(null)}
                       className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
                     />
                   ) : (
@@ -1162,6 +1158,17 @@ export default function SocialAccountProfile() {
                     </Button>
                   </div>
                 </a>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full gap-1.5"
+                  onClick={() => setProfilePhotoOpen(true)}
+                  data-testid="button-profile-photo"
+                >
+                  <ScanFace className="h-4 w-4" />
+                  Profile picture &amp; faces
+                </Button>
+                <ProfilePhotoDialog accountId={account.id} username={account.username} open={profilePhotoOpen} onOpenChange={setProfilePhotoOpen} />
 
                 {/* Account Details Card */}
                 <Card className="p-4 space-y-3 text-xs shadow-none">
@@ -1349,7 +1356,6 @@ export default function SocialAccountProfile() {
                         id={followerAccount.id}
                         username={followerAccount.username}
                         imageUrl={followerAccount.imageUrl}
-                        imageUrlHq={followerAccount.imageUrlHq}
                         testIdPrefix="follower"
                       />
                     ))}
@@ -1404,7 +1410,6 @@ export default function SocialAccountProfile() {
                         id={followingAccount.id}
                         username={followingAccount.username}
                         imageUrl={followingAccount.imageUrl}
-                        imageUrlHq={followingAccount.imageUrlHq}
                         testIdPrefix="following"
                       />
                     ))}
@@ -1520,7 +1525,7 @@ export default function SocialAccountProfile() {
                         <div className="aspect-square bg-muted relative overflow-hidden">
                           {firstImage ? (
                             <img
-                              src={firstImage}
+                              src={withImageSize(firstImage, 360)}
                               alt="Post thumbnail"
                               className="w-full h-full object-cover"
                             />
@@ -1622,7 +1627,6 @@ export default function SocialAccountProfile() {
                 bio: account.bio,
                 location: account.location,
                 imageUrl: account.imageUrl,
-                imageUrlHq: account.imageUrlHq,
                 joinedAt: account.joinedAt,
               }}
               canTrack={accountType?.name?.toLowerCase() === "instagram"}
@@ -1789,7 +1793,6 @@ export default function SocialAccountProfile() {
                             id={a.id}
                             username={a.username}
                             imageUrl={a.imageUrl}
-                            imageUrlHq={a.imageUrlHq}
                             testIdPrefix="followers-only"
                             onNavigate={() => setIsCompareOpen(false)}
                           />
@@ -1813,7 +1816,6 @@ export default function SocialAccountProfile() {
                             id={a.id}
                             username={a.username}
                             imageUrl={a.imageUrl}
-                            imageUrlHq={a.imageUrlHq}
                             testIdPrefix="following-only"
                             onNavigate={() => setIsCompareOpen(false)}
                           />

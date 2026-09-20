@@ -2,29 +2,23 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { HardDrive, Cloud, Server, ArrowRightLeft, Loader2, ImageIcon, Images, TriangleAlert, Database, Trash2, Wrench, CheckCircle2, XCircle } from "lucide-react";
+import { Server, Loader2, ImageIcon, Images, TriangleAlert, Database, Trash2, Wrench, CheckCircle2, XCircle, Sparkles, Video, Files } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-
-type StorageMode = "prm-s3" | "s3" | "local";
-
-type StorageModeResponse = {
-  mode: StorageMode;
-  hasS3Creds: boolean;
-  hasPrmS3Creds: boolean;
-};
+import { formatBytes } from "@/lib/utils";
 
 type ImageStats = {
-  total: number;
-  local: number;
-  s3: number;
-  prmS3: number;
+  images: number; // one per picture, however many sizes are baked
+  videos: number;
+  variants: number;
+  total: number; // every file in PRM-S3: objects + variants
+  objectBytes: number;
+  variantBytes: number;
 };
 
 type PrmS3DeliveryMode = "direct" | "proxy";
@@ -63,23 +57,19 @@ export default function ImageStorageSettingsPage() {
   const { isAdmin } = useAuth();
 
   // Dialog state
-  const [transferConfirm, setTransferConfirm] = useState<{ from: StorageMode; to: StorageMode; count: number } | null>(null);
-  const [switchModeConfirm, setSwitchModeConfirm] = useState<{ targetMode: StorageMode; sourceMode: StorageMode; count: number } | null>(null);
   const [maintenanceConfirm, setMaintenanceConfirm] = useState<"backfill" | "delete-instagram" | "delete-orphans" | null>(null);
 
   // PRM-S3 form state
-  const [prmS3Endpoint, setPrmS3Endpoint] = useState("http://localhost:9000");
-  const [prmS3PublicEndpoint, setPrmS3PublicEndpoint] = useState("");
-  const [prmS3DeliveryMode, setPrmS3DeliveryMode] = useState<PrmS3DeliveryMode>("direct");
-  const [prmS3Bucket, setPrmS3Bucket] = useState("images");
-  const [prmS3Region, setPrmS3Region] = useState("us-east-1");
-  const [prmS3AccessKey, setPrmS3AccessKey] = useState("");
-  const [prmS3SecretKey, setPrmS3SecretKey] = useState("");
-  const [testResult, setTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
-
-  const { data: storageData, isLoading: modeLoading } = useQuery<StorageModeResponse>({
-    queryKey: ["/api/image-storage/mode"],
+  const [form, setForm] = useState({
+    endpoint: "http://localhost:9000",
+    publicEndpoint: "",
+    deliveryMode: "direct" as PrmS3DeliveryMode,
+    bucket: "images",
+    region: "us-east-1",
+    accessKeyId: "",
+    secretAccessKey: "",
   });
+  const [testResult, setTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
 
   const { data: stats, isLoading: statsLoading } = useQuery<ImageStats>({
     queryKey: ["/api/image-storage/stats"],
@@ -92,46 +82,26 @@ export default function ImageStorageSettingsPage() {
 
   useEffect(() => {
     if (prmS3Config) {
-      if (prmS3Config.endpoint) setPrmS3Endpoint(prmS3Config.endpoint);
-      setPrmS3PublicEndpoint(prmS3Config.publicEndpoint || "");
-      setPrmS3DeliveryMode(prmS3Config.deliveryMode === "proxy" ? "proxy" : "direct");
-      if (prmS3Config.bucket) setPrmS3Bucket(prmS3Config.bucket);
-      if (prmS3Config.region) setPrmS3Region(prmS3Config.region);
-      if (prmS3Config.accessKeyId) setPrmS3AccessKey(prmS3Config.accessKeyId);
-      if (prmS3Config.secretAccessKey) setPrmS3SecretKey(prmS3Config.secretAccessKey);
+      setForm({
+        endpoint: prmS3Config.endpoint || "http://localhost:9000",
+        publicEndpoint: prmS3Config.publicEndpoint || "",
+        deliveryMode: prmS3Config.deliveryMode === "proxy" ? "proxy" : "direct",
+        bucket: prmS3Config.bucket || "images",
+        region: prmS3Config.region || "us-east-1",
+        accessKeyId: prmS3Config.accessKeyId || "",
+        secretAccessKey: prmS3Config.secretAccessKey || "",
+      });
     }
   }, [prmS3Config]);
 
-  const setModeMutation = useMutation({
-    mutationFn: async (mode: StorageMode) => {
-      const res = await apiRequest("PUT", "/api/image-storage/mode", { mode });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/mode"] });
-      toast({ title: "Storage mode updated" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to update storage mode", description: error.message, variant: "destructive" });
-    },
-  });
-
   const savePrmS3ConfigMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/image-storage/prm-s3/settings", {
-        endpoint: prmS3Endpoint,
-        publicEndpoint: prmS3PublicEndpoint,
-        deliveryMode: prmS3DeliveryMode,
-        bucket: prmS3Bucket,
-        region: prmS3Region,
-        accessKeyId: prmS3AccessKey,
-        secretAccessKey: prmS3SecretKey,
-      });
+      const res = await apiRequest("POST", "/api/image-storage/prm-s3/settings", form);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/image-storage/prm-s3/settings"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/mode"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/prm-s3/health"] });
       toast({ title: "PRM-S3 settings saved" });
     },
     onError: (error: Error) => {
@@ -158,24 +128,6 @@ export default function ImageStorageSettingsPage() {
     },
   });
 
-  const transferMutation = useMutation({
-    mutationFn: async ({ from, to }: { from: StorageMode; to: StorageMode }) => {
-      const res = await apiRequest("POST", "/api/image-storage/transfer", { from, to });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-      toast({
-        title: "Transfer task started",
-        description: "A background task has been created. Check the Tasks page to monitor progress.",
-      });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to start transfer", description: error.message, variant: "destructive" });
-    },
-  });
-
   const backfillMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/photos/backfill");
@@ -192,17 +144,37 @@ export default function ImageStorageSettingsPage() {
     },
   });
 
-  const backfillImageTiersMutation = useMutation({
+  const migrateImageTiersMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/image-storage/backfill-profile-image-tiers");
+      const res = await apiRequest("POST", "/api/image-storage/migrate-profile-image-tiers");
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-      toast({ title: "Backfill started", description: "A background task is sorting profile images into 150px / 1080px tiers. Check the Tasks page for progress." });
+      toast({
+        title: "Migration started",
+        description: "A background task is migrating profile image tiers and references. Check the Tasks page for progress.",
+      });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to start backfill", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to start migration", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const bakeImageVariantsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/image-storage/bake-image-variants");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      toast({
+        title: "Bake task started",
+        description: "A background task is baking webp size variants (64, 150, 1080) for all images. Check the Tasks page for progress.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to start bake task", description: error.message, variant: "destructive" });
     },
   });
 
@@ -242,136 +214,18 @@ export default function ImageStorageSettingsPage() {
     },
   });
 
-  const getStorageCount = (mode: StorageMode): number => {
-    if (!stats) return 0;
-    if (mode === "prm-s3") return stats.prmS3;
-    if (mode === "s3") return stats.s3;
-    return stats.local;
-  };
-
-  const getStorageLabel = (mode: StorageMode): string => {
-    if (mode === "prm-s3") return "PRM-S3";
-    if (mode === "s3") return "Standard S3";
-    return "Local Storage";
-  };
-
-  const handleModeChange = (targetMode: StorageMode) => {
-    const currentMode = storageData?.mode || "local";
-    if (targetMode === currentMode) return;
-
-    const currentCount = getStorageCount(currentMode);
-    if (currentCount > 0) {
-      setSwitchModeConfirm({
-        targetMode,
-        sourceMode: currentMode,
-        count: currentCount,
-      });
-    } else {
-      setModeMutation.mutate(targetMode);
-    }
-  };
-
-  const handleConfirmSwitchMode = (transferImages: boolean) => {
-    if (!switchModeConfirm) return;
-    const { targetMode, sourceMode } = switchModeConfirm;
-    setModeMutation.mutate(targetMode);
-    if (transferImages) {
-      transferMutation.mutate({ from: sourceMode, to: targetMode });
-    }
-    setSwitchModeConfirm(null);
-  };
-
-  if (modeLoading) {
-    return (
-      <div className="flex items-center justify-center py-16" data-testid="loading-image-storage">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  const currentMode = storageData?.mode || "local";
-  const hasS3Creds = storageData?.hasS3Creds || false;
-  const hasPrmS3Creds = storageData?.hasPrmS3Creds || false;
-
   return (
     <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="space-y-2 mb-6 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-image-storage-title">Image Storage</h1>
         <p className="text-muted-foreground">
-          Where every image and video the app stores goes — uploads, profile pictures, posts, stories and
-          message attachments. {isAdmin ? "Changing it or moving images between backends affects all users." : "Only admins can change this."}
+          Every image and video the app stores — uploads, profile pictures, posts, stories, message
+          attachments and face crops — lives in PRM-S3. {isAdmin ? "The connection settings apply to all users." : "Only admins can change the connection."}
         </p>
       </div>
 
       <div className="settings-cards-grid">
-        {/* Card 1: Storage Mode */}
-        <Card data-testid="card-storage-mode">
-          <CardHeader>
-            <CardTitle className="text-lg">Storage Mode</CardTitle>
-            <CardDescription>Where new images and videos are stored, app-wide.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center gap-4 flex-wrap">
-              <Select value={currentMode} onValueChange={(val) => handleModeChange(val as StorageMode)} disabled={!isAdmin || setModeMutation.isPending}>
-                <SelectTrigger className="w-[220px]" data-testid="select-storage-mode">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="prm-s3" data-testid="option-prm-s3">
-                    <span className="flex items-center gap-2">
-                      <Server className="h-4 w-4 text-primary" />
-                      PRM-S3 Storage
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="s3" data-testid="option-s3">
-                    <span className="flex items-center gap-2">
-                      <Cloud className="h-4 w-4" />
-                      S3 Storage
-                    </span>
-                  </SelectItem>
-                  <SelectItem value="local" data-testid="option-local">
-                    <span className="flex items-center gap-2">
-                      <HardDrive className="h-4 w-4" />
-                      Local Storage
-                    </span>
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              {setModeMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-            </div>
-
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant={currentMode === "prm-s3" ? "default" : "outline"} data-testid="badge-current-mode">
-                {currentMode === "prm-s3" && <Server className="h-3 w-3 mr-1" />}
-                {currentMode === "s3" && <Cloud className="h-3 w-3 mr-1" />}
-                {currentMode === "local" && <HardDrive className="h-3 w-3 mr-1" />}
-                Active: {getStorageLabel(currentMode)}
-              </Badge>
-              <Badge variant={hasPrmS3Creds ? "outline" : "secondary"} data-testid="badge-prm-s3-status">
-                <Server className="h-3 w-3 mr-1" />
-                PRM-S3: {hasPrmS3Creds ? "Configured" : "Not Set"}
-              </Badge>
-              <Badge variant={hasS3Creds ? "outline" : "secondary"} data-testid="badge-s3-status">
-                <Cloud className="h-3 w-3 mr-1" />
-                Standard S3: {hasS3Creds ? "Configured" : "Not Set"}
-              </Badge>
-            </div>
-
-            {!hasPrmS3Creds && currentMode === "prm-s3" && (
-              <p className="text-sm text-destructive">
-                PRM-S3 credentials are not configured. Please fill in the PRM-S3 Server Configuration below.
-              </p>
-            )}
-
-            {!hasS3Creds && currentMode === "s3" && (
-              <p className="text-sm text-destructive">
-                Standard S3 credentials are not configured. Uploads will fail until S3 environment variables are set.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Card 2: PRM-S3 Server Configuration (admins only; the endpoint is admin-gated) */}
+        {/* PRM-S3 Server Configuration (admins only; the endpoint is admin-gated) */}
         {isAdmin && (
         <Card data-testid="card-prm-s3-config">
           <CardHeader>
@@ -391,8 +245,8 @@ export default function ImageStorageSettingsPage() {
                 <Label htmlFor="prm-endpoint">Internal Endpoint URL</Label>
                 <Input
                   id="prm-endpoint"
-                  value={prmS3Endpoint}
-                  onChange={(e) => setPrmS3Endpoint(e.target.value)}
+                  value={form.endpoint}
+                  onChange={(e) => setForm((prev) => ({ ...prev, endpoint: e.target.value }))}
                   placeholder="http://192.168.0.70:9000"
                   data-testid="input-prm-s3-endpoint"
                 />
@@ -405,8 +259,8 @@ export default function ImageStorageSettingsPage() {
                 <Label htmlFor="prm-public-endpoint">Public Endpoint URL</Label>
                 <Input
                   id="prm-public-endpoint"
-                  value={prmS3PublicEndpoint}
-                  onChange={(e) => setPrmS3PublicEndpoint(e.target.value)}
+                  value={form.publicEndpoint}
+                  onChange={(e) => setForm((prev) => ({ ...prev, publicEndpoint: e.target.value }))}
                   placeholder="https://prm-cdn.example.com"
                   data-testid="input-prm-s3-public-endpoint"
                 />
@@ -418,7 +272,7 @@ export default function ImageStorageSettingsPage() {
 
               <div className="space-y-1.5">
                 <Label htmlFor="prm-delivery-mode">Delivery Mode</Label>
-                <Select value={prmS3DeliveryMode} onValueChange={(val) => setPrmS3DeliveryMode(val as PrmS3DeliveryMode)}>
+                <Select value={form.deliveryMode} onValueChange={(val) => setForm((prev) => ({ ...prev, deliveryMode: val as PrmS3DeliveryMode }))}>
                   <SelectTrigger id="prm-delivery-mode" className="w-[260px]" data-testid="select-prm-s3-delivery-mode">
                     <SelectValue />
                   </SelectTrigger>
@@ -428,7 +282,7 @@ export default function ImageStorageSettingsPage() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  {prmS3DeliveryMode === "direct"
+                  {form.deliveryMode === "direct"
                     ? "API responses contain 24-hour signed URLs and the browser loads media straight from PRM-S3 via the public endpoint."
                     : "Media travels PRM-S3 → PRM → browser through /api/prm-s3/. Slower, but PRM-S3 needs no public address."}
                 </p>
@@ -438,8 +292,8 @@ export default function ImageStorageSettingsPage() {
                 <Label htmlFor="prm-bucket">Bucket Name</Label>
                 <Input
                   id="prm-bucket"
-                  value={prmS3Bucket}
-                  onChange={(e) => setPrmS3Bucket(e.target.value)}
+                  value={form.bucket}
+                  onChange={(e) => setForm((prev) => ({ ...prev, bucket: e.target.value }))}
                   placeholder="images"
                 />
               </div>
@@ -448,8 +302,8 @@ export default function ImageStorageSettingsPage() {
                 <Label htmlFor="prm-region">Region</Label>
                 <Input
                   id="prm-region"
-                  value={prmS3Region}
-                  onChange={(e) => setPrmS3Region(e.target.value)}
+                  value={form.region}
+                  onChange={(e) => setForm((prev) => ({ ...prev, region: e.target.value }))}
                   placeholder="us-east-1"
                 />
               </div>
@@ -458,8 +312,8 @@ export default function ImageStorageSettingsPage() {
                 <Label htmlFor="prm-access-key">Access Key ID</Label>
                 <Input
                   id="prm-access-key"
-                  value={prmS3AccessKey}
-                  onChange={(e) => setPrmS3AccessKey(e.target.value)}
+                  value={form.accessKeyId}
+                  onChange={(e) => setForm((prev) => ({ ...prev, accessKeyId: e.target.value }))}
                   placeholder="PRM0CDED7B21AD5BF229"
                 />
               </div>
@@ -469,8 +323,8 @@ export default function ImageStorageSettingsPage() {
                 <Input
                   id="prm-secret-key"
                   type="password"
-                  value={prmS3SecretKey}
-                  onChange={(e) => setPrmS3SecretKey(e.target.value)}
+                  value={form.secretAccessKey}
+                  onChange={(e) => setForm((prev) => ({ ...prev, secretAccessKey: e.target.value }))}
                   placeholder="••••••••"
                 />
               </div>
@@ -515,11 +369,11 @@ export default function ImageStorageSettingsPage() {
         </Card>
         )}
 
-        {/* Card 3: Image Statistics */}
+        {/* Stats */}
         <Card data-testid="card-image-stats">
           <CardHeader>
-            <CardTitle className="text-lg">Image Statistics</CardTitle>
-            <CardDescription>Overview of where your images are currently stored across all providers.</CardDescription>
+            <CardTitle className="text-lg">Stats</CardTitle>
+            <CardDescription>What PRM-S3 holds. An image counts once no matter how many sizes are baked for it.</CardDescription>
           </CardHeader>
           <CardContent>
             {statsLoading ? (
@@ -527,171 +381,40 @@ export default function ImageStorageSettingsPage() {
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </div>
             ) : stats ? (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <div className="flex flex-col p-3 rounded-lg border bg-card">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="flex flex-col p-4 rounded-lg border bg-card">
                   <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
-                    <ImageIcon className="h-3.5 w-3.5" />
-                    Total Images
+                    <ImageIcon className="h-4 w-4 text-primary" />
+                    Images
                   </div>
-                  <span className="text-2xl font-bold" data-testid="text-total-images">{stats.total}</span>
+                  <span className="text-3xl font-bold" data-testid="text-total-images">{stats.images.toLocaleString()}</span>
                 </div>
-                <div className="flex flex-col p-3 rounded-lg border bg-card">
-                  <div className="flex items-center gap-2 text-primary text-xs font-medium mb-1">
-                    <Server className="h-3.5 w-3.5" />
-                    PRM-S3
+                <div className="flex flex-col p-4 rounded-lg border bg-card">
+                  <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
+                    <Video className="h-4 w-4 text-primary" />
+                    Videos
                   </div>
-                  <span className="text-2xl font-bold" data-testid="text-prm-s3-images">{stats.prmS3}</span>
+                  <span className="text-3xl font-bold" data-testid="text-total-videos">{stats.videos.toLocaleString()}</span>
                 </div>
-                <div className="flex flex-col p-3 rounded-lg border bg-card">
-                  <div className="flex items-center gap-2 text-blue-500 text-xs font-medium mb-1">
-                    <Cloud className="h-3.5 w-3.5" />
-                    Standard S3
+                <div className="flex flex-col p-4 rounded-lg border bg-card">
+                  <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
+                    <Files className="h-4 w-4 text-primary" />
+                    Total
                   </div>
-                  <span className="text-2xl font-bold" data-testid="text-s3-images">{stats.s3}</span>
-                </div>
-                <div className="flex flex-col p-3 rounded-lg border bg-card">
-                  <div className="flex items-center gap-2 text-amber-500 text-xs font-medium mb-1">
-                    <HardDrive className="h-3.5 w-3.5" />
-                    Local
-                  </div>
-                  <span className="text-2xl font-bold" data-testid="text-local-images">{stats.local}</span>
+                  <span className="text-3xl font-bold" data-testid="text-total-files">{stats.total.toLocaleString()}</span>
+                  <span className="text-xs text-muted-foreground mt-1">
+                    includes {stats.variants.toLocaleString()} size variants · {formatBytes(stats.objectBytes + stats.variantBytes)}
+                  </span>
                 </div>
               </div>
-            ) : null}
+            ) : (
+              <p className="text-sm text-muted-foreground" data-testid="text-stats-unavailable">Stats unavailable — PRM-S3 could not be reached.</p>
+            )}
           </CardContent>
         </Card>
 
-        {/* Cards 4-5: Transfer and maintenance (admins only; the endpoints are admin-gated) */}
+        {/* Storage maintenance (admins only; the endpoints are admin-gated) */}
         {isAdmin && (
-        <>
-        <Card data-testid="card-transfer-images">
-          <CardHeader>
-            <CardTitle className="text-lg">Transfer Images</CardTitle>
-            <CardDescription>
-              Move images between any combination of storage servers. Transfers run as asynchronous background tasks.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* S3 to S3 Transfers */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Cloud className="h-4 w-4 text-blue-500" />
-                <ArrowRightLeft className="h-3.5 w-3.5 text-muted-foreground" />
-                <Server className="h-4 w-4 text-primary" />
-                <h3 className="text-sm font-semibold">S3 to S3 Transfers</h3>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Transfer images directly between Standard S3 and your dedicated PRM-S3 instance.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Button
-                  variant="outline"
-                  className="justify-start h-auto py-2.5 px-3 text-left"
-                  onClick={() => setTransferConfirm({ from: "s3", to: "prm-s3", count: stats?.s3 || 0 })}
-                  disabled={transferMutation.isPending || !stats || !hasPrmS3Creds}
-                >
-                  <ArrowRightLeft className="h-4 w-4 mr-2 shrink-0 text-primary" />
-                  <div className="flex flex-col text-xs">
-                    <span className="font-medium">Standard S3 → PRM-S3</span>
-                    <span className="text-muted-foreground">{stats?.s3 || 0} images available</span>
-                  </div>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="justify-start h-auto py-2.5 px-3 text-left"
-                  onClick={() => setTransferConfirm({ from: "prm-s3", to: "s3", count: stats?.prmS3 || 0 })}
-                  disabled={transferMutation.isPending || !stats || !hasS3Creds}
-                >
-                  <ArrowRightLeft className="h-4 w-4 mr-2 shrink-0 text-blue-500" />
-                  <div className="flex flex-col text-xs">
-                    <span className="font-medium">PRM-S3 → Standard S3</span>
-                    <span className="text-muted-foreground">{stats?.prmS3 || 0} images available</span>
-                  </div>
-                </Button>
-              </div>
-            </div>
-
-            {/* S3 to Local Transfers */}
-            <div className="border-t pt-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <Cloud className="h-4 w-4 text-muted-foreground" />
-                <ArrowRightLeft className="h-3.5 w-3.5 text-muted-foreground" />
-                <HardDrive className="h-4 w-4 text-amber-500" />
-                <h3 className="text-sm font-semibold">S3 to Local Transfers</h3>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Download images from S3 servers to local storage. Updates database records and removes remote files.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Button
-                  variant="outline"
-                  className="justify-start h-auto py-2.5 px-3 text-left"
-                  onClick={() => setTransferConfirm({ from: "prm-s3", to: "local", count: stats?.prmS3 || 0 })}
-                  disabled={transferMutation.isPending || !stats}
-                >
-                  <ArrowRightLeft className="h-4 w-4 mr-2 shrink-0 text-amber-500" />
-                  <div className="flex flex-col text-xs">
-                    <span className="font-medium">PRM-S3 → Local</span>
-                    <span className="text-muted-foreground">{stats?.prmS3 || 0} images available</span>
-                  </div>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="justify-start h-auto py-2.5 px-3 text-left"
-                  onClick={() => setTransferConfirm({ from: "s3", to: "local", count: stats?.s3 || 0 })}
-                  disabled={transferMutation.isPending || !stats}
-                >
-                  <ArrowRightLeft className="h-4 w-4 mr-2 shrink-0 text-amber-500" />
-                  <div className="flex flex-col text-xs">
-                    <span className="font-medium">Standard S3 → Local</span>
-                    <span className="text-muted-foreground">{stats?.s3 || 0} images available</span>
-                  </div>
-                </Button>
-              </div>
-            </div>
-
-            {/* Local to S3 Transfers */}
-            <div className="border-t pt-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <HardDrive className="h-4 w-4 text-amber-500" />
-                <ArrowRightLeft className="h-3.5 w-3.5 text-muted-foreground" />
-                <Server className="h-4 w-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold">Local to S3 Transfers</h3>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Upload local files to PRM-S3 or Standard S3. Updates database records and cleans up local copies.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <Button
-                  variant="outline"
-                  className="justify-start h-auto py-2.5 px-3 text-left"
-                  onClick={() => setTransferConfirm({ from: "local", to: "prm-s3", count: stats?.local || 0 })}
-                  disabled={transferMutation.isPending || !stats || stats.local === 0 || !hasPrmS3Creds}
-                >
-                  <ArrowRightLeft className="h-4 w-4 mr-2 shrink-0 text-primary" />
-                  <div className="flex flex-col text-xs">
-                    <span className="font-medium">Local → PRM-S3</span>
-                    <span className="text-muted-foreground">{stats?.local || 0} images available</span>
-                  </div>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="justify-start h-auto py-2.5 px-3 text-left"
-                  onClick={() => setTransferConfirm({ from: "local", to: "s3", count: stats?.local || 0 })}
-                  disabled={transferMutation.isPending || !stats || stats.local === 0 || !hasS3Creds}
-                >
-                  <ArrowRightLeft className="h-4 w-4 mr-2 shrink-0 text-blue-500" />
-                  <div className="flex flex-col text-xs">
-                    <span className="font-medium">Local → Standard S3</span>
-                    <span className="text-muted-foreground">{stats?.local || 0} images available</span>
-                  </div>
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Card 5: Storage Maintenance */}
         <Card data-testid="card-storage-maintenance">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
@@ -734,27 +457,51 @@ export default function ImageStorageSettingsPage() {
               </Button>
             </div>
 
-            {/* Section 2: Profile image tiers */}
+            {/* Section 2: Migrate profile image tiers */}
             <div className="border-t pt-6 space-y-3">
               <h3 className="text-sm font-medium flex items-center gap-2">
                 <Images className="h-4 w-4" />
-                Backfill Profile Image Tiers
+                Migrate Profile Image Tiers
               </h3>
               <p className="text-xs text-muted-foreground">
-                Social accounts whose list image is a full-size (1080px) picture get it moved to the high-quality slot and a 150px thumbnail generated for list views. Accounts already on a 150px image are left alone. Safe to run more than once; runs as a background task.
+                Migrates social accounts to single canonical image URLs with PRM-S3 ?s= size variants, consolidates people and history references, and removes obsolete generated 150px thumbnails. Safe to run more than once; runs as a background task.
               </p>
               <Button
                 variant="outline"
-                onClick={() => backfillImageTiersMutation.mutate()}
-                disabled={backfillImageTiersMutation.isPending}
-                data-testid="button-backfill-profile-image-tiers"
+                onClick={() => migrateImageTiersMutation.mutate()}
+                disabled={migrateImageTiersMutation.isPending}
+                data-testid="button-migrate-profile-image-tiers"
               >
-                {backfillImageTiersMutation.isPending ? (
+                {migrateImageTiersMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
                   <Images className="h-4 w-4 mr-2" />
                 )}
-                Backfill Profile Image Tiers
+                Migrate Profile Image Tiers
+              </Button>
+            </div>
+
+            {/* Section 2b: Bake Image Variants */}
+            <div className="border-t pt-6 space-y-3">
+              <h3 className="text-sm font-medium flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                Bake Image Variants
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Pre-bake webp size variants (64px, 150px, 1080px) for all existing images and face crops in PRM-S3. Images already baked are skipped; safe to run anytime. Runs as a background task.
+              </p>
+              <Button
+                variant="outline"
+                onClick={() => bakeImageVariantsMutation.mutate()}
+                disabled={bakeImageVariantsMutation.isPending}
+                data-testid="button-bake-image-variants"
+              >
+                {bakeImageVariantsMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 mr-2" />
+                )}
+                Bake Image Variants
               </Button>
             </div>
 
@@ -825,76 +572,8 @@ export default function ImageStorageSettingsPage() {
             </div>
           </CardContent>
         </Card>
-        </>
         )}
       </div>
-
-      {/* Transfer Dialog */}
-      <AlertDialog open={!!transferConfirm} onOpenChange={(open) => !open && setTransferConfirm(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Transfer Images from {transferConfirm ? getStorageLabel(transferConfirm.from) : ""} to{" "}
-              {transferConfirm ? getStorageLabel(transferConfirm.to) : ""}?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This will transfer {transferConfirm?.count || 0} images from {transferConfirm ? getStorageLabel(transferConfirm.from) : ""}{" "}
-              to {transferConfirm ? getStorageLabel(transferConfirm.to) : ""}. Each source copy is deleted once the image is in the destination.
-              {transferConfirm && transferConfirm.from !== "local"
-                ? ` When every image has been moved, ${getStorageLabel(transferConfirm.from)} is swept: any leftover file no record points at is deleted, and references to files that no longer exist are cleared.`
-                : ""}{" "}
-              A background task will execute this transfer.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-transfer">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (transferConfirm) {
-                  transferMutation.mutate({ from: transferConfirm.from, to: transferConfirm.to });
-                  setTransferConfirm(null);
-                }
-              }}
-              data-testid="button-confirm-transfer"
-            >
-              Start Transfer
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Mode Switch Dialog */}
-      <AlertDialog open={!!switchModeConfirm} onOpenChange={(open) => !open && setSwitchModeConfirm(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Switch Storage Mode to {switchModeConfirm ? getStorageLabel(switchModeConfirm.targetMode) : ""}?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              You currently have {switchModeConfirm?.count || 0} images stored in{" "}
-              {switchModeConfirm ? getStorageLabel(switchModeConfirm.sourceMode) : ""}. Would you like to transfer existing images to{" "}
-              {switchModeConfirm ? getStorageLabel(switchModeConfirm.targetMode) : ""} as well? New image uploads will use{" "}
-              {switchModeConfirm ? getStorageLabel(switchModeConfirm.targetMode) : ""} regardless.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex gap-2 flex-wrap">
-            <AlertDialogCancel data-testid="button-cancel-switch">Cancel</AlertDialogCancel>
-            <Button
-              variant="outline"
-              onClick={() => handleConfirmSwitchMode(false)}
-              data-testid="button-switch-no-transfer"
-            >
-              Switch Without Transfer
-            </Button>
-            <AlertDialogAction
-              onClick={() => handleConfirmSwitchMode(true)}
-              data-testid="button-switch-and-transfer"
-            >
-              Switch and Transfer Images
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Backfill Dialog */}
       <AlertDialog open={maintenanceConfirm === "backfill"} onOpenChange={(open) => !open && setMaintenanceConfirm(null)}>

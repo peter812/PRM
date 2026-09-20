@@ -4,14 +4,19 @@
  * runs when prm-stories delivers new content.
  */
 import path from "path";
-import { and, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
+import crypto from "crypto";
+import sharp from "sharp";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, notExists, sql } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
 import { fetchImageBuffer } from "./prm-s3";
-import { imageTasks, photos, socialAccountPosts } from "@shared/schema";
+import { faces, imageTasks, people, photos, socialAccountPosts, socialAccounts, type Photo } from "@shared/schema";
 import { currentAccess, runAsSystem } from "./access";
 import { log } from "./vite";
 import { triggerImageTaskWorker } from "./task-worker";
+// Only referenced inside functions, so the profile-image -> recognition import
+// cycle never reads it before it's initialised.
+import { HQ_MIN_WIDTH } from "./profile-image";
 
 // ── Compute connection ────────────────────────────────────────────────────────
 
@@ -55,12 +60,37 @@ export type DetectedFace = {
   [key: string]: unknown;
 };
 
+/** One entry of photos.facial_ids. */
+export type FacialId = {
+  faceUuid: string | undefined;
+  coordinates: unknown;
+  personId: string | null;
+  socialAccountId: string | null;
+};
+
+export type ProfileLinkReason =
+  | "not_profile" | "no_faces" | "multiple_faces" | "no_box" | "face_too_small"
+  | "face_missing" | "group_conflict";
+
+/** What linking a profile picture's face to its account came to. */
+export type ProfileLinkOutcome =
+  | { linked: true; personfaceUuid: string; alreadyLinked: boolean }
+  | { linked: false; reason: ProfileLinkReason };
+
+export type FaceRecognitionResult = {
+  facesDetected: number;
+  faces: DetectedFace[];
+  raw: any;
+  profileLink: ProfileLinkOutcome;
+};
+
 /**
  * Detect faces on a stored photo and record the run on the photos row. Compute
  * answers 400 for "no faces"; that still counts as a run so the photo isn't
- * picked up again by backfill.
+ * picked up again by backfill. A profile picture with one face also links that
+ * face to its account (see linkProfileFace).
  */
-export async function runFaceRecognition(photoId: string): Promise<{ facesDetected: number; faces: DetectedFace[]; raw: any }> {
+export async function runFaceRecognition(photoId: string): Promise<FaceRecognitionResult> {
   const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
   if (!photo) throw new Error("Photo not found.");
 
@@ -80,21 +110,193 @@ export async function runFaceRecognition(photoId: string): Promise<{ facesDetect
   } else {
     data = await response.json();
   }
-  const faces: DetectedFace[] = data.results ?? data.faces ?? [];
+  const detected: DetectedFace[] = data.results ?? data.faces ?? [];
+
+  const profileLink = await linkProfileFace(photo, detected, async () => fetched.buffer);
+  const facialIds = await resolveFaceIdentities(detected);
 
   await db.update(photos)
-    .set({
-      facialIds: faces.map((f) => ({
-        faceUuid: f.face_uuid || f.faceUuid,
-        coordinates: f.box || f.coordinates || null,
-        personId: f.person_uuid || f.personId || null,
-        socialAccountId: null,
-      })),
-      faceIdAt: new Date(),
-    })
+    .set({ facialIds, faceIdAt: new Date() })
     .where(eq(photos.id, photoId));
 
-  return { facesDetected: data.faces_detected ?? faces.length, faces, raw: data };
+  return { facesDetected: data.faces_detected ?? detected.length, faces: detected, raw: data, profileLink };
+}
+
+/**
+ * The facial_ids entries for a detection: whatever compute matched, plus the
+ * account whose profile picture shares the face's group (social_accounts.
+ * personface_uuid), and that account's owner when it has one.
+ */
+async function resolveFaceIdentities(detected: DetectedFace[]): Promise<FacialId[]> {
+  const ids = detected.map((f) => f.face_uuid || f.faceUuid).filter((id): id is string => !!id);
+  const groupOf = new Map<string, string>();
+  if (ids.length) {
+    const rows = await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(inArray(faces.id, ids));
+    for (const r of rows) if (r.personfaceUuid) groupOf.set(r.id, r.personfaceUuid);
+  }
+  const accountOf = new Map<string, { id: string; ownerUuid: string | null }>();
+  const personOf = new Map<string, string>();
+  const groups = Array.from(new Set(groupOf.values()));
+  if (groups.length) {
+    const saRows = await db
+      .select({ id: socialAccounts.id, ownerUuid: socialAccounts.ownerUuid, personfaceUuid: socialAccounts.personfaceUuid })
+      .from(socialAccounts)
+      .where(inArray(socialAccounts.personfaceUuid, groups));
+    for (const r of saRows) if (r.personfaceUuid && !accountOf.has(r.personfaceUuid)) accountOf.set(r.personfaceUuid, r);
+
+    const personRows = await db
+      .select({ id: people.id, personfaceUuid: people.personfaceUuid })
+      .from(people)
+      .where(inArray(people.personfaceUuid, groups));
+    for (const r of personRows) if (r.personfaceUuid && !personOf.has(r.personfaceUuid)) personOf.set(r.personfaceUuid, r.id);
+  }
+  return detected.map((f) => {
+    const faceUuid = f.face_uuid || f.faceUuid;
+    const group = faceUuid ? groupOf.get(faceUuid) : undefined;
+    const account = group ? accountOf.get(group) : undefined;
+    const linkedPersonId = group ? personOf.get(group) : undefined;
+    return {
+      faceUuid,
+      coordinates: f.box || f.coordinates || null,
+      personId: linkedPersonId || account?.ownerUuid || f.person_uuid || f.personId || null,
+      socialAccountId: account?.id ?? null,
+    };
+  });
+}
+
+// ── Profile picture -> account ────────────────────────────────────────────────
+
+const PROFILE_LINK_MIN_FACE_PCT_KEY = "auto_recog_profile_link_min_face_pct";
+const PROFILE_LINK_MIN_FACE_PCT_DEFAULT = 25;
+
+/** Smallest face (widest side, as % of the image's shorter side) that counts as the account holder. */
+export async function getProfileLinkMinFacePct(): Promise<number> {
+  const raw = Number(await storage.getAppSetting(PROFILE_LINK_MIN_FACE_PCT_KEY));
+  return Number.isFinite(raw) && raw > 0 ? raw : PROFILE_LINK_MIN_FACE_PCT_DEFAULT;
+}
+
+const profileAccountId = (photo: Pick<Photo, "prmLocation">): string | null =>
+  photo.prmLocation?.startsWith("profile_image:") ? photo.prmLocation.slice("profile_image:".length).trim() || null : null;
+
+/**
+ * A profile picture showing exactly one big-enough face is the account holder:
+ * put that face's group on social_accounts.personface_uuid so the same face in
+ * any other photo can be named "@username" without a person existing yet. When
+ * the account already has an owner, the owner's face group is used (and set if
+ * the person had none), matching what /api/prm-face/face/connect would do.
+ */
+async function linkProfileFace(photo: Photo, detected: DetectedFace[], getBuffer: () => Promise<Buffer>): Promise<ProfileLinkOutcome> {
+  const accountId = profileAccountId(photo);
+  if (!accountId) return { linked: false, reason: "not_profile" };
+  if (detected.length === 0) return { linked: false, reason: "no_faces" };
+  if (detected.length > 1) return { linked: false, reason: "multiple_faces" };
+
+  const face = detected[0];
+  const box = (face.box || face.coordinates) as { w?: number; h?: number } | null;
+  if (!box || !(box.w! > 0) || !(box.h! > 0)) return { linked: false, reason: "no_box" };
+  let { widthPx, heightPx } = photo;
+  if (!widthPx || !heightPx) {
+    const meta = await sharp(await getBuffer()).metadata();
+    widthPx = meta.width ?? null;
+    heightPx = meta.height ?? null;
+  }
+  if (!widthPx || !heightPx) return { linked: false, reason: "no_box" };
+  const facePct = (Math.max(box.w!, box.h!) / Math.min(widthPx, heightPx)) * 100;
+  if (facePct < await getProfileLinkMinFacePct()) return { linked: false, reason: "face_too_small" };
+
+  const faceUuid = face.face_uuid || face.faceUuid;
+  const [faceRow] = faceUuid
+    ? await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(eq(faces.id, faceUuid))
+    : [];
+  if (!faceRow) return { linked: false, reason: "face_missing" };
+
+  const [account] = await db
+    .select({ ownerUuid: socialAccounts.ownerUuid, personfaceUuid: socialAccounts.personfaceUuid })
+    .from(socialAccounts)
+    .where(eq(socialAccounts.id, accountId));
+  if (!account) return { linked: false, reason: "not_profile" };
+  const [owner] = account.ownerUuid
+    ? await db.select({ id: people.id, personfaceUuid: people.personfaceUuid }).from(people).where(eq(people.id, account.ownerUuid))
+    : [];
+
+  const target = account.personfaceUuid ?? owner?.personfaceUuid ?? faceRow.personfaceUuid ?? crypto.randomUUID();
+  // Compute already grouped this face with a different identity: leave both alone.
+  if (faceRow.personfaceUuid && faceRow.personfaceUuid !== target) return { linked: false, reason: "group_conflict" };
+
+  const alreadyLinked = account.personfaceUuid === target && faceRow.personfaceUuid === target;
+  if (faceRow.personfaceUuid !== target) await db.update(faces).set({ personfaceUuid: target }).where(eq(faces.id, faceRow.id));
+  if (account.personfaceUuid !== target) await db.update(socialAccounts).set({ personfaceUuid: target }).where(eq(socialAccounts.id, accountId));
+  if (owner && !owner.personfaceUuid) await db.update(people).set({ personfaceUuid: target }).where(eq(people.id, owner.id));
+  if (!alreadyLinked) log(`[ProfileLink] account ${accountId} <- face ${faceRow.id} (${facePct.toFixed(0)}% of image)`);
+  return { linked: true, personfaceUuid: target, alreadyLinked };
+}
+
+export type AssociateProfileFacesResult = { examined: number; linked: number; skipped: Partial<Record<ProfileLinkReason, number>> };
+
+/**
+ * "Associate" on Recognition settings: link already-recognised current profile
+ * pictures to accounts that have no face yet, from the stored facial_ids, with
+ * no new compute run. The image is only fetched when the photo row lacks its
+ * dimensions.
+ */
+export async function associateProfileFaces(): Promise<AssociateProfileFacesResult> {
+  const rows = await db
+    .select({ photo: photos })
+    .from(photos)
+    .innerJoin(socialAccounts, eq(photos.prmLocation, sql`'profile_image:' || ${socialAccounts.id}`))
+    .where(and(
+      eq(photos.isSubImage, false),
+      gte(photos.widthPx, HQ_MIN_WIDTH),
+      isNotNull(photos.faceIdAt),
+      isNull(socialAccounts.personfaceUuid),
+      eq(photos.location, socialAccounts.imageUrl),
+    ));
+  const result: AssociateProfileFacesResult = { examined: rows.length, linked: 0, skipped: {} };
+  for (const { photo } of rows) {
+    const detected: DetectedFace[] = ((photo.facialIds ?? []) as FacialId[]).map((f) => ({ face_uuid: f.faceUuid, box: f.coordinates }));
+    const outcome = await linkProfileFace(photo, detected, async () => (await fetchImageBuffer(photo.location)).buffer);
+    if (outcome.linked) result.linked++;
+    else result.skipped[outcome.reason] = (result.skipped[outcome.reason] ?? 0) + 1;
+  }
+  return result;
+}
+
+/** Big enough for recognition: the 150px tier is skipped everywhere. */
+const isHqPhoto = (photo: Pick<Photo, "widthPx">) => (photo.widthPx ?? 0) >= HQ_MIN_WIDTH;
+
+/**
+ * The account's current profile picture and earlier full-size ones still registered under it, newest first.
+ */
+export async function profilePhotos(accountId: string): Promise<{ current: Photo | null; previous: Photo[] }> {
+  const [account] = await db
+    .select({ imageUrl: socialAccounts.imageUrl })
+    .from(socialAccounts)
+    .where(eq(socialAccounts.id, accountId));
+  if (!account) throw new Error("Social account not found.");
+  const rows = await db
+    .select()
+    .from(photos)
+    .where(and(eq(photos.prmLocation, `profile_image:${accountId}`), eq(photos.isSubImage, false)))
+    .orderBy(desc(photos.uploadedAt));
+  const currentUrl = account.imageUrl;
+  const current = rows.find((p) => p.location === currentUrl) ?? null;
+  return { current, previous: rows.filter((p) => p !== current && isHqPhoto(p)) };
+}
+
+export type ProfilePhotoRun = { photoId: string; facesDetected: number; profileLink: ProfileLinkOutcome };
+
+/** Face recognition on an account's profile picture(s), synchronously, for the account page. */
+export async function recognizeProfilePhotos(accountId: string, includePrevious: boolean): Promise<ProfilePhotoRun[]> {
+  const { current, previous } = await profilePhotos(accountId);
+  if (!current) throw new Error("This account has no stored profile picture.");
+  if (!isHqPhoto(current)) throw new Error(`The stored profile picture is only ${current.widthPx ?? "?"}px wide; recognition needs a ${HQ_MIN_WIDTH}px copy.`);
+  const targets = includePrevious ? [current, ...previous] : [current];
+  const runs: ProfilePhotoRun[] = [];
+  for (const photo of targets) {
+    const { facesDetected, profileLink } = await runFaceRecognition(photo.id);
+    runs.push({ photoId: photo.id, facesDetected, profileLink });
+  }
+  return runs;
 }
 
 export type OcrOptions = { min_score?: unknown; model?: unknown; photo_id?: string };
@@ -202,6 +404,7 @@ export type AutoRecognitionSettings = {
   profile: { face: boolean };
   post: { face: boolean; ocr: boolean; transcribe: boolean };
   story: { face: boolean; ocr: boolean; transcribe: boolean };
+  profileLink: { minFacePct: number };
 };
 
 const AUTO_RECOGNITION_KEYS: Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, string>>> = {
@@ -229,10 +432,13 @@ export async function getAutoRecognitionSettings(): Promise<AutoRecognitionSetti
       ...(keys.ocr ? { ocr: await read(keys.ocr), transcribe: await read(keys.transcribe) } : {}),
     };
   }
+  out.profileLink = { minFacePct: await getProfileLinkMinFacePct() };
   return out;
 }
 
-export async function setAutoRecognitionSettings(update: Partial<Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>>>): Promise<void> {
+export async function setAutoRecognitionSettings(
+  update: Partial<Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>>> & { profileLink?: { minFacePct?: unknown } },
+): Promise<void> {
   for (const kind of Object.keys(AUTO_RECOGNITION_KEYS) as AutoRecognitionKind[]) {
     const keys = AUTO_RECOGNITION_KEYS[kind];
     for (const job of Object.keys(keys) as AutoRecognitionJob[]) {
@@ -240,6 +446,8 @@ export async function setAutoRecognitionSettings(update: Partial<Record<AutoReco
       if (typeof value === "boolean") await storage.setAppSetting(keys[job]!, value ? "true" : "false");
     }
   }
+  const pct = Number(update.profileLink?.minFacePct);
+  if (Number.isFinite(pct) && pct > 0 && pct <= 100) await storage.setAppSetting(PROFILE_LINK_MIN_FACE_PCT_KEY, String(pct));
 }
 
 /**
@@ -351,7 +559,8 @@ async function unprocessedPhotoIds(kind: AutoRecognitionKind, job: "face" | "ocr
   );
   const conditions = [isNull(stampColumn), eq(photos.isSubImage, false), noLiveTask];
   if (STORY_KINDS[kind] === "profile") {
-    conditions.push(sql`${photos.prmLocation} LIKE 'profile_image:%'`);
+    // Never the 150px tier: too small to embed, and its 1080 sibling gets the run.
+    conditions.push(sql`${photos.prmLocation} LIKE 'profile_image:%'`, gte(photos.widthPx, HQ_MIN_WIDTH));
   } else {
     const isStory = STORY_KINDS[kind] === "story";
     conditions.push(sql`${photos.prmLocation} LIKE 'post:%'`);

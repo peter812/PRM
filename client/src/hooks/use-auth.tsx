@@ -7,6 +7,7 @@ import {
 import { insertUserSchema, User as SelectUser, InsertUser } from "@shared/schema";
 import { getQueryFn, apiRequest, queryClient } from "../lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { clearStoredReturnTo } from "@/lib/auth-redirect";
 
 export type AuthUser = SelectUser & { adminView?: boolean };
 
@@ -63,6 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await apiRequest("POST", "/api/logout");
     },
     onSuccess: () => {
+      clearStoredReturnTo();
       queryClient.clear();
       queryClient.setQueryData(["/api/user"], null);
     },

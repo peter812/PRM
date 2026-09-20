@@ -31,13 +31,10 @@ import {
   type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
-import { deleteImageFromS3 } from "../s3";
-import { deleteImageFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer } from "../prm-s3";
-import { deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { uploadImage, syncFaceCropStorage } from "../image-storage";
+import { fetchImageBuffer, uploadImage, syncFaceCropStorage } from "../prm-s3";
 import {
   runFaceRecognition, runOcr, runOcrOnBuffer, transcribeBuffer, ComputeUnreachableError, getComputeConnection,
-  getAutoRecognitionSettings, setAutoRecognitionSettings, backfillCounts, runBackfill,
+  getAutoRecognitionSettings, setAutoRecognitionSettings, backfillCounts, runBackfill, associateProfileFaces,
   type AutoRecognitionKind, type AutoRecognitionJob,
 } from "../recognition";
 import { hashPassword, requireAuth } from "../auth";
@@ -570,7 +567,7 @@ export function registerRoutes(app: Express) {
           const [newPerson] = await db.insert(people).values({
             firstName,
             lastName,
-            userId: req.user?.id || null,
+            createdByUserId: req.user?.id || null,
           }).returning();
           resolvedPersonId = newPerson.id;
         } else if (resolution === "known_person") {
@@ -692,7 +689,7 @@ export function registerRoutes(app: Express) {
             const [newPerson] = await db.insert(people).values({
               firstName,
               lastName,
-              userId: req.user?.id || null,
+              createdByUserId: req.user?.id || null,
             }).returning();
             resolvedPersonId = newPerson.id;
           }
@@ -1260,6 +1257,16 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    app.post("/api/recognition/auto/associate-profile-faces", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        res.json(await associateProfileFaces());
+      } catch (error: any) {
+        console.error("Error associating profile faces:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     // ── Query photos containing a person (by face IDs and person UUID) ──────────
   
     app.get("/api/image/query-person", async (req, res) => {
@@ -3946,9 +3953,13 @@ Respond with ONLY a JSON array, no other text.`;
         return res.status(400).json({ error: "faceUuid or personfaceUuid is required." });
       }
 
+      if (!personId && !socialAccountId) {
+        return res.status(400).json({ error: "personId or socialAccountId is required." });
+      }
+
       try {
         let targetPersonfaceUuid = personfaceUuid;
-        let resolvedPersonId = personId;
+        let resolvedPersonId: string | null = personId || null;
 
         if (!targetPersonfaceUuid && faceUuid) {
           const [f] = await db.select().from(faces).where(eq(faces.id, faceUuid));
@@ -3963,49 +3974,62 @@ Respond with ONLY a JSON array, no other text.`;
           }
         }
 
+        let sa: any = null;
+        if (socialAccountId) {
+          const [foundSa] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, socialAccountId));
+          if (!foundSa) {
+            return res.status(404).json({ error: "Social account not found." });
+          }
+          sa = foundSa;
+          // If no personId was explicitly passed, inherit the social account's owner if one exists
+          if (!resolvedPersonId && sa.ownerUuid) {
+            resolvedPersonId = sa.ownerUuid;
+          }
+          // If targetPersonfaceUuid wasn't established yet, try using the social account's existing group
+          if (!targetPersonfaceUuid && sa.personfaceUuid) {
+            targetPersonfaceUuid = sa.personfaceUuid;
+          }
+        }
+
+        let person: any = null;
+        if (resolvedPersonId) {
+          const [foundPerson] = await db.select().from(people).where(eq(people.id, resolvedPersonId));
+          if (foundPerson) {
+            person = foundPerson;
+            if (!targetPersonfaceUuid && person.personfaceUuid) {
+              targetPersonfaceUuid = person.personfaceUuid;
+            }
+          } else if (personId) {
+            return res.status(404).json({ error: "Person not found." });
+          }
+        }
+
         if (!targetPersonfaceUuid) {
           targetPersonfaceUuid = crypto.randomUUID();
         }
 
-        if (socialAccountId && !resolvedPersonId) {
-          const [sa] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, socialAccountId));
-          if (sa) {
-            if (sa.ownerUuid) {
-              resolvedPersonId = sa.ownerUuid;
-            } else {
-              const nameParts = sa.username.trim().split(/\s+/);
-              const firstName = nameParts[0] || "Social";
-              const lastName = nameParts.slice(1).join(" ") || "User";
-              
-              const [newPerson] = await db.insert(people).values({
-                firstName,
-                lastName,
-                userId: req.user?.id || null,
-              }).returning();
-              
-              resolvedPersonId = newPerson.id;
-              
-              await db.update(socialAccounts)
-                .set({ ownerUuid: resolvedPersonId })
-                .where(eq(socialAccounts.id, socialAccountId));
-            }
-          }
-        }
-
-        if (!resolvedPersonId) {
-          return res.status(400).json({ error: "Could not resolve personId." });
-        }
-
-        await db.update(people)
-          .set({ personfaceUuid: targetPersonfaceUuid })
-          .where(eq(people.id, resolvedPersonId));
-
+        // If faceUuid was passed and has no personfaceUuid or had a different one, update it
         if (faceUuid) {
           await db.update(faces)
             .set({ personfaceUuid: targetPersonfaceUuid })
             .where(eq(faces.id, faceUuid));
         }
 
+        // If personId / resolvedPersonId exists, link person to the group
+        if (resolvedPersonId) {
+          await db.update(people)
+            .set({ personfaceUuid: targetPersonfaceUuid })
+            .where(eq(people.id, resolvedPersonId));
+        }
+
+        // If socialAccountId exists, link social account to the group
+        if (socialAccountId) {
+          await db.update(socialAccounts)
+            .set({ personfaceUuid: targetPersonfaceUuid })
+            .where(eq(socialAccounts.id, socialAccountId));
+        }
+
+        // Update photos.facialIds for all faces in this group
         const groupFaces = await db.select().from(faces).where(eq(faces.personfaceUuid, targetPersonfaceUuid));
         for (const gf of groupFaces) {
           if (gf.photoId) {
@@ -4018,7 +4042,9 @@ Respond with ONLY a JSON array, no other text.`;
                   updated = true;
                   return {
                     ...fid,
-                    personId: resolvedPersonId,
+                    // Person takes precedence if resolved, otherwise keep whatever was previously set
+                    personId: resolvedPersonId !== null ? resolvedPersonId : (fid.personId || null),
+                    // Social account is linked if provided, otherwise preserve existing social account link
                     socialAccountId: socialAccountId || fid.socialAccountId || null,
                   };
                 }
@@ -4033,17 +4059,21 @@ Respond with ONLY a JSON array, no other text.`;
           }
         }
 
+        // Sync with external PRM-Face microservice if configured
         const apiUrl = await getPrmFaceSetting("prm_face_api_url");
         const apiKey = await getPrmFaceSetting("prm_face_api_key");
-        if (apiUrl && apiKey) {
-          const [p] = await db.select().from(people).where(eq(people.id, resolvedPersonId));
-          const displayName = p ? `${p.firstName} ${p.lastName}` : "User";
+        if (apiUrl && apiKey && (resolvedPersonId || socialAccountId)) {
+          // Person takes precedence for naming/UUID in PRM-Face
+          const identityUuid = resolvedPersonId || socialAccountId;
+          const displayName = person
+            ? `${person.firstName} ${person.lastName}`
+            : (sa ? `@${sa.username}` : "User");
 
           for (const gf of groupFaces) {
             try {
               const params = new URLSearchParams();
               params.append("face_uuid", gf.id);
-              params.append("person_uuid", resolvedPersonId);
+              params.append("person_uuid", identityUuid);
               params.append("name", displayName);
 
               await fetch(`${prmBase(apiUrl)}/api/face/assign`, {
@@ -4061,7 +4091,12 @@ Respond with ONLY a JSON array, no other text.`;
           }
         }
 
-        res.json({ success: true, personId: resolvedPersonId, personfaceUuid: targetPersonfaceUuid });
+        res.json({
+          success: true,
+          personId: resolvedPersonId || null,
+          socialAccountId: socialAccountId || null,
+          personfaceUuid: targetPersonfaceUuid,
+        });
       } catch (error: any) {
         console.error("Error in face/connect:", error);
         res.status(500).json({ error: error.message });

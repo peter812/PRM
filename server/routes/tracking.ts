@@ -16,7 +16,7 @@ import { postedBy, storage } from "../storage";
 import { requireAuth } from "../auth";
 import { runAsSystem, visibleShared } from "../access";
 import { sseManager } from "../middleware/sse";
-import { uploadImage, uploadMedia } from "../image-storage";
+import { uploadImage, uploadMedia, uploadPostImage } from "../prm-s3";
 import { syncEntityInBackground } from "../vector-universal";
 import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
 import { TRACKING_KINDS, type TrackingKind } from "@shared/interest-level";
@@ -373,7 +373,7 @@ export function registerTracking(app: Express) {
         for (const [i, slide] of slides.entries()) {
           const fileHash = crypto.createHash("sha256").update(slide.buffer).digest("hex");
           let url = (await storage.getPhotoByFileHash(fileHash))?.location;
-          if (!url) url = await storeMedia(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg", "image");
+          if (!url) url = await uploadPostImage(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg");
           stored.push({ url, fileHash });
         }
         const photoIds = await db.transaction(async (tx) => {

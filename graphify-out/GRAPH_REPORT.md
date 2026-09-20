@@ -1,16 +1,16 @@
-# Graph Report - PRM  (2026-09-18)
+# Graph Report - PRM  (2026-09-20)
 
 ## Corpus Check
-- 340 files · ~534,104 words
+- 347 files · ~544,170 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 4249 nodes · 10913 edges · 304 communities (165 shown, 139 thin omitted)
-- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 49 edges (avg confidence: 0.84)
+- 4339 nodes · 11141 edges · 311 communities (171 shown, 140 thin omitted)
+- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 50 edges (avg confidence: 0.84)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `894610c5`
+- Built from commit: `55fc67ef`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -19,19 +19,19 @@
 - DatabaseStorage
 - settings-layout.tsx
 - IStorage
-- routes/tracking.ts
+- SocialAccountWithCurrentProfile
 - social-media.ts
-- daily-note-modal.tsx
+- social-graph-3d.tsx
 - task-worker.ts
 - @types/react
-- registerRoutes
+- task-tracker-modal.tsx
 - Person
 - Insights + Auto OSINT Network Scans — Implementation Plan
 - server/tracking.ts
 - Family Tree Feature — Backend Implementation Guide
 - Pathway to Multi-User PRM
-- card.tsx
 - button.tsx
+- dialog.tsx
 - ownedByCurrentUser
 - sidebar.tsx
 - db.ts
@@ -39,16 +39,16 @@
 - How to Integrate PRM-Face into Your Application
 - Messages Feature Build Out
 - Core Value Propositions
-- .get
+- RelationshipType
 - Crowds & Potential Groups Feature Buildout Guide
 - Settings Pages Styling Guide
-- ai-tools.ts
+- recognition.ts
 - Implementation Plan: Instagram DM Import + Messages UI
 - Vectorize Everything — Implementation Plan
-- Interaction
-- SocialAccountHistoryEntry
+- cn
+- registerRoutes
 - social-account-profile.tsx
-- person-graph-view.tsx
+- Conversation
 - instagram-dm-import.ts
 - use-toast.ts
 - account-creation-timeline.tsx
@@ -60,26 +60,26 @@
 - 3. The Ugly: Architectural Disasters, Vulnerabilities & Race Conditions
 - 2. Backend API Changes (Express.js)
 - PRM-Face Image Pipeline Upgrade Plan (PRM-face Application)
-- imageDetailHref
+- select.tsx
 - Component Library
-- recognition-images.tsx
+- social-accounts-list.tsx
 - components.json
 - People Manager CRM - Development Quick Start
-- InteractionType
+- interest-level.ts
 - Docker Deployment Guide
 - Technical Audit: Interactions, Daily Notes, Messages & Unified Timeline Flow
-- social-accounts-list.tsx
+- Interaction
 - External Tools Guide
 - API reference
 - stories-scheduler.ts
-- family-tree-tab.tsx
-- SocialAccountPost
+- instagram-tracking.tsx
+- social-account-history-tab.tsx
 - prm-s3.ts
 - System Architecture
 - devDependencies
-- person-profile.tsx
+- osint-tools.ts
 - Database Setup Guide
-- family-tree-relations.ts
+- SocialAccountPost
 - graph.tsx
 - toast.tsx
 - Oculus Quest 3 VR Graph Visualizer — Technical Specification & Implementation Plan
@@ -91,9 +91,9 @@
 - extension-bridge.ts
 - Technical Audit: Graph Visualization Subsystem
 - log
-- DenseGraphRenderer
-- ExtensionSession
-- prm-face-save-demo.tsx
+- AccountTracking
+- auth-redirect.ts
+- social-tracking.tsx
 - Technical Audit: AI Assistant, Vector Search, and Face Recognition Subsystems
 - global-search.tsx
 - InsertMessage
@@ -107,10 +107,10 @@
 - Partnership
 - SsoConfig
 - SocialNetworkChange
-- ExtensionAuthCode
+- InteractionType
 - Historical Profile Tracking Model
 - 2. The Bad: Suboptimal Schemas, Redundancies & Weak Constraints
-- profile-image.ts
+- routes/tracking.ts
 - Troubleshooting
 - Common Issues
 - useToast
@@ -129,7 +129,7 @@
 - Person Profile Flow Tab
 - Elo Rating System for Contacts
 - deleteImageFromS3 Function Call
-- cn
+- message-bubble.tsx
 - Schooling
 - Qdrant Vector Storage User Guide & Snippets
 - graphify Knowledge Graph Rules
@@ -138,16 +138,16 @@
 - dependencies
 - osint-scan-queue.ts
 - Simulation
-- image-crop-modal.tsx
+- family-tree-tab.tsx
 - date-fns
 - Docker Compose Dev Postgres Service
-- task-detail.tsx
+- image-tasks-settings.tsx
 - dotenv
 - drizzle-orm
 - axios
 - @replit/vite-plugin-cartographer
 - People Relationship Management (PRM) - External API Guide
-- ai-chat-demo.tsx
+- utils.ts
 - lucide-react
 - People
 - nanoid
@@ -155,15 +155,15 @@
 - express
 - papaparse
 - passport
-- GroupNote
+- .get
+- family-tree-relations.ts
 - buildFlowElements
-- Interactions
-- ELO Ranking System
 - family-tree.tsx
+- theme-toggle.tsx
 - @radix-ui/react-checkbox
 - @radix-ui/react-collapsible
 - @radix-ui/react-dialog
-- ImageDetailPage
+- image-detail.tsx
 - @radix-ui/react-label
 - @radix-ui/react-popover
 - @radix-ui/react-progress
@@ -171,26 +171,27 @@
 - @radix-ui/react-scroll-area
 - @radix-ui/react-select
 - @radix-ui/react-separator
+- prm-face-demo.tsx
 - @radix-ui/react-slot
 - @radix-ui/react-switch
 - @radix-ui/react-tabs
 - 1. The service (PRM-stories)
-- @radix-ui/react-tooltip
+- Image sizes under one ID (`?s=`) — plan
 - adm-zip
 - react-dom
 - react-easy-crop
 - react-hook-form
 - react-markdown
 - remark-gfm
-- message-bubble.tsx
+- Notes
 - tailwindcss-animate
 - three
 - @radix-ui/react-toast
 - @types/three
 - @xyflow/react
-- Relationships
+- dispatch
 - @tanstack/react-query
-- compression
+- subgroup-profile.tsx
 - 3. Traps — read these
 - tailwindcss
 - @tailwindcss/typography
@@ -260,7 +261,7 @@
 - d3-force-3d
 - Social Accounts
 - @radix-ui/react-avatar
-- Quick Start (5 Minutes)
+- Relationships
 - react
 - Interaction Types
 - @aws-sdk/s3-request-presigner
@@ -270,12 +271,12 @@
 - Phase 4 — Extension payload contract v2
 - Phase 2 — The diff engine — `server/social-account-history.ts` (new)
 - Phase 3 — Rework `processImportSocial` — `server/task-worker.ts:2450`
-- theme-toggle.tsx
+- Relationship
 - postcss
 - App.tsx
 - 3d-force-graph
 - mini-person-graph.tsx
-- drizzle-kit
+- mobile-bottom-nav.tsx
 - framer-motion
 - @radix-ui/react-alert-dialog
 - @replit/vite-plugin-dev-banner
@@ -283,8 +284,9 @@
 - Find My Name — plan
 - drizzle-zod
 - PRM-VR Devlog 01 — Implementation Plan
+- Graph Data
 - 3. Core Capabilities & Mechanics Breakdown
-- social-graph-3d.tsx
+- not-found.tsx
 - sharp
 - vite
 - AI Assistant & Agentic Tools
@@ -299,12 +301,14 @@
 - start-dev.sh
 - start-prod.sh
 - @types/multer
+- autoprefixer
 - Image Management
 - API Key Management
 - Instagram Stories & Social Tracking
 - Family & Lineage
 - User Profile
 - zod
+- SettingsSidebar
 - cmdk
 - connect-pg-simple
 - @radix-ui/react-radio-group
@@ -312,18 +316,21 @@
 - @types/papaparse
 - wouter
 - @types/passport
+- Quick Start (5 Minutes)
+- @aws-sdk/client-s3
+- compression
 
 ## God Nodes (most connected - your core abstractions)
-1. `DatabaseStorage` - 250 edges
-2. `IStorage` - 224 edges
-3. `useToast()` - 207 edges
-4. `cn()` - 184 edges
-5. `apiRequest()` - 178 edges
-6. `Button` - 123 edges
+1. `DatabaseStorage` - 254 edges
+2. `IStorage` - 227 edges
+3. `useToast()` - 211 edges
+4. `apiRequest()` - 183 edges
+5. `cn()` - 181 edges
+6. `Button` - 126 edges
 7. `queryClient` - 83 edges
 8. `Card` - 79 edges
-9. `Badge()` - 63 edges
-10. `Input` - 63 edges
+9. `Input` - 65 edges
+10. `Badge()` - 63 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Docker Compose Dev Postgres Service` --semantically_similar_to--> `Docker Compose Postgres Service`  [INFERRED] [semantically similar]
@@ -338,7 +345,9 @@
   attached_assets/Pasted-This-proposed-data-model-refactors-the-existing-schema-_1770897464205.txt → replit.md
 
 ## Import Cycles
+- 3-file cycle: `server/profile-image.ts -> server/recognition.ts -> server/task-worker.ts -> server/profile-image.ts`
 - 3-file cycle: `server/storage.ts -> server/vector-universal.ts -> server/vector.ts -> server/storage.ts`
+- 4-file cycle: `server/profile-image.ts -> server/recognition.ts -> server/task-worker.ts -> server/social-account-history.ts -> server/profile-image.ts`
 
 ## Hyperedges (group relationships)
 - **Historical Social Account Storage Schema** — attached_assets_pasted_this_proposed_data_model_refactors_the_existing_schema__1770897464205_historical_tracking_model, attached_assets_pasted_this_proposed_data_model_refactors_the_existing_schema__1770897464205_social_accounts_registry, attached_assets_pasted_this_proposed_data_model_refactors_the_existing_schema__1770897464205_social_profile_versions, attached_assets_pasted_this_proposed_data_model_refactors_the_existing_schema__1770897464205_social_network_snapshots [EXTRACTED 1.00]
@@ -346,55 +355,55 @@
 - **Layout and Styling Patterns** — guides_styling_settings_standard_container, guides_styling_settings_full_height_list, guides_design_guidelines_empty_states, attached_assets_pasted__implementation_plan_communications_folding_sections_go_1767493112718_folding_accordions [INFERRED 0.85]
 - **Genealogy Graph and Visualizer Architecture** — guides_family_ext_guide_union_centric, guides_family_ext_guide_recursive_cte, guides_family_ext_guide_elk_layout, guides_force_graph_repo_readme_graph_component [INFERRED 0.95]
 
-## Communities (304 total, 139 thin omitted)
+## Communities (311 total, 140 thin omitted)
 
 ### Community 0 - "schema.ts"
 Cohesion: 0.02
-Nodes (148): ConversationWithParticipants, FamilyTreePersonEntry, FamilyTreeResult, interactionTypesCache, MessageWithRecipients, MissingLink, PendingImportFilter, PostgresSessionStore (+140 more)
+Nodes (140): ConversationWithParticipants, FamilyTreePersonEntry, FamilyTreeResult, interactionTypesCache, MessageWithRecipients, MissingLink, PendingImportFilter, PostgresSessionStore (+132 more)
 
 ### Community 1 - "DatabaseStorage"
 Cohesion: 0.03
-Nodes (15): AdditionalInfoDialogProps, ChangeUsernameDialogProps, ExportSocialAccountDialogProps, PersonSocialAccountsChipsProps, SocialAccountDialogProps, TrueDbTabProps, currentAccess(), visibleShared() (+7 more)
+Nodes (5): DatabaseStorage, GroupNote, InsertGroupNote, OsintScanQueueRow, SocialNetworkState
 
 ### Community 2 - "settings-layout.tsx"
 Cohesion: 0.05
-Nodes (36): NotFound, APP_OPTIONS, importExportSections, FaceItem, FaceListResponse, AdminSettingsPage, AdminUsersPage, ApiDocs (+28 more)
+Nodes (34): APP_OPTIONS, FaceItem, FaceListResponse, AdminSettingsPage, AdminUsersPage, ApiDocs, ApiSettingsPage, AppOptionsPage (+26 more)
 
 ### Community 3 - "IStorage"
 Cohesion: 0.02
-Nodes (7): IStorage, Conversation, DailyNoteAuditLog, InsertConversation, InsertPhoto, OsintScanQueueRow, Photo
+Nodes (6): IStorage, DailyNoteAuditLog, ExtensionAuthCode, InsertExtensionAuthCode, InsertPhoto, Photo
 
-### Community 4 - "routes/tracking.ts"
-Cohesion: 0.10
-Nodes (36): runAsSystem(), generateDeterministicUuid(), authedRun(), fail(), followsSchema, followUser, infoSchema, jobFor() (+28 more)
+### Community 4 - "SocialAccountWithCurrentProfile"
+Cohesion: 0.05
+Nodes (17): AdditionalInfoDialogProps, ExportSocialAccountDialogProps, PersonSocialAccountsChipsProps, SocialAccountDialogProps, PaginatedHistory, TrueDbTabProps, visibleShared(), HistoryAccountRef (+9 more)
 
 ### Community 5 - "social-media.ts"
 Cohesion: 0.05
-Nodes (72): buildOllamaToolsArray(), getAiToolByName(), requireAuth(), applyFamilyTreeChanges(), ApplyFamilyTreeChangesResult, buildContextPrompt(), buildSystemPrompt(), enrichChanges() (+64 more)
+Nodes (88): AI_TOOLS, AiToolCategory, AiToolContext, AiToolDefinition, AiToolIcon, AiToolJsonSchema, AiToolMetadata, AiToolResult (+80 more)
 
-### Community 6 - "daily-note-modal.tsx"
-Cohesion: 0.15
-Nodes (24): AddConnectionDialogProps, RelationshipFormValues, DailyNoteModal(), EventRow, formatModalTitleDate(), generateId(), PartyItem, ImportFilters (+16 more)
+### Community 6 - "social-graph-3d.tsx"
+Cohesion: 0.06
+Nodes (61): AddConnectionDialogProps, RelationshipFormValues, DailyNoteModal(), EventRow, formatModalTitleDate(), generateId(), PartyItem, ImportFilters (+53 more)
 
 ### Community 7 - "task-worker.ts"
 Cohesion: 0.05
-Nodes (71): main(), resolveRootAccount(), runOnce(), check(), classifies(), sample, setImageStorageMode(), parseExportZipName() (+63 more)
+Nodes (82): main(), resolveRootAccount(), runOnce(), check(), classifies(), sample, legacyHqImageUrls(), legacyProfileImagesPending() (+74 more)
 
-### Community 9 - "registerRoutes"
-Cohesion: 0.09
-Nodes (39): listAiToolMetadata(), registerRoutes(), activeToolNames(), buildOllamaChatContext(), describeImageWithOllama(), generateSexGuesses(), getImageBuffer(), getOllamaSetting() (+31 more)
+### Community 9 - "task-tracker-modal.tsx"
+Cohesion: 0.32
+Nodes (6): EMPTY_IMAGE_TASKS, EMPTY_TASKS, getTaskLabel(), TaskTrackerModal(), TrackedTask, Progress
 
 ### Community 10 - "Person"
-Cohesion: 0.04
-Nodes (24): GroupDialogProps, AddMembersDialogProps, MembersTabProps, PersonDialogProps, AddToGroupsDialogProps, PersonGroupsTabProps, PoliticalLeaningCardProps, RelationshipDialogProps (+16 more)
+Cohesion: 0.05
+Nodes (22): GroupDialogProps, AddMembersDialogProps, MembersTabProps, PersonDialogProps, AddToGroupsDialogProps, PersonGroupsTabProps, PoliticalLeaningCardProps, RelationshipDialogProps (+14 more)
 
 ### Community 11 - "Insights + Auto OSINT Network Scans — Implementation Plan"
 Cohesion: 0.08
 Nodes (23): 1. Schema — `shared/schema.ts`, 2. Storage — `server/storage.ts`, 3. Enqueue logic — new `server/osint-scan-queue.ts`, 4. Drip runner — `server/osint-scan-queue.ts` (started from `server/index.ts` next to the task worker), 5. API routes, 6. Client, 7. Implementation order, 8. Risks / things to watch (+15 more)
 
 ### Community 12 - "server/tracking.ts"
-Cohesion: 0.06
-Nodes (50): AccountTracking(), when(), asLevel(), InterestLevelBadge(), InterestLevelSelect(), applyMeRule(), BatchSummary, CHECKED_COLUMN (+42 more)
+Cohesion: 0.12
+Nodes (24): BatchSummary, CHECKED_COLUMN, CHECKED_SQL_COLUMN, ClaimedJob, ClaimedRow, claimTrackingJobs(), DECIDED_SKIPS, DUE_COLUMN (+16 more)
 
 ### Community 13 - "Family Tree Feature — Backend Implementation Guide"
 Cohesion: 0.04
@@ -404,25 +413,25 @@ Nodes (45): 10. Testing Checklist, 1. Overview, 2.1 New Column on `relationships
 Cohesion: 0.04
 Nodes (45): 1.1 Auth and sessions (already in place), 1.2 Tables that already carry a `user_id`, 1.3 Tables with **no** ownership column today, 1.4 Storage / repository layer, 1.5 Background workers, 1.6 Client, 1.7 DB initialization, 1. Where the codebase is today (+37 more)
 
-### Community 15 - "card.tsx"
-Cohesion: 0.05
-Nodes (83): COLORS, FaceBox, FaceResult, Person, PhotoUploadDialogProps, Card, CardContent, CardDescription (+75 more)
+### Community 15 - "button.tsx"
+Cohesion: 0.07
+Nodes (60): BLOCKER_TEXT, ROW, CHANNEL_TABS, ConversationListPaneProps, Props, InterestLevelSelect(), LinkFollowingAccountsDialogProps, LinkSocialAccountDialogProps (+52 more)
 
-### Community 16 - "button.tsx"
-Cohesion: 0.06
-Nodes (74): UnknownFaces, BLOCKER_TEXT, ROW, AddNoteDialogProps, NoteForm, noteFormSchema, additionalInfoSchema, additionalSchoolingSchema (+66 more)
+### Community 16 - "dialog.tsx"
+Cohesion: 0.05
+Nodes (67): AiChatDemo, ConversationMediaDialogProps, MediaItem, ApplyResponse, changeColor(), changeIcon(), describeChange(), GenerateFamilyConnectionsDialog() (+59 more)
 
 ### Community 17 - "ownedByCurrentUser"
-Cohesion: 0.06
-Nodes (14): DailyNoteModalProps, actingUserId(), bypassesAccessFilters(), canReadOwned(), canReadShared(), ownedByCurrentUser(), requireAccess(), DailyNote (+6 more)
+Cohesion: 0.05
+Nodes (12): DailyNoteModalProps, actingUserId(), ownedByCurrentUser(), DailyNote, DailyNoteWithDetails, ImageTask, InsertDailyNote, InsertImageTask (+4 more)
 
 ### Community 18 - "sidebar.tsx"
-Cohesion: 0.11
-Nodes (27): menuItems, Sidebar(), SidebarContent(), SidebarContext, SidebarContextProps, SidebarFooter(), SidebarGroup(), SidebarGroupAction() (+19 more)
+Cohesion: 0.09
+Nodes (32): menuItems, Separator, SheetContent, SheetContentProps, SheetDescription, SheetFooter(), SheetHeader(), SheetOverlay (+24 more)
 
 ### Community 19 - "db.ts"
-Cohesion: 0.09
-Nodes (39): accountId(), check(), csv(), ok(), run(), runImport(), check(), counts() (+31 more)
+Cohesion: 0.10
+Nodes (28): isDryRun, main(), accountId(), check(), csv(), ok(), run(), runImport() (+20 more)
 
 ### Community 20 - "graph-layout.worker.ts"
 Cohesion: 0.24
@@ -440,9 +449,9 @@ Nodes (30): 1. `conversations` — Thread / chain container, 2. `messages` — I
 Cohesion: 0.06
 Nodes (30): API & Integration, Competitive Advantages, Contact Management, Core Value Propositions, CRM Application - Marketing Website Content, Customization & Settings, Data Management, Developer-Friendly (+22 more)
 
-### Community 24 - ".get"
-Cohesion: 0.05
-Nodes (12): RelationshipMenuItemsProps, PersonCardContentProps, User, dedup(), TTLCache, InsertRelationshipType, InsertSocialAccountType, InsertUser (+4 more)
+### Community 24 - "RelationshipType"
+Cohesion: 0.23
+Nodes (4): RelationshipMenuItemsProps, PersonCardContentProps, InsertRelationshipType, RelationshipType
 
 ### Community 25 - "Crowds & Potential Groups Feature Buildout Guide"
 Cohesion: 0.07
@@ -452,9 +461,9 @@ Nodes (29): 1. Configuration & Center Account Setup, 1. Configuration Parameters
 Cohesion: 0.07
 Nodes (29): Breakdown, Buttons, Card-only pages (no standalone title), Card Patterns, CardContent internal spacing, Container-Pattern Pages, Current Page Inventory & Issues, Destructive actions (+21 more)
 
-### Community 27 - "ai-tools.ts"
-Cohesion: 0.08
-Nodes (21): AI_TOOLS, AiToolCategory, AiToolContext, AiToolDefinition, AiToolIcon, AiToolJsonSchema, AiToolMetadata, AiToolResult (+13 more)
+### Community 27 - "recognition.ts"
+Cohesion: 0.06
+Nodes (47): HQ_MIN_WIDTH, alreadyQueued(), associateProfileFaces(), AssociateProfileFacesResult, AUTO_RECOGNITION_KEYS, AutoRecognitionJob, AutoRecognitionKind, AutoRecognitionSettings (+39 more)
 
 ### Community 28 - "Implementation Plan: Instagram DM Import + Messages UI"
 Cohesion: 0.07
@@ -464,53 +473,53 @@ Nodes (26): 1.1 `server/local-storage.ts`, 1.2 Serving route — `server/routes/
 Cohesion: 0.07
 Nodes (26): 1. New Qdrant Collection, 2. SQL DB: Storing Vector IDs, 3. Vectorization Service (`server/vector-universal.ts`), 4. Hooks: Auto-Sync on Create/Update/Delete, 5. Bulk Initial Sync, 6. Search Feature: "Super Search", 7. Settings UI Updates, 8. Implementation Order (+18 more)
 
-### Community 30 - "Interaction"
-Cohesion: 0.11
-Nodes (10): InteractionDialogProps, InteractionsTabProps, PersonFlowTab(), PersonFlowTabProps, FlowItem, FlowResponse, InsertInteraction, InsertNote (+2 more)
+### Community 30 - "cn"
+Cohesion: 0.07
+Nodes (43): GraphTriangleIcon(), MarkdownMessage(), MarkdownMessageProps, PersonActionButton(), PersonActionButtonProps, PersonContextMenu(), PersonContextMenuProps, PersonLike (+35 more)
 
-### Community 31 - "SocialAccountHistoryEntry"
-Cohesion: 0.19
-Nodes (6): PaginatedHistory, HistoryAccountRef, HistoryPostRef, SocialAccountHistoryDetail, SocialAccountHistoryEntry, SocialAccountHistoryKind
+### Community 31 - "registerRoutes"
+Cohesion: 0.10
+Nodes (36): setAutoRecognitionSettings(), registerRoutes(), activeToolNames(), buildOllamaChatContext(), describeImageWithOllama(), generateSexGuesses(), getImageBuffer(), getOllamaSetting() (+28 more)
 
 ### Community 32 - "social-account-profile.tsx"
-Cohesion: 0.04
-Nodes (83): GroupProfile, GuessTheSex, OcrDemo, PendingSocialImportsPage, PotentialGroupsPage, SocialAccountProfile, CHANNEL_TABS, ConversationListPaneProps (+75 more)
+Cohesion: 0.06
+Nodes (48): AddNoteDialog(), AdditionalInfoDialog(), initials(), PersonInfoPanel(), InsightsTab(), LikesHiddenBadge(), MessagesTab(), PersonDialog() (+40 more)
 
-### Community 33 - "person-graph-view.tsx"
-Cohesion: 0.25
-Nodes (9): applyRendererPerfSettings(), getInitialGraphSettings(), ForceGraphInstance, getLinkEndpointId(), GraphLink, GraphNode, PersonGraphView(), PersonGraphViewProps (+1 more)
+### Community 33 - "Conversation"
+Cohesion: 0.13
+Nodes (4): Conversation, ConversationParticipant, InsertConversation, InsertConversationParticipant
 
 ### Community 34 - "instagram-dm-import.ts"
 Cohesion: 0.15
 Nodes (18): assertAscending(), assertUniqueExternalIds(), check(), fixtureDir, scriptDir, thread, decodeMetaString(), loadThreadFolder() (+10 more)
 
 ### Community 35 - "use-toast.ts"
-Cohesion: 0.20
-Nodes (13): Action, ActionType, actionTypes, addToRemoveQueue(), dispatch(), genId(), listeners, memoryState (+5 more)
+Cohesion: 0.08
+Nodes (40): AddNoteDialogProps, NoteForm, noteFormSchema, additionalInfoSchema, additionalSchoolingSchema, collegeSchema, FormValues, jobExperienceSchema (+32 more)
 
 ### Community 36 - "account-creation-timeline.tsx"
 Cohesion: 0.26
 Nodes (11): AccountCreationTimelinePage, AccountCreationTimelinePage(), Bucket, fillMonths(), Granularity, PAD, periodLabel(), smoothPath() (+3 more)
 
 ### Community 37 - "messages-tab.tsx"
-Cohesion: 0.15
-Nodes (12): channelIconFor(), conversationDisplayName(), ConversationListPane(), lastMessagePreview(), participantName(), ImportBackupDialog(), ImportBackupSource, EmbeddedMessagesView() (+4 more)
+Cohesion: 0.16
+Nodes (11): channelIconFor(), conversationDisplayName(), ConversationListPane(), lastMessagePreview(), participantName(), ImportBackupSource, EmbeddedMessagesView(), EmbeddedMessagesViewProps (+3 more)
 
 ### Community 38 - "family-tree-flow.tsx"
 Cohesion: 0.10
 Nodes (17): CHILD_TYPES, CoupleGroupColor, DeletableEdgeData, edgeTypes, FamilyTreeCanvasHandle, FamilyTreeFlow, FamilyTreeFlowInnerProps, FamilyTreeFlowProps (+9 more)
 
 ### Community 39 - "social-graph-settings.tsx"
-Cohesion: 0.12
-Nodes (22): AutoToggleMode, ColorScheme, DEEP_LINK_PARAMS, DENSE_THRESHOLD_STEPS, DenseModeSetting, EXTRAS_STEPS, GraphMode, hasNoGraphUrlParams() (+14 more)
+Cohesion: 0.06
+Nodes (37): DenseGraphIndex, DenseGraphLink, DenseGraphNode, DenseGraphRenderer, GraphResourceCache, AutoToggleMode, ColorScheme, DEEP_LINK_PARAMS (+29 more)
 
 ### Community 40 - "compilerOptions"
 Cohesion: 0.06
 Nodes (31): build, client/src/**/*, dist, dom, dom.iterable, esnext, node, node_modules (+23 more)
 
 ### Community 41 - "home.tsx"
-Cohesion: 0.14
-Nodes (13): HomePage, BoardCard(), BoardCardProps, CARD_DEFINITIONS, CardId, DEFAULT_ORDER, distributeIntoColumns(), getGreeting() (+5 more)
+Cohesion: 0.13
+Nodes (14): HomePage, BoardCard(), BoardCardProps, CARD_DEFINITIONS, CardId, DEFAULT_ORDER, distributeIntoColumns(), getGreeting() (+6 more)
 
 ### Community 42 - "3. The Ugly: Architectural Disasters, Vulnerabilities & Race Conditions"
 Cohesion: 0.05
@@ -524,17 +533,17 @@ Nodes (18): 1.1 `photos` Table Update, 1.2 `image_questions` Table (New), 1. Dat
 Cohesion: 0.11
 Nodes (18): 1.1 Exchanging Setup Code & Passing Connection Variables, 1.2 Persisting & Initializing Configurations, 1.3 Request Guard Middleware, 1.4 Recognition Parameters Management APIs, 1. Handshake-Driven Connection Initialization, 2.1 Database Client, 2.2 S3 Client, 2. Database and S3 Clients (+10 more)
 
-### Community 45 - "imageDetailHref"
-Cohesion: 0.27
-Nodes (8): ImagesListPage, currentLocationFrom(), imageDetailHref(), RecentPhotosContent(), ImagesListPage(), PhotoListItem, PhotosPage, RecentImagesCard()
+### Community 45 - "select.tsx"
+Cohesion: 0.14
+Nodes (22): ConversationMediaDialog(), ConversationThreadPane(), ConversationThreadPaneProps, getChannelIcon(), isReactionNoise(), FindMyNameDialog(), FindMyNameDialogProps, NameGuess (+14 more)
 
 ### Community 46 - "Component Library"
 Cohesion: 0.11
 Nodes (17): Accessibility, Animations, API Access Section, Buttons, Cards & Containers, Component Library, Data Display, Design Approach (+9 more)
 
-### Community 47 - "recognition-images.tsx"
-Cohesion: 0.13
-Nodes (18): buildFaceThumbUrl(), buildFullImageUrl(), buildListThumbUrl(), COLORS, FaceDetail, FaceState, ImageDetail, ImageItem (+10 more)
+### Community 47 - "social-accounts-list.tsx"
+Cohesion: 0.07
+Nodes (49): PersonBasic, VIEW_MODE_CYCLE, VIEW_MODE_LABELS, FACE_COLORS, FaceBox, FaceDetail, ImageDetail, PersonPhotosResponse (+41 more)
 
 ### Community 48 - "components.json"
 Cohesion: 0.12
@@ -544,6 +553,10 @@ Nodes (16): aliases, components, hooks, lib, ui, utils, rsc, $schema (+8 more)
 Cohesion: 0.12
 Nodes (17): Additional Documentation, Available Commands, Database Options, Development Workflow, Docker Development Stack, IDE Setup, Making Changes, Next Steps (+9 more)
 
+### Community 50 - "interest-level.ts"
+Cohesion: 0.13
+Nodes (18): asLevel(), InterestLevelBadge(), Cadence, DEFAULT_POST_SETTINGS, INTEREST_LEVEL_COLOR, INTEREST_LEVEL_LABEL, INTEREST_LEVELS, InterestLevel (+10 more)
+
 ### Community 51 - "Docker Deployment Guide"
 Cohesion: 0.12
 Nodes (16): Build Details, Docker CLI, Docker Compose, Docker Deployment Guide, Docker Files Explained, `Dockerfile` (Development - Default), `Dockerfile.production` (Production), Environment Variables (+8 more)
@@ -552,9 +565,9 @@ Nodes (16): Build Details, Docker CLI, Docker Compose, Docker Deployment Guide, 
 Cohesion: 0.06
 Nodes (31): 1.1 Multi-Entity Interactions with Strict Schema Validation, 1.2 Rich Daily Journaling with Multi-Modal AI Features, 1.3 Perspective Messaging ("Their Phone") View, 1.4 Unified Date Grouping & Infinite Scroll Infrastructure, 1. The Good: Architectural Highlights & Strengths, 2.1 Catastrophic In-Memory Table Scanning in `GET /api/interactions`, 2.2 Massive $N*M+1$ Query Cascades in Messages and Daily Notes, 2.3 Per-Image Individual HTTP GETs & Layout Thrashing (+23 more)
 
-### Community 53 - "social-accounts-list.tsx"
-Cohesion: 0.06
-Nodes (63): ImageDetailPage, PeopleList, FACE_COLORS, FaceBox, FaceDetail, ImageDetail, PersonPhotosResponse, PhotoImage (+55 more)
+### Community 53 - "Interaction"
+Cohesion: 0.16
+Nodes (7): InteractionDialogProps, InteractionsTabProps, PersonFlowTabProps, FlowItem, FlowResponse, InsertInteraction, Interaction
 
 ### Community 54 - "External Tools Guide"
 Cohesion: 0.13
@@ -565,20 +578,20 @@ Cohesion: 0.13
 Nodes (14): API reference, Container layout, Data input, Examples, Force engine configuration, Initialisation, Input JSON syntax, Interaction (+6 more)
 
 ### Community 56 - "stories-scheduler.ts"
-Cohesion: 0.09
-Nodes (40): main(), checkStoriesSchema, importerFor(), importerPatchSchema, registerStories(), runSchema, storyMetaSchema, storyPostId() (+32 more)
+Cohesion: 0.10
+Nodes (42): main(), runAsSystem(), authedRun(), checkStoriesSchema, importerFor(), importerPatchSchema, registerStories(), runSchema (+34 more)
 
-### Community 57 - "family-tree-tab.tsx"
-Cohesion: 0.25
-Nodes (6): ConnectRelationshipDialog(), FamilyTreeExplorer(), personName(), FamilyTreeTabProps, FamilyTreeTab, FamilyTreeTab
-
-### Community 58 - "SocialAccountPost"
+### Community 57 - "instagram-tracking.tsx"
 Cohesion: 0.18
-Nodes (4): PostDetailDialogProps, PostDialogProps, InsertSocialAccountPost, SocialAccountPost
+Nodes (13): Table, TableBody, TableCaption, TableCell, TableFooter, TableHead, TableHeader, TableRow (+5 more)
+
+### Community 58 - "social-account-history-tab.tsx"
+Cohesion: 0.20
+Nodes (13): describeEntry(), describeNeighbour(), DirectEntry(), formatDateTime(), KINDS, NeighbourEntry(), Part, PendingJob() (+5 more)
 
 ### Community 59 - "prm-s3.ts"
 Cohesion: 0.05
-Nodes (80): RFC-3986, check(), main(), getImageStorageMode(), IMAGE_STORAGE_MODE_KEY, isStorageMode(), uploadImage(), uploadMedia() (+72 more)
+Nodes (66): RFC-3986, directBare, directSized, faceSized, mockConfig, normalized1, normalized2, normalized3 (+58 more)
 
 ### Community 60 - "System Architecture"
 Cohesion: 0.14
@@ -586,23 +599,23 @@ Nodes (13): Authentication & API Access, Backend, Data Storage, Database Reset, 
 
 ### Community 61 - "devDependencies"
 Cohesion: 0.15
-Nodes (13): autoprefixer, esbuild, devDependencies, autoprefixer, esbuild, @replit/vite-plugin-runtime-error-modal, @types/express, @types/react-dom (+5 more)
+Nodes (13): drizzle-kit, esbuild, devDependencies, drizzle-kit, esbuild, @replit/vite-plugin-runtime-error-modal, @types/express, @types/react-dom (+5 more)
 
-### Community 62 - "person-profile.tsx"
-Cohesion: 0.06
-Nodes (53): AddNoteDialog(), AdditionalInfoDialog(), initials(), PersonBasic, PersonInfoPanel(), VIEW_MODE_CYCLE, VIEW_MODE_LABELS, FamilyTreePersonSelector() (+45 more)
+### Community 62 - "osint-tools.ts"
+Cohesion: 0.33
+Nodes (5): OSINT_TOOLS, OsintTargetType, OsintToolMeta, JobDetail, JobSummary
 
 ### Community 63 - "Database Setup Guide"
 Cohesion: 0.15
 Nodes (13): Automatic Database Reset (New!), Database Connection String Format, Database Setup Guide, Docker, Docker-Specific Setup, Local Development, Next Steps, Option A: Create Database Before Starting Docker (+5 more)
 
-### Community 64 - "family-tree-relations.ts"
-Cohesion: 0.36
-Nodes (7): FamilyTreeData, applyModifiers(), computeExtendedRelationships(), getStepCategory(), KinshipTerm, PATH_MAP, translateRelationshipPath()
+### Community 64 - "SocialAccountPost"
+Cohesion: 0.18
+Nodes (4): PostDetailDialogProps, PostDialogProps, InsertSocialAccountPost, SocialAccountPost
 
 ### Community 65 - "graph.tsx"
-Cohesion: 0.19
-Nodes (12): Graph, AddConnectionDialog(), OptionsPanel(), Edge, Graph(), GraphData, GraphGroup, GraphPerson (+4 more)
+Cohesion: 0.21
+Nodes (11): Graph, OptionsPanel(), Edge, Graph(), GraphData, GraphGroup, GraphPerson, hexToNumber() (+3 more)
 
 ### Community 66 - "toast.tsx"
 Cohesion: 0.26
@@ -629,40 +642,44 @@ Cohesion: 0.23
 Nodes (3): isDuplicatePendingImport(), InsertPendingSocialAccountImport, PendingSocialAccountImport
 
 ### Community 73 - "extension-bridge.ts"
-Cohesion: 0.18
-Nodes (11): DEFAULT_MAX_RECORDS, describe(), EXTENSION_ID_SETTING, EXTENSION_MAX_RECORDS_SETTING, ExtensionUnavailableError, ExtractAction, ExtractRequest, ExtractResponse (+3 more)
+Cohesion: 0.25
+Nodes (8): describe(), ExtensionUnavailableError, ExtractAction, ExtractRequest, ExtractResponse, FAILURE_REASONS, requestExtraction(), Window
 
 ### Community 74 - "Technical Audit: Graph Visualization Subsystem"
 Cohesion: 0.07
 Nodes (28): 1.1 WebGL-Based Hardware Acceleration via Pixi.js v8, 1.2 Dedicated, Minimally Projected Backend Graph Endpoint, 1.3 Blob Mode Algorithmic Merging, 1.4 Advanced 3D Optimizations in Sister Modules, 1. The Good: Architectural Highlights, 2.1 State Synchronization Anti-Pattern: Full Canvas Destruction on Filter Changes, 2.2 Unoptimized, Infinite Main-Thread Force Simulation, 2.3 Flawed Mobile/Touch Interaction & Missing Pan Navigation (+20 more)
 
 ### Community 75 - "log"
-Cohesion: 0.20
-Nodes (30): addColumnIfNotExists(), columnExists(), dropAllTables(), ensureSsoEmailColumn(), hasUsers(), initializeDatabase(), migrateFamilyToNormalizedSchema(), migrateImageStorageModeToAppSetting() (+22 more)
+Cohesion: 0.26
+Nodes (25): addColumnIfNotExists(), columnExists(), dropAllTables(), dropLegacyHqImageColumns(), dropLegacyImageStorageMode(), ensureSsoEmailColumn(), hasUsers(), initializeDatabase() (+17 more)
 
-### Community 76 - "DenseGraphRenderer"
-Cohesion: 0.22
-Nodes (4): DenseGraphIndex, DenseGraphLink, DenseGraphNode, DenseGraphRenderer
+### Community 76 - "AccountTracking"
+Cohesion: 0.19
+Nodes (13): AccountTracking(), when(), LevelDefaultsCard(), applyMeRule(), jitteredDue(), levelCadences(), markChecked(), spreadDue() (+5 more)
 
-### Community 78 - "prm-face-save-demo.tsx"
-Cohesion: 0.14
-Nodes (15): PrmFaceSaveDemo, Assignment, COLORS, FaceBox, FaceResult, FaceState, IdentificationModal(), PersonOption (+7 more)
+### Community 77 - "auth-redirect.ts"
+Cohesion: 0.44
+Nodes (8): clearStoredReturnTo(), getSafeReturnTo(), isNonHomePage(), sanitizeReturnTo(), setStoredReturnTo(), ProtectedRoute(), AuthDirectPage(), AuthPage()
+
+### Community 78 - "social-tracking.tsx"
+Cohesion: 0.24
+Nodes (10): SocialTrackingPage, Batch, BatchProgress(), estimate(), FollowingStatus, SocialTrackingPage(), STATUS_KEY, RECENT_CHECK_HOURS (+2 more)
 
 ### Community 79 - "Technical Audit: AI Assistant, Vector Search, and Face Recognition Subsystems"
 Cohesion: 0.07
 Nodes (28): 1.1 Universal Vector Embeddings Across Heterogeneous Entities, 1.2 Declarative Tool Calling & Multi-Step Agentic Loops, 1.3 Human-in-the-Loop Tool Authorization Bus, 1.4 Face Identity Clustering & Microservice Decoupling, 1. The Good: Architectural Strengths & Modern Patterns, 2.1 Sequential, Unbatched Embedding Generation, 2.2 Lack of Embedding Debouncing on Entity Mutation Hooks, 2.3 Overly Permissive Vector Similarity Threshold (+20 more)
 
 ### Community 80 - "global-search.tsx"
-Cohesion: 0.17
-Nodes (14): GlobalSearch(), SearchTypeFilter, DropdownMenuRadioItem, CATEGORY_ICONS, CATEGORY_LABELS, DEFAULT_PREFERENCES, loadPreferences(), savePreferences() (+6 more)
+Cohesion: 0.21
+Nodes (17): GlobalSearch(), SearchTypeFilter, addToSearchHistory(), clearSearchHistory(), loadSearchHistory(), removeFromSearchHistory(), saveSearchHistory(), SearchHistoryItem (+9 more)
 
 ### Community 82 - "2. The scraper service (`prm-stories/`)"
 Cohesion: 0.09
 Nodes (22): 1. Why network interception, not DOM scraping, 2.1 Stack, 2.2 First run / login, 2.3 A run, step by step, 2.4 Scheduling, 2.5 Tripwires (abort the run, back off), 2.6 Output on disk, 2.7 Delivery (+14 more)
 
 ### Community 83 - "image-table-page.tsx"
-Cohesion: 0.22
-Nodes (6): faceCount(), fmtDate(), ImageTablePage(), Photo, PhotosPage, ImageTablePage
+Cohesion: 0.19
+Nodes (7): TooltipContent, faceCount(), fmtDate(), ImageTablePage(), Photo, PhotosPage, ImageTablePage
 
 ### Community 84 - "Account tracking — plan"
 Cohesion: 0.06
@@ -684,9 +701,9 @@ Nodes (7): Import Nickname Mapping Logic, Instagram Followers/Following CSV Impo
 Cohesion: 0.07
 Nodes (26): 1.1 Type Safety & Runtime Schema Generation, 1.2 Multi-Tenant Ownership & Visibility Pattern, 1.3 Normalized Relational Sub-Schemas, 1.4 Selective GIN Indexing, 1. The Good: Architectural Strengths & Sound Patterns, 2.1 SQLite Legacy Artifacts in PostgreSQL, 2.2 Denormalized Text Arrays Over Proper Junction Tables, 2.3 Polymorphic Foreign Key Anti-Pattern (+18 more)
 
-### Community 95 - "profile-image.ts"
-Cohesion: 0.11
-Nodes (35): main(), rejects(), ALLOWED_IMAGE_HOSTS, applyProfileImageVerdict(), assertFetchableImageUrl(), backfillProfileImageTiers(), cdnFilename(), classifyProfileImage() (+27 more)
+### Community 95 - "routes/tracking.ts"
+Cohesion: 0.05
+Nodes (79): main(), rejects(), fetchImageBuffer(), isPrmS3ImageUrl(), isStoredImageUrl(), putPrmS3Object(), uploadImage, uploadMedia (+71 more)
 
 ### Community 96 - "Troubleshooting"
 Cohesion: 0.29
@@ -697,8 +714,8 @@ Cohesion: 0.29
 Nodes (7): Common Issues, "database does not exist", "ENOENT: no such file or directory .env", Images don't upload, Port 5000 already in use, "relation does not exist", Windows: "NODE_ENV is not recognized"
 
 ### Community 98 - "useToast"
-Cohesion: 0.05
-Nodes (75): SocialTrackingPage, ChangeUsernameDialog(), computeDerivedUrl(), ExportSocialAccountDialog(), FamilyMemberDialog(), InteractionDialog(), InteractionsTab(), LinkFollowingAccountsDialog() (+67 more)
+Cohesion: 0.03
+Nodes (100): AddConnectionDialog(), ChangeUsernameDialog(), computeDerivedUrl(), ExportSocialAccountDialog(), ImportBackupDialog(), InteractionsTab(), PhotoUploadDialog(), PoliticalLeaningCard() (+92 more)
 
 ### Community 100 - "scripts"
 Cohesion: 0.33
@@ -710,19 +727,19 @@ Nodes (23): 1.1 Multi-Signal Community Detection & Smart Grouping, 1.2 Hierarchi
 
 ### Community 102 - "vector-universal.ts"
 Cohesion: 0.13
-Nodes (28): extractJsonObject(), guessNameFromMessages(), NameGuess, autoPassInImageForPerson(), autoPassInImageForSocialAccount(), ImagePassInResult, runAutomaticImagePassIn(), registerRoutes() (+20 more)
+Nodes (29): extractJsonObject(), guessNameFromMessages(), NameGuess, autoPassInImageForPerson(), autoPassInImageForSocialAccount(), ImagePassInResult, runAutomaticImagePassIn(), registerRoutes() (+21 more)
 
 ### Community 103 - "access.ts"
-Cohesion: 0.07
-Nodes (49): AccessContext, AccessContextMissingError, accessMiddleware(), express-session, preserveAccess(), runAsUser(), runWithAccess(), SessionData (+41 more)
+Cohesion: 0.06
+Nodes (53): AdminUsersPage(), AccessContext, AccessContextMissingError, accessMiddleware(), bypassesAccessFilters(), canReadOwned(), canReadShared(), express-session (+45 more)
 
 ### Community 104 - "data-types.tsx"
 Cohesion: 0.17
-Nodes (9): TypeListConfig, TypeListPage(), interactionTypeConfig, InteractionTypesList(), relationshipTypeConfig, RelationshipTypesList(), DataTypesPage, socialAccountTypeConfig (+1 more)
+Nodes (8): TypeListConfig, interactionTypeConfig, InteractionTypesList(), relationshipTypeConfig, RelationshipTypesList(), DataTypesPage, socialAccountTypeConfig, SocialAccountTypesList()
 
 ### Community 105 - "settings-home.tsx"
-Cohesion: 0.17
-Nodes (8): OllamaSettings, PhotoListItem, PhotosPage, PrmFaceSettings, ServiceStatus, TestResult, VectorSettings, SettingsHomePage
+Cohesion: 0.15
+Nodes (9): OllamaSettings, PhotoListItem, PhotosPage, PrmFaceSettings, RecentImagesCard(), ServiceStatus, TestResult, VectorSettings (+1 more)
 
 ### Community 106 - "Troubleshooting"
 Cohesion: 0.40
@@ -756,9 +773,9 @@ Nodes (3): Elo Rating System for Contacts, Elo Expected Score Mathematical Found
 Cohesion: 0.67
 Nodes (3): deleteImageFromS3 Function Call, Invalid Image URL Error Exception, PRM Application Image Pipeline Upgrade Plan
 
-### Community 114 - "cn"
-Cohesion: 0.10
-Nodes (29): MarkdownMessage(), MarkdownMessageProps, AlertDialogOverlay, ContextMenuCheckboxItem, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuRadioItem (+21 more)
+### Community 114 - "message-bubble.tsx"
+Cohesion: 0.25
+Nodes (5): MessageBubble(), MessageBubbleProps, ShareCard(), MessageAttachment, MessageMetadata
 
 ### Community 116 - "Qdrant Vector Storage User Guide & Snippets"
 Cohesion: 0.07
@@ -766,7 +783,7 @@ Nodes (27): 1. "Qdrant URL is not configured" or Network Connection Refused, 1. 
 
 ### Community 120 - "dependencies"
 Cohesion: 0.12
-Nodes (17): @aws-sdk/client-s3, class-variance-authority, clsx, @hookform/resolvers, dependencies, @aws-sdk/client-s3, class-variance-authority, clsx (+9 more)
+Nodes (17): class-variance-authority, clsx, @hookform/resolvers, dependencies, class-variance-authority, clsx, @hookform/resolvers, pixi.js (+9 more)
 
 ### Community 121 - "osint-scan-queue.ts"
 Cohesion: 0.15
@@ -776,21 +793,21 @@ Nodes (24): isOsintConfigured(), loadOsintConfig(), normalizeOsintUrl(), OSINT_A
 Cohesion: 0.14
 Nodes (5): d3-force-3d, ManyBodyForce, Simulation, SimulationLink, SimulationNode
 
-### Community 123 - "image-crop-modal.tsx"
-Cohesion: 0.36
-Nodes (7): createImage(), FreeCropArea(), getCroppedImage(), Handle, ImageCropModal(), ImageCropModalProps, Rect
+### Community 123 - "family-tree-tab.tsx"
+Cohesion: 0.25
+Nodes (6): ConnectRelationshipDialog(), FamilyTreeExplorer(), personName(), FamilyTreeTabProps, FamilyTreeTab, FamilyTreeTab
 
-### Community 126 - "task-detail.tsx"
-Cohesion: 0.32
-Nodes (6): TaskDetailPage, formatDate(), getTaskLabel(), ImageTasksResponse, STATUS_COLORS, TaskDetailPage()
+### Community 126 - "image-tasks-settings.tsx"
+Cohesion: 0.12
+Nodes (19): ImagesListPage, currentLocationFrom(), imageDetailHref(), formatCondensed(), formatDate(), formatDuration(), ImageTasksResponse, ImageTasksSettingsPage() (+11 more)
 
 ### Community 131 - "People Relationship Management (PRM) - External API Guide"
 Cohesion: 0.08
-Nodes (23): Account Matching, Base URL, Best Practices, Connect Person to Social Accounts, Detect Faces in Image, Error Responses, Example Integration, Facial Recognition & PRM-Face (+15 more)
+Nodes (23): Account Matching, Base URL, Best Practices, Connect Person to Social Accounts, Detect Faces in Image, ELO Ranking System, Error Responses, Example Integration (+15 more)
 
-### Community 132 - "ai-chat-demo.tsx"
-Cohesion: 0.06
-Nodes (41): AiChatDemo, AiDescDemo, ConversationMediaDialog(), ConversationThreadPane(), ConversationThreadPaneProps, getChannelIcon(), isReactionNoise(), FindMyNameDialog() (+33 more)
+### Community 132 - "utils.ts"
+Cohesion: 0.08
+Nodes (50): CrowdMemberDetail, CrowdTab(), CrowdTabProps, PersonCrowdMemberDetail, SocialAccountCrowdMemberDetail, TaskProgressResponse, FamilyMemberDialog(), FamilyMemberDialogProps (+42 more)
 
 ### Community 134 - "People"
 Cohesion: 0.22
@@ -800,41 +817,53 @@ Nodes (9): Create Person, Delete Person, Get Person by ID, Get Person's Activity
 Cohesion: 0.18
 Nodes (9): 1. What the feature is, 2.1 `social_accounts` — current state, 2.2 `social_account_history` — the journal, 2. The data model as built, 6. Scope discipline, 7.1 What is actually in the database right now, 7. Verification, 8. Out of scope (+1 more)
 
-### Community 141 - "buildFlowElements"
+### Community 140 - ".get"
+Cohesion: 0.05
+Nodes (16): ChangeUsernameDialogProps, User, applyModifiers(), computeFamilyLabels(), FamilyTree, getStepCategory(), KinshipTerm, PATH_MAP (+8 more)
+
+### Community 141 - "family-tree-relations.ts"
+Cohesion: 0.36
+Nodes (7): FamilyTreeData, applyModifiers(), computeExtendedRelationships(), getStepCategory(), KinshipTerm, PATH_MAP, translateRelationshipPath()
+
+### Community 142 - "buildFlowElements"
 Cohesion: 0.29
 Nodes (7): buildFlowElements(), FamilyTreeFlowInner, formatRelationshipLabel(), getInverseParentRole(), getRelationshipCategory(), isCoupleGroupId(), isRealPersonId()
 
-### Community 142 - "Interactions"
-Cohesion: 0.40
-Nodes (5): Create Interaction, Delete Interaction, Get Interactions, Interactions, Update Interaction
-
-### Community 143 - "ELO Ranking System"
-Cohesion: 0.67
-Nodes (3): ELO Ranking System, Get Random Voting Pair, Submit ELO Vote Match
-
-### Community 144 - "family-tree.tsx"
+### Community 143 - "family-tree.tsx"
 Cohesion: 0.33
 Nodes (4): FamilyTreePage, FamilyTreeExplorerProps, FamilyTreeViewMode, VIEW_MODES
 
-### Community 148 - "ImageDetailPage"
-Cohesion: 0.40
-Nodes (5): formatDate(), ImageDetailPage(), isFaceArray(), isFacialIdsArray(), useBackHref()
+### Community 144 - "theme-toggle.tsx"
+Cohesion: 0.60
+Nodes (4): applyTheme(), getEffectiveTheme(), ThemeMode, ThemeToggle()
+
+### Community 148 - "image-detail.tsx"
+Cohesion: 0.07
+Nodes (33): ImageDetailPage, isOcrData(), OcrRunDialog(), pctBox(), PersonPhotosTab(), PhotoModal(), getMentionsForImage(), isVideoUrl() (+25 more)
 
 ### Community 152 - "Implementation Plan: Social Account History Tab + Import Rework"
 Cohesion: 0.22
 Nodes (9): Design decisions (settled), Implementation Plan: Social Account History Tab + Import Rework, Phase 1 — Migration + baseline backfill, Phase 5 — API, Phase 7 — XML export/import, Phase 8 — Post deletion (future — NOT in this change), Sequencing, Status (+1 more)
 
+### Community 156 - "prm-face-demo.tsx"
+Cohesion: 0.25
+Nodes (7): PrmFaceDemo, COLORS, FaceBox, FaceResult, PickoutResult, PrmFaceDemoPage(), PrmFaceSettings
+
 ### Community 160 - "1. The service (PRM-stories)"
 Cohesion: 0.11
 Nodes (18): 1.1 State, 1.2 Endpoints, 1.3 The session and the task loop, 1.4 Transition between tasks, 1.5 Ending a sitting with a task still queued, 1.6 Service restart, 1. The service (PRM-stories), 2.1 Run rows as the task list (+10 more)
 
-### Community 168 - "message-bubble.tsx"
-Cohesion: 0.25
-Nodes (5): MessageBubble(), MessageBubbleProps, ShareCard(), MessageAttachment, MessageMetadata
+### Community 161 - "Image sizes under one ID (`?s=`) — plan"
+Cohesion: 0.33
+Nodes (5): Image sizes under one ID (`?s=`) — plan, Order of work, Phase 1 — PRM-S3: bake on write, serve by size, Phase 2 — PRM plumbing and warm job, Phase 3 — Instagram profile pictures
 
-### Community 174 - "Relationships"
+### Community 168 - "Notes"
 Cohesion: 0.40
-Nodes (5): Create Relationship, Delete Relationship, Get Person's Relationships, Relationships, Update Relationship
+Nodes (5): Create Note, Delete Note, Get All Notes, Get Note by ID, Notes
+
+### Community 174 - "dispatch"
+Cohesion: 0.50
+Nodes (5): addToRemoveQueue(), dispatch(), genId(), reducer(), Toast
 
 ### Community 177 - "3. Traps — read these"
 Cohesion: 0.29
@@ -860,9 +889,9 @@ Nodes (14): app, http, IncomingMessage, ETAG_GET_PATHS, etagMiddleware(), should
 Cohesion: 0.14
 Nodes (14): Create Social Account, Delete All Social Accounts, Delete Social Account, Export Social Accounts as XML, Get Network Change History, Get Network State, Get Profile Version History, Get Social Account Followers (+6 more)
 
-### Community 252 - "Quick Start (5 Minutes)"
-Cohesion: 0.67
-Nodes (3): Quick Start (5 Minutes), Step 1: Clone and Install, Step 2: Choose Your Development Method
+### Community 252 - "Relationships"
+Cohesion: 0.40
+Nodes (5): Create Relationship, Delete Relationship, Get Person's Relationships, Relationships, Update Relationship
 
 ### Community 254 - "Interaction Types"
 Cohesion: 0.15
@@ -892,13 +921,13 @@ Nodes (3): 2.1 Algorithm, 2.2 Performance — this is the rewrite that matters, 
 Cohesion: 0.67
 Nodes (3): 3.1 Shape, 3.2 Inline image download + hash, Phase 3 — Rework `processImportSocial` — `server/task-worker.ts:2450`
 
-### Community 262 - "theme-toggle.tsx"
-Cohesion: 0.60
-Nodes (4): applyTheme(), getEffectiveTheme(), ThemeMode, ThemeToggle()
+### Community 262 - "Relationship"
+Cohesion: 0.19
+Nodes (3): deriveLineageRole(), InsertRelationship, Relationship
 
 ### Community 264 - "App.tsx"
-Cohesion: 0.04
-Nodes (57): AccountMatching, App(), AppLayout(), AuthDirectPage, AuthPage, DailyNoteDetail, DailyNotesList, DemosPage (+49 more)
+Cohesion: 0.05
+Nodes (40): AccountMatching, AiDescDemo, App(), AppLayout(), AuthDirectPage, AuthPage, DailyNoteDetail, DailyNotesList (+32 more)
 
 ### Community 266 - "mini-person-graph.tsx"
 Cohesion: 0.29
@@ -916,13 +945,13 @@ Nodes (11): Decisions (2026-09-14), Files, Find My Name — plan, `GET /api/conv
 Cohesion: 0.18
 Nodes (11): 0. Decisions locked in, 1. Root causes found in the current code, 2. Architecture additions, 4. Files touched per phase, 5. Estimates, 6. Risks, 7. Out of scope for Devlog 01, 8. Optional follow-up (PRM server) (+3 more)
 
+### Community 275 - "Graph Data"
+Cohesion: 0.67
+Nodes (3): Get Relationship Graph Data, Get Social Graph Data, Graph Data
+
 ### Community 276 - "3. Core Capabilities & Mechanics Breakdown"
 Cohesion: 0.18
 Nodes (11): 3.1.1 Endpoints Used, 3.1.2 Open Constraints to Resolve Before Building, 3.1.3 Session Persistence, 3.1 Authentication Flow (Direct Login — Why Not the Pairing Code), 3.2 Dual-Grip Bimanual Pinch-to-Scale & Spatial Navigation, 3.3 Target Selection & Billboarded 3D Info Bubble, 3.4 Passthrough vs. Virtual Environment Switching, 3.4a TLS / Certificate Requirements (Open Item) (+3 more)
-
-### Community 277 - "social-graph-3d.tsx"
-Cohesion: 0.10
-Nodes (23): SocialGraph3D, GraphResourceCache, resolveArrowsEnabled(), resolveAutoToggle(), resolveDenseEnabled(), buildGraphUrl(), CROWD_PALETTES, crowdColorAt() (+15 more)
 
 ### Community 280 - "AI Assistant & Agentic Tools"
 Cohesion: 0.33
@@ -934,7 +963,7 @@ Nodes (8): 7. Step-by-Step Implementation Roadmap, Phase 1: Project Setup, OpenX
 
 ### Community 282 - "Core Resources"
 Cohesion: 0.11
-Nodes (19): Core Resources, Create Group, Create Group Note, Create Note, Delete Group, Delete Group Note, Delete Note, ELO Ranking (+11 more)
+Nodes (19): Core Resources, Create Group, Create Group Note, Create Interaction, Delete Group, Delete Group Note, Delete Interaction, ELO Ranking (+11 more)
 
 ### Community 283 - "3. Phased work breakdown"
 Cohesion: 0.29
@@ -980,25 +1009,29 @@ Nodes (4): Create Lineage Link, Create Partnership Link, Family & Lineage, Get F
 Cohesion: 0.50
 Nodes (4): Get Current User, Get ME Person Profile, Update User Profile, User Profile
 
+### Community 308 - "Quick Start (5 Minutes)"
+Cohesion: 0.67
+Nodes (3): Quick Start (5 Minutes), Step 1: Clone and Install, Step 2: Choose Your Development Method
+
 ## Knowledge Gaps
-- **1611 isolated node(s):** `ROW`, `BLOCKER_TEXT`, `AddConnectionDialogProps`, `RelationshipFormValues`, `AddNoteDialogProps` (+1606 more)
+- **1651 isolated node(s):** `ROW`, `BLOCKER_TEXT`, `AddConnectionDialogProps`, `RelationshipFormValues`, `AddNoteDialogProps` (+1646 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **139 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **140 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `IStorage` connect `IStorage` to `schema.ts`, `DatabaseStorage`, `Person`, `GroupNote`, `ownedByCurrentUser`, `.get`, `Interaction`, `SocialAccountHistoryEntry`, `InteractionType`, `SocialAccountPost`, `Insight`, `PendingSocialAccountImport`, `ExtensionSession`, `global-search.tsx`, `InsertMessage`, `ApiKey`, `Lineage`, `Partnership`, `SsoConfig`, `SocialNetworkChange`, `ExtensionAuthCode`, `Schooling`?**
-  _High betweenness centrality (0.053) - this node is a cross-community bridge._
-- **Why does `DatabaseStorage` connect `DatabaseStorage` to `schema.ts`, `IStorage`, `social-media.ts`, `Person`, `GroupNote`, `ownedByCurrentUser`, `.get`, `Interaction`, `SocialAccountHistoryEntry`, `InteractionType`, `SocialAccountPost`, `Insight`, `PendingSocialAccountImport`, `ExtensionSession`, `global-search.tsx`, `InsertMessage`, `ApiKey`, `Lineage`, `Partnership`, `SsoConfig`, `SocialNetworkChange`, `ExtensionAuthCode`, `access.ts`, `Schooling`?**
-  _High betweenness centrality (0.036) - this node is a cross-community bridge._
-- **Why does `cn()` connect `cn` to `social-account-profile.tsx`, `graph.tsx`, `toast.tsx`, `ai-chat-demo.tsx`, `messages-tab.tsx`, `daily-note-modal.tsx`, `message-bubble.tsx`, `home.tsx`, `prm-face-save-demo.tsx`, `card.tsx`, `button.tsx`, `global-search.tsx`, `sidebar.tsx`, `recognition-images.tsx`, `social-accounts-list.tsx`, `person-profile.tsx`?**
-  _High betweenness centrality (0.021) - this node is a cross-community bridge._
+- **Why does `IStorage` connect `IStorage` to `schema.ts`, `DatabaseStorage`, `SocialAccountWithCurrentProfile`, `Relationship`, `Person`, `.get`, `ownedByCurrentUser`, `RelationshipType`, `Conversation`, `Interaction`, `Insight`, `SocialAccountPost`, `PendingSocialAccountImport`, `InsertMessage`, `ApiKey`, `Lineage`, `Partnership`, `SsoConfig`, `SocialNetworkChange`, `InteractionType`, `Schooling`?**
+  _High betweenness centrality (0.060) - this node is a cross-community bridge._
+- **Why does `DatabaseStorage` connect `DatabaseStorage` to `schema.ts`, `IStorage`, `SocialAccountWithCurrentProfile`, `Relationship`, `Person`, `.get`, `ownedByCurrentUser`, `RelationshipType`, `Conversation`, `Interaction`, `prm-s3.ts`, `Insight`, `SocialAccountPost`, `PendingSocialAccountImport`, `InsertMessage`, `ApiKey`, `Lineage`, `Partnership`, `SsoConfig`, `SocialNetworkChange`, `InteractionType`, `access.ts`, `Schooling`?**
+  _High betweenness centrality (0.022) - this node is a cross-community bridge._
+- **Why does `Person` connect `Person` to `social-account-profile.tsx`, `schema.ts`, `Conversation`, `use-toast.ts`, `utils.ts`, `DatabaseStorage`, `social-graph-3d.tsx`, `home.tsx`, `.get`, `select.tsx`, `button.tsx`, `global-search.tsx`, `dialog.tsx`, `social-accounts-list.tsx`, `image-detail.tsx`, `RelationshipType`, `cn`?**
+  _High betweenness centrality (0.016) - this node is a cross-community bridge._
 - **What connects `ROW`, `BLOCKER_TEXT`, `AddConnectionDialogProps` to the rest of the system?**
-  _1611 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _1651 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `schema.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.015373244641537324 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.01580262839635572 - nodes in this community are weakly interconnected._
 - **Should `DatabaseStorage` be split into smaller, more focused modules?**
-  _Cohesion score 0.0254968128983877 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.028601978080727078 - nodes in this community are weakly interconnected._
 - **Should `settings-layout.tsx` be split into smaller, more focused modules?**
-  _Cohesion score 0.045068027210884355 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.04983388704318937 - nodes in this community are weakly interconnected._

@@ -1,10 +1,9 @@
 import { storage } from "./storage";
-import { db } from "./db";
+import { db, pool } from "./db";
+import { legacyHqImageUrls, legacyProfileImagesPending } from "./db-init";
 import { syncEntityInBackground } from "./vector-universal";
-import { uploadImageToS3, deleteImageFromS3, uploadMediaToS3, deleteMediaFromS3, ObjectMissingError, listS3ObjectKeys, deleteS3ObjectKey, s3KeyFromUrl } from "./s3";
-import { uploadImageToPrmS3, deleteImageFromPrmS3, uploadMediaToPrmS3, deleteMediaFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer, listPrmS3ObjectKeys, deletePrmS3ObjectKey, normalizePrmS3Key } from "./prm-s3";
-import { uploadImageLocally, deleteImageLocally, isLocalImageUrl, uploadMediaLocally, deleteMediaLocally, isLocalMediaUrl } from "./local-storage";
-import { uploadImage, uploadMedia } from "./image-storage";
+import { uploadImage, uploadMedia, listPrmS3ObjectKeys, copyPrmS3ObjectInPlace, isPrmS3VariantBaked, deleteImageFromPrmS3, getPrmS3Client } from "./prm-s3";
+import { CopyObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
 import { parseSmsBackup } from "./sms-import";
@@ -20,7 +19,6 @@ import {
   classifyProfileImage,
   applyProfileImageVerdict,
   getCurrentProfileImageUrls,
-  backfillProfileImageTiers,
   type ProfileImageOutcome,
 } from "./profile-image";
 import {
@@ -34,7 +32,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, and, isNotNull, isNull, inArray } from "drizzle-orm";
+import { eq, and, isNotNull, inArray, like } from "drizzle-orm";
 import Papa from "papaparse";
 import { sseManager } from "./middleware/sse";
 
@@ -72,6 +70,8 @@ import {
   aiChats,
   appSettings,
   socialAccounts,
+  socialAccountHistory,
+  socialProfileVersions,
   groups,
   relationships,
   socialFollows,
@@ -144,7 +144,7 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
   await autoPassInImageForSocialAccount(socialAccountId);
 
   return JSON.stringify({
-    cdnUrl: outcome.imageUrlHq ?? outcome.imageUrl,
+    cdnUrl: outcome.imageUrl,
     socialAccountId,
     photoId: outcome.photoId,
     imageChange: outcome.imageChange,
@@ -309,7 +309,7 @@ async function processGetImgTask(payload: {
   }
   const outcome = await applyProfileImageVerdict(socialAccountId, current, fetched, verdict);
   await recordProfileImageChange(socialAccountId, outcome);
-  return JSON.stringify({ cdnUrl: outcome.imageUrlHq ?? outcome.imageUrl, socialAccountId, imageChange: outcome.imageChange });
+  return JSON.stringify({ cdnUrl: outcome.imageUrl, socialAccountId, imageChange: outcome.imageChange });
 }
 
 // ── Export XML task ──────────────────────────────────────────────────────────
@@ -1665,224 +1665,360 @@ async function isTaskCancelled(taskId: string): Promise<boolean> {
   return !task || task.status === "cancelled" || task.status === "failed";
 }
 
-function getStorageProvider(url: string): "local" | "prm-s3" | "s3" {
-  if (isLocalImageUrl(url) || isLocalMediaUrl(url)) return "local";
-  if (isPrmS3ImageUrl(url)) return "prm-s3";
-  return "s3";
-}
-
-/** Image url references in the database whose file lives in `provider`, one entry per row/column. */
-async function getImageUrlsIn(provider: "local" | "s3" | "prm-s3") {
-  const allUrls = await storage.getAllImageUrls();
-
-  // Also include any photos records whose location matches `provider`
-  const photoRows = await db.select({ id: photos.id, location: photos.location }).from(photos);
-  for (const pr of photoRows) {
-    if (pr.location && !allUrls.some(u => u.url === pr.location)) {
-      allUrls.push({ table: "photos", id: pr.id, column: "location", url: pr.location });
-    }
-  }
-
-  return allUrls.filter(
-    u => getStorageProvider(u.url) === provider && !u.url.includes("instagram.com") && !u.url.includes("fbcdn.net")
-  );
-}
-
-/** Runs `fn` over `items` with a pool of workers; `shouldStop` is polled once per pool-width of items. */
-async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>, shouldStop?: () => Promise<boolean>): Promise<boolean> {
-  let next = 0;
-  let stopped = false;
-  const worker = async () => {
-    while (!stopped) {
-      const i = next++;
-      if (i >= items.length) return;
-      if (shouldStop && i % concurrency === 0 && await shouldStop()) {
-        stopped = true;
-        return;
-      }
-      await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-  return stopped;
-}
-
 /**
- * Moves every database-referenced image from one store to another, then
- * sweeps the source bucket so nothing is left behind: objects no row points
- * at any more (orphans from earlier partial transfers) are deleted, and
- * references whose object is already gone are cleared. Only objects still
- * referenced after a failed transfer survive the sweep.
+ * Migrates profile images to single canonical URLs with ?s= variants (image-sizes-plan.md Phase 3).
+ * 1. Builds thumbUrl -> hqUrl map from the generated profile thumbs (derivedFromPhotoId) and accounts holding both urls.
+ * 2. Accounts with image_url_hq: image_url := image_url_hq, is_hq := true, image_url_hq := null.
+ *    Without: is_hq := photos.widthPx >= 320.
+ * 3. Rewrites columns holding thumb URLs: people.image_url, groups.image_url, social_profile_versions.image_url,
+ *    social_account_history.previous_image_url := coalesce(previous_image_url_hq, mapped(previous_image_url)).
+ * 4. Deletes the mapped thumb objects in PRM-S3 and their photos rows; a thumb whose parent is gone stays.
+ * The _hq columns are read and cleared raw (legacyHqImageUrls) so a second run after db-init dropped them is a no-op.
  */
-async function processTransferImages(
-  taskId: string,
-  payload: { from: "local" | "s3" | "prm-s3"; to: "local" | "s3" | "prm-s3"; concurrency?: number }
-): Promise<string> {
-  const { from, to } = payload;
-  const matchingUrls = await getImageUrlsIn(from);
+async function processMigrateProfileImageTiers(taskId: string): Promise<string> {
+  await storage.updateTaskProgress(taskId, 5, "Scanning sub-images and building thumb->HQ map...");
 
-  // Group by unique URL so each distinct image file is transferred once
-  const urlMap = new Map<string, Array<{ table: string; id: string; column: string; url: string }>>();
-  for (const entry of matchingUrls) {
-    if (!urlMap.has(entry.url)) {
-      urlMap.set(entry.url, []);
+  // 1. Build thumbUrl -> hqUrl map. Only the generated profile thumbs: multi_image_download makes sub-images too.
+  const subPhotos = await db
+    .select({
+      id: photos.id,
+      location: photos.location,
+      ogMetadata: photos.ogMetadata,
+    })
+    .from(photos)
+    .where(and(eq(photos.isSubImage, true), like(photos.prmLocation, "profile_image:%")));
+
+  const parentIds = subPhotos
+    .map((p) => (p.ogMetadata as any)?.derivedFromPhotoId)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+
+  const parentPhotos = parentIds.length > 0
+    ? await db.select({ id: photos.id, location: photos.location }).from(photos).where(inArray(photos.id, parentIds))
+    : [];
+  const parentMap = new Map(parentPhotos.map((p) => [p.id, p.location]));
+
+  const thumbToHqMap = new Map<string, string>();
+  const mappedThumbs: typeof subPhotos = [];
+  for (const p of subPhotos) {
+    const derivedId = (p.ogMetadata as any)?.derivedFromPhotoId;
+    if (derivedId && parentMap.has(derivedId)) {
+      thumbToHqMap.set(p.location, parentMap.get(derivedId)!);
+      mappedThumbs.push(p);
     }
-    urlMap.get(entry.url)!.push(entry);
+  }
+  const unmappedThumbs = subPhotos.length - mappedThumbs.length;
+
+  // Also include dual-URL social accounts
+  const legacy = await legacyHqImageUrls();
+  for (const a of legacy.accounts) {
+    if (a.imageUrl && a.imageUrl !== a.imageUrlHq) {
+      thumbToHqMap.set(a.imageUrl, a.imageUrlHq);
+    }
   }
 
-  const distinctUrls = Array.from(urlMap.keys());
-  let transferred = 0;
-  let missing = 0;
-  let failed = 0;
-  let done = 0;
-  const errors: string[] = [];
+  if (await isTaskCancelled(taskId)) return JSON.stringify({ cancelled: true });
+  await storage.updateTaskProgress(taskId, 25, `Found ${thumbToHqMap.size} thumb mappings. Migrating social accounts...`);
 
-  // Each transfer is dominated by round-trips to the remote store, so run a
-  // pool of workers pulling from a shared cursor rather than one at a time.
-  const concurrency = Math.min(Math.max(payload.concurrency ?? 100, 1), 200);
-
-  const transferOne = async (oldUrl: string) => {
-    const entries = urlMap.get(oldUrl) || [];
-    try {
-      // 1. Download buffer from source
-      const { buffer, mimeType } = await fetchImageBuffer(oldUrl);
-      const isMedia = mimeType.startsWith("video/") || mimeType.startsWith("audio/");
-      const ext = isMedia
-        ? (oldUrl.split("?")[0].split(".").pop() || "mp4")
-        : mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
-
-      // 2. Upload to destination
-      let newUrl: string;
-      if (to === "local") {
-        newUrl = isMedia
-          ? await uploadMediaLocally(buffer, `transferred.${ext}`, mimeType)
-          : await uploadImageLocally(buffer, `transferred.${ext}`, mimeType);
-      } else if (to === "prm-s3") {
-        newUrl = isMedia
-          ? await uploadMediaToPrmS3(buffer, `transferred.${ext}`, mimeType)
-          : await uploadImageToPrmS3(buffer, `transferred.${ext}`, mimeType);
-      } else {
-        newUrl = isMedia
-          ? await uploadMediaToS3(buffer, `transferred.${ext}`, mimeType)
-          : await uploadImageToS3(buffer, `transferred.${ext}`, mimeType);
-      }
-
-      // 3. Update database references
-      for (const entry of entries) {
-        if (entry.table === "photos") {
-          await storage.updatePhotoLocation(oldUrl, newUrl);
-        } else {
-          await storage.updateImageUrl(entry.table, entry.id, entry.column, oldUrl, newUrl);
-        }
-      }
-      await storage.updatePhotoLocation(oldUrl, newUrl).catch(() => {});
-
-      // 4. Delete from source
-      try {
-        if (from === "local") {
-          await (isMedia ? deleteMediaLocally(oldUrl) : deleteImageLocally(oldUrl));
-        } else if (from === "prm-s3") {
-          await (isMedia ? deleteMediaFromPrmS3(oldUrl) : deleteImageFromPrmS3(oldUrl));
-        } else {
-          await (isMedia ? deleteMediaFromS3(oldUrl) : deleteImageFromS3(oldUrl));
-        }
-      } catch (delErr) {
-        log(`[TaskWorker] Warning: could not delete ${from} image after transfer: ${oldUrl}`);
-      }
-
-      transferred++;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (err instanceof ObjectMissingError) {
-        // The file is already gone, so the reference can never resolve again.
-        // Clear it where the column allows; photos/faces/posts are reported instead.
-        missing++;
-        for (const entry of entries) {
-          if (entry.table === "photos" || entry.table === "faces" || entry.table === "social_account_posts") {
-            errors.push(`${entry.table}.${entry.column} ${entry.id}: ${msg}`);
-            continue;
-          }
-          await storage.updateImageUrl(entry.table, entry.id, entry.column, oldUrl, null)
-            .catch(e => errors.push(`${entry.table}.${entry.column} ${entry.id}: could not clear: ${e instanceof Error ? e.message : String(e)}`));
-        }
-        return;
-      }
-      failed++;
-      errors.push(`${oldUrl}: ${msg}`);
-      log(`[TaskWorker] Failed to transfer image from ${from} to ${to}: ${oldUrl} - ${msg}`);
-    }
-  };
-
-  const cancelled = await runPool(distinctUrls, concurrency, async (url) => {
-    await transferOne(url);
-    done++;
-    if (done % 25 === 0 || done === distinctUrls.length) {
-      const pct = Math.round((done / distinctUrls.length) * 90);
-      await storage.updateTaskProgress(taskId, pct, `${transferred}/${distinctUrls.length} transferred`);
-    }
-  }, () => isTaskCancelled(taskId));
-
-  // Sweep: delete every object left in the source bucket that no row still
-  // points at. Local storage is not swept.
-  let swept = 0;
-  let kept = 0;
-  if (!cancelled && from !== "local") {
-    await storage.updateTaskProgress(taskId, 90, `Sweeping ${from} for leftover files…`);
-    const keyFromUrl = from === "s3" ? s3KeyFromUrl : normalizePrmS3Key;
-    const stillReferenced = new Set((await getImageUrlsIn(from)).map(u => keyFromUrl(u.url)));
-    const allKeys = from === "s3" ? await listS3ObjectKeys() : await listPrmS3ObjectKeys();
-    const orphanKeys = allKeys.filter(k => !stillReferenced.has(k));
-    kept = allKeys.length - orphanKeys.length;
-    const deleteKey = from === "s3" ? deleteS3ObjectKey : deletePrmS3ObjectKey;
-    await runPool(orphanKeys, concurrency, async (key) => {
-      try {
-        await deleteKey(key);
-        swept++;
-      } catch (err) {
-        errors.push(`sweep ${key}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    });
-    log(`[TaskWorker] Swept ${from}: deleted ${swept}/${orphanKeys.length} orphaned objects, ${kept} still referenced`);
+  // 2. Migrate social_accounts
+  let accountsUpdated = 0;
+  if (legacy.accounts.length > 0) {
+    const { rowCount } = await pool.query(
+      `UPDATE social_accounts SET image_url = image_url_hq, is_hq_image = TRUE, image_url_hq = NULL WHERE image_url_hq IS NOT NULL`,
+    );
+    accountsUpdated += rowCount ?? 0;
   }
 
-  return JSON.stringify({ transferred, missing, failed, total: distinctUrls.length, swept, leftInSource: kept, cancelled: cancelled || undefined, errors });
-}
-
-async function processTransferImagesToLocal(taskId: string): Promise<string> {
-  return processTransferImages(taskId, { from: "s3", to: "local" });
-}
-
-async function processTransferImagesToS3(taskId: string): Promise<string> {
-  return processTransferImages(taskId, { from: "local", to: "s3" });
-}
-
-/**
- * Accounts from before image tiers may hold a 1080 in image_url. Moves each to
- * image_url_hq with a fresh 150 webp in image_url (profile-image-tiers-plan.md §6).
- */
-async function processBackfillProfileImageTiers(taskId: string): Promise<string> {
-  const accounts = await db
-    .select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq })
+  const allAccounts = await db
+    .select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl, isHqImage: socialAccounts.isHqImage })
     .from(socialAccounts)
-    .where(and(isNotNull(socialAccounts.imageUrl), isNull(socialAccounts.imageUrlHq)));
-  const counts = { moved: 0, already_lq: 0, missing: 0, skipped: 0, failed: 0 };
-  const errors: string[] = [];
+    .where(isNotNull(socialAccounts.imageUrl));
 
-  for (const [i, account] of accounts.entries()) {
-    if (await isTaskCancelled(taskId)) {
-      return JSON.stringify({ ...counts, total: accounts.length, cancelled: true, errors });
-    }
-    try {
-      counts[await backfillProfileImageTiers(account)]++;
-    } catch (err) {
-      counts.failed++;
-      if (errors.length < 20) errors.push(`${account.id}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    if (i % 25 === 0) {
-      await storage.updateTaskProgress(taskId, Math.round((i / accounts.length) * 100), `${i}/${accounts.length} accounts checked`);
+  for (const account of allAccounts) {
+    const photo = await storage.getPhotoByLocation(account.imageUrl!);
+    if (photo?.widthPx == null) continue;
+    const isHq = photo.widthPx >= 320;
+    if (account.isHqImage !== isHq) {
+      await db.update(socialAccounts).set({ isHqImage: isHq }).where(eq(socialAccounts.id, account.id));
+      accountsUpdated++;
     }
   }
-  return JSON.stringify({ ...counts, total: accounts.length, errors });
+
+  if (await isTaskCancelled(taskId)) return JSON.stringify({ cancelled: true });
+  await storage.updateTaskProgress(taskId, 50, "Rewriting references in people, groups, and history...");
+
+  // 3. Rewrite references
+  let peopleUpdated = 0;
+  let groupsUpdated = 0;
+  let spvUpdated = 0;
+  let historyUpdated = 0;
+
+  if (legacy.history.length > 0) {
+    const { rowCount } = await pool.query(
+      `UPDATE social_account_history SET previous_image_url = previous_image_url_hq, previous_image_url_hq = NULL WHERE previous_image_url_hq IS NOT NULL`,
+    );
+    historyUpdated += rowCount ?? 0;
+  }
+
+  if (thumbToHqMap.size > 0) {
+    const peopleRows = await db.select({ id: people.id, imageUrl: people.imageUrl }).from(people).where(isNotNull(people.imageUrl));
+    for (const p of peopleRows) {
+      if (p.imageUrl && thumbToHqMap.has(p.imageUrl)) {
+        await db.update(people).set({ imageUrl: thumbToHqMap.get(p.imageUrl)! }).where(eq(people.id, p.id));
+        peopleUpdated++;
+      }
+    }
+
+    const groupRows = await db.select({ id: groups.id, imageUrl: groups.imageUrl }).from(groups).where(isNotNull(groups.imageUrl));
+    for (const g of groupRows) {
+      if (g.imageUrl && thumbToHqMap.has(g.imageUrl)) {
+        await db.update(groups).set({ imageUrl: thumbToHqMap.get(g.imageUrl)! }).where(eq(groups.id, g.id));
+        groupsUpdated++;
+      }
+    }
+
+    const spvRows = await db.select({ id: socialProfileVersions.id, imageUrl: socialProfileVersions.imageUrl }).from(socialProfileVersions).where(isNotNull(socialProfileVersions.imageUrl));
+    for (const spv of spvRows) {
+      if (spv.imageUrl && thumbToHqMap.has(spv.imageUrl)) {
+        await db.update(socialProfileVersions).set({ imageUrl: thumbToHqMap.get(spv.imageUrl)! }).where(eq(socialProfileVersions.id, spv.id));
+        spvUpdated++;
+      }
+    }
+
+    const historyRows = await db
+      .select({ id: socialAccountHistory.id, previousImageUrl: socialAccountHistory.previousImageUrl })
+      .from(socialAccountHistory)
+      .where(isNotNull(socialAccountHistory.previousImageUrl));
+    for (const h of historyRows) {
+      if (h.previousImageUrl && thumbToHqMap.has(h.previousImageUrl)) {
+        await db.update(socialAccountHistory).set({ previousImageUrl: thumbToHqMap.get(h.previousImageUrl)! }).where(eq(socialAccountHistory.id, h.id));
+        historyUpdated++;
+      }
+    }
+  }
+
+  if (await isTaskCancelled(taskId)) return JSON.stringify({ cancelled: true });
+  await storage.updateTaskProgress(taskId, 75, `Deleting ${mappedThumbs.length} obsolete thumbnail objects and photo records...`);
+
+  // 4. Delete thumb objects and photos rows
+  let deletedThumbs = 0;
+  for (const p of mappedThumbs) {
+    try {
+      await deleteImageFromPrmS3(p.location);
+    } catch {
+      // Ignore if missing in S3
+    }
+    await db.delete(photos).where(eq(photos.id, p.id));
+    deletedThumbs++;
+  }
+
+  // 5. Verification of remaining
+  const pending = await legacyProfileImagesPending();
+  const remaining = pending.hqAccounts + pending.hqHistory + pending.thumbs;
+
+  await storage.updateTaskProgress(
+    taskId,
+    100,
+    remaining === 0
+      ? "Migration complete. The image_url_hq / previous_image_url_hq columns will be dropped on next start."
+      : `Migration complete. Remaining unmigrated: ${remaining}; the _hq columns stay until it reaches 0.`,
+  );
+
+  return JSON.stringify({
+    thumbMappingsCount: thumbToHqMap.size,
+    accountsUpdated,
+    peopleUpdated,
+    groupsUpdated,
+    spvUpdated,
+    historyUpdated,
+    deletedThumbs,
+    unmappedThumbs,
+    remainingUnmigrated: remaining,
+  });
+}
+
+import { sql } from "drizzle-orm";
+
+async function processMigrateImagePrefixes(taskId: string): Promise<string> {
+  const counts = { total: 0, migrated: 0, skipped: 0, failed: 0 };
+  const errors: string[] = [];
+  const { client: s3Client, bucket } = await getPrmS3Client();
+
+  const toMigrate = await db.execute(sql`
+    SELECT 
+      p.id, 
+      p.location, 
+      p.prm_location as "prmLocation", 
+      p.og_metadata as "ogMetadata",
+      sap.post_type as "postType"
+    FROM photos p
+    LEFT JOIN social_account_posts sap ON p.prm_location = 'post:' || sap.id
+    WHERE p.location LIKE '/api/prm-s3/images/%' 
+       OR p.location LIKE 'images/%'
+  `);
+  const items = toMigrate.rows as any[];
+  counts.total = items.length;
+
+  if (items.length === 0) {
+    await storage.updateTaskProgress(taskId, 100, "No images found to migrate.");
+    return JSON.stringify({ ...counts, errors });
+  }
+
+  let nextIndex = 0;
+  let completed = 0;
+
+  const runWorker = async () => {
+    while (nextIndex < items.length) {
+      if (await isTaskCancelled(taskId)) return;
+      const idx = nextIndex++;
+      const item = items[idx];
+      const oldLocation: string = item.location;
+      
+      try {
+        const oldKey = oldLocation.startsWith("/api/prm-s3/") 
+          ? oldLocation.substring("/api/prm-s3/".length) 
+          : oldLocation;
+
+        let targetPrefix = "";
+        if (item.postType === "story" || item.ogMetadata?.source === "instagram-story") {
+          targetPrefix = "stories/";
+        } else if (item.postType === "post" || item.postType === "video" || item.postType === "carousel" || item.ogMetadata?.source === "instagram-post") {
+          targetPrefix = "posts/";
+        } else if (item.prmLocation?.startsWith("profile_image:") || item.prmLocation?.startsWith("social_profile_image:")) {
+          targetPrefix = "profiles/";
+        } else {
+          // If we can't determine it, we leave it in images/ (generic)
+          counts.skipped++;
+          completed++;
+          continue;
+        }
+
+        const filename = oldKey.substring("images/".length);
+        const newKey = targetPrefix + filename;
+        const newLocation = oldLocation.replace("images/" + filename, newKey);
+
+        // 1. Copy original object to new prefix (PRM-S3 bakes the new folder's WebP proxies on write)
+        await s3Client.send(new CopyObjectCommand({
+          Bucket: bucket,
+          CopySource: bucket + "/" + oldKey,
+          Key: newKey,
+        }));
+
+        // 2. DB Update transaction
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`UPDATE photos SET location = ${newLocation} WHERE id = ${item.id}`);
+          await tx.execute(sql`
+            UPDATE social_account_posts 
+            SET content = REPLACE(content, ${oldLocation}, ${newLocation})
+            WHERE content LIKE ${'%' + oldLocation + '%'}
+          `);
+          await tx.execute(sql`UPDATE social_accounts SET image_url = ${newLocation} WHERE image_url = ${oldLocation}`);
+          await tx.execute(sql`UPDATE social_account_history SET previous_image_url = ${newLocation} WHERE previous_image_url = ${oldLocation}`);
+          await tx.execute(sql`UPDATE people SET image_url = ${newLocation} WHERE image_url = ${oldLocation}`);
+          await tx.execute(sql`UPDATE social_profile_versions SET image_url = ${newLocation} WHERE image_url = ${oldLocation}`);
+        });
+
+        // 3. Delete old object from images/ (cleans up old key and any old proxies)
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: oldKey,
+        }));
+
+        counts.migrated++;
+      } catch (err) {
+        counts.failed++;
+        if (errors.length < 20) {
+          errors.push(`${oldLocation}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      completed++;
+      if (completed % 25 === 0 || completed === items.length) {
+        await storage.updateTaskProgress(
+          taskId,
+          Math.round((completed / items.length) * 100),
+          `${completed}/${items.length} images migrated (${counts.migrated} migrated, ${counts.failed} failed)`
+        );
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: 4 }, () => runWorker()));
+
+  if (await isTaskCancelled(taskId)) {
+    return JSON.stringify({ ...counts, cancelled: true, errors });
+  }
+
+  await storage.updateTaskProgress(taskId, 100, `Completed: ${counts.migrated} migrated, ${counts.skipped} skipped, ${counts.failed} failed`);
+  return JSON.stringify({ ...counts, errors });
+}
+
+function smallestVariantSize(key: string): 360 | 64 {
+  if (key.startsWith("stories/") || key.startsWith("posts/")) return 360;
+  return 64; // profiles/, faces/, images/ (default)
+}
+
+/**
+ * Warms image variants for existing images in PRM-S3 (image-sizes-plan.md Phase 2).
+ * Lists keys under images/ and faces/, checks HEAD ?s=64 (skips if image/webp),
+ * and issues in-place CopyObject at concurrency 4 to trigger PRM-S3 baking.
+ */
+async function processBakeImageVariants(taskId: string): Promise<string> {
+  const allKeys = await listPrmS3ObjectKeys(["images/", "profiles/", "posts/", "stories/", "faces/"]);
+  const counts = { total: allKeys.length, baked: 0, skipped: 0, failed: 0 };
+  const errors: string[] = [];
+
+  if (allKeys.length === 0) {
+    await storage.updateTaskProgress(taskId, 100, "No images found to bake.");
+    return JSON.stringify({ ...counts, errors });
+  }
+
+  let nextIndex = 0;
+  let completed = 0;
+
+  const runWorker = async () => {
+    while (nextIndex < allKeys.length) {
+      if (await isTaskCancelled(taskId)) return;
+      const idx = nextIndex++;
+      const key = allKeys[idx];
+      try {
+        const { baked, contentType } = await isPrmS3VariantBaked(key, smallestVariantSize(key));
+        if (baked) {
+          counts.skipped++;
+        } else {
+          await copyPrmS3ObjectInPlace(key, contentType || "image/jpeg");
+          // PRM-S3 bakes nothing for a non-image or a < 64 px source; count those as skipped, not baked.
+          if ((await isPrmS3VariantBaked(key, smallestVariantSize(key))).baked) counts.baked++;
+          else counts.skipped++;
+        }
+      } catch (err) {
+        counts.failed++;
+        if (errors.length < 20) {
+          errors.push(`${key}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      completed++;
+      if (completed % 25 === 0 || completed === allKeys.length) {
+        await storage.updateTaskProgress(
+          taskId,
+          Math.round((completed / allKeys.length) * 100),
+          `${completed}/${allKeys.length} images checked (${counts.baked} baked, ${counts.skipped} skipped)`,
+        );
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: 4 }, () => runWorker()));
+
+  if (await isTaskCancelled(taskId)) {
+    return JSON.stringify({ ...counts, cancelled: true, errors });
+  }
+
+  await storage.updateTaskProgress(
+    taskId,
+    100,
+    `Completed: ${counts.baked} baked, ${counts.skipped} skipped, ${counts.failed} failed`,
+  );
+  return JSON.stringify({ ...counts, errors });
 }
 
 async function processImportInstagram(taskId: string, payload: {
@@ -3920,21 +4056,16 @@ async function processNextTask(): Promise<boolean> {
           result = await processGetImgTask(payload);
           break;
         }
-        case "transfer_images": {
-          const payload = JSON.parse(task.payload);
-          result = await processTransferImages(task.id, payload);
+        case "migrate_profile_image_tiers": {
+          result = await processMigrateProfileImageTiers(task.id);
           break;
         }
-        case "transfer_images_to_local": {
-          result = await processTransferImagesToLocal(task.id);
+        case "migrate_image_prefixes": {
+          result = await processMigrateImagePrefixes(task.id);
           break;
         }
-        case "transfer_images_to_s3": {
-          result = await processTransferImagesToS3(task.id);
-          break;
-        }
-        case "backfill_profile_image_tiers": {
-          result = await processBackfillProfileImageTiers(task.id);
+        case "bake_image_variants": {
+          result = await processBakeImageVariants(task.id);
           break;
         }
         case "import_social": {

@@ -34,6 +34,7 @@ import {
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
+import { withImageSize } from "@shared/image-size";
 
 const PAGE_SIZE = 24;
 
@@ -237,7 +238,7 @@ function PhotoModal({
           <div className="relative bg-black flex items-center justify-center" style={{ minHeight: 300, maxHeight: "60vh" }}>
             <img
               ref={imgRef}
-              src={image.image_url}
+              src={withImageSize(image.image_url, "max")}
               alt="Photo"
               className="max-w-full max-h-full object-contain"
               style={{ maxHeight: "60vh" }}
@@ -478,12 +479,12 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
             data-testid={`card-person-photo-${img.image_uuid}`}
           >
             <img
-              src={img.thumb_url}
+              src={withImageSize(img.thumb_url || img.image_url, 360)}
               alt="Photo"
               className="w-full h-full object-cover"
               loading="lazy"
               onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = img.image_url;
+                (e.currentTarget as HTMLImageElement).src = withImageSize(img.image_url, 360);
               }}
             />
           </button>

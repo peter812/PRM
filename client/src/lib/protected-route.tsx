@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { Redirect, Route, useLocation } from "wouter";
 import { useEffect, useState } from "react";
+import { isNonHomePage, setStoredReturnTo, clearStoredReturnTo } from "@/lib/auth-redirect";
 
 export function ProtectedRoute({
   path,
@@ -25,9 +26,22 @@ export function ProtectedRoute({
   useEffect(() => {
     if (!user && !isLoading && ssoStatus?.enabled === 1 && ssoStatus?.autoSso === 1) {
       setShouldRedirectToSso(true);
-      window.location.href = "/api/sso/login";
+      const currentPath = typeof window !== "undefined"
+        ? `${window.location.pathname}${window.location.search}${window.location.hash}`
+        : location;
+      const isNonHome = typeof window !== "undefined"
+        ? isNonHomePage(window.location.pathname)
+        : isNonHomePage(location);
+
+      if (isNonHome) {
+        setStoredReturnTo(currentPath);
+        window.location.href = `/api/sso/login?returnTo=${encodeURIComponent(currentPath)}`;
+      } else {
+        clearStoredReturnTo();
+        window.location.href = "/api/sso/login";
+      }
     }
-  }, [user, isLoading, ssoStatus]);
+  }, [user, isLoading, ssoStatus, location]);
 
   if (isLoading || (!user && ssoStatusLoading)) {
     return (
@@ -50,6 +64,23 @@ export function ProtectedRoute({
   }
 
   if (!user) {
+    const currentPath = typeof window !== "undefined"
+      ? `${window.location.pathname}${window.location.search}${window.location.hash}`
+      : location;
+    const isNonHome = typeof window !== "undefined"
+      ? isNonHomePage(window.location.pathname)
+      : isNonHomePage(location);
+
+    if (isNonHome) {
+      setStoredReturnTo(currentPath);
+      return (
+        <Route path={path} nest={nest}>
+          <Redirect to={`~/auth?returnTo=${encodeURIComponent(currentPath)}`} />
+        </Route>
+      );
+    }
+
+    clearStoredReturnTo();
     return (
       <Route path={path} nest={nest}>
         <Redirect to="~/auth" />

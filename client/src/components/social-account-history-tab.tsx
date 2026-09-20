@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useImporters } from "@/lib/instagram";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
+import { withImageSize } from "@shared/image-size";
 import { SocialAccountHistoryModal, type CurrentProfileValues } from "@/components/social-account-history-modal";
 import { TRACKING_KINDS, TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
 import {
@@ -466,8 +467,8 @@ function DirectEntry({ entry, onOpen }: { entry: SocialAccountHistoryEntry; onOp
           {changedImage && (
             <div className="flex items-center gap-1">
               <Avatar className="w-8 h-8 opacity-60">
-                {(entry.previousImageUrlHq ?? entry.previousImageUrl) && (
-                  <AvatarImage src={entry.previousImageUrlHq ?? entry.previousImageUrl ?? undefined} alt="previous" />
+                {entry.previousImageUrl && (
+                  <AvatarImage src={withImageSize(entry.previousImageUrl, 64)} alt="previous" />
                 )}
                 <AvatarFallback className="text-[10px]">old</AvatarFallback>
               </Avatar>

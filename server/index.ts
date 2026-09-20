@@ -12,7 +12,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
 import { startTaskWorker } from "./task-worker";
-import { syncFaceCropStorage } from "./image-storage";
+import { syncFaceCropStorage } from "./prm-s3";
 import { startOsintScanRunner } from "./osint-scan-queue";
 import { startStoriesScheduler } from "./stories-scheduler";
 import { rateLimitMiddleware } from "./middleware/rate-limit";

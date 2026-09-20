@@ -11,6 +11,7 @@ import { formatDistanceToNow } from "date-fns";
 import type { SocialAccountPost, SocialPostCommentWithAccount } from "@shared/schema";
 import { safeJsonParse } from "@/lib/utils";
 import { postPosters } from "@/lib/instagram";
+import { withImageSize } from "@shared/image-size";
 import { Link } from "wouter";
 import {
   Dialog,
@@ -39,7 +40,7 @@ function isVideoUrl(url: string | null | undefined): boolean {
     cleanUrl.endsWith(".mp4") ||
     cleanUrl.endsWith(".webm") ||
     cleanUrl.endsWith(".mov") ||
-    url.startsWith("/api/media/")
+    url.startsWith("/api/prm-s3/media/")
   );
 }
 
@@ -144,7 +145,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                   />
                 ) : (
                   <img
-                    src={images[currentImageIndex]}
+                    src={withImageSize(images[currentImageIndex], "max")}
                     alt={`Post image ${currentImageIndex + 1}`}
                     className="max-w-full max-h-[60vh] md:max-h-[80vh] object-contain block"
                     data-testid="img-post-detail"

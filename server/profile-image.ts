@@ -2,16 +2,13 @@ import { storage } from "./storage";
 import { db } from "./db";
 import { photos, socialAccounts } from "@shared/schema";
 import type { Photo, ProfileImageChange } from "@shared/schema";
-import { fetchImageBuffer, isStoredImageUrl } from "./prm-s3";
-import { isLocalImageUrl, getLocalImagePath } from "./local-storage";
-import { uploadImage } from "./image-storage";
+import { fetchImageBuffer, isStoredImageUrl, uploadImage, putPrmS3Object, uploadProfileImage } from "./prm-s3";
 import { syncEntityInBackground } from "./vector-universal";
 import { enqueueAutoRecognition } from "./recognition";
 import { eq } from "drizzle-orm";
 import crypto from "crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
-import fs from "node:fs";
 import sharp from "sharp";
 
 /**
@@ -24,10 +21,11 @@ import sharp from "sharp";
  * these, so the rules live in exactly one place.
  *
  * Instagram serves the same picture at two sizes: a 150px thumbnail on every
- * follower/following scrape and a 1080px original on a profile-info fetch. Both
- * are kept (social_accounts.image_url / image_url_hq), and a perceptual hash
- * tells a bigger copy of the same picture from a new picture, so the journal can
- * say "improved" rather than "changed". See profile-image-tiers-plan.md.
+ * follower/following scrape and a 1080px original on a profile-info fetch. One
+ * url is kept (social_accounts.image_url + is_hq_image; the 1080 replaces the
+ * 150 under the same key), and a perceptual hash tells a bigger copy of the same
+ * picture from a new picture, so the journal can say "improved" rather than
+ * "changed". See profile-image-tiers-plan.md and image-sizes-plan.md Phase 3.
  */
 
 export const INSTAGRAM_USER_AGENT =
@@ -36,13 +34,10 @@ export const INSTAGRAM_USER_AGENT =
 export type ImageTier = "lq" | "hq";
 
 /** 150 and 320 are Instagram's thumbnail sizes; 640 and 1080 are the "full" picture. */
-const HQ_MIN_WIDTH = 320;
+export const HQ_MIN_WIDTH = 320;
 
 export const tierOf = (dims: { width: number } | null): ImageTier =>
   dims && dims.width >= HQ_MIN_WIDTH ? "hq" : "lq";
-
-/** The size every list view renders; an HQ copy is cut down to this when no LQ arrived. */
-const THUMBNAIL_PX = 150;
 
 /**
  * Difference hash: 9×8 greyscale, each bit is "left pixel brighter than right".
@@ -278,10 +273,10 @@ export async function profileImageFromBuffer(
   };
 }
 
-/** The two urls an account holds, in the shape both the row and `currentProfile` carry. */
+/** The account's picture, in the shape both the row and `currentProfile` carry. */
 export interface ProfileImageUrls {
   imageUrl: string | null;
-  imageUrlHq: string | null;
+  isHqImage?: boolean;
 }
 
 export type ProfileImageVerdict =
@@ -348,23 +343,21 @@ export async function classifyProfileImage(
   current: ProfileImageUrls,
   fetched: FetchedProfileImage,
 ): Promise<ProfileImageVerdict> {
-  const best = current.imageUrlHq ?? current.imageUrl;
-  if (!best) {
+  if (!current.imageUrl) {
     return { replace: true, imageChange: fetched.tier === "hq" ? "added_hq" : "added_lq", keepLq: false };
   }
 
-  const bestPhoto = await storage.getPhotoByLocation(best);
-  const lqPhoto = current.imageUrl && current.imageUrl !== best
-    ? await storage.getPhotoByLocation(current.imageUrl)
-    : null;
-  if ([bestPhoto, lqPhoto].some((p) => p?.fileHash === fetched.fileHash)) {
+  const bestPhoto = await storage.getPhotoByLocation(current.imageUrl);
+  if (bestPhoto?.fileHash === fetched.fileHash) {
     return { replace: false, reason: "same_hash" };
   }
 
   // Rows from before tiers may hold a 1080 in image_url; the photos row knows, the column doesn't.
-  const currentTier: ImageTier = bestPhoto?.widthPx
+  const currentTier: ImageTier = current.isHqImage
+    ? "hq"
+    : bestPhoto?.widthPx
     ? tierOf({ width: bestPhoto.widthPx })
-    : current.imageUrlHq ? "hq" : "lq";
+    : "lq";
 
   let same = false;
   if (bestPhoto) {
@@ -407,7 +400,7 @@ export async function storeProfileImage(
   fetched: FetchedProfileImage,
   socialAccountId: string,
 ): Promise<{ cdnUrl: string; photoId: string }> {
-  const cdnUrl = await uploadImage(fetched.buffer, `instagram_profile.${fetched.ext}`, fetched.contentType);
+  const cdnUrl = await uploadProfileImage(fetched.buffer, `instagram_profile.${fetched.ext}`, fetched.contentType);
 
   const photo = await storage.insertPhoto({
     location: cdnUrl,
@@ -425,47 +418,18 @@ export async function storeProfileImage(
   return { cdnUrl, photoId: photo.id };
 }
 
-/**
- * The 150px webp every list renders, cut from an HQ copy. A sub-image of the
- * photo it came from, so the image page still resolves it and dedupe sees its hash.
- */
-export async function storeProfileThumbnail(
-  hqBuffer: Buffer,
-  socialAccountId: string,
-  derivedFromPhotoId: string | null,
-): Promise<string> {
-  const buffer = await sharp(hqBuffer)
-    .resize(THUMBNAIL_PX, THUMBNAIL_PX, { fit: "cover" })
-    .webp({ quality: 82 })
-    .toBuffer();
-  const cdnUrl = await uploadImage(buffer, "instagram_profile_150.webp", "image/webp");
-
-  await storage.insertPhoto({
-    location: cdnUrl,
-    prmLocation: `profile_image:${socialAccountId}`,
-    isSubImage: true,
-    fileHash: crypto.createHash("sha256").update(buffer).digest("hex"),
-    widthPx: THUMBNAIL_PX,
-    heightPx: THUMBNAIL_PX,
-    perceptualHash: await perceptualHash(buffer),
-    ogMetadata: { derivedFromPhotoId, contentType: "image/webp", fetchedAt: new Date().toISOString() },
-  });
-
-  return cdnUrl;
-}
-
 /** What a replacement leaves on the account, plus how the journal describes it. */
 export interface ProfileImageOutcome {
   imageUrl: string;
-  imageUrlHq: string | null;
+  isHqImage: boolean;
   imageChange: ProfileImageChange;
   photoId: string;
 }
 
 /**
- * Stores the fetched image — and its 150 thumbnail when no LQ copy would remain —
- * and says what the account's two urls become. Does not touch the account row:
- * the caller writes that together with the journal entry.
+ * Stores the fetched image — re-PUTting in-place on "improved" or uploading to a new key
+ * for a new picture — and returns what the account's image fields become.
+ * Does not touch the account row: the caller writes that together with the journal entry.
  */
 export async function applyProfileImageVerdict(
   socialAccountId: string,
@@ -475,19 +439,52 @@ export async function applyProfileImageVerdict(
   /** When the bytes are already in storage (a manual upload), the row to reuse. */
   stored?: { cdnUrl: string; photoId: string },
 ): Promise<ProfileImageOutcome> {
-  const { cdnUrl, photoId } = stored ?? (await storeProfileImage(fetched, socialAccountId));
   const { imageChange } = verdict;
-  // The picture itself, never the 150 thumbnail cut below.
-  void enqueueAutoRecognition({ kind: "profile", photoIds: [photoId] });
 
-  if (fetched.tier === "lq") {
-    // A new picture only known at 150: whatever HQ we held is of the old picture.
-    return { imageUrl: cdnUrl, imageUrlHq: null, imageChange, photoId };
+  if (imageChange === "improved") {
+    if (!current.imageUrl) {
+      throw new Error("applyProfileImageVerdict: case 'improved' requires current.imageUrl");
+    }
+    await putPrmS3Object(current.imageUrl, fetched.buffer, fetched.contentType);
+    let photo = await storage.getPhotoByLocation(current.imageUrl);
+    const facts = {
+      fileHash: fetched.fileHash,
+      widthPx: fetched.dims?.width ?? null,
+      heightPx: fetched.dims?.height ?? null,
+      perceptualHash: fetched.perceptualHash,
+      ogMetadata: fetched.ogMetadata,
+    };
+    if (photo) {
+      await db.update(photos).set(facts).where(eq(photos.id, photo.id));
+    } else {
+      photo = await storage.insertPhoto({
+        location: current.imageUrl,
+        prmLocation: `profile_image:${socialAccountId}`,
+        isSubImage: false,
+        ...facts,
+      });
+    }
+    void enqueueAutoRecognition({ kind: "profile", photoIds: [photo.id] });
+    return {
+      imageUrl: current.imageUrl,
+      isHqImage: true,
+      imageChange: "improved",
+      photoId: photo.id,
+    };
   }
-  const imageUrl = verdict.keepLq && current.imageUrl
-    ? current.imageUrl
-    : await storeProfileThumbnail(fetched.buffer, socialAccountId, photoId);
-  return { imageUrl, imageUrlHq: cdnUrl, imageChange, photoId };
+
+  // Cases A, B, C', D', E', F' (new picture):
+  const { cdnUrl, photoId } = stored ?? (await storeProfileImage(fetched, socialAccountId));
+  const isHq = fetched.tier === "hq";
+  if (isHq) {
+    void enqueueAutoRecognition({ kind: "profile", photoIds: [photoId] });
+  }
+  return {
+    imageUrl: cdnUrl,
+    isHqImage: isHq,
+    imageChange,
+    photoId,
+  };
 }
 
 /**
@@ -521,6 +518,10 @@ export async function ingestManualProfileImage(
   const verdict = await classifyProfileImage(current, fetched);
   if (!verdict.replace) return null;
 
+  if (verdict.imageChange === "improved") {
+    return applyProfileImageVerdict(socialAccountId, current, fetched, verdict);
+  }
+
   if (!isStored) {
     // Store external profile image into PRM storage
     const stored = await storeProfileImage(fetched, socialAccountId);
@@ -546,38 +547,11 @@ export async function ingestManualProfileImage(
 /** The account's current urls, for the classifier. */
 export async function getCurrentProfileImageUrls(socialAccountId: string): Promise<ProfileImageUrls> {
   const [row] = await db
-    .select({ imageUrl: socialAccounts.imageUrl, imageUrlHq: socialAccounts.imageUrlHq })
+    .select({
+      imageUrl: socialAccounts.imageUrl,
+      isHqImage: socialAccounts.isHqImage,
+    })
     .from(socialAccounts)
     .where(eq(socialAccounts.id, socialAccountId));
-  return { imageUrl: row?.imageUrl ?? null, imageUrlHq: row?.imageUrlHq ?? null };
-}
-
-/**
- * Normalises one account written before tiers existed: a 1080 sitting in
- * image_url moves to image_url_hq and a 150 webp takes its place. Nothing about
- * the picture changed, so no journal entry. Returns what it did.
- */
-export async function backfillProfileImageTiers(
-  account: { id: string } & ProfileImageUrls,
-): Promise<"moved" | "already_lq" | "missing" | "skipped"> {
-  if (!account.imageUrl || account.imageUrlHq) return "skipped";
-
-  const photo = await storage.getPhotoByLocation(account.imageUrl);
-  let widthPx = photo?.widthPx ?? null;
-  let buffer: Buffer | null = null;
-  if (!widthPx) {
-    buffer = await readStoredImage(account.imageUrl);
-    if (!buffer) return "missing";
-    widthPx = getImageDimensions(buffer)?.width ?? (await sharp(buffer).metadata()).width ?? null;
-  }
-  if (tierOf(widthPx ? { width: widthPx } : null) === "lq") return "already_lq";
-
-  buffer ??= await readStoredImage(account.imageUrl);
-  if (!buffer) return "missing";
-  const thumbUrl = await storeProfileThumbnail(buffer, account.id, photo?.id ?? null);
-  await db
-    .update(socialAccounts)
-    .set({ imageUrl: thumbUrl, imageUrlHq: account.imageUrl })
-    .where(eq(socialAccounts.id, account.id));
-  return "moved";
+  return { imageUrl: row?.imageUrl ?? null, isHqImage: row?.isHqImage ?? false };
 }

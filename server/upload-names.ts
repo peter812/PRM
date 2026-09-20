@@ -28,6 +28,15 @@ const UPLOAD_KINDS: Record<UploadKind, { prefix: string; fallbackExt: string; ex
 
 export type UploadKind = "image" | "media";
 
+export type ImageCategory = "generic" | "profile" | "post" | "story";
+
+const CATEGORY_PREFIXES: Record<ImageCategory, string> = {
+  generic: "images",
+  profile: "profiles",
+  post:    "posts",
+  story:   "stories",
+};
+
 export function isSafeUploadExtension(kind: UploadKind, ext: string): boolean {
   return UPLOAD_KINDS[kind].extensions.has(ext.toLowerCase());
 }
@@ -37,7 +46,7 @@ export function isSafeUploadExtension(kind: UploadKind, ext: string): boolean {
  * `key` is that name under the kind's bucket prefix (images/… or media/…).
  * Throws on a MIME type we do not accept.
  */
-export function newUploadName(kind: UploadKind, originalFilename: string, mimeType: string): { fileName: string; key: string } {
+export function newUploadName(kind: UploadKind, originalFilename: string, mimeType: string, category?: ImageCategory): { fileName: string; key: string } {
   const spec = UPLOAD_KINDS[kind];
   if (!spec.mimeTypes.has(mimeType.toLowerCase())) {
     throw new Error(`Invalid or unsafe ${kind} MIME type`);
@@ -45,5 +54,6 @@ export function newUploadName(kind: UploadKind, originalFilename: string, mimeTy
   let ext = originalFilename.split(".").pop()?.toLowerCase() || spec.fallbackExt;
   if (!spec.extensions.has(ext)) ext = spec.fallbackExt;
   const fileName = `${nanoid()}.${ext}`;
-  return { fileName, key: `${spec.prefix}/${fileName}` };
+  const prefix = kind === "image" && category ? CATEGORY_PREFIXES[category] : spec.prefix;
+  return { fileName, key: `${prefix}/${fileName}` };
 }

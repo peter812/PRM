@@ -40,6 +40,7 @@ import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { cn, getInitials, isValidHexColor } from "@/lib/utils";
 import { INSTAGRAM_TYPE_ID, type SocialAccountWithCurrentProfile, type Person, type SocialAccountType } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 import { RECENT_CHECK_HOURS, TRACKING_KINDS, TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
@@ -644,10 +645,9 @@ export default function SocialAccountsList() {
                         <div className="flex items-center gap-3">
                           <AccountCheckbox account={account} checked={selectedIds.has(account.id)} onToggle={() => toggleSelect(account.id)} className="self-stretch pr-1" />
                           <Avatar className="w-10 h-10">
-                            {(account.currentProfile?.imageUrlHq || account.currentProfile?.imageUrl) && (
+                            {account.currentProfile?.imageUrl && (
                               <AvatarImage
-                                src={account.currentProfile?.imageUrlHq ?? account.currentProfile?.imageUrl ?? undefined}
-                                fallbackSrc={account.currentProfile?.imageUrl ?? undefined}
+                                src={withImageSize(account.currentProfile.imageUrl, 64)}
                                 alt={account.username}
                               />
                             )}
@@ -794,10 +794,9 @@ export default function SocialAccountsList() {
                         <div className="flex items-center gap-4">
                           <AccountCheckbox account={account} checked={selectedIds.has(account.id)} onToggle={() => toggleSelect(account.id)} className="self-stretch pr-1" />
                           <Avatar className="w-16 h-16">
-                            {(account.currentProfile?.imageUrlHq || account.currentProfile?.imageUrl) && (
+                            {account.currentProfile?.imageUrl && (
                               <AvatarImage
-                                src={account.currentProfile?.imageUrlHq ?? account.currentProfile?.imageUrl ?? undefined}
-                                fallbackSrc={account.currentProfile?.imageUrl ?? undefined}
+                                src={withImageSize(account.currentProfile.imageUrl, 64)}
                                 alt={account.username}
                               />
                             )}

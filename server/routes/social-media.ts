@@ -31,10 +31,7 @@ import {
   type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
-import { deleteImageFromS3 } from "../s3";
-import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl } from "../prm-s3";
-import { deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { getImageStorageMode, setImageStorageMode, isStorageMode, syncFaceCropStorage } from "../image-storage";
+import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats } from "../prm-s3";
 import { hashPassword, requireAuth, requireAdmin } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { queueOsintScansForMeAccount } from "../osint-scan-queue";
@@ -48,6 +45,7 @@ import { sendApiError, ErrorCodes } from "../middleware/error-handler";
 import { resolvePhotoSource } from "../photo-source";
 import { recordAccountProfileChanges } from "../social-account-history";
 import { ingestManualProfileImage } from "../profile-image";
+import { profilePhotos, recognizeProfilePhotos } from "../recognition";
 import { updateTracking, type TrackingPatch } from "../tracking";
 import { sseManager } from "../middleware/sse";
 import {
@@ -595,13 +593,13 @@ export function registerRoutes(app: Express) {
         const changes: Parameters<typeof recordAccountProfileChanges>[1] = registryFields;
         if (body.imageUrl === null) {
           registryFields.imageUrl = null;
-          registryFields.imageUrlHq = null;
+          registryFields.isHqImage = false;
           changes.image = null;
         } else if (typeof body.imageUrl === "string" && body.imageUrl !== existing.imageUrl) {
           const image = await ingestManualProfileImage(id, existing, body.imageUrl);
           if (image) {
             registryFields.imageUrl = image.imageUrl;
-            registryFields.imageUrlHq = image.imageUrlHq;
+            registryFields.isHqImage = image.isHqImage;
             changes.image = image;
           }
         }
@@ -647,8 +645,9 @@ export function registerRoutes(app: Express) {
   
     app.delete("/api/social-accounts/delete-all", requireAdmin, async (req, res) => {
       try {
-        const count = await storage.deleteAllSocialAccounts();
-        res.json({ success: true, deleted: count });
+        const deleteMedia = req.query.deleteMedia === "true" || req.body?.deleteMedia === true;
+        const result = await storage.deleteAllSocialAccounts({ deleteMedia });
+        res.json({ success: true, ...result });
       } catch (error) {
         console.error("Error deleting all social accounts:", error);
         res.status(500).json({ error: "Failed to delete all social accounts" });
@@ -805,6 +804,46 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error fetching me following ids:", error);
         res.status(500).json({ error: "Failed to fetch following ids" });
+      }
+    });
+
+    // The stored profile picture and what face recognition made of it, for the
+    // account page's profile-photo dialog.
+    app.get("/api/social-accounts/:id/profile-photo", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const account = await storage.getSocialAccountById(id);
+        if (!account) return res.status(404).json({ error: "Social account not found" });
+        const { current, previous } = await profilePhotos(id);
+        const [{ count: groupFaces }] = account.personfaceUuid
+          ? await db.select({ count: sql<number>`count(*)::int` }).from(faces).where(eq(faces.personfaceUuid, account.personfaceUuid))
+          : [{ count: 0 }];
+        res.json({
+          current: current && {
+            id: current.id, location: current.location, widthPx: current.widthPx, heightPx: current.heightPx,
+            uploadedAt: current.uploadedAt, faceIdAt: current.faceIdAt, facialIds: current.facialIds ?? [],
+          },
+          previousCount: previous.length,
+          personfaceUuid: account.personfaceUuid ?? null,
+          groupFaces,
+        });
+      } catch (error) {
+        console.error("Error fetching profile photo info:", error);
+        res.status(500).json({ error: "Failed to fetch profile photo info" });
+      }
+    });
+
+    app.post("/api/social-accounts/:id/profile-photo/recognize", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!(await storage.getSocialAccountById(id))) {
+          return res.status(404).json({ error: "Social account not found" });
+        }
+        const runs = await recognizeProfilePhotos(id, req.body?.includePrevious === true);
+        res.json({ runs });
+      } catch (error) {
+        console.error("Error recognizing profile photo:", error);
+        res.status(500).json({ error: error instanceof Error ? error.message : "Failed to run face recognition" });
       }
     });
 
@@ -1848,39 +1887,8 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // Image storage settings. The mode and stats are readable by everyone (the
-    // settings page shows them); choosing a backend, configuring PRM-S3 and
-    // moving images between backends are admin actions.
-    app.get("/api/image-storage/mode", async (req, res) => {
-      if (!req.isAuthenticated() || !req.user) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-      try {
-        const mode = await getImageStorageMode();
-        const hasS3Creds = !!(process.env.S3_ENDPOINT && process.env.S3_ACCESS_KEY && process.env.S3_SECRET_KEY && process.env.S3_BUCKET);
-        const prmS3Config = await getPrmS3Config();
-        res.json({ mode, hasS3Creds, hasPrmS3Creds: prmS3Config.isConfigured });
-      } catch (error) {
-        console.error("Error getting image storage mode:", error);
-        res.status(500).json({ error: "Failed to get image storage mode" });
-      }
-    });
-  
-    app.put("/api/image-storage/mode", requireAdmin, async (req, res) => {
-      try {
-        const { mode } = req.body;
-        if (!isStorageMode(mode)) {
-          return res.status(400).json({ error: "Invalid storage mode. Must be 'prm-s3', 's3', or 'local'" });
-        }
-        await setImageStorageMode(mode);
-        await syncFaceCropStorage();
-        res.json({ success: true, mode });
-      } catch (error) {
-        console.error("Error setting image storage mode:", error);
-        res.status(500).json({ error: "Failed to set image storage mode" });
-      }
-    });
-  
+    // Image storage settings. Stats are readable by everyone (the settings
+    // page shows them); configuring PRM-S3 is an admin action.
     app.get("/api/image-storage/prm-s3/settings", requireAdmin, async (req, res) => {
       try {
         const config = await getPrmS3Config();
@@ -1933,95 +1941,52 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/transfer", requireAdmin, async (req, res) => {
-      try {
-        const { from, to, concurrency } = req.body;
-        const validModes = ["local", "s3", "prm-s3"];
-        if (!validModes.includes(from) || !validModes.includes(to) || from === to) {
-          return res.status(400).json({ error: "Invalid transfer options. 'from' and 'to' must be distinct storage providers ('local', 's3', 'prm-s3')" });
-        }
-        const task = await storage.createTask({
-          userId: req.user!.id,
-          type: "transfer_images",
-          status: "pending",
-          payload: JSON.stringify({ userId: req.user!.id, from, to, concurrency: Number(concurrency) || undefined }),
-        });
-        triggerTaskWorker();
-        res.json(task);
-      } catch (error: any) {
-        console.error("Error creating image transfer task:", error);
-        res.status(500).json({ error: "Failed to create transfer task" });
-      }
+    // Polled by the client so it can warn every user when PRM-S3 is down.
+    app.get("/api/prm-s3/health", async (_req, res) => {
+      res.json(await checkPrmS3Health());
     });
-  
-    app.post("/api/image-storage/transfer-to-local", requireAdmin, async (req, res) => {
+
+    app.post("/api/image-storage/migrate-profile-image-tiers", requireAdmin, async (req, res) => {
       try {
         const task = await storage.createTask({
           userId: req.user!.id,
-          type: "transfer_images_to_local",
+          type: "migrate_profile_image_tiers",
           status: "pending",
           payload: JSON.stringify({ userId: req.user!.id }),
         });
         triggerTaskWorker();
         res.json(task);
       } catch (error) {
-        console.error("Error creating transfer to local task:", error);
-        res.status(500).json({ error: "Failed to create transfer task" });
-      }
-    });
-  
-    app.post("/api/image-storage/backfill-profile-image-tiers", requireAdmin, async (req, res) => {
-      try {
-        const task = await storage.createTask({
-          userId: req.user!.id,
-          type: "backfill_profile_image_tiers",
-          status: "pending",
-          payload: JSON.stringify({ userId: req.user!.id }),
-        });
-        triggerTaskWorker();
-        res.json(task);
-      } catch (error) {
-        console.error("Error creating profile image tier backfill task:", error);
-        res.status(500).json({ error: "Failed to create backfill task" });
+        console.error("Error creating profile image tier migration task:", error);
+        res.status(500).json({ error: "Failed to create migration task" });
       }
     });
 
-    app.post("/api/image-storage/transfer-to-s3", requireAdmin, async (req, res) => {
+    app.post("/api/image-storage/bake-image-variants", requireAdmin, async (req, res) => {
       try {
         const task = await storage.createTask({
           userId: req.user!.id,
-          type: "transfer_images_to_s3",
+          type: "bake_image_variants",
           status: "pending",
           payload: JSON.stringify({ userId: req.user!.id }),
         });
         triggerTaskWorker();
         res.json(task);
       } catch (error) {
-        console.error("Error creating transfer to S3 task:", error);
-        res.status(500).json({ error: "Failed to create transfer task" });
+        console.error("Error creating bake image variants task:", error);
+        res.status(500).json({ error: "Failed to create bake image variants task" });
       }
     });
-  
+
+    // Counts come from PRM-S3 itself: an image is one object however many
+    // sizes are baked for it; `total` is every file on disk (objects + variants).
     app.get("/api/image-storage/stats", async (req, res) => {
       if (!req.isAuthenticated() || !req.user) {
         return res.status(401).json({ error: "Not authenticated" });
       }
       try {
-        const allUrls = await storage.getAllImageUrls();
-        let localCount = 0;
-        let prmS3Count = 0;
-        let s3Count = 0;
-
-        for (const u of allUrls) {
-          if (isLocalImageUrl(u.url)) {
-            localCount++;
-          } else if (isPrmS3ImageUrl(u.url)) {
-            prmS3Count++;
-          } else if (!u.url.includes("instagram.com") && !u.url.includes("fbcdn.net")) {
-            s3Count++;
-          }
-        }
-        res.json({ total: allUrls.length, local: localCount, s3: s3Count, prmS3: prmS3Count });
+        const s = await getPrmS3BucketStats();
+        res.json({ images: s.images, videos: s.videos, variants: s.variants, total: s.objects + s.variants, objectBytes: s.objectBytes, variantBytes: s.variantBytes });
       } catch (error) {
         console.error("Error getting image stats:", error);
         res.status(500).json({ error: "Failed to get image stats" });
@@ -2170,16 +2135,10 @@ export function registerRoutes(app: Express) {
         await db.update(notes).set({ imageUrl: null }).where(inArray(notes.imageUuid, idsToDelete));
         await db.update(interactions).set({ imageUrl: null }).where(inArray(interactions.imageUuid, idsToDelete));
 
-        // 7. Delete physical files from local/S3
+        // 7. Delete physical files from PRM-S3 (external locations have nothing to delete)
         for (const p of allPhotosToDelete) {
           try {
-            if (isLocalImageUrl(p.location)) {
-              await deleteImageLocally(p.location);
-            } else if (isPrmS3ImageUrl(p.location)) {
-              await deleteImageFromPrmS3(p.location);
-            } else if (p.location.includes(process.env.S3_BUCKET || "")) {
-              await deleteImageFromS3(p.location);
-            }
+            if (isPrmS3ImageUrl(p.location)) await deleteImageFromPrmS3(p.location);
           } catch (err) {
             console.error(`Failed to delete physical file for photo ${p.id} at ${p.location}:`, err);
           }
@@ -2405,13 +2364,13 @@ export function registerRoutes(app: Express) {
         const changes: Parameters<typeof recordAccountProfileChanges>[1] = registryFields;
         if (body.imageUrl === null) {
           registryFields.imageUrl = null;
-          registryFields.imageUrlHq = null;
+          registryFields.isHqImage = false;
           changes.image = null;
         } else if (typeof body.imageUrl === "string" && body.imageUrl !== existing.imageUrl) {
           const image = await ingestManualProfileImage(id, existing, body.imageUrl);
           if (image) {
             registryFields.imageUrl = image.imageUrl;
-            registryFields.imageUrlHq = image.imageUrlHq;
+            registryFields.isHqImage = image.isHqImage;
             changes.image = image;
           }
         }

@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PersonWithRelations, Note, Interaction } from "@shared/schema";
 import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useMutation } from "@tanstack/react-query";
 import { AddNoteDialog } from "@/components/add-note-dialog";
@@ -250,7 +251,7 @@ export default function PersonProfile() {
           {activeTab !== "home" && (
             <Avatar className="w-9 h-9 shrink-0">
               {person.imageUrl && (
-                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                <AvatarImage src={withImageSize(person.imageUrl, 64)} alt={`${person.firstName} ${person.lastName}`} />
               )}
               <AvatarFallback className="text-xs">
                 {getInitials(person.firstName, person.lastName)}
@@ -538,7 +539,7 @@ export default function PersonProfile() {
                 {/* Large Profile Image */}
                 <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden group shadow-sm">
                   {person.imageUrl ? (
-                    <img src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} className="w-full h-full object-cover" />
+                    <img src={withImageSize(person.imageUrl, "max")} alt={`${person.firstName} ${person.lastName}`} className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-4xl font-bold bg-primary/10 text-primary">
                       {getInitials(person.firstName, person.lastName)}

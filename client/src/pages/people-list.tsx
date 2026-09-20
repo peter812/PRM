@@ -29,6 +29,7 @@ import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/sch
 import { PersonDialog } from "@/components/person-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
+import { withImageSize } from "@shared/image-size";
 import { useToast } from "@/hooks/use-toast";
 import { PersonContextMenu, PersonActionButton } from "@/components/person-context-menu";
 import { PersonTagsCell } from "@/components/person-tags-cell";
@@ -656,7 +657,7 @@ export default function PeopleList() {
                           <div className="flex items-center gap-2">
                             <Avatar className="w-12 h-12">
                               {person.imageUrl && (
-                                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                                <AvatarImage src={withImageSize(person.imageUrl, 64)} alt={`${person.firstName} ${person.lastName}`} />
                               )}
                               <AvatarFallback>
                                 {getInitials(person.firstName, person.lastName)}
@@ -777,7 +778,7 @@ export default function PeopleList() {
                           <div className="flex items-center gap-4">
                             <Avatar className="w-20 h-20">
                               {person.imageUrl && (
-                                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                                <AvatarImage src={withImageSize(person.imageUrl, 150)} alt={`${person.firstName} ${person.lastName}`} />
                               )}
                               <AvatarFallback className="text-xl">
                                 {getInitials(person.firstName, person.lastName)}

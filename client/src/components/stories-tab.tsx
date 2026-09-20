@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { safeJsonParse } from "@/lib/utils";
 import type { SocialAccountPost } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 
 /** What prm-stories puts in social_account_posts.metadata for a story. */
 interface StoryMetadata {
@@ -71,14 +72,14 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
               <video
                 key={story.id}
                 src={meta.videoUrl}
-                poster={image ?? undefined}
+                poster={withImageSize(image, 1080)}
                 controls
                 playsInline
                 className="max-h-[85vh] w-full object-contain"
                 data-testid="video-story"
               />
             ) : image ? (
-              <img src={image} alt={story.description ?? "Story"} className="max-h-[85vh] w-full object-contain" />
+              <img src={withImageSize(image, 1080)} alt={story.description ?? "Story"} className="max-h-[85vh] w-full object-contain" />
             ) : (
               <ImageIcon className="h-12 w-12 text-muted-foreground/40 my-24" />
             )}
@@ -260,7 +261,7 @@ export function StoriesTab({ stories }: { stories: SocialAccountPost[] }) {
                 data-testid={`card-story-${cover.id}`}
               >
                 {image ? (
-                  <img src={image} alt="" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
+                  <img src={withImageSize(image, 360)} alt="" className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" />
                 ) : (
                   <div className="h-full w-full flex items-center justify-center">
                     <ImageIcon className="h-8 w-8 text-muted-foreground/40" />

@@ -50,9 +50,6 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export type StorageMode = "prm-s3" | "s3" | "local";
-export const STORAGE_MODES: [StorageMode, ...StorageMode[]] = ["prm-s3", "s3", "local"];
-
 /**
  * Instance roles, least to most privileged.
  *
@@ -401,9 +398,8 @@ export const socialAccounts = pgTable("social_accounts", {
   nickname: text("nickname"),
   bio: text("bio"),
   accountUrl: text("account_url"),
-  imageUrl: text("image_url"),                        // PRM/S3 url of the 150px copy — every list view
-  imageUrlHq: text("image_url_hq"),                   // PRM/S3 url of the 1080px copy; null until a
-                                                      // profile-info fetch delivers one (profile-image.ts)
+  imageUrl: text("image_url"),                        // PRM/S3 url of the profile image
+  isHqImage: boolean("is_hq_image").notNull().default(false),
   externalImageUrl: text("external_image_url"),       // last signed Instagram url: a lead for the
                                                       // image worker to follow, never a display source
   location: text("location"),
@@ -439,9 +435,14 @@ export const socialAccounts = pgTable("social_accounts", {
   joinedAt: timestamp("joined_at"), // first of the month Instagram's About dialog reports
   reportedPostsCount: integer("reported_posts_count"),
   isPrivate: boolean("is_private"),
+  // The face this account's own profile picture shows (faces.personface_uuid),
+  // so a face seen elsewhere can be named "@username" before anyone attaches a
+  // person. Set by recognition.ts when a profile picture has exactly one face.
+  personfaceUuid: varchar("personface_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("social_accounts_username_idx").on(t.username),
+  index("social_accounts_personface_uuid_idx").on(t.personfaceUuid),
   index("social_accounts_visibility_idx").on(t.visibility),
   index("social_accounts_owner_uuid_idx").on(t.ownerUuid),
   index("social_accounts_group_id_idx").on(t.groupId),
@@ -530,7 +531,6 @@ export const socialAccountHistory = pgTable("social_account_history", {
   previousBio: text("previous_bio"),
   previousLocation: text("previous_location"),
   previousImageUrl: text("previous_image_url"),   // a stable PRM/S3 url, so the modal renders it directly
-  previousImageUrlHq: text("previous_image_url_hq"),
   // How the picture moved between tiers — one of ProfileImageChange. Null on rows
   // written before tiers existed; "image" in profileFieldsChanged still marks them.
   imageChange: text("image_change"),
@@ -1828,7 +1828,7 @@ export type HistoryAccountRef = {
   username: string;
   nickname: string | null;
   imageUrl: string | null;
-  imageUrlHq: string | null;
+  isHqImage: boolean;
 };
 
 /**
@@ -1920,7 +1920,7 @@ export type SocialPostCommentWithAccount = SocialPostComment & {
 };
 
 export type SocialAccountWithCurrentProfile = SocialAccount & {
-  currentProfile: (SocialProfileVersion & { imageUrlHq: string | null }) | null;
+  currentProfile: (SocialProfileVersion & { isHqImage: boolean }) | null;
   latestState: SocialNetworkState | null;
   latestImportFollowers?: Date | string | null;
   latestImportFollowing?: Date | string | null;
@@ -2284,7 +2284,7 @@ export const insertConversationParticipantSchema = createInsertSchema(conversati
 // message rendering components.
 export interface MessageAttachment {
   type: "video" | "audio" | "file";
-  /** Serving URL (/api/media/... or S3). Absent when unavailable. */
+  /** Serving URL (/api/prm-s3/media/... or presigned). Absent when unavailable. */
   url?: string;
   /** Original path/URL inside the source export */
   originalUri?: string;

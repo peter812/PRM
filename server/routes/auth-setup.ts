@@ -36,10 +36,9 @@ import {
   canAssignRole,
 } from "@shared/schema";
 import multer from "multer";
-import { deleteImageFromS3 } from "../s3";
-import { deleteImageFromPrmS3, getPrmS3ObjectStream, getPrmS3PublicUrl, PRM_S3_PRESIGN_WINDOW_SECONDS, isPrmS3ImageUrl } from "../prm-s3";
-import { deleteImageLocally, getLocalImagePath, isLocalImageUrl, getLocalMediaPath } from "../local-storage";
-import { uploadImage } from "../image-storage";
+import { Readable } from "stream";
+import { deleteImageFromPrmS3, getPrmS3Config, presignPrmS3PublicUrl, PRM_S3_PRESIGN_WINDOW_SECONDS, uploadImage } from "../prm-s3";
+import { withImageSize, isValidImageSize, type ImageSize } from "@shared/image-size";
 import { hashPassword, requireAuth, requireAdmin, publicUser, authenticateExtensionToken } from "../auth";
 import { runAsUser } from "../access";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
@@ -111,60 +110,59 @@ export function registerRoutes(app: Express) {
       return requireAuth(req, res, next);
     });
   
-    // Serve local images (authenticated)
-    app.get("/api/images/:filename", (req, res) => {
-      if (!req.isAuthenticated()) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-  
-      const filePath = getLocalImagePath(req.params.filename);
-      if (!filePath) {
-        return res.status(404).json({ error: "Image not found" });
-      }
-
-      res.sendFile(filePath);
-    });
-
-    // Serve local media (video/audio) — res.sendFile handles HTTP Range
-    // requests, which <video>/<audio> need for seeking
-    app.get("/api/media/:filename", (req, res) => {
-      if (!req.isAuthenticated()) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-
-      const filePath = getLocalMediaPath(req.params.filename);
-      if (!filePath) {
-        return res.status(404).json({ error: "Media not found" });
-      }
-
-      res.sendFile(filePath);
-    });
-
     // Serve PRM-S3 objects (authenticated): images, media, and the face crops
     // PRM-compute writes under faces/.
     // Proxy mode streams the object through this server over the internal
     // endpoint. In direct mode API responses already carry presigned public
     // URLs, so this route is only a safety net for stale clients: redirect
     // to the presigned URL rather than proxying the bytes.
-    app.get("/api/prm-s3/:kind(images|media|faces)/:filename", async (req, res) => {
+    app.get("/api/prm-s3/:kind(images|profiles|posts|stories|media|faces)/:filename", async (req, res) => {
       if (!req.isAuthenticated()) {
         return res.status(401).json({ error: "Not authenticated" });
+      }
+      const s = typeof req.query.s === "string" ? req.query.s : undefined;
+      if (s !== undefined && !isValidImageSize(s)) {
+        return res.status(400).json({ error: "s must be one of 64, 128, 150, 360, 480, 1080 or max" });
       }
       try {
         const safeName = path.basename(req.params.filename);
         const key = `${req.params.kind}/${safeName}`;
-        const publicUrl = await getPrmS3PublicUrl(key);
-        if (publicUrl) {
-          // A presigned URL is valid for at least one signing window.
+        const cfg = await getPrmS3Config();
+
+        if (cfg.directDelivery) {
+          const publicUrl = presignPrmS3PublicUrl(cfg, key);
+          const redirectUrl = s ? withImageSize(publicUrl, s as ImageSize) : publicUrl;
           res.setHeader("Cache-Control", `private, max-age=${PRM_S3_PRESIGN_WINDOW_SECONDS - 600}`);
-          return res.redirect(302, publicUrl);
+          return res.redirect(302, redirectUrl);
         }
-        const { stream, contentType, contentLength, etag } = await getPrmS3ObjectStream(key);
-        if (etag) res.setHeader("ETag", etag);
-        if (contentLength) res.setHeader("Content-Length", contentLength);
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("Cache-Control", "public, max-age=86400");
-        stream.pipe(res);
+
+        let internalUrl = presignPrmS3PublicUrl(cfg, key, { endpoint: cfg.endpoint });
+        if (s) internalUrl = withImageSize(internalUrl, s as ImageSize);
+
+        // Forward Range and conditional headers so seeks and revalidation
+        // work through the proxy; PRM-S3 answers 206/304 itself.
+        const headers: Record<string, string> = {};
+        for (const h of ["range", "if-none-match", "if-modified-since"]) {
+          const v = req.headers[h];
+          if (typeof v === "string") headers[h] = v;
+        }
+        const s3Res = await fetch(internalUrl, { headers });
+        if (!s3Res.ok && s3Res.status !== 304) {
+          return res.status(s3Res.status).json({ error: "Object not found on PRM-S3" });
+        }
+
+        for (const h of ["ETag", "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified"]) {
+          const v = s3Res.headers.get(h);
+          if (v) res.setHeader(h, v);
+        }
+        res.setHeader("Cache-Control", s3Res.headers.get("cache-control") || "public, max-age=86400");
+        res.status(s3Res.status);
+
+        if (s3Res.status !== 304 && s3Res.body) {
+          Readable.fromWeb(s3Res.body as any).pipe(res);
+        } else {
+          res.end();
+        }
       } catch (err: any) {
         res.status(404).json({ error: "Object not found on PRM-S3" });
       }
@@ -262,13 +260,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "No image URL provided" });
         }
   
-        if (isLocalImageUrl(imageUrl)) {
-          await deleteImageLocally(imageUrl);
-        } else if (isPrmS3ImageUrl(imageUrl)) {
-          await deleteImageFromPrmS3(imageUrl);
-        } else {
-          await deleteImageFromS3(imageUrl);
-        }
+        await deleteImageFromPrmS3(imageUrl);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting image:", error);
@@ -3029,7 +3021,18 @@ export function registerRoutes(app: Express) {
         const crypto = await import("crypto");
         const state = crypto.randomBytes(32).toString('hex');
         req.session.ssoState = state;
-        // Don't store userId yet - we'll determine it from OAuth response
+
+        // Store returnTo in session if valid relative URL
+        if (typeof req.query.returnTo === "string") {
+          const target = req.query.returnTo.trim();
+          if (target.startsWith("/") && !target.startsWith("//") && !target.includes("\\")) {
+            req.session.ssoReturnTo = target;
+          } else {
+            delete req.session.ssoReturnTo;
+          }
+        } else {
+          delete req.session.ssoReturnTo;
+        }
   
         // Build authorization URL
         const authParams = new URLSearchParams({
@@ -3147,6 +3150,16 @@ export function registerRoutes(app: Express) {
           if (err) {
             console.error("Error logging in after SSO:", err);
             return res.redirect('/?error=login_failed');
+          }
+          const returnTo = req.session.ssoReturnTo;
+          delete req.session.ssoReturnTo;
+          if (
+            typeof returnTo === "string" &&
+            returnTo.startsWith("/") &&
+            !returnTo.startsWith("//") &&
+            !returnTo.includes("\\")
+          ) {
+            return res.redirect(returnTo);
           }
           res.redirect('/');
         });

@@ -4,6 +4,7 @@ import { Link, useRoute, useLocation } from "wouter";
 import { Loader2, ChevronLeft, ImageOff, CheckCircle2, XCircle, ExternalLink, Trash2, Scan, Clock } from "lucide-react";
 import { format } from "date-fns";
 import type { Photo, Person, SocialAccountWithCurrentProfile } from "@shared/schema";
+import { withImageSize } from "@shared/image-size";
 import { Button } from "@/components/ui/button";
 import { imageDetailHref } from "@/lib/image-link";
 import { useToast } from "@/hooks/use-toast";
@@ -361,7 +362,7 @@ export default function ImageDetailPage() {
         <div className="relative inline-block max-w-full">
           <img
             ref={imgRef}
-            src={photo.location}
+            src={withImageSize(photo.location, "max")}
             alt={photo.imageDescription || photo.id}
             className="max-h-[560px] w-auto object-contain block"
             onLoad={handleImageLoad}
@@ -478,7 +479,7 @@ export default function ImageDetailPage() {
                       {i + 1}
                     </span>
                     {person ? (
-                      <span className="flex items-center gap-1.5 min-w-0">
+                      <span className="flex items-center gap-1.5 min-w-0 flex-wrap">
                         <span className="text-muted-foreground">Identified as:</span>
                         <Link
                           href={`/person/${person.id}`}
@@ -487,13 +488,29 @@ export default function ImageDetailPage() {
                         >
                           {person.firstName} {person.lastName}
                         </Link>
+                        {social && (
+                          <span className="text-xs text-muted-foreground flex items-center gap-1 ml-1 shrink-0">
+                            <span>•</span>
+                            <Link
+                              href={`/social-accounts/${social.id}`}
+                              className="text-muted-foreground hover:text-foreground hover:underline truncate max-w-[140px]"
+                              data-testid={`link-facial-social-${i}`}
+                            >
+                              @{social.username}
+                            </Link>
+                          </span>
+                        )}
                       </span>
                     ) : social ? (
                       <span className="flex items-center gap-1.5 min-w-0">
                         <span className="text-muted-foreground">Linked social account:</span>
-                        <span className="font-medium text-foreground truncate">
-                          {social.currentProfile?.nickname || `@${social.username}`}
-                        </span>
+                        <Link
+                          href={`/social-accounts/${social.id}`}
+                          className="font-medium text-foreground hover:text-primary hover:underline truncate"
+                          data-testid={`link-facial-social-${i}`}
+                        >
+                          {social.currentProfile?.nickname ? `${social.currentProfile.nickname} (@${social.username})` : `@${social.username}`}
+                        </Link>
                       </span>
                     ) : (
                       <span className="text-muted-foreground">Unknown / Unmapped</span>

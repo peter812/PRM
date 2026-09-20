@@ -1617,8 +1617,7 @@ function SocialGraphContent({
                 >
                   {selectedAccount.currentProfile?.imageUrl ? (
                     <AvatarImage
-                      src={selectedAccount.currentProfile.imageUrlHq ?? selectedAccount.currentProfile.imageUrl}
-                      fallbackSrc={selectedAccount.currentProfile.imageUrl ?? undefined}
+                      src={selectedAccount.currentProfile.imageUrl}
                       alt={selectedAccount.username}
                     />
                   ) : null}

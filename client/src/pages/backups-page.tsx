@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { formatBytes } from "@/lib/utils";
 import {
   Database,
   Download,
@@ -63,15 +64,6 @@ interface TaskStatus {
   progress: number;
   progressMessage: string | null;
   result: string | null;
-}
-
-function formatBytes(bytes: number, decimals = 1): string {
-  if (bytes === 0) return "0 Bytes";
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ["Bytes", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
 
 function formatDate(dateStr: string): string {

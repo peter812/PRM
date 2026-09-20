@@ -280,29 +280,72 @@ async function migrateStorySettingsToImporter(): Promise<void> {
 }
 
 /**
- * Image storage used to be chosen per user (users.image_storage_mode) with a
- * separate global choice for stories (stories_image_storage). Background
- * workers ran as no user and picked whichever user came first, so uploads
- * landed in backends nobody had chosen. Now one app setting decides; it is
- * seeded from the super admin's choice, and both old settings are dropped.
+ * PRM-S3 is the only image backend now. Older installs let admins pick local
+ * disk or an AWS bucket, first per user (users.image_storage_mode, plus
+ * stories_image_storage for stories) and later via one app setting; all three
+ * are dropped.
  */
-async function migrateImageStorageModeToAppSetting(): Promise<void> {
-  if (!(await columnExists("users", "image_storage_mode"))) return;
-  const { rows } = await pool.query(
-    `SELECT image_storage_mode FROM users
-     ORDER BY CASE role WHEN 'super_admin' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, id
-     LIMIT 1`,
-  );
-  const mode = rows[0]?.image_storage_mode;
-  if (mode === "prm-s3" || mode === "s3" || mode === "local") {
-    await pool.query(
-      `INSERT INTO app_settings (key, value) VALUES ('image_storage_mode', $1) ON CONFLICT (key) DO NOTHING`,
-      [mode],
-    );
+async function dropLegacyImageStorageMode(): Promise<void> {
+  if (await columnExists("users", "image_storage_mode")) {
+    await pool.query(`ALTER TABLE users DROP COLUMN image_storage_mode`);
   }
-  await pool.query(`ALTER TABLE users DROP COLUMN image_storage_mode`);
-  await pool.query(`DELETE FROM app_settings WHERE key = 'stories_image_storage'`);
-  log(`Moved image storage mode to app setting (${mode ?? "unset"})`);
+  await pool.query(`DELETE FROM app_settings WHERE key IN ('image_storage_mode', 'stories_image_storage')`);
+}
+
+/**
+ * The retired `_hq` url columns (image-sizes-plan.md Phase 3), read raw so the
+ * migrate_profile_image_tiers job and the orphan sweep work both before and after
+ * dropLegacyHqImageColumns: empty once the columns are gone.
+ */
+export async function legacyHqImageUrls(): Promise<{
+  accounts: { id: string; imageUrl: string | null; imageUrlHq: string }[];
+  history: { id: string; previousImageUrlHq: string }[];
+}> {
+  const accounts = (await columnExists("social_accounts", "image_url_hq"))
+    ? (await pool.query(`SELECT id, image_url AS "imageUrl", image_url_hq AS "imageUrlHq" FROM social_accounts WHERE image_url_hq IS NOT NULL`)).rows
+    : [];
+  const history = (await columnExists("social_account_history", "previous_image_url_hq"))
+    ? (await pool.query(`SELECT id, previous_image_url_hq AS "previousImageUrlHq" FROM social_account_history WHERE previous_image_url_hq IS NOT NULL`)).rows
+    : [];
+  return { accounts, history };
+}
+
+/**
+ * What still blocks dropping the `_hq` columns; all zero once migrate_profile_image_tiers
+ * has run. A thumb whose parent row is gone is not counted: the job leaves it alone.
+ */
+export async function legacyProfileImagesPending(): Promise<{ hqAccounts: number; hqHistory: number; thumbs: number }> {
+  const { accounts, history } = await legacyHqImageUrls();
+  const { rows } = await pool.query(`
+    SELECT count(*)::int AS n FROM photos t
+    WHERE t.is_sub_image AND t.prm_location LIKE 'profile_image:%'
+      AND EXISTS (SELECT 1 FROM photos p WHERE p.id = t.og_metadata->>'derivedFromPhotoId')
+  `);
+  return { hqAccounts: accounts.length, hqHistory: history.length, thumbs: rows[0].n };
+}
+
+/**
+ * Drops image_url_hq / previous_image_url_hq once migrate_profile_image_tiers has
+ * moved every value out of them and deleted the generated 150px thumbs. A separate,
+ * later step so a half-run migration cannot strand data.
+ */
+async function dropLegacyHqImageColumns(): Promise<void> {
+  if (
+    !(await columnExists("social_accounts", "image_url_hq")) &&
+    !(await columnExists("social_account_history", "previous_image_url_hq"))
+  ) {
+    return;
+  }
+  const { hqAccounts, hqHistory, thumbs } = await legacyProfileImagesPending();
+  if (hqAccounts || hqHistory || thumbs) {
+    log(`Profile image tier migration still pending (${hqAccounts} accounts, ${hqHistory} history rows, ${thumbs} thumbs); keeping image_url_hq / previous_image_url_hq`);
+    return;
+  }
+  await pool.query(`
+    ALTER TABLE social_accounts DROP COLUMN IF EXISTS image_url_hq;
+    ALTER TABLE social_account_history DROP COLUMN IF EXISTS previous_image_url_hq;
+  `);
+  log("Dropped image_url_hq / previous_image_url_hq: profile image tier migration complete");
 }
 
 /**
@@ -463,8 +506,8 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
   // 2c. Posts checks journal what they imported and marked deleted.
   await addColumnIfNotExists("social_account_history", "posts_added", "INTEGER NOT NULL DEFAULT 0");
   await addColumnIfNotExists("social_account_history", "posts_deleted", "INTEGER NOT NULL DEFAULT 0");
-  // 2d. Profile image tiers (profile-image-tiers-plan.md §2).
-  await addColumnIfNotExists("social_account_history", "previous_image_url_hq", "TEXT");
+  // 2d. Profile image tiers (profile-image-tiers-plan.md §2, image-sizes-plan.md Phase 3).
+  await addColumnIfNotExists("social_accounts", "is_hq_image", "BOOLEAN NOT NULL DEFAULT FALSE");
   await addColumnIfNotExists("social_account_history", "image_change", "TEXT");
 
   // 2b. Indexes the ingest path depends on.
@@ -651,7 +694,8 @@ async function validateAndSyncSchema(): Promise<void> {
         joined_at: "TIMESTAMP",
         reported_posts_count: "INTEGER",
         is_private: "BOOLEAN",
-        image_url_hq: "TEXT",
+        is_hq_image: "BOOLEAN NOT NULL DEFAULT FALSE",
+        personface_uuid: "VARCHAR",
       },
       ai_chats: {
         vector_id: "TEXT",
@@ -874,7 +918,7 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS tracking_jobs_batch_idx ON tracking_jobs (batch_id);
     `);
     await migrateStorySettingsToImporter();
-    await migrateImageStorageModeToAppSetting();
+    await dropLegacyImageStorageMode();
 
     // Tracking: due-date indexes need the columns the loop above just added, and
     // the "me" rule (accounts on either side of a me account start at medium) is
@@ -1097,6 +1141,7 @@ async function validateAndSyncSchema(): Promise<void> {
 
     // Flatten the current profile back onto social_accounts and build the history journal (v4)
     await migrateSocialAccountsToJournal();
+    await dropLegacyHqImageColumns();
 
     // Create conversations table if it doesn't exist
     const conversationsExists = await tableExists("conversations");
@@ -1187,6 +1232,8 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("conversation_participants table created successfully");
     }
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS social_accounts_personface_uuid_idx ON social_accounts (personface_uuid)`);
 
     // Ensure faces table exists
     const facesExists = await tableExists("faces");

@@ -22,6 +22,7 @@ import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { BubblesBackground } from "@/components/bubbles-background";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
+import { PrmS3StatusGuard } from "@/components/prm-s3-status";
 import { Button } from "@/components/ui/button";
 import { Settings, LogOut, Home, Loader2 } from "lucide-react";
 import { SettingsSidebar } from "@/pages/settings-layout";
@@ -305,6 +306,7 @@ function AppLayout() {
       <div className="flex h-screen w-full">
         {isSettingsPage ? <SettingsSidebar /> : <AppSidebar />}
         <div className="flex flex-col flex-1 overflow-hidden">
+          <PrmS3StatusGuard enabled={!!user} />
           <header className="flex items-center gap-3 px-3 py-2 border-b">
             <div className="flex items-center gap-2 min-w-0 shrink-0">
               <SidebarTrigger data-testid="button-sidebar-toggle" />

@@ -26,12 +26,10 @@ function getTaskLabel(type: string): string {
       return "Mass Follower Count Refresh";
     case "get_img":
       return "Image Download";
-    case "transfer_images_to_local":
-      return "Transfer Images to Local";
-    case "transfer_images_to_s3":
-      return "Transfer Images to S3";
-    case "backfill_profile_image_tiers":
-      return "Backfill Profile Image Tiers";
+    case "migrate_profile_image_tiers":
+      return "Migrate Profile Image Tiers";
+    case "bake_image_variants":
+      return "Bake Image Variants";
     case "import_social":
       return "Social Extraction Import";
     case "import_instagram":
@@ -109,18 +107,19 @@ function TaskResultDisplay({ task }: { task: Task }) {
         </span>
       );
     }
-    if (task.type === "transfer_images_to_local" || task.type === "transfer_images_to_s3") {
+    if (task.type === "migrate_profile_image_tiers") {
       return (
         <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
-          Transferred: {result.transferred}, Failed: {result.failed}, Total: {result.total}
+          Thumbs mapped: {result.thumbMappingsCount}, Accounts: {result.accountsUpdated}, People: {result.peopleUpdated}, Groups: {result.groupsUpdated}, Versions: {result.spvUpdated}, History: {result.historyUpdated}, Deleted thumbs: {result.deletedThumbs}, Unmapped: {result.unmappedThumbs}, Remaining: {result.remainingUnmigrated}
           {result.cancelled && " (cancelled)"}
         </span>
       );
     }
-    if (task.type === "backfill_profile_image_tiers") {
+    if (task.type === "bake_image_variants") {
       return (
         <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
-          Moved: {result.moved}, Already 150px: {result.already_lq}, Missing: {result.missing}, Skipped: {result.skipped}, Failed: {result.failed}, Total: {result.total}
+          Baked: {result.baked}, Skipped: {result.skipped}, Failed: {result.failed}, Total: {result.total}
+          {result.cancelled && " (cancelled)"}
         </span>
       );
     }

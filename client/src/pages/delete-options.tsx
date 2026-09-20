@@ -25,6 +25,7 @@ export default function DeleteOptionsPage() {
 
   const [isDeleteSocialsDialogOpen, setIsDeleteSocialsDialogOpen] = useState(false);
   const [confirmDeleteSocials, setConfirmDeleteSocials] = useState(false);
+  const [deleteSocialMedia, setDeleteSocialMedia] = useState(true);
 
   const [isDeleteFamilyDialogOpen, setIsDeleteFamilyDialogOpen] = useState(false);
   const [confirmDeleteFamily, setConfirmDeleteFamily] = useState(false);
@@ -89,9 +90,12 @@ export default function DeleteOptionsPage() {
   });
 
   const deleteAllSocialAccountsMutation = useMutation({
-    mutationFn: async () => {
-      const response = await fetch("/api/social-accounts/delete-all", {
+    mutationFn: async ({ deleteMedia }: { deleteMedia: boolean }) => {
+      const qs = deleteMedia ? "?deleteMedia=true" : "";
+      const response = await fetch(`/api/social-accounts/delete-all${qs}`, {
         method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deleteMedia }),
       });
 
       if (!response.ok) {
@@ -102,15 +106,23 @@ export default function DeleteOptionsPage() {
       return response.json();
     },
     onSuccess: (data) => {
+      let description = `Successfully deleted ${data.deleted} social account(s).`;
+      if (data.deletedPosts) {
+        description += ` ${data.deletedPosts} post(s) removed.`;
+      }
+      if (data.deletedFiles) {
+        description += ` ${data.deletedFiles} media file(s) and ${data.deletedPhotos ?? 0} photo record(s) deleted from storage.`;
+      }
       toast({
         title: "Social Accounts Deleted",
-        description: `Successfully deleted ${data.deleted} social accounts.`,
+        description,
       });
 
       setIsDeleteSocialsDialogOpen(false);
       setConfirmDeleteSocials(false);
 
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
     },
     onError: (error: Error) => {
       toast({
@@ -129,7 +141,7 @@ export default function DeleteOptionsPage() {
 
   const handleDeleteAllSocialAccounts = () => {
     if (confirmDeleteSocials) {
-      deleteAllSocialAccountsMutation.mutate();
+      deleteAllSocialAccountsMutation.mutate({ deleteMedia: deleteSocialMedia });
     }
   };
 
@@ -617,7 +629,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Reset Images &amp; Faces (PRM-Compute)</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Deletes all recognition images and detected faces from PRM-Compute and S3, and clears face links. Profile pictures and avatars are preserved.
+                  Deletes all recognition images and detected faces from PRM-Compute and PRM-S3, and clears face links. Profile pictures and avatars are preserved.
                 </p>
               </div>
               <Button
@@ -716,6 +728,23 @@ export default function DeleteOptionsPage() {
                 <li>Follower and following relationships will be lost</li>
                 <li>Links to people will be removed</li>
               </ul>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4 bg-muted/40">
+              <div className="space-y-0.5 pr-4">
+                <Label htmlFor="delete-social-media" className="text-sm font-medium cursor-pointer">
+                  Delete associated media from storage
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Permanently deletes profile images (current & past), posts, carousels, videos, and stories from PRM-S3 storage and the photos database.
+                </p>
+              </div>
+              <Switch
+                id="delete-social-media"
+                checked={deleteSocialMedia}
+                onCheckedChange={setDeleteSocialMedia}
+                data-testid="switch-delete-social-media"
+              />
             </div>
 
             <div className="flex items-center justify-between rounded-md border p-4">
@@ -826,7 +855,7 @@ export default function DeleteOptionsPage() {
               Confirm Images &amp; Faces Reset
             </DialogTitle>
             <DialogDescription>
-              This will permanently delete all recognition images and detected faces from PRM-Compute and S3 storage.
+              This will permanently delete all recognition images and detected faces from PRM-Compute and PRM-S3 storage.
             </DialogDescription>
           </DialogHeader>
 
@@ -834,7 +863,7 @@ export default function DeleteOptionsPage() {
             <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
               <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
               <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-                <li>Every detected face and its cropped image are deleted from PRM-Compute and S3 storage</li>
+                <li>Every detected face and its cropped image are deleted from PRM-Compute and PRM-S3 storage</li>
                 <li>All recognition-pipeline images (post, interaction, and note photos) are removed from S3 and the database</li>
                 <li>Face links are stripped from all people and social account posts</li>
                 <li>Profile pictures and social avatars are preserved</li>

@@ -71,16 +71,16 @@ export async function recordProfileImageChange(
         followers: socialAccounts.followersCount,
         following: socialAccounts.followingCount,
         imageUrl: socialAccounts.imageUrl,
-        imageUrlHq: socialAccounts.imageUrlHq,
+        isHqImage: socialAccounts.isHqImage,
       })
       .from(socialAccounts)
       .where(eq(socialAccounts.id, socialAccountId));
     if (!account) return;
-    if (account.imageUrl === image.imageUrl && account.imageUrlHq === image.imageUrlHq) return;
+    if (account.imageUrl === image.imageUrl && account.isHqImage === image.isHqImage) return;
 
     await tx
       .update(socialAccounts)
-      .set({ imageUrl: image.imageUrl, imageUrlHq: image.imageUrlHq })
+      .set({ imageUrl: image.imageUrl, isHqImage: image.isHqImage })
       .where(eq(socialAccounts.id, socialAccountId));
 
     await tx.insert(socialAccountHistory).values({
@@ -93,7 +93,6 @@ export async function recordProfileImageChange(
       followingAfter: account.following,
       profileFieldsChanged: ["image"],
       previousImageUrl: account.imageUrl,
-      previousImageUrlHq: account.imageUrlHq,
       imageChange: image.imageChange,
     });
   });
@@ -304,7 +303,12 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
       if (column) previousValues[column] = (prev ?? null) as string | null;
     }
     if (p.image) {
-      previousValues.previousImageUrlHq = before.imageUrlHq;
+      // "improved" keeps the url (the 1080 replaced the 150 under the same key),
+      // so the diff above misses it; journal it as a change from the same url.
+      if (p.image.imageChange === "improved" && !profileFieldsChanged.includes("image")) {
+        profileFieldsChanged.push("image");
+        previousValues.previousImageUrl = before.imageUrl;
+      }
       previousValues.imageChange = p.image.imageChange;
     }
 
@@ -319,7 +323,7 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
         ...(p.bio !== undefined ? { bio: p.bio } : {}),
         ...(p.location !== undefined ? { location: p.location } : {}),
         ...(p.accountUrl !== undefined ? { accountUrl: p.accountUrl } : {}),
-        ...(p.image ? { imageUrl: p.image.imageUrl, imageUrlHq: p.image.imageUrlHq } : {}),
+        ...(p.image ? { imageUrl: p.image.imageUrl, isHqImage: p.image.isHqImage } : {}),
         ...(p.externalImageUrl !== undefined ? { externalImageUrl: p.externalImageUrl } : {}),
         ...(p.joinedAt !== undefined ? { joinedAt: p.joinedAt } : {}),
         ...(p.reportedFollowersCount !== undefined
@@ -467,7 +471,6 @@ export async function recordAccountProfileChanges(
     nickname?: string | null;
     bio?: string | null;
     imageUrl?: string | null;
-    imageUrlHq?: string | null;
     location?: string | null;
     followersCount?: number | null;
     followingCount?: number | null;
@@ -489,10 +492,13 @@ export async function recordAccountProfileChanges(
     profileFieldsChanged.push("bio");
     previousValues.previousBio = existing.bio ?? null;
   }
-  if (changes.image !== undefined && (changes.image?.imageUrl ?? null) !== (existing.imageUrl ?? null)) {
+  // "improved" keeps the url (same key, better bytes), so it is a change even though the urls match.
+  if (
+    changes.image !== undefined &&
+    ((changes.image?.imageUrl ?? null) !== (existing.imageUrl ?? null) || changes.image?.imageChange === "improved")
+  ) {
     profileFieldsChanged.push("image");
     previousValues.previousImageUrl = existing.imageUrl ?? null;
-    previousValues.previousImageUrlHq = existing.imageUrlHq ?? null;
     previousValues.imageChange = changes.image?.imageChange ?? null;
   }
   if (changes.location !== undefined && (changes.location ?? null) !== (existing.location ?? null)) {

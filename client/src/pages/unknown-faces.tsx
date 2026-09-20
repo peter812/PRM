@@ -39,6 +39,7 @@ type SocialAccount = {
   id: string;
   username: string;
   ownerUuid?: string | null;
+  personfaceUuid?: string | null;
   currentProfile?: {
     imageUrl?: string | null;
   } | null;
@@ -73,6 +74,11 @@ export default function UnknownFacesPage() {
   // 2. Fetch all CRM people (to check for current connections)
   const { data: people = [], isLoading: isLoadingPeople } = useQuery<Person[]>({
     queryKey: ["/api/people"],
+  });
+
+  // 2b. Fetch all social accounts (to check for current connections)
+  const { data: allSocialAccounts = [] } = useQuery<SocialAccount[]>({
+    queryKey: ["/api/social-accounts"],
   });
 
   // 3. Search people endpoint (autocomplete query when searchQuery.length >= 3)
@@ -112,6 +118,7 @@ export default function UnknownFacesPage() {
       });
       queryClient.invalidateQueries({ queryKey: ["/api/prm-face/face/without-name"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
       setSelectedGroup(null);
       setShowSearch(false);
       setSearchQuery("");
@@ -266,10 +273,12 @@ export default function UnknownFacesPage() {
     );
   }
 
-  // Check if a group is connected to a person
-  const getConnectedEntity = (personfaceUuid: string | null) => {
-    if (!personfaceUuid) return null;
-    return people.find((p) => p.personfaceUuid === personfaceUuid);
+  // Check if a group is connected to a person and/or social account
+  const getConnectedEntities = (personfaceUuid: string | null) => {
+    if (!personfaceUuid) return { person: null, social: null };
+    const person = people.find((p) => p.personfaceUuid === personfaceUuid) || null;
+    const social = allSocialAccounts.find((sa) => sa.personfaceUuid === personfaceUuid) || null;
+    return { person, social };
   };
 
   return (
@@ -302,6 +311,7 @@ export default function UnknownFacesPage() {
             {groups.map((group) => {
               const latestFace = group.faces[0];
               const displayUrl = latestFace.s3_url || "";
+              const { person, social } = getConnectedEntities(group.personfaceUuid);
               
               return (
                 <Card 
@@ -335,15 +345,32 @@ export default function UnknownFacesPage() {
                     </div>
 
                     {/* Bottom controls */}
-                    <div className="flex items-center justify-between mt-3 px-0.5">
-                      <Button
-                        size="sm"
-                        className="h-7 text-xs font-semibold rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow"
-                        onClick={() => setSelectedGroup(group)}
-                      >
-                        Connect
-                      </Button>
-                      <span className="text-[10px] text-muted-foreground font-medium truncate max-w-[100px]">
+                    <div className="flex items-center justify-between mt-3 px-0.5 gap-1">
+                      {person ? (
+                        <div className="flex items-center gap-1 min-w-0" title={`${person.firstName} ${person.lastName}${social ? ` (@${social.username})` : ""}`}>
+                          <span className="text-[11px] font-semibold text-primary truncate max-w-[90px]">
+                            {person.firstName} {person.lastName}
+                          </span>
+                          {social && (
+                            <span className="text-[10px] text-zinc-400 font-mono truncate max-w-[60px]">
+                              @{social.username}
+                            </span>
+                          )}
+                        </div>
+                      ) : social ? (
+                        <span className="text-[11px] font-semibold text-sky-400 truncate max-w-[120px]" title={`@${social.username}`}>
+                          @{social.username}
+                        </span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="h-7 text-xs font-semibold rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow"
+                          onClick={() => setSelectedGroup(group)}
+                        >
+                          Connect
+                        </Button>
+                      )}
+                      <span className="text-[10px] text-muted-foreground font-medium truncate shrink-0">
                         {formatTimestamp(group.latestTimestamp)}
                       </span>
                     </div>
@@ -427,30 +454,215 @@ export default function UnknownFacesPage() {
           {/* Right section: Data Panel (takes 2/5 cols on desktop) */}
           <div className="md:col-span-2 p-6 flex flex-col justify-between bg-zinc-900/40 border-t md:border-t-0 md:border-l border-zinc-800 overflow-y-auto">
             {selectedGroup && (() => {
-              const connectedEntity = getConnectedEntity(selectedGroup.personfaceUuid);
-              
-              if (connectedEntity) {
-                // Connected state display
-                const initials = `${connectedEntity.firstName[0] || ""}${connectedEntity.lastName[0] || ""}`;
-                return (
-                  <div className="space-y-6 flex-1 flex flex-col justify-between">
-                    <div className="space-y-4">
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Connected Identity</h3>
-                      <div className="flex items-center gap-3 bg-zinc-900/60 p-3 rounded-xl border border-zinc-800">
-                        <Avatar className="h-10 w-10 border border-zinc-700">
-                          {connectedEntity.imageUrl && <AvatarImage src={connectedEntity.imageUrl} />}
-                          <AvatarFallback className="bg-zinc-800 text-sm font-semibold text-zinc-200">{initials}</AvatarFallback>
-                        </Avatar>
-                        <div className="overflow-hidden">
-                          <p className="text-sm font-bold text-zinc-100 truncate">
-                            {connectedEntity.firstName} {connectedEntity.lastName}
+              const { person: connectedPerson, social: connectedSocial } = getConnectedEntities(selectedGroup.personfaceUuid);
+              const hasAnyConnection = !!connectedPerson || !!connectedSocial;
+
+              return (
+                <div className="space-y-6 flex-1 flex flex-col justify-between">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500">
+                        {connectedPerson ? "Connected Identity" : connectedSocial ? "Linked Social Account" : "Identity Connection"}
+                      </h3>
+                      {connectedPerson ? (
+                        <span className="text-[9px] bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded-full font-semibold">
+                          CRM Person (Precedent)
+                        </span>
+                      ) : connectedSocial ? (
+                        <span className="text-[9px] bg-sky-500/10 text-sky-400 border border-sky-500/20 px-2 py-0.5 rounded-full font-semibold">
+                          Social Linked
+                        </span>
+                      ) : (
+                        <span className="text-[9px] bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 px-2 py-0.5 rounded-full font-semibold">
+                          Unassigned
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Connected CRM Person Card (Precedent) */}
+                    {connectedPerson && (() => {
+                      const initials = `${connectedPerson.firstName[0] || ""}${connectedPerson.lastName[0] || ""}`;
+                      return (
+                        <div className="space-y-1.5">
+                          <p className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">Primary Identity</p>
+                          <div className="flex items-center gap-3 bg-zinc-900/60 p-3 rounded-xl border border-zinc-800">
+                            <Avatar className="h-10 w-10 border border-zinc-700">
+                              {connectedPerson.imageUrl && <AvatarImage src={connectedPerson.imageUrl} />}
+                              <AvatarFallback className="bg-zinc-800 text-sm font-semibold text-zinc-200">{initials}</AvatarFallback>
+                            </Avatar>
+                            <div className="overflow-hidden">
+                              <p className="text-sm font-bold text-zinc-100 truncate">
+                                {connectedPerson.firstName} {connectedPerson.lastName}
+                              </p>
+                              <p className="text-[10px] text-zinc-500 font-medium">CRM Contact</p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Connected Social Account Card */}
+                    {connectedSocial && (() => {
+                      const initials = connectedSocial.username.substring(0, 2).toUpperCase();
+                      const avatarImg = connectedSocial.imageUrl || connectedSocial.currentProfile?.imageUrl;
+                      return (
+                        <div className="space-y-1.5">
+                          <p className="text-[10px] text-zinc-400 font-semibold uppercase tracking-wider">
+                            {connectedPerson ? "Linked Social Profile" : "Active Social Identity"}
                           </p>
-                          <p className="text-[10px] text-zinc-500 font-medium">CRM Contact</p>
+                          <div className="flex items-center gap-3 bg-zinc-900/60 p-3 rounded-xl border border-zinc-800">
+                            <Avatar className="h-9 w-9 border border-zinc-700">
+                              {avatarImg && <AvatarImage src={avatarImg} />}
+                              <AvatarFallback className="bg-zinc-800 text-xs font-semibold text-zinc-200">{initials}</AvatarFallback>
+                            </Avatar>
+                            <div className="overflow-hidden">
+                              <p className="text-sm font-bold text-zinc-100 truncate">
+                                @{connectedSocial.username}
+                              </p>
+                              <p className="text-[10px] text-zinc-500 font-medium flex items-center gap-1">
+                                <AtSign className="h-2.5 w-2.5" /> Social Account
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* If connected to Social but not yet to Person, offer prominent Person linking */}
+                    {!connectedPerson && connectedSocial && !showSearch && (
+                      <div className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-2.5">
+                        <p className="text-xs font-medium text-zinc-300">
+                          Link a CRM contact to this face group. The person will take precedence for naming while keeping @{connectedSocial.username} linked.
+                        </p>
+                        <Button
+                          size="sm"
+                          className="w-full text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 flex items-center justify-center gap-2 py-2"
+                          onClick={() => setShowSearch(true)}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Connect CRM Contact
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* If completely unassigned and not searching */}
+                    {!hasAnyConnection && !showSearch && (
+                      <Button
+                        className="w-full text-xs font-semibold rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 flex items-center justify-center gap-2 py-5"
+                        onClick={() => setShowSearch(true)}
+                      >
+                        <ArrowRight className="h-4 w-4" />
+                        Connect Account
+                      </Button>
+                    )}
+
+                    {/* If search is open */}
+                    {showSearch && (
+                      <div className="space-y-3 pt-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-zinc-300">
+                            {connectedSocial ? "Select CRM Person to link:" : "Search Person or Social Account:"}
+                          </span>
+                          <button
+                            type="button"
+                            className="text-[11px] text-zinc-500 hover:text-zinc-300"
+                            onClick={() => { setShowSearch(false); setSearchQuery(""); }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
+                          <Input
+                            placeholder="Search people or social media..."
+                            className="pl-9 text-xs rounded-xl bg-zinc-950 border-zinc-800 text-white placeholder-zinc-500 h-9"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            autoFocus
+                          />
+                        </div>
+
+                        {/* Autocomplete Selection List */}
+                        <div className="border border-zinc-800 rounded-xl overflow-hidden bg-zinc-950 max-h-[25vh] overflow-y-auto">
+                          {searchQuery.length < 3 ? (
+                            <div className="p-4 text-center text-xs text-zinc-500 font-medium">
+                              Type 3+ characters to search contacts...
+                            </div>
+                          ) : (
+                            <>
+                              {(isSearchingPeople || isSearchingSocial) && (
+                                <div className="p-3 text-center text-xs text-zinc-500 flex items-center justify-center gap-2">
+                                  <Loader2 className="h-3 w-3 animate-spin" /> Searching...
+                                </div>
+                              )}
+
+                              {!isSearchingPeople && !isSearchingSocial && searchPeopleResults.length === 0 && searchSocialResults.length === 0 && (
+                                <div className="p-4 text-center text-xs text-zinc-500 font-medium">
+                                  No accounts or contacts found.
+                                </div>
+                              )}
+
+                              {/* People Results */}
+                              {searchPeopleResults.map((p) => {
+                                const nameParts = (p.name || "").trim().split(/\s+/);
+                                const initials = nameParts.map(part => part[0] || "").join("").substring(0, 2).toUpperCase();
+                                return (
+                                  <button
+                                    key={p.uuid}
+                                    className="w-full p-2.5 hover:bg-zinc-900 border-b border-zinc-900 text-left flex items-center gap-3 transition-colors group"
+                                    onClick={() => handleConnect({ personId: p.uuid })}
+                                    disabled={connectMutation.isPending}
+                                  >
+                                    <Avatar className="h-7 w-7 border border-zinc-800">
+                                      <AvatarFallback className="bg-zinc-800 text-[10px] font-bold text-zinc-300">{initials}</AvatarFallback>
+                                    </Avatar>
+                                    <div className="overflow-hidden flex-1">
+                                      <p className="text-xs font-bold text-zinc-200 group-hover:text-white truncate">
+                                        {p.name}
+                                      </p>
+                                      <p className="text-[9px] text-zinc-500 font-medium">CRM Contact</p>
+                                    </div>
+                                    <Plus className="h-3.5 w-3.5 text-zinc-600 group-hover:text-zinc-300" />
+                                  </button>
+                                );
+                              })}
+
+                              {/* Social Account Results */}
+                              {searchSocialResults.map((sa) => {
+                                const initials = sa.username.substring(0, 2).toUpperCase();
+                                const avatarImg = sa.imageUrl || sa.currentProfile?.imageUrl;
+                                return (
+                                  <button
+                                    key={sa.id}
+                                    className="w-full p-2.5 hover:bg-zinc-900 border-b border-zinc-900 text-left flex items-center gap-3 transition-colors group"
+                                    onClick={() => handleConnect({ socialAccountId: sa.id })}
+                                    disabled={connectMutation.isPending}
+                                  >
+                                    <Avatar className="h-7 w-7 border border-zinc-800">
+                                      {avatarImg && <AvatarImage src={avatarImg} />}
+                                      <AvatarFallback className="bg-zinc-800 text-[10px] font-bold text-zinc-300">{initials}</AvatarFallback>
+                                    </Avatar>
+                                    <div className="overflow-hidden flex-1">
+                                      <p className="text-xs font-bold text-zinc-200 group-hover:text-white truncate">
+                                        @{sa.username}
+                                      </p>
+                                      <p className="text-[9px] text-zinc-500 font-medium flex items-center gap-1">
+                                        <AtSign className="h-2 w-2" /> Social Account
+                                      </p>
+                                    </div>
+                                    <Plus className="h-3.5 w-3.5 text-zinc-600 group-hover:text-zinc-300" />
+                                  </button>
+                                );
+                              })}
+                            </>
+                          )}
                         </div>
                       </div>
-                    </div>
-                    
-                    {/* Raw personface_uuid */}
+                    )}
+                  </div>
+
+                  {/* Raw group UUID */}
+                  {selectedGroup.personfaceUuid && (
                     <div className="space-y-2 mt-auto pt-6">
                       <Label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Group UUID</Label>
                       <div className="flex items-center gap-2 bg-zinc-950 p-2 rounded-lg border border-zinc-800 text-[10px] font-mono text-zinc-400">
@@ -465,140 +677,9 @@ export default function UnknownFacesPage() {
                         </Button>
                       </div>
                     </div>
-                  </div>
-                );
-              } else {
-                // Not-connected state display
-                return (
-                  <div className="space-y-6 flex-1 flex flex-col justify-between">
-                    <div className="space-y-4">
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500 flex items-center justify-between">
-                        <span>Identity Connection</span>
-                        <span className="text-[9px] bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 px-2 py-0.5 rounded-full font-semibold">
-                          Unassigned
-                        </span>
-                      </h3>
-
-                      {!showSearch ? (
-                        <Button
-                          className="w-full text-xs font-semibold rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 flex items-center justify-center gap-2 py-5"
-                          onClick={() => setShowSearch(true)}
-                        >
-                          <ArrowRight className="h-4 w-4" />
-                          Connect Account
-                        </Button>
-                      ) : (
-                        <div className="space-y-3">
-                          <div className="relative">
-                            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-zinc-500" />
-                            <Input
-                              placeholder="Search people or social media..."
-                              className="pl-9 text-xs rounded-xl bg-zinc-950 border-zinc-800 text-white placeholder-zinc-500 h-9"
-                              value={searchQuery}
-                              onChange={(e) => setSearchQuery(e.target.value)}
-                              autoFocus
-                            />
-                          </div>
-
-                          {/* Autocomplete Selection List */}
-                          <div className="border border-zinc-800 rounded-xl overflow-hidden bg-zinc-950 max-h-[30vh] overflow-y-auto">
-                            {searchQuery.length < 3 ? (
-                              <div className="p-4 text-center text-xs text-zinc-500 font-medium">
-                                Type 3+ characters to search contacts...
-                              </div>
-                            ) : (
-                              <>
-                                {(isSearchingPeople || isSearchingSocial) && (
-                                  <div className="p-3 text-center text-xs text-zinc-500 flex items-center justify-center gap-2">
-                                    <Loader2 className="h-3 w-3 animate-spin" /> Searching...
-                                  </div>
-                                )}
-
-                                {!isSearchingPeople && !isSearchingSocial && searchPeopleResults.length === 0 && searchSocialResults.length === 0 && (
-                                  <div className="p-4 text-center text-xs text-zinc-500 font-medium">
-                                    No accounts or contacts found.
-                                  </div>
-                                )}
-
-                                {/* People Results */}
-                                {searchPeopleResults.map((p) => {
-                                  const nameParts = (p.name || "").trim().split(/\s+/);
-                                  const initials = nameParts.map(part => part[0] || "").join("").substring(0, 2).toUpperCase();
-                                  return (
-                                    <button
-                                      key={p.uuid}
-                                      className="w-full p-2.5 hover:bg-zinc-900 border-b border-zinc-900 text-left flex items-center gap-3 transition-colors group"
-                                      onClick={() => handleConnect({ personId: p.uuid })}
-                                      disabled={connectMutation.isPending}
-                                    >
-                                      <Avatar className="h-7 w-7 border border-zinc-800">
-                                        <AvatarFallback className="bg-zinc-800 text-[10px] font-bold text-zinc-300">{initials}</AvatarFallback>
-                                      </Avatar>
-                                      <div className="overflow-hidden flex-1">
-                                        <p className="text-xs font-bold text-zinc-200 group-hover:text-white truncate">
-                                          {p.name}
-                                        </p>
-                                        <p className="text-[9px] text-zinc-500 font-medium">CRM Contact</p>
-                                      </div>
-                                      <Plus className="h-3.5 w-3.5 text-zinc-600 group-hover:text-zinc-300" />
-                                    </button>
-                                  );
-                                })}
-
-                                {/* Social Account Results */}
-                                {searchSocialResults.map((sa) => {
-                                  const initials = sa.username.substring(0, 2).toUpperCase();
-                                  const avatarImg = sa.imageUrl || sa.currentProfile?.imageUrl;
-                                  return (
-                                    <button
-                                      key={sa.id}
-                                      className="w-full p-2.5 hover:bg-zinc-900 border-b border-zinc-900 text-left flex items-center gap-3 transition-colors group"
-                                      onClick={() => handleConnect({ socialAccountId: sa.id })}
-                                      disabled={connectMutation.isPending}
-                                    >
-                                      <Avatar className="h-7 w-7 border border-zinc-800">
-                                        {avatarImg && <AvatarImage src={avatarImg} />}
-                                        <AvatarFallback className="bg-zinc-800 text-[10px] font-bold text-zinc-300">{initials}</AvatarFallback>
-                                      </Avatar>
-                                      <div className="overflow-hidden flex-1">
-                                        <p className="text-xs font-bold text-zinc-200 group-hover:text-white truncate">
-                                          @{sa.username}
-                                        </p>
-                                        <p className="text-[9px] text-zinc-500 font-medium flex items-center gap-1">
-                                          <AtSign className="h-2 w-2" /> Social Account
-                                        </p>
-                                      </div>
-                                      <Plus className="h-3.5 w-3.5 text-zinc-600 group-hover:text-zinc-300" />
-                                    </button>
-                                  );
-                                })}
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    
-                    {/* Raw group UUID */}
-                    {selectedGroup.personfaceUuid && (
-                      <div className="space-y-2 mt-auto pt-6">
-                        <Label className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">Group UUID</Label>
-                        <div className="flex items-center gap-2 bg-zinc-950 p-2 rounded-lg border border-zinc-800 text-[10px] font-mono text-zinc-400">
-                          <span className="truncate flex-1">{selectedGroup.personfaceUuid}</span>
-                          <Button 
-                            size="icon" 
-                            variant="ghost" 
-                            className="h-5 w-5 hover:bg-zinc-800 text-zinc-400"
-                            onClick={() => handleCopyId(selectedGroup.personfaceUuid || "")}
-                          >
-                            <Copy className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              }
+                  )}
+                </div>
+              );
             })()}
           </div>
         </DialogContent>

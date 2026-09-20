@@ -16,9 +16,10 @@ import {
   CalendarDays,
   Trophy,
 } from "lucide-react";
-import { Redirect } from "wouter";
+import { Redirect, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Separator } from "@/components/ui/separator";
+import { getSafeReturnTo, clearStoredReturnTo } from "@/lib/auth-redirect";
 
 const FEATURES = [
   {
@@ -65,6 +66,9 @@ const FEATURES = [
 
 export default function AuthPage() {
   const { user, loginMutation } = useAuth();
+  const search = useSearch();
+  const searchParams = new URLSearchParams(search);
+  const returnToParam = searchParams.get("returnTo");
 
   const { data: setupStatus } = useQuery<{ isSetupNeeded: boolean }>({
     queryKey: ["/api/setup/status"],
@@ -89,7 +93,9 @@ export default function AuthPage() {
   }
 
   if (user) {
-    return <Redirect to="/" />;
+    const destination = getSafeReturnTo(returnToParam) || "/";
+    clearStoredReturnTo();
+    return <Redirect to={destination} replace />;
   }
 
   const handleLogin = (data: InsertUser) => {
@@ -97,7 +103,12 @@ export default function AuthPage() {
   };
 
   const handleSsoLogin = () => {
-    window.location.href = "/api/sso/login";
+    const destination = getSafeReturnTo(returnToParam);
+    if (destination) {
+      window.location.href = `/api/sso/login?returnTo=${encodeURIComponent(destination)}`;
+    } else {
+      window.location.href = "/api/sso/login";
+    }
   };
 
   const isSsoEnabled = ssoStatus?.enabled === 1;
