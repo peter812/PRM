@@ -60,6 +60,10 @@ function getTaskLabel(type: string): string {
       return "Analyze Image (Full)";
     case "analyze_img_face":
       return "Analyze Image (Face)";
+    case "analyze_img_ocr":
+      return "Analyze Image (OCR)";
+    case "transcribe_video":
+      return "Transcribe Video";
     case "analyze_img_metadata":
       return "Analyze Image (Metadata)";
     case "analyze_img_llm":

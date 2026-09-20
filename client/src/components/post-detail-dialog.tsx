@@ -86,6 +86,7 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
   };
 
   const mentionsForCurrentImage = getMentionsForImage(post.mentionedAccounts, currentImageIndex);
+  const transcript = (post.videoTranscript as { text?: string } | null)?.text;
   const posters = postPosters(post);
 
   const renderDescriptionWithLinks = (text: string) => {
@@ -239,6 +240,16 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                   <div>
                     <p className="text-sm whitespace-pre-wrap leading-relaxed break-words" data-testid="text-post-description">
                       {renderDescriptionWithLinks(post.description)}
+                    </p>
+                  </div>
+                )}
+
+                {/* Whisper transcript of the post's video (auto recognition) */}
+                {transcript && (
+                  <div className="rounded-md bg-muted/50 p-2.5 space-y-1.5">
+                    <p className="text-xs text-muted-foreground font-medium">Video transcript</p>
+                    <p className="text-sm whitespace-pre-wrap leading-relaxed break-words" data-testid="text-post-transcript">
+                      {transcript}
                     </p>
                   </div>
                 )}

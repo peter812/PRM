@@ -14,6 +14,7 @@ import {
   Monitor,
   Scan,
   ScanText,
+  Mic,
   TrendingUp,
   Sparkles,
   MessagesSquare,
@@ -175,6 +176,11 @@ const menuItems = [
         title: "OCR",
         url: "/ocr-demo",
         icon: ScanText,
+      },
+      {
+        title: "Whisper",
+        url: "/demos/whisper",
+        icon: Mic,
       },
       {
         title: "Account Creation Timeline",

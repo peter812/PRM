@@ -34,7 +34,12 @@ import multer from "multer";
 import { deleteImageFromS3 } from "../s3";
 import { deleteImageFromPrmS3, isPrmS3ImageUrl, fetchImageBuffer } from "../prm-s3";
 import { deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { uploadImage } from "../image-storage";
+import { uploadImage, syncFaceCropStorage } from "../image-storage";
+import {
+  runFaceRecognition, runOcr, runOcrOnBuffer, transcribeBuffer, ComputeUnreachableError, getComputeConnection,
+  getAutoRecognitionSettings, setAutoRecognitionSettings, backfillCounts, runBackfill,
+  type AutoRecognitionKind, type AutoRecognitionJob,
+} from "../recognition";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -196,6 +201,7 @@ export function registerRoutes(app: Express) {
         const data = await response.json() as { api_key: string; key_id: string; message?: string };
         await setPrmFaceSetting("prm_compute_api_key", data.api_key);
         await setPrmFaceSetting("prm_compute_key_id", data.key_id);
+        await syncFaceCropStorage();
   
         res.json({ success: true, message: "API key generated and stored successfully." });
       } catch (error: any) {
@@ -262,10 +268,10 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    // OCR model presets: list/download the PP-OCRv5 mobile ("little") and
-    // server ("big") models and pick which one /api/ocr uses. Thin proxies to
-    // PRM-Compute's /api/ocr/models and /api/ocr/config.
-    const proxyOcr = async (
+    // OCR / Whisper model presets: list/download the "little" and "big"
+    // models and pick which one /api/ocr and /api/whisper use. Thin proxies to
+    // PRM-Compute's /api/{ocr,whisper}/models and /api/{ocr,whisper}/config.
+    const proxyCompute = async (
       req: any,
       res: any,
       path: string,
@@ -293,15 +299,65 @@ export function registerRoutes(app: Express) {
       }
     };
 
-    app.get("/api/prm-face/ocr/models", (req, res) => proxyOcr(req, res, "/api/ocr/models"));
-    app.post("/api/prm-face/ocr/models/:model/download", (req, res) =>
-      proxyOcr(req, res, `/api/ocr/models/${encodeURIComponent(req.params.model)}/download`, { method: "POST" }),
-    );
-    app.get("/api/prm-face/ocr/config", (req, res) => proxyOcr(req, res, "/api/ocr/config"));
-    app.post("/api/prm-face/ocr/config", (req, res) => {
-      const { model } = req.body ?? {};
-      if (typeof model !== "string" || !model) return res.status(400).json({ error: "model is required." });
-      return proxyOcr(req, res, "/api/ocr/config", { method: "POST", body: { model } });
+    for (const engine of ["ocr", "whisper"] as const) {
+      app.get(`/api/prm-face/${engine}/models`, (req, res) => proxyCompute(req, res, `/api/${engine}/models`));
+      app.post(`/api/prm-face/${engine}/models/:model/download`, (req, res) =>
+        proxyCompute(req, res, `/api/${engine}/models/${encodeURIComponent(req.params.model)}/download`, { method: "POST" }),
+      );
+      app.get(`/api/prm-face/${engine}/config`, (req, res) => proxyCompute(req, res, `/api/${engine}/config`));
+      app.post(`/api/prm-face/${engine}/config`, (req, res) => {
+        const { model } = req.body ?? {};
+        if (typeof model !== "string" || !model) return res.status(400).json({ error: "model is required." });
+        return proxyCompute(req, res, `/api/${engine}/config`, { method: "POST", body: { model } });
+      });
+    }
+
+    // Idle model unload: PRM owns the setting (app_settings, so PRM-Compute can
+    // read it from the shared DB at startup); after a change PRM pings
+    // POST /api/face/idle-unload/reload so the running server picks it up
+    // without a restart. Both routes answer from the saved setting even when
+    // compute is offline; `loaded` is the live list of presets in memory.
+    const idleUnloadSetting = async () => ({
+      enabled: (await storage.getAppSetting("compute_idle_unload_enabled")) === "true",
+      minutes: Number(await storage.getAppSetting("compute_idle_unload_minutes")) || 10,
+    });
+    const computeIdleUnload = async (
+      path: string,
+      method: "GET" | "POST",
+    ): Promise<{ loaded: any[] | null; computeError?: string }> => {
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiUrl || !apiKey) return { loaded: null, computeError: "PRM-Compute is not configured." };
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}${path}`, {
+          method,
+          headers: { "x-api-key": apiKey },
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) return { loaded: null, computeError: `PRM-Compute error: ${await response.text()}` };
+        const data = await response.json();
+        return { loaded: Array.isArray(data.loaded) ? data.loaded : [] };
+      } catch (error: any) {
+        return { loaded: null, computeError: `Failed to contact PRM-Compute: ${error.message}` };
+      }
+    };
+
+    app.get("/api/prm-face/idle-unload", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      res.json({ ...(await idleUnloadSetting()), ...(await computeIdleUnload("/api/face/idle-unload", "GET")) });
+    });
+
+    app.post("/api/prm-face/idle-unload", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { enabled, minutes } = req.body ?? {};
+      if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be a boolean." });
+      const mins = Number(minutes);
+      if (!Number.isInteger(mins) || mins < 1 || mins > 24 * 60) {
+        return res.status(400).json({ error: "minutes must be a whole number between 1 and 1440." });
+      }
+      await storage.setAppSetting("compute_idle_unload_enabled", enabled ? "true" : "false");
+      await storage.setAppSetting("compute_idle_unload_minutes", String(mins));
+      res.json({ ...(await idleUnloadSetting()), ...(await computeIdleUnload("/api/face/idle-unload/reload", "POST")) });
     });
 
     // Delete all recognition-pipeline images & faces and reset PRM-Face.
@@ -322,7 +378,7 @@ export function registerRoutes(app: Express) {
         if (apiUrl && apiKey) {
           faceService.attempted = true;
           try {
-            const response = await fetch(`${prmBase(apiUrl)}/api/face/reset-all`, {
+            const response = await fetch(`${prmBase(apiUrl)}/api/face/delete-data`, {
               method: "POST",
               headers: { "x-api-key": apiKey },
             });
@@ -444,6 +500,7 @@ export function registerRoutes(app: Express) {
           try {
             const formData = new FormData();
             formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
+            formData.append("photo_id", photo.id);
             formData.append("max_faces", "100");
 
             const response = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
@@ -702,90 +759,25 @@ export function registerRoutes(app: Express) {
       const { background } = req.body;
 
       try {
-        const [photo] = await db.select().from(photos).where(eq(photos.id, id));
+        const [photo] = await db.select({ id: photos.id, location: photos.location }).from(photos).where(eq(photos.id, id));
         if (!photo) return res.status(404).json({ error: "Photo not found." });
+        if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM-Face service is not configured." });
 
-        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-        const apiKey = await getPrmFaceSetting("prm_face_api_key");
-        if (!apiUrl || !apiKey) {
-          return res.status(400).json({ error: "PRM-Face service is not configured." });
-        }
+        const { facesDetected, faces } = await runFaceRecognition(id);
 
-        // 1. Fetch the image file into a buffer
-        let buffer: Buffer;
-        let mimeType = "image/jpeg";
-        try {
-          const fetched = await fetchImageBuffer(photo.location);
-          buffer = fetched.buffer;
-          mimeType = fetched.mimeType;
-        } catch (fetchErr: any) {
-          return res.status(500).json({ error: `Failed to retrieve photo buffer: ${fetchErr.message}` });
-        }
-
-        // 2. Send image to PRM-Face microservice img/add
-        const formData = new FormData();
-        const blob = new Blob([buffer], { type: mimeType });
-        const originalName = path.basename(photo.location) || "image.jpg";
-        formData.append("image", blob, originalName);
-        formData.append("max_faces", "100");
-
-        let prmResponse;
-        try {
-          prmResponse = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
-            method: "POST",
-            headers: { "X-API-Key": apiKey },
-            body: formData,
-            signal: AbortSignal.timeout(30000),
-          });
-        } catch (fetchErr: any) {
-          console.error("Failed to contact PRM-Face microservice:", fetchErr.message);
-          return res.status(503).json({
-            error: `Could not reach the PRM-Face server. Please check that the microservice at ${apiUrl} is online and running.`
-          });
-        }
-
-        if (!prmResponse.ok) {
-          const errBody = await prmResponse.text();
-          return res.status(prmResponse.status).json({ error: `PRM-Face error: ${errBody}` });
-        }
-
-        const data = await prmResponse.json() as any;
-        const detectedFaces = data.results ?? data.faces ?? [];
-
-        // 3. Handle background vs foreground
         if (background) {
-          const facialIds = detectedFaces.map((f: any) => ({
-            faceUuid: f.face_uuid || f.faceUuid,
-            coordinates: f.box || f.coordinates || null,
-            personId: f.person_uuid || f.personId || null,
-            socialAccountId: null,
-          }));
-
-          await db.update(photos)
-            .set({
-              facialIds,
-              faceIdAt: new Date(),
-            })
-            .where(eq(photos.id, id));
-
-          return res.json({
-            success: true,
-            background: true,
-            facesDetected: detectedFaces.length,
-          });
+          return res.json({ success: true, background: true, facesDetected });
         }
-
         // Foreground: return detection results in the shape expected by client
         res.json({
           imageUrl: photo.location,
           photoId: photo.id,
-          faceDetection: {
-            faces_detected: data.faces_detected ?? detectedFaces.length,
-            results: detectedFaces,
-          },
+          faceDetection: { faces_detected: facesDetected, results: faces },
         });
-
       } catch (error: any) {
+        if (error instanceof ComputeUnreachableError) {
+          return res.status(503).json({ error: `${error.message}. Please check that the microservice is online and running.` });
+        }
         console.error("Error in run-face-recog endpoint:", error);
         res.status(500).json({ error: error.message });
       }
@@ -825,31 +817,6 @@ export function registerRoutes(app: Express) {
         res.json({ ok: true, message: msg });
       } catch (error: any) {
         res.json({ ok: false, message: `Could not reach PRM-Compute server: ${error.message}` });
-      }
-    });
-  
-    app.get("/api/prm-face/img/list", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
-      const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
-      const { page = "1", page_size = "24" } = req.query as Record<string, string>;
-      try {
-        const response = await fetch(
-          `${prmBase(apiUrl)}/api/img/list?page=${page}&page_size=${page_size}`,
-          { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15000) }
-        );
-        if (!response.ok) {
-          if (response.status === 404 || response.status === 405) {
-            return res.status(401).json({ error: "API_KEY_INVALID" });
-          }
-          const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
-        }
-        res.json(await response.json());
-      } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
       }
     });
   
@@ -1193,27 +1160,31 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/prm-face/reset-all", async (req, res) => {
+    // "Delete Face Data" on Recognition Settings: wipe faces, crops and pending
+    // questions on PRM-compute, then every local face association. Photos stay.
+    app.post("/api/prm-face/delete-face-data", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
   
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM-Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM-Compute API key is not configured." });
   
       try {
-        const response = await fetch(`${prmBase(apiUrl)}/api/reset/all`, {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/delete-data`, {
           method: "POST",
           headers: { "x-api-key": apiKey },
-          signal: AbortSignal.timeout(30000),
+          signal: AbortSignal.timeout(60000),
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM-Compute error: ${body}` });
         }
-        res.json({ ok: true });
+        const compute = await response.json();
+        const local = await storage.clearFaceData();
+        res.json({ success: true, compute, local });
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to delete face data: ${error.message}` });
       }
     });
   
@@ -1238,6 +1209,54 @@ export function registerRoutes(app: Express) {
         res.json({ success: true });
       } catch (error) {
         res.status(500).json({ error: "Failed to save setting" });
+      }
+    });
+
+    // ── Automatic recognition on new stories / posts / profile images ────────
+
+    app.get("/api/recognition/auto", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        res.json(await getAutoRecognitionSettings());
+      } catch (error) {
+        res.status(500).json({ error: "Failed to fetch settings" });
+      }
+    });
+
+    app.post("/api/recognition/auto", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        await setAutoRecognitionSettings(req.body ?? {});
+        res.json(await getAutoRecognitionSettings());
+      } catch (error) {
+        res.status(500).json({ error: "Failed to save settings" });
+      }
+    });
+
+    app.get("/api/recognition/auto/backfill-counts", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        res.json(await backfillCounts());
+      } catch (error: any) {
+        console.error("Error counting recognition backfill:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    const backfillBody = z.object({
+      kind: z.enum(["profile", "post", "story"]),
+      job: z.enum(["face", "ocr", "transcribe"]),
+    });
+    app.post("/api/recognition/auto/backfill", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const parsed = backfillBody.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "kind and job are required" });
+      try {
+        const queued = await runBackfill(parsed.data.kind as AutoRecognitionKind, parsed.data.job as AutoRecognitionJob);
+        res.json({ queued });
+      } catch (error: any) {
+        console.error("Error queueing recognition backfill:", error);
+        res.status(500).json({ error: error.message });
       }
     });
   
@@ -1383,7 +1402,11 @@ export function registerRoutes(app: Express) {
         const sexGuessModel = (await getOllamaSetting("ollama_sex_guess_model")) ?? "";
         const whisperApiUrl = (await getOllamaSetting("whisper_api_url")) || process.env.WHISPER_API_URL || "";
         const whisperModel = (await getOllamaSetting("whisper_model")) || process.env.WHISPER_MODEL || "";
-        res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true", sexGuessModel, whisperApiUrl, whisperModel });
+        // Dictation goes to PRM-Compute's built-in Whisper when it is connected,
+        // else to the external OpenAI-compatible server above.
+        const computeConnected = !!(await getPrmFaceSetting("prm_face_api_url")) && !!(await getPrmFaceSetting("prm_face_api_key"));
+        const whisperSource = computeConnected ? "prm-compute" : whisperApiUrl.trim() ? "external" : null;
+        res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true", sexGuessModel, whisperApiUrl, whisperModel, whisperSource });
       } catch (error) {
         res.status(500).json({ error: "Failed to fetch Ollama settings" });
       }
@@ -2775,19 +2798,62 @@ export function registerRoutes(app: Express) {
     });
   
   
-    // Transcribe a recorded audio clip to text using a configured local Whisper
-    // server. Forwards the audio to an OpenAI-compatible transcription endpoint
-    // (whisper.cpp whisper-server, faster-whisper / speaches, etc.). The URL and
-    // model come from Intelligence settings, else WHISPER_API_URL / WHISPER_MODEL
-    // (set by docker-compose for the bundled speaches container).
+    // Transcribe a recorded audio clip to text. Uses PRM-Compute's built-in
+    // Whisper (/api/whisper) when it is connected; otherwise forwards to a
+    // configured OpenAI-compatible transcription endpoint (whisper.cpp
+    // whisper-server, faster-whisper / speaches, etc.). That URL and model come
+    // from Intelligence settings, else WHISPER_API_URL / WHISPER_MODEL (set by
+    // docker-compose for the bundled speaches container).
+    // Send an uploaded clip to PRM-Compute's Whisper. Resolves null when
+    // PRM-Compute isn't connected; rejects with { status, error } otherwise.
+    const transcribeWithCompute = async (
+      file: Express.Multer.File,
+      opts: { model?: string; language?: string } = {},
+    ) => {
+      if (!(await getComputeConnection())) return null;
+      try {
+        return await transcribeBuffer(file.buffer, file.mimetype || "audio/webm", file.originalname || "audio.webm", opts);
+      } catch (err: any) {
+        if (err instanceof ComputeUnreachableError && /timed out|TimeoutError/i.test(err.message)) {
+          throw { status: 504, error: "Transcription timed out after 120 seconds." };
+        }
+        throw { status: 502, error: err.message };
+      }
+    };
+
+    // Whisper demo: full PRM-Compute payload (segments, language, device) with
+    // an optional model/language override. Requires PRM-Compute.
+    app.post("/api/prm-face/whisper", upload.single("audio"), async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (!req.file) return res.status(400).json({ error: "No audio provided." });
+      const model = typeof req.body?.model === "string" ? req.body.model : undefined;
+      const language = typeof req.body?.language === "string" ? req.body.language : undefined;
+      try {
+        const started = Date.now();
+        const result = await transcribeWithCompute(req.file, { model, language });
+        if (!result) return res.status(400).json({ error: "PRM-Compute is not configured." });
+        return res.json({ ...result, elapsedMs: Date.now() - started });
+      } catch (err: any) {
+        return res.status(err.status ?? 500).json({ error: err.error ?? err.message ?? "Transcription failed." });
+      }
+    });
+
     app.post("/api/daily-notes/transcribe", upload.single("audio"), async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
+        if (!req.file) return res.status(400).json({ error: "No audio provided." });
+
+        try {
+          const result = await transcribeWithCompute(req.file);
+          if (result) return res.json({ text: result.text ?? "" });
+        } catch (err: any) {
+          return res.status(err.status ?? 502).json({ error: err.error ?? err.message });
+        }
+
         const apiUrl = (await getOllamaSetting("whisper_api_url")) || process.env.WHISPER_API_URL || "";
         if (!apiUrl.trim()) {
-          return res.status(400).json({ error: "No Whisper (speech-to-text) server URL configured. Set one in Intelligence settings." });
+          return res.status(400).json({ error: "No speech-to-text available. Connect PRM-Compute in Recognition settings, or set a Whisper server URL in Intelligence settings." });
         }
-        if (!req.file) return res.status(400).json({ error: "No audio provided." });
 
         const base = apiUrl.replace(/\/+$/, "");
         const model = ((await getOllamaSetting("whisper_model")) || process.env.WHISPER_MODEL || "").trim() || "whisper-1";
@@ -4299,48 +4365,44 @@ Respond with ONLY a JSON array, no other text.`;
     });
 
     // OCR: Extract text from image via PRM-Compute
+    async function runPrmComputeOcr(
+      buffer: Buffer,
+      mimeType: string,
+      fileName: string,
+      opts: { min_score?: unknown; model?: unknown; photo_id?: string },
+    ): Promise<{ status: number; body: any }> {
+      if (!(await getComputeConnection())) return { status: 400, body: { error: "PRM-Compute is not configured." } };
+      try {
+        return { status: 200, body: await runOcrOnBuffer(buffer, mimeType, fileName, opts) };
+      } catch (error: any) {
+        if (error instanceof ComputeUnreachableError) return { status: 503, body: { error: error.message } };
+        return { status: 502, body: { error: error.message } };
+      }
+    }
+
     const handleOcr = async (req: any, res: any) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       if (!req.file) return res.status(400).json({ error: "No image provided" });
-
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Compute API URL is not configured." });
-
-      const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Compute API key is not configured." });
-
-      try {
-        const formData = new FormData();
-        const blob = new Blob([req.file.buffer], { type: req.file.mimetype || "image/jpeg" });
-        formData.append("image", blob, req.file.originalname || "image.jpg");
-        if (req.body.min_score !== undefined && req.body.min_score !== "") {
-          formData.append("min_score", String(req.body.min_score));
-        }
-        // Optional preset override ("v5-mobile" | "v5-server"); defaults to the configured one.
-        if (req.body.model) {
-          formData.append("model", String(req.body.model));
-        }
-
-        const response = await fetch(`${prmBase(apiUrl)}/api/ocr`, {
-          method: "POST",
-          headers: { "X-API-Key": apiKey },
-          body: formData,
-          signal: AbortSignal.timeout(45000),
-        });
-
-        if (!response.ok) {
-          const errBody = await response.text();
-          return res.status(response.status).json({ error: `PRM-Compute OCR error: ${errBody}` });
-        }
-
-        const data = await response.json();
-        res.json(data);
-      } catch (error: any) {
-        console.error("Error calling PRM-Compute OCR:", error);
-        res.status(500).json({ error: `Failed to contact PRM-Compute server: ${error.message}` });
-      }
+      const { status, body } = await runPrmComputeOcr(req.file.buffer, req.file.mimetype, req.file.originalname, req.body);
+      res.status(status).json(body);
     };
 
     app.post("/api/prm-face/ocr", upload.single("image"), handleOcr);
     app.post("/api/ocr", upload.single("image"), handleOcr);
+
+    // OCR on an existing photo. PRM-Compute persists the result on the photos
+    // row (ocr_data / ocr_at); this route only supplies the bytes and photo_id.
+    app.post("/api/photos/:id/run-ocr", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { id } = req.params;
+      try {
+        if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM-Compute is not configured." });
+        res.json(await runOcr(id, req.body ?? {}));
+      } catch (error: any) {
+        if (error instanceof ComputeUnreachableError) return res.status(503).json({ error: error.message });
+        if (error.message === "Photo not found.") return res.status(404).json({ error: error.message });
+        console.error("Error in run-ocr endpoint:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
 }

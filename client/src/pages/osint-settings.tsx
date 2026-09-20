@@ -178,6 +178,11 @@ export default function OsintSettingsPage() {
     },
   });
 
+  const { data: computeSettings } = useQuery<{ apiUrl: string; hasApiKey: boolean }>({
+    queryKey: ["/api/prm-compute/settings"],
+  });
+  const isComputeConfigured = !!computeSettings?.apiUrl && !!computeSettings?.hasApiKey;
+
   if (isLoading) {
     return (
       <div className="flex h-[50vh] w-full items-center justify-center">
@@ -185,11 +190,6 @@ export default function OsintSettingsPage() {
       </div>
     );
   }
-
-  const { data: computeSettings } = useQuery<{ apiUrl: string; hasApiKey: boolean }>({
-    queryKey: ["/api/prm-compute/settings"],
-  });
-  const isComputeConfigured = !!computeSettings?.apiUrl && !!computeSettings?.hasApiKey;
 
   return (
     <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0 space-y-6">

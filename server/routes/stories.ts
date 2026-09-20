@@ -23,6 +23,7 @@ import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrape
 import { generateDeterministicUuid } from "./social-media";
 import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
+import { enqueueAutoRecognition } from "../recognition";
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 // A story video (≤ 60 s) is usually 3–15 MB; the scraper skips anything over its own cap (50 MB by default).
@@ -225,8 +226,9 @@ export function registerStories(app: Express) {
           .where(eq(photos.prmLocation, `post:${postId}`))
           .limit(1);
 
-        if (!existingPhoto) {
-          await storage.insertPhoto({
+        let photoId = existingPhoto?.id;
+        if (!photoId) {
+          photoId = (await storage.insertPhoto({
             location: imageUrl,
             prmLocation: `post:${postId}`,
             isSubImage: false,
@@ -234,7 +236,7 @@ export function registerStories(app: Express) {
             widthPx: width ?? null,
             heightPx: height ?? null,
             ogMetadata: { source: "instagram-story", storyPk: cleanStoryPk, takenAt },
-          });
+          })).id;
         }
 
         const [inserted] = await db
@@ -259,6 +261,7 @@ export function registerStories(app: Express) {
 
         await db.update(socialAccounts).set({ lastScrapedAt: new Date() }).where(eq(socialAccounts.id, account.id));
         res.status(201).json({ outcome: "stored", postId });
+        void enqueueAutoRecognition({ kind: "story", photoIds: [photoId], videoPostId: metadata.videoUrl ? postId : undefined });
       });
     } catch (error) {
       console.error("Error storing story:", error);

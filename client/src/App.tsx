@@ -50,6 +50,7 @@ const PrmFaceSaveDemo = lazy(() => import("@/pages/prm-face-save-demo"));
 const UnknownFaces = lazy(() => import("@/pages/unknown-faces"));
 const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
 const OcrDemo = lazy(() => import("@/pages/ocr-demo"));
+const WhisperDemo = lazy(() => import("@/pages/whisper-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
@@ -222,6 +223,7 @@ function Router() {
         <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
         <ProtectedRoute path="/ocr-demo" component={OcrDemo} />
         <ProtectedRoute path="/demos/ocr" component={OcrDemo} />
+        <ProtectedRoute path="/demos/whisper" component={WhisperDemo} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />

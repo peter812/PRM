@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare, HelpCircle, Network, Mic, Cpu } from "lucide-react";
+import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare, HelpCircle, Network, Cpu } from "lucide-react";
 
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -27,8 +27,6 @@ type OllamaSettings = {
   eventsPrompt: string;
   sexGuessModel?: string;
   familyTreeModel?: string;
-  whisperApiUrl?: string;
-  whisperModel?: string;
 };
 
 type TestResult = {
@@ -54,8 +52,6 @@ export default function IntelligenceSettingsPage() {
   const [eventsPrompt, setEventsPrompt] = useState(DEFAULT_EVENTS_PROMPT);
   const [selectedSexGuessModel, setSelectedSexGuessModel] = useState("");
   const [selectedFamilyTreeModel, setSelectedFamilyTreeModel] = useState("");
-  const [whisperApiUrl, setWhisperApiUrl] = useState("");
-  const [whisperModel, setWhisperModel] = useState("");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data: settings, isLoading } = useQuery<OllamaSettings>({
@@ -79,8 +75,6 @@ export default function IntelligenceSettingsPage() {
     setEventsPrompt(settings.eventsPrompt || DEFAULT_EVENTS_PROMPT);
     setSelectedSexGuessModel(settings.sexGuessModel ?? "");
     setSelectedFamilyTreeModel(settings.familyTreeModel ?? "");
-    setWhisperApiUrl(settings.whisperApiUrl ?? "");
-    setWhisperModel(settings.whisperModel ?? "");
   }, [settings]);
 
   const saveMutation = useMutation({
@@ -135,10 +129,6 @@ export default function IntelligenceSettingsPage() {
 
   const handleSaveEventsPrompt = () => {
     saveMutation.mutate({ eventsPrompt });
-  };
-
-  const handleSaveWhisper = () => {
-    saveMutation.mutate({ whisperApiUrl, whisperModel });
   };
 
   const models = modelsData?.models ?? [];
@@ -594,57 +584,6 @@ export default function IntelligenceSettingsPage() {
                 data-testid="button-save-events-prompt"
               >
                 {saveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : "Save Prompt"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-whisper">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Mic className="h-5 w-5" />
-              Speech-to-text (Whisper)
-            </CardTitle>
-            <CardDescription>
-              Point to a local, OpenAI-compatible transcription server (whisper.cpp{" "}
-              <code className="text-xs bg-muted px-1 rounded">whisper-server</code>, faster-whisper / speaches, etc.).
-              Enables the <span className="font-medium">Dictate</span> button on daily notes.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="whisper-api-url">Server URL</Label>
-              <Input
-                id="whisper-api-url"
-                placeholder="http://localhost:8000"
-                value={whisperApiUrl}
-                onChange={(e) => setWhisperApiUrl(e.target.value)}
-                data-testid="input-whisper-api-url"
-              />
-              <p className="text-xs text-muted-foreground">
-                Audio is POSTed to <code className="text-xs bg-muted px-1 rounded">{"{URL}"}/v1/audio/transcriptions</code>.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="whisper-model">Model</Label>
-              <Input
-                id="whisper-model"
-                placeholder="whisper-1"
-                value={whisperModel}
-                onChange={(e) => setWhisperModel(e.target.value)}
-                data-testid="input-whisper-model"
-              />
-              <p className="text-xs text-muted-foreground">
-                The transcription model name your server expects (e.g. <span className="font-mono">whisper-1</span> or <span className="font-mono">Systran/faster-whisper-base</span>). Defaults to <span className="font-mono">whisper-1</span>.
-              </p>
-            </div>
-            <div className="flex justify-end">
-              <Button
-                onClick={handleSaveWhisper}
-                disabled={saveMutation.isPending}
-                data-testid="button-save-whisper"
-              >
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </Button>
             </div>
           </CardContent>

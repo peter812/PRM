@@ -84,6 +84,7 @@ import {
   formatPhoneNumberForDisplay,
 } from "@shared/schema";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
+import { runFaceRecognition, runOcr, transcribeVideo, ComputeUnreachableError, RECOGNITION_TASK_TYPES } from "./recognition";
 
 const POLL_INTERVAL_MS = 60_000;
 const IMAGE_DOWNLOAD_DELAY_MS = 1_000;
@@ -96,6 +97,10 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 // ── Image task worker state ───────────────────────────────────────────────────
 let isImageProcessing = false;
 let imageTaskPollTimer: ReturnType<typeof setTimeout> | null = null;
+// While PRM-Compute is unreachable, recognition tasks stay pending and are
+// skipped until this passes; downloads and the rest keep flowing.
+const COMPUTE_BACKOFF_MS = 5 * 60_000;
+let recognitionPausedUntil = 0;
 
 // ── Image task handlers ───────────────────────────────────────────────────────
 
@@ -153,8 +158,22 @@ async function processAnalyzeImgFull(imageTaskId: string, payload: { photoId?: s
 }
 
 async function processAnalyzeImgFace(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
-  log(`[ImageWorker] analyze_img_face stub — photoId: ${payload.photoId ?? "none"}`);
-  return JSON.stringify({ stub: true, note: "Face detection not yet implemented" });
+  if (!payload.photoId) throw new Error("photoId is required");
+  const { facesDetected } = await runFaceRecognition(payload.photoId);
+  return JSON.stringify({ photoId: payload.photoId, facesDetected });
+}
+
+async function processAnalyzeImgOcr(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
+  if (!payload.photoId) throw new Error("photoId is required");
+  const result = await runOcr(payload.photoId);
+  const text: string = result?.text ?? "";
+  return JSON.stringify({ photoId: payload.photoId, lines: result?.lines?.length ?? 0, chars: text.length });
+}
+
+async function processTranscribeVideo(imageTaskId: string, payload: { postId?: string }): Promise<string> {
+  if (!payload.postId) throw new Error("postId is required");
+  const transcript = await transcribeVideo(payload.postId);
+  return JSON.stringify({ postId: payload.postId, chars: transcript.text.length, language: transcript.language, segments: transcript.segments.length });
 }
 
 async function processAnalyzeImgMetadata(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
@@ -173,7 +192,8 @@ async function processConvertImg(imageTaskId: string, payload: { photoId?: strin
 }
 
 async function processNextImageTask(): Promise<boolean> {
-  const task = await runAsSystem(() => storage.getNextPendingImageTask());
+  const excludeTypes = Date.now() < recognitionPausedUntil ? RECOGNITION_TASK_TYPES : undefined;
+  const task = await runAsSystem(() => storage.getNextPendingImageTask(excludeTypes));
   if (!task) return false;
 
   log(`[ImageWorker] Processing image task ${task.id} (type: ${task.type})`);
@@ -195,6 +215,12 @@ async function processNextImageTask(): Promise<boolean> {
           break;
         case "analyze_img_face":
           result = await processAnalyzeImgFace(task.id, payload);
+          break;
+        case "analyze_img_ocr":
+          result = await processAnalyzeImgOcr(task.id, payload);
+          break;
+        case "transcribe_video":
+          result = await processTranscribeVideo(task.id, payload);
           break;
         case "analyze_img_metadata":
           result = await processAnalyzeImgMetadata(task.id, payload);
@@ -220,12 +246,18 @@ async function processNextImageTask(): Promise<boolean> {
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
       // Only write failed state if not already cancelled
       const postErrorTask = await storage.getImageTaskById(task.id).catch(() => null);
-      if (!postErrorTask || postErrorTask.status !== "cancelled") {
-        await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
+      if (postErrorTask && postErrorTask.status === "cancelled") return true;
+      if (error instanceof ComputeUnreachableError) {
+        // Not the task's fault: hand it back to the queue and try again later.
+        recognitionPausedUntil = Date.now() + COMPUTE_BACKOFF_MS;
+        log(`[ImageWorker] ${errorMessage} — recognition tasks paused for ${COMPUTE_BACKOFF_MS / 60_000} min`);
+        await storage.updateImageTaskStatus(task.id, "pending");
+        return true;
       }
+      log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
+      await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
       return true;
     }
   });
@@ -279,19 +311,6 @@ async function processGetImgTask(payload: {
   await recordProfileImageChange(socialAccountId, outcome);
   return JSON.stringify({ cdnUrl: outcome.imageUrlHq ?? outcome.imageUrl, socialAccountId, imageChange: outcome.imageChange });
 }
-
-async function processRefreshFollowerCount(payload: {
-  socialAccountId: string;
-}): Promise<string> {
-  const { socialAccountId } = payload;
-  // Counts are derived directly from the social_follows edge table.
-  const state = await storage.getNetworkState(socialAccountId);
-  if (!state) {
-    return JSON.stringify({ socialAccountId, message: "Account not found", followerCount: 0, followingCount: 0 });
-  }
-  return JSON.stringify({ socialAccountId, followerCount: state.followerCount, followingCount: state.followingCount });
-}
-
 
 // ── Export XML task ──────────────────────────────────────────────────────────
 
@@ -1644,14 +1663,6 @@ async function processImportXmlTask(taskId: string, payload: {
 async function isTaskCancelled(taskId: string): Promise<boolean> {
   const task = await storage.getTaskById(taskId);
   return !task || task.status === "cancelled" || task.status === "failed";
-}
-
-async function processMassRefreshFollowerCount(taskId: string): Promise<string> {
-  // Counts are derived directly from the social_follows edge table, so there
-  // is nothing to recompute; report totals for visibility.
-  const allAccounts = await storage.getAllSocialAccounts();
-  const allFollows = await storage.getAllFollows();
-  return JSON.stringify({ refreshed: allAccounts.length, skipped: 0, total: allAccounts.length, followEdges: allFollows.length });
 }
 
 function getStorageProvider(url: string): "local" | "prm-s3" | "s3" {
@@ -3907,15 +3918,6 @@ async function processNextTask(): Promise<boolean> {
         case "get_img": {
           const payload = JSON.parse(task.payload);
           result = await processGetImgTask(payload);
-          break;
-        }
-        case "refresh_follower_count": {
-          const payload = JSON.parse(task.payload);
-          result = await processRefreshFollowerCount(payload);
-          break;
-        }
-        case "mass_refresh_follower_count": {
-          result = await processMassRefreshFollowerCount(task.id);
           break;
         }
         case "transfer_images": {

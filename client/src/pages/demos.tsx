@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Radar, Scan, Sparkles, ScanText, TrendingUp } from "lucide-react";
+import { Radar, Scan, Sparkles, ScanText, TrendingUp, Mic } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 
@@ -91,6 +91,20 @@ export default function DemosPage() {
               </CardTitle>
               <CardDescription>
                 Extract and locate text from images with bounded line detection.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/whisper">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Mic className="h-5 w-5" />
+                Whisper Demo
+              </CardTitle>
+              <CardDescription>
+                Transcribe recordings or uploaded audio with timed, clickable segments.
               </CardDescription>
             </CardHeader>
           </Card>

@@ -528,6 +528,14 @@ export interface IStorage {
     filesDeleted: number;
     deletedPhotos?: { id: string; location: string; vectorId: string | null }[];
   }>;
+  clearFaceData(): Promise<{
+    facesDeleted: number;
+    imageQuestionsDeleted: number;
+    faceTasksDeleted: number;
+    photosCleared: number;
+    peopleCleared: number;
+    postsCleared: number;
+  }>;
   resetImagePipeline(): Promise<{
     photosDeleted: number;
     filesDeleted: number;
@@ -541,7 +549,7 @@ export interface IStorage {
   // Image task operations
   createImageTask(task: InsertImageTask): Promise<ImageTask>;
   getImageTaskById(id: string): Promise<ImageTask | undefined>;
-  getNextPendingImageTask(): Promise<ImageTask | undefined>;
+  getNextPendingImageTask(excludeTypes?: string[]): Promise<ImageTask | undefined>;
   updateImageTaskStatus(id: string, status: string, result?: string): Promise<void>;
   updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void>;
   getCurrentImageTasks(recentWindowSeconds?: number, limit?: number): Promise<ImageTask[]>;
@@ -4935,11 +4943,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   /** Queue polling — deliberately unfiltered; the worker runs it as the system. */
-  async getNextPendingImageTask(): Promise<ImageTask | undefined> {
+  async getNextPendingImageTask(excludeTypes?: string[]): Promise<ImageTask | undefined> {
+    const pending = eq(imageTasks.status, "pending");
     const [task] = await db
       .select()
       .from(imageTasks)
-      .where(eq(imageTasks.status, "pending"))
+      .where(excludeTypes?.length ? and(pending, notInArray(imageTasks.type, excludeTypes)) : pending)
       .orderBy(imageTasks.createdAt)
       .limit(1);
     return task || undefined;
@@ -5385,6 +5394,52 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async clearFaceData(): Promise<{
+    facesDeleted: number;
+    imageQuestionsDeleted: number;
+    faceTasksDeleted: number;
+    photosCleared: number;
+    peopleCleared: number;
+    postsCleared: number;
+  }> {
+    // Wipe everything face recognition produced while keeping the photos
+    // themselves: face rows, pending face questions, face-analysis tasks, and
+    // every association from photos, people and posts to a face. PRM-compute's
+    // /api/face/delete-data normally clears faces and questions already, but we
+    // do it here too so a local wipe is complete even if it is offline.
+    const facesDeleted = (await db.delete(faces).returning({ id: faces.id })).length;
+    const imageQuestionsDeleted = (await db.delete(imageQuestions).returning({ id: imageQuestions.id })).length;
+    const faceTasksDeleted = (
+      await db.delete(imageTasks).where(eq(imageTasks.type, "analyze_img_face")).returning({ id: imageTasks.id })
+    ).length;
+
+    const photosCleared = (
+      await db
+        .update(photos)
+        .set({ faceIdAt: null, faceUuids: null, facialIds: [] })
+        .where(or(isNotNull(photos.faceIdAt), isNotNull(photos.faceUuids), sql`${photos.facialIds} <> '[]'::jsonb`))
+        .returning({ id: photos.id })
+    ).length;
+
+    const peopleCleared = (
+      await db
+        .update(people)
+        .set({ personfaceUuid: null })
+        .where(isNotNull(people.personfaceUuid))
+        .returning({ id: people.id })
+    ).length;
+
+    const postsCleared = (
+      await db
+        .update(socialAccountPosts)
+        .set({ faceIds: null })
+        .where(isNotNull(socialAccountPosts.faceIds))
+        .returning({ id: socialAccountPosts.id })
+    ).length;
+
+    return { facesDeleted, imageQuestionsDeleted, faceTasksDeleted, photosCleared, peopleCleared, postsCleared };
+  }
+
   async resetImagePipeline(): Promise<{
     photosDeleted: number;
     filesDeleted: number;
@@ -5432,30 +5487,10 @@ export class DatabaseStorage implements IStorage {
       await db.delete(photos).where(inArray(photos.id, pipelineIds));
     }
 
-    // 2. Delete any remaining faces (e.g. sync uploads with photo_id = NULL that
-    //    the cascade above wouldn't reach), plus all image tasks and questions.
-    //    PRM-face's /api/face/reset-all normally clears the faces already, but we
-    //    do it here too so a local reset is complete even if PRM-face is offline.
-    const facesDeleted = (await db.delete(faces).returning({ id: faces.id })).length;
-    const imageQuestionsDeleted = (await db.delete(imageQuestions).returning({ id: imageQuestions.id })).length;
+    // 2. Every image task (not just face analysis), then the face data and
+    //    associations the cascade above didn't reach.
     const imageTasksDeleted = (await db.delete(imageTasks).returning({ id: imageTasks.id })).length;
-
-    // 3. Strip face associations from people and social account posts.
-    const peopleCleared = (
-      await db
-        .update(people)
-        .set({ personfaceUuid: null })
-        .where(isNotNull(people.personfaceUuid))
-        .returning({ id: people.id })
-    ).length;
-
-    const postsCleared = (
-      await db
-        .update(socialAccountPosts)
-        .set({ faceIds: null })
-        .where(isNotNull(socialAccountPosts.faceIds))
-        .returning({ id: socialAccountPosts.id })
-    ).length;
+    const { facesDeleted, imageQuestionsDeleted, peopleCleared, postsCleared } = await this.clearFaceData();
 
     return {
       photosDeleted: pipelineIds.length,

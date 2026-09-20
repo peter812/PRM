@@ -6,6 +6,7 @@ import { fetchImageBuffer, isStoredImageUrl } from "./prm-s3";
 import { isLocalImageUrl, getLocalImagePath } from "./local-storage";
 import { uploadImage } from "./image-storage";
 import { syncEntityInBackground } from "./vector-universal";
+import { enqueueAutoRecognition } from "./recognition";
 import { eq } from "drizzle-orm";
 import crypto from "crypto";
 import dns from "node:dns/promises";
@@ -476,6 +477,8 @@ export async function applyProfileImageVerdict(
 ): Promise<ProfileImageOutcome> {
   const { cdnUrl, photoId } = stored ?? (await storeProfileImage(fetched, socialAccountId));
   const { imageChange } = verdict;
+  // The picture itself, never the 150 thumbnail cut below.
+  void enqueueAutoRecognition({ kind: "profile", photoIds: [photoId] });
 
   if (fetched.tier === "lq") {
     // A new picture only known at 150: whatever HQ we held is of the old picture.

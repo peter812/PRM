@@ -321,14 +321,12 @@ export function uploadMediaToPrmS3(buffer: Buffer, originalFilename: string, mim
 }
 
 export function normalizePrmS3Key(keyOrUrl: string): string {
-  if (keyOrUrl.startsWith("/api/prm-s3/images/")) {
-    return `images/${keyOrUrl.replace("/api/prm-s3/images/", "").split(/[?#]/)[0]}`;
-  }
-  if (keyOrUrl.startsWith("/api/prm-s3/media/")) {
-    return `media/${keyOrUrl.replace("/api/prm-s3/media/", "").split(/[?#]/)[0]}`;
-  }
+  const proxy = keyOrUrl.match(/^\/api\/prm-s3\/(images|media|faces)\/([^/?#]+)/);
+  if (proxy) return `${proxy[1]}/${proxy[2]}`;
   // Absolute (possibly presigned) urls and bare keys under any prefix we write.
-  const match = keyOrUrl.match(/(?:^|\/)(images|media|faces)\/([^/?#]+)/);
+  // Anchored on the object name so a bucket also called "images" isn't taken
+  // for the prefix (http://host/images/faces/x.jpg -> faces/x.jpg).
+  const match = keyOrUrl.match(/(?:^|\/)(images|media|faces)\/([^/?#]+)(?=[?#]|$)/);
   return match ? `${match[1]}/${match[2]}` : keyOrUrl;
 }
 

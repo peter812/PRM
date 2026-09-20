@@ -27,6 +27,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
+import { OcrRunDialog, isOcrData } from "@/components/ocr-run-dialog";
 
 function formatDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
@@ -120,6 +121,7 @@ export default function ImageDetailPage() {
 
   const [showConfirmRecog, setShowConfirmRecog] = useState(false);
   const [showForegroundRecog, setShowForegroundRecog] = useState(false);
+  const [showOcr, setShowOcr] = useState(false);
   const [isRunningBackground, setIsRunningBackground] = useState(false);
 
   const handleRunBackground = async () => {
@@ -178,7 +180,6 @@ export default function ImageDetailPage() {
         description: "The image and all associated traces have been removed.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/photos"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/img/list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/image/query-person"] });
       setLocation(back.href);
     } catch (err: any) {
@@ -263,6 +264,8 @@ export default function ImageDetailPage() {
   const hasAiDescription = !!photo.imageDescriptionAt;
   const hasFaceRecog = !!photo.faceIdAt;
   const facialIds = isFacialIdsArray(photo.facialIds) ? photo.facialIds : [];
+  const hasOcr = !!photo.ocrAt;
+  const ocr = isOcrData(photo.ocrData) ? photo.ocrData : null;
 
   const clientSource = (() => {
     if (!photo.prmLocation) return null;
@@ -415,6 +418,7 @@ export default function ImageDetailPage() {
       <div className="flex flex-wrap gap-2 mb-4" data-testid="group-status-chips">
         <StatusChip label="AI desc" value={hasAiDescription} testId="chip-ai-status" />
         <StatusChip label="Face recog" value={hasFaceRecog} onClick={() => setShowConfirmRecog(true)} testId="chip-face-recog" />
+        <StatusChip label="OCR" value={hasOcr} onClick={() => setShowOcr(true)} testId="chip-ocr" />
         <StatusChip label="Sub image" value={!!photo.isSubImage} testId="chip-sub-image" />
       </div>
 
@@ -612,6 +616,40 @@ export default function ImageDetailPage() {
             testId="text-date-ai-description"
           />
           <MetaRow label="Face detection" value={formatDate(photo.faceIdAt)} testId="text-date-face-id" />
+          <MetaRow label="OCR" value={formatDate(photo.ocrAt)} testId="text-date-ocr" />
+        </div>
+      </div>
+
+      {/* Deep info: OCR data */}
+      <div className="mb-12" data-testid="section-deep-info-ocr">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            Deep info — OCR
+          </h2>
+          <Button variant="outline" size="sm" onClick={() => setShowOcr(true)} data-testid="btn-run-ocr-section">
+            {hasOcr ? "Re-run OCR" : "Run OCR"}
+          </Button>
+        </div>
+        <div className="border rounded-md px-3">
+          {!hasOcr ? (
+            <div className="py-2.5 text-sm text-muted-foreground">OCR not run on this image.</div>
+          ) : (
+            <>
+              <MetaRow label="Model" value={ocr?.model} mono testId="text-ocr-model" />
+              <MetaRow label="Lines" value={ocr ? ocr.lines.length : 0} testId="text-ocr-line-count" />
+              <MetaRow
+                label="Text"
+                value={
+                  ocr && ocr.text.trim() !== "" ? (
+                    <pre className="whitespace-pre-wrap break-words font-sans text-sm m-0">{ocr.text}</pre>
+                  ) : (
+                    <span className="text-muted-foreground">No text detected.</span>
+                  )
+                }
+                testId="text-ocr-text"
+              />
+            </>
+          )}
         </div>
       </div>
 
@@ -708,6 +746,18 @@ export default function ImageDetailPage() {
             queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
           }}
           existingPhoto={{ id, imageUrl: photo.location }}
+        />
+      )}
+
+      {/* OCR Dialog */}
+      {photo && (
+        <OcrRunDialog
+          open={showOcr}
+          onClose={() => {
+            setShowOcr(false);
+            queryClient.invalidateQueries({ queryKey: [`/api/photos/${id}`] });
+          }}
+          photo={{ id, imageUrl: photo.location, ocrData: photo.ocrData, ocrAt: photo.ocrAt }}
         />
       )}
     </div>

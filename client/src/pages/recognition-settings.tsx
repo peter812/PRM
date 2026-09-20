@@ -16,7 +16,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders, ScanText, Download } from "lucide-react";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders, ScanText, Download, Mic, Timer, Sparkles } from "lucide-react";
+import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -148,18 +149,21 @@ export default function RecognitionSettingsPage() {
     },
   });
 
-  const resetAllMutation = useMutation({
+  const deleteFaceDataMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/prm-face/reset-all", {});
+      const res = await apiRequest("POST", "/api/prm-face/delete-face-data", {});
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data: { compute?: { faces_deleted?: number }; local?: { photosCleared?: number } }) => {
       setResetDialogOpen(false);
-      toast({ title: "All PRM-Face data deleted", description: "All records, faces, and images have been wiped from the PRM-Face server." });
+      toast({
+        title: "Face data deleted",
+        description: `${data.compute?.faces_deleted ?? 0} faces and their crops removed; ${data.local?.photosCleared ?? 0} photos will be re-scanned.`,
+      });
     },
     onError: (error: Error) => {
       setResetDialogOpen(false);
-      toast({ title: "Reset failed", description: error.message, variant: "destructive" });
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -197,58 +201,6 @@ export default function RecognitionSettingsPage() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update configuration", description: error.message, variant: "destructive" });
-    },
-  });
-
-  type OcrModel = {
-    id: string;
-    label: string;
-    description: string;
-    downloaded: boolean;
-    downloading: boolean;
-    error: string | null;
-    active: boolean;
-    device: "cuda" | "cpu";
-  };
-
-  const [ocrModel, setOcrModel] = useState<string>("");
-
-  const { data: ocrModels } = useQuery<{ models: OcrModel[] }>({
-    queryKey: ["/api/prm-face/ocr/models"],
-    enabled: !!settings?.hasApiKey,
-    // Poll while a download is in flight so the buttons flip to "Downloaded".
-    refetchInterval: (query) => (query.state.data?.models.some((m) => m.downloading) ? 2000 : false),
-  });
-
-  useEffect(() => {
-    const active = ocrModels?.models.find((m) => m.active);
-    if (active) setOcrModel(active.id);
-  }, [ocrModels]);
-
-  const downloadOcrModelMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await apiRequest("POST", `/api/prm-face/ocr/models/${id}/download`, {});
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/ocr/models"] });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to start download", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const saveOcrModelMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/prm-face/ocr/config", { model: ocrModel });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/ocr/models"] });
-      toast({ title: "OCR model updated" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to update OCR model", description: error.message, variant: "destructive" });
     },
   });
 
@@ -511,89 +463,24 @@ export default function RecognitionSettingsPage() {
         )}
 
         {hasApiKey && (
-          <Card data-testid="card-ocr">
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <ScanText className="h-4 w-4" />
-                OCR
-              </CardTitle>
-              <CardDescription>
-                Choose which PaddleOCR (PP-OCRv5) model PRM-Compute uses to read text from images.
-                {ocrModels && (
-                  <>
-                    {" "}Inference runs on{" "}
-                    <span className="font-medium text-foreground" data-testid="text-ocr-device">
-                      {ocrModels.models[0]?.device === "cuda" ? "GPU (CUDA)" : "CPU"}
-                    </span>.
-                  </>
-                )}
-                Download a model before selecting it; the first OCR request otherwise waits for the download.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="ocr-model">Active OCR Model</Label>
-                <div className="flex gap-2">
-                  <Select value={ocrModel} onValueChange={setOcrModel}>
-                    <SelectTrigger id="ocr-model" className="flex-1" data-testid="select-ocr-model">
-                      <SelectValue placeholder="Select a model" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ocrModels?.models.map((m) => (
-                        <SelectItem key={m.id} value={m.id} data-testid={`option-ocr-model-${m.id}`}>
-                          {m.label}{m.downloaded ? "" : " (not downloaded)"}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    onClick={() => saveOcrModelMutation.mutate()}
-                    disabled={saveOcrModelMutation.isPending || !ocrModel || ocrModels?.models.find((m) => m.active)?.id === ocrModel}
-                    data-testid="button-save-ocr-model"
-                  >
-                    {saveOcrModelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                {ocrModels?.models.map((m) => (
-                  <div
-                    key={m.id}
-                    className="flex items-center justify-between gap-4 rounded-md border p-3"
-                    data-testid={`row-ocr-model-${m.id}`}
-                  >
-                    <div className="space-y-0.5 min-w-0">
-                      <p className="text-sm font-medium">{m.label}</p>
-                      <p className="text-xs text-muted-foreground">{m.description}</p>
-                      {m.error && <p className="text-xs text-destructive">Download failed: {m.error}</p>}
-                    </div>
-                    {m.downloaded ? (
-                      <span className="flex items-center gap-1 text-xs text-muted-foreground shrink-0">
-                        <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-500" />
-                        Downloaded
-                      </span>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="shrink-0"
-                        onClick={() => downloadOcrModelMutation.mutate(m.id)}
-                        disabled={m.downloading || downloadOcrModelMutation.isPending}
-                        data-testid={`button-download-ocr-model-${m.id}`}
-                      >
-                        {m.downloading ? (
-                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Downloading…</>
-                        ) : (
-                          <><Download className="h-4 w-4 mr-2" />Download</>
-                        )}
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          <>
+            <ComputeModelCard
+              engine="ocr"
+              title="OCR"
+              icon={<ScanText className="h-4 w-4" />}
+              blurb="Choose which PaddleOCR (PP-OCRv5) model PRM-Compute uses to read text from images."
+              requestNoun="OCR request"
+            />
+            <ComputeModelCard
+              engine="whisper"
+              title="Whisper"
+              heading="Speech-to-text (Whisper)"
+              icon={<Mic className="h-4 w-4" />}
+              blurb="Choose which Whisper model PRM-Compute uses to transcribe dictation and Describe Me recordings."
+              requestNoun="transcription"
+            />
+            <IdleUnloadCard />
+          </>
         )}
 
         <Card data-testid="card-facial-intelligence">
@@ -632,6 +519,8 @@ export default function RecognitionSettingsPage() {
           </CardContent>
         </Card>
 
+        <AutoRecognitionCard />
+
         <Card className="border-destructive/40" data-testid="card-danger-zone">
           <CardHeader>
             <CardTitle className="text-lg text-destructive flex items-center gap-2">
@@ -639,18 +528,18 @@ export default function RecognitionSettingsPage() {
               Danger Zone
             </CardTitle>
             <CardDescription>
-              Permanently delete all data stored on the PRM-Face server — this includes all indexed images,
-              face records, and recognition data. This action cannot be undone.
+              Permanently delete every detected face, face crop, pending face question, and
+              person-to-face link. Photos are kept and will be scanned again. This action cannot be undone.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <Button
               variant="destructive"
               onClick={() => setResetDialogOpen(true)}
-              disabled={!hasApiKey || resetAllMutation.isPending}
-              data-testid="button-reset-all-prm-face"
+              disabled={!hasApiKey || deleteFaceDataMutation.isPending}
+              data-testid="button-delete-face-data"
             >
-              {resetAllMutation.isPending ? (
+              {deleteFaceDataMutation.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Deleting…
@@ -658,7 +547,7 @@ export default function RecognitionSettingsPage() {
               ) : (
                 <>
                   <Trash2 className="h-4 w-4 mr-2" />
-                  Delete All PRM-Face Data
+                  Delete Face Data
                 </>
               )}
             </Button>
@@ -672,26 +561,470 @@ export default function RecognitionSettingsPage() {
       </div>
 
       <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
-        <AlertDialogContent data-testid="dialog-confirm-reset-all">
+        <AlertDialogContent data-testid="dialog-confirm-delete-face-data">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete all PRM-Compute data?</AlertDialogTitle>
+            <AlertDialogTitle>Delete face data?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently wipe all images, face records, and recognition data from the PRM-Compute server.
+              This will permanently remove all detected faces, face crops, pending face questions, and
+              person-to-face links from PRM and PRM-Compute. Photos are kept.
               This action <strong>cannot be undone</strong>.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-reset-all">Cancel</AlertDialogCancel>
+            <AlertDialogCancel data-testid="button-cancel-delete-face-data">Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => resetAllMutation.mutate()}
-              data-testid="button-confirm-reset-all"
+              onClick={() => deleteFaceDataMutation.mutate()}
+              data-testid="button-confirm-delete-face-data"
             >
-              Yes, delete everything
+              Yes, delete face data
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+type ComputeModel = {
+  id: string;
+  label: string;
+  description: string;
+  downloaded: boolean;
+  downloading: boolean;
+  error: string | null;
+  active: boolean;
+  device: "cuda" | "cpu";
+};
+
+// Model picker for one PRM-Compute engine (OCR, Whisper). Both expose the same
+// /models, /models/:id/download and /config endpoints, proxied by PRM.
+function ComputeModelCard({
+  engine,
+  title,
+  heading = title,
+  icon,
+  blurb,
+  requestNoun,
+}: {
+  engine: "ocr" | "whisper";
+  title: string;
+  heading?: string;
+  icon: React.ReactNode;
+  blurb: string;
+  requestNoun: string;
+}) {
+  const { toast } = useToast();
+  const modelsKey = `/api/prm-face/${engine}/models`;
+  const [model, setModel] = useState<string>("");
+
+  const { data: models } = useQuery<{ models: ComputeModel[] }>({
+    queryKey: [modelsKey],
+    // Poll while a download is in flight so the buttons flip to "Downloaded".
+    refetchInterval: (query) => (query.state.data?.models.some((m) => m.downloading) ? 2000 : false),
+  });
+
+  useEffect(() => {
+    const active = models?.models.find((m) => m.active);
+    if (active) setModel(active.id);
+  }, [models]);
+
+  const downloadMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("POST", `${modelsKey}/${id}/download`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [modelsKey] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to start download", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/prm-face/${engine}/config`, { model });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [modelsKey] });
+      toast({ title: `${title} model updated` });
+    },
+    onError: (error: Error) => {
+      toast({ title: `Failed to update ${title} model`, description: error.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card data-testid={`card-${engine}`}>
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          {icon}
+          {heading}
+        </CardTitle>
+        <CardDescription>
+          {blurb}
+          {models && (
+            <>
+              {" "}Inference runs on{" "}
+              <span className="font-medium text-foreground" data-testid={`text-${engine}-device`}>
+                {models.models[0]?.device === "cuda" ? "GPU (CUDA)" : "CPU"}
+              </span>.
+            </>
+          )}
+          {" "}Download a model before selecting it; the first {requestNoun} otherwise waits for the download.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor={`${engine}-model`}>Active {title} Model</Label>
+          <div className="flex gap-2">
+            <Select value={model} onValueChange={setModel}>
+              <SelectTrigger id={`${engine}-model`} className="flex-1" data-testid={`select-${engine}-model`}>
+                <SelectValue placeholder="Select a model" />
+              </SelectTrigger>
+              <SelectContent>
+                {models?.models.map((m) => (
+                  <SelectItem key={m.id} value={m.id} data-testid={`option-${engine}-model-${m.id}`}>
+                    {m.label}{m.downloaded ? "" : " (not downloaded)"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending || !model || models?.models.find((m) => m.active)?.id === model}
+              data-testid={`button-save-${engine}-model`}
+            >
+              {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+            </Button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {models?.models.map((m) => (
+            <div
+              key={m.id}
+              className="flex items-center justify-between gap-4 rounded-md border p-3"
+              data-testid={`row-${engine}-model-${m.id}`}
+            >
+              <div className="space-y-0.5 min-w-0">
+                <p className="text-sm font-medium">{m.label}</p>
+                <p className="text-xs text-muted-foreground">{m.description}</p>
+                {m.error && <p className="text-xs text-destructive">Download failed: {m.error}</p>}
+              </div>
+              {m.downloaded ? (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground shrink-0">
+                  <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-500" />
+                  Downloaded
+                </span>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => downloadMutation.mutate(m.id)}
+                  disabled={m.downloading || downloadMutation.isPending}
+                  data-testid={`button-download-${engine}-model-${m.id}`}
+                >
+                  {m.downloading ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Downloadingâ€¦</>
+                  ) : (
+                    <><Download className="h-4 w-4 mr-2" />Download</>
+                  )}
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+type IdleUnloadStatus = {
+  enabled: boolean;
+  minutes: number;
+  loaded: { engine: string; model: string; idle_seconds: number }[] | null;
+  computeError?: string;
+};
+
+function formatIdle(seconds: number) {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+// Automatic recognition: what to queue for PRM-Compute when prm-stories delivers
+// new stories, posts and profile pictures. Toggles only affect new arrivals;
+// "Run on existing" queues the unprocessed backlog through the image task queue.
+type AutoRecognitionKind = "profile" | "post" | "story";
+type AutoRecognitionJob = "face" | "ocr" | "transcribe";
+type AutoRecognitionSettings = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>>;
+type BackfillCounts = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, number>>>;
+
+const AUTO_RECOGNITION_SECTIONS: { kind: AutoRecognitionKind; title: string; noun: string; jobs: { job: AutoRecognitionJob; label: string; hint: string }[] }[] = [
+  { kind: "profile", title: "Profile images", noun: "profile", jobs: [
+    { job: "face", label: "Facial recognition", hint: "Detect faces on each new profile picture." },
+  ] },
+  { kind: "post", title: "Posts", noun: "post", jobs: [
+    { job: "face", label: "Facial recognition", hint: "Detect faces on every slide of a new post." },
+    { job: "ocr", label: "OCR", hint: "Extract any text in the images." },
+    { job: "transcribe", label: "Videos: speech to text", hint: "Transcribe the audio of video posts with Whisper." },
+  ] },
+  { kind: "story", title: "Stories", noun: "story", jobs: [
+    { job: "face", label: "Facial recognition", hint: "Detect faces on each new story frame." },
+    { job: "ocr", label: "OCR", hint: "Extract any text in the story image." },
+    { job: "transcribe", label: "Videos: speech to text", hint: "Transcribe the audio of video stories with Whisper." },
+  ] },
+];
+
+const JOB_NOUN: Record<AutoRecognitionJob, string> = { face: "facial recognition", ocr: "OCR", transcribe: "speech to text" };
+
+function AutoRecognitionCard() {
+  const { toast } = useToast();
+  const [pendingBackfill, setPendingBackfill] = useState<{ kind: AutoRecognitionKind; job: AutoRecognitionJob; count: number } | null>(null);
+
+  const { data: settings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
+  const { data: counts, isFetching: countsLoading } = useQuery<BackfillCounts>({
+    queryKey: ["/api/recognition/auto/backfill-counts"],
+    refetchInterval: 30000,
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async (update: Partial<AutoRecognitionSettings>) => {
+      const res = await apiRequest("POST", "/api/recognition/auto", update);
+      return res.json() as Promise<AutoRecognitionSettings>;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["/api/recognition/auto"], data);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update setting", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const backfillMutation = useMutation({
+    mutationFn: async ({ kind, job }: { kind: AutoRecognitionKind; job: AutoRecognitionJob }) => {
+      const res = await apiRequest("POST", "/api/recognition/auto/backfill", { kind, job });
+      return res.json() as Promise<{ queued: number }>;
+    },
+    onSuccess: ({ queued }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recognition/auto/backfill-counts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/image-tasks"] });
+      toast({ title: queued ? `Queued ${queued.toLocaleString()} task${queued === 1 ? "" : "s"}` : "Nothing to queue", description: queued ? "Progress shows on the Image Tasks page." : undefined });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to queue backfill", description: error.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card data-testid="card-auto-recognition">
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Sparkles className="h-4 w-4" />
+          Automatic Recognition
+        </CardTitle>
+        <CardDescription>
+          Run recognition on content as prm-stories delivers it. Each job is queued as an image
+          task and processed by PRM-Compute in the background; follow along on the{" "}
+          <Link href="/settings/image-tasks" className="underline">Image Tasks</Link> page. Toggles
+          apply to new arrivals; <strong>Run on existing</strong> queues what has never been processed.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {AUTO_RECOGNITION_SECTIONS.map((section) => (
+          <div key={section.kind} className="space-y-3" data-testid={`auto-recognition-${section.kind}`}>
+            <h3 className="text-sm font-semibold">{section.title}</h3>
+            {section.jobs.map(({ job, label, hint }) => {
+              const count = counts?.[section.kind]?.[job];
+              const id = `auto-recog-${section.kind}-${job}`;
+              return (
+                <div key={job} className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor={id} className="text-sm font-medium">{label}</Label>
+                    <p className="text-xs text-muted-foreground">{hint}</p>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={countsLoading && count === undefined || !count || backfillMutation.isPending}
+                      onClick={() => setPendingBackfill({ kind: section.kind, job, count: count ?? 0 })}
+                      data-testid={`button-backfill-${section.kind}-${job}`}
+                    >
+                      Run on existing{count !== undefined ? ` (${count.toLocaleString()})` : ""}
+                    </Button>
+                    <Switch
+                      id={id}
+                      checked={!!settings?.[section.kind]?.[job]}
+                      onCheckedChange={(checked) => saveMutation.mutate({ [section.kind]: { [job]: checked } })}
+                      disabled={!settings || saveMutation.isPending}
+                      data-testid={`switch-${id}`}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </CardContent>
+
+      <AlertDialog open={!!pendingBackfill} onOpenChange={(open) => !open && setPendingBackfill(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Queue {pendingBackfill ? JOB_NOUN[pendingBackfill.job] : ""} on existing content?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingBackfill && (
+                <>
+                  This queues {pendingBackfill.count.toLocaleString()} {AUTO_RECOGNITION_SECTIONS.find((s) => s.kind === pendingBackfill.kind)?.noun}{" "}
+                  {pendingBackfill.job === "transcribe" ? "video" : "image"}{pendingBackfill.count === 1 ? "" : "s"} that
+                  {pendingBackfill.count === 1 ? " has" : " have"} never been processed. PRM-Compute works through them one at a time.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingBackfill) backfillMutation.mutate({ kind: pendingBackfill.kind, job: pendingBackfill.job });
+                setPendingBackfill(null);
+              }}
+              data-testid="button-confirm-backfill"
+            >
+              Queue
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
+  );
+}
+
+// Idle model unload: OCR / Whisper presets stay in memory once loaded unless
+// this is on. The setting is saved in PRM (app_settings) and PRM-Compute reads
+// it at startup and whenever it's saved here.
+function IdleUnloadCard() {
+  const { toast } = useToast();
+  const [enabled, setEnabled] = useState(false);
+  const [minutes, setMinutes] = useState("10");
+
+  const { data: status } = useQuery<IdleUnloadStatus>({
+    queryKey: ["/api/prm-face/idle-unload"],
+    refetchInterval: 30000,
+  });
+
+  useEffect(() => {
+    if (!status) return;
+    setEnabled(status.enabled);
+    setMinutes(String(status.minutes));
+  }, [status?.enabled, status?.minutes]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/prm-face/idle-unload", { enabled, minutes: Number(minutes) });
+      return res.json() as Promise<IdleUnloadStatus>;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(["/api/prm-face/idle-unload"], data);
+      toast({
+        title: "Idle unload setting saved",
+        description: data.computeError
+          ? `PRM-Compute will pick it up on its next start: ${data.computeError}`
+          : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to save idle unload setting", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const mins = Number(minutes);
+  const validMinutes = Number.isInteger(mins) && mins >= 1 && mins <= 1440;
+  const dirty = !!status && (enabled !== status.enabled || mins !== status.minutes);
+
+  return (
+    <Card data-testid="card-idle-unload">
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Timer className="h-4 w-4" />
+          Idle Model Unload
+        </CardTitle>
+        <CardDescription>
+          OCR and Whisper models stay in RAM / VRAM once loaded. Turn this on to have PRM-Compute
+          unload any model that hasn't been used for a while; the next request reloads it (a few
+          seconds, ~20 s for Whisper big). Face models are never unloaded.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label htmlFor="idle-unload-enabled">Unload idle models</Label>
+            <p className="text-sm text-muted-foreground">Free memory when a model sits unused.</p>
+          </div>
+          <Switch
+            id="idle-unload-enabled"
+            checked={enabled}
+            onCheckedChange={setEnabled}
+            data-testid="switch-idle-unload"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="idle-unload-minutes">Unload after (minutes)</Label>
+          <div className="flex gap-2">
+            <Input
+              id="idle-unload-minutes"
+              type="number"
+              min={1}
+              max={1440}
+              value={minutes}
+              onChange={(e) => setMinutes(e.target.value)}
+              disabled={!enabled}
+              className="w-32"
+              data-testid="input-idle-unload-minutes"
+            />
+            <Button
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending || !validMinutes || !dirty}
+              data-testid="button-save-idle-unload"
+            >
+              {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+            </Button>
+          </div>
+          {!validMinutes && (
+            <p className="text-xs text-destructive">Enter a whole number between 1 and 1440.</p>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Loaded models</p>
+          {status?.loaded == null ? (
+            <p className="text-xs text-muted-foreground" data-testid="text-idle-unload-offline">
+              {status?.computeError ?? "Loading…"}
+            </p>
+          ) : status.loaded.length === 0 ? (
+            <p className="text-xs text-muted-foreground" data-testid="text-idle-unload-empty">
+              No OCR or Whisper models are in memory.
+            </p>
+          ) : (
+            status.loaded.map((m) => (
+              <div
+                key={`${m.engine}/${m.model}`}
+                className="flex items-center justify-between gap-4 rounded-md border p-3"
+                data-testid={`row-loaded-${m.engine}-${m.model}`}
+              >
+                <p className="text-sm font-medium">
+                  {m.engine === "ocr" ? "OCR" : "Whisper"} · {m.model}
+                </p>
+                <span className="text-xs text-muted-foreground shrink-0">idle {formatIdle(m.idle_seconds)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

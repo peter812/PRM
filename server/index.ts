@@ -12,6 +12,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
 import { startTaskWorker } from "./task-worker";
+import { syncFaceCropStorage } from "./image-storage";
 import { startOsintScanRunner } from "./osint-scan-queue";
 import { startStoriesScheduler } from "./stories-scheduler";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
@@ -181,6 +182,9 @@ app.use(prmS3DirectMiddleware);
     ...(!isWindows && { reusePort: true }),
   }, () => {
     log(`serving on port ${port}`);
+    // PRM-compute reads the face-crop bucket from app_settings; make sure the
+    // resolved PRM-S3 config is there and compute has loaded it.
+    void syncFaceCropStorage();
     startTaskWorker();
     startOsintScanRunner();
     startStoriesScheduler();

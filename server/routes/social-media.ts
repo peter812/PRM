@@ -34,7 +34,7 @@ import multer from "multer";
 import { deleteImageFromS3 } from "../s3";
 import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl } from "../prm-s3";
 import { deleteImageLocally, getLocalImagePath, isLocalImageUrl } from "../local-storage";
-import { getImageStorageMode, setImageStorageMode, isStorageMode } from "../image-storage";
+import { getImageStorageMode, setImageStorageMode, isStorageMode, syncFaceCropStorage } from "../image-storage";
 import { hashPassword, requireAuth, requireAdmin } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
 import { queueOsintScansForMeAccount } from "../osint-scan-queue";
@@ -1420,24 +1420,6 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.get("/api/tasks/social-accounts-brief", async (req, res) => {
-      try {
-        // Lean query: only fetch the three fields needed, avoiding the heavy full join
-        const rows = await db
-          .select({
-            id: socialAccounts.id,
-            username: socialAccounts.username,
-            nickname: socialAccounts.nickname,
-          })
-          .from(socialAccounts)
-          .orderBy(socialAccounts.username);
-        res.json(rows.map(r => ({ id: r.id, username: r.username, nickname: r.nickname ?? null })));
-      } catch (error) {
-        console.error("Error fetching brief accounts:", error);
-        res.status(500).json({ error: "Failed to fetch accounts" });
-      }
-    });
-  
     app.get("/api/tasks/worker-status", (_req, res) => {
       res.json({ paused: isTaskWorkerPaused() });
     });
@@ -1501,44 +1483,6 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error cancelling task:", error);
         res.status(500).json({ error: "Failed to cancel task" });
-      }
-    });
-  
-    app.post("/api/tasks/refresh-follower-count/:socialAccountId", async (req, res) => {
-      try {
-        const { socialAccountId } = req.params;
-        const account = await storage.getSocialAccountById(socialAccountId);
-        if (!account) {
-          return res.status(404).json({ error: "Social account not found" });
-        }
-        const task = await storage.createTask({
-          userId: req.user!.id,
-          type: "refresh_follower_count",
-          status: "pending",
-          title: account.username,
-          payload: JSON.stringify({ socialAccountId }),
-        });
-        triggerTaskWorker();
-        res.json(task);
-      } catch (error) {
-        console.error("Error creating refresh task:", error);
-        res.status(500).json({ error: "Failed to create refresh task" });
-      }
-    });
-  
-    app.post("/api/tasks/mass-refresh-follower-count", async (req, res) => {
-      try {
-        const task = await storage.createTask({
-          userId: req.user!.id,
-          type: "mass_refresh_follower_count",
-          status: "pending",
-          payload: JSON.stringify({}),
-        });
-        triggerTaskWorker();
-        res.json(task);
-      } catch (error) {
-        console.error("Error creating mass refresh task:", error);
-        res.status(500).json({ error: "Failed to create mass refresh task" });
       }
     });
   
@@ -1929,6 +1873,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "Invalid storage mode. Must be 'prm-s3', 's3', or 'local'" });
         }
         await setImageStorageMode(mode);
+        await syncFaceCropStorage();
         res.json({ success: true, mode });
       } catch (error) {
         console.error("Error setting image storage mode:", error);
@@ -1972,6 +1917,7 @@ export function registerRoutes(app: Express) {
           toSave.secretAccessKey = secretAccessKey;
         }
         await setPrmS3Config(toSave);
+        await syncFaceCropStorage();
         res.json({ success: true });
       } catch (error: any) {
         res.status(500).json({ error: error.message });

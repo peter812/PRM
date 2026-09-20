@@ -39,6 +39,7 @@ import {
   queueManualJob,
   requeueJob,
 } from "../tracking";
+import { enqueueAutoRecognition } from "../recognition";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -407,6 +408,7 @@ export function registerTracking(app: Express) {
         await upsertComments(id, meta.comments ?? []);
         for (const photoId of photoIds) syncEntityInBackground("image", photoId);
         res.status(201).json({ outcome: "stored", postId: id });
+        void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined });
       });
     } catch (error) {
       fail(res, "store post", error);

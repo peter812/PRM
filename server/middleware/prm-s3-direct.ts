@@ -5,7 +5,8 @@ import { getPrmS3Config, presignPrmS3PublicUrl, normalizeEndpointUrl, type PrmS3
  * PRM-S3 direct delivery.
  *
  * The database only ever stores proxy paths (/api/prm-s3/images/<name>,
- * /api/prm-s3/media/<name>). In direct mode this middleware:
+ * /api/prm-s3/media/<name>, /api/prm-s3/faces/<name> for PRM-compute's face
+ * crops). In direct mode this middleware:
  *
  *  - rewrites those paths inside every JSON API response into presigned GET
  *    URLs on the public PRM-S3 endpoint, so the browser (and API-key
@@ -18,7 +19,7 @@ import { getPrmS3Config, presignPrmS3PublicUrl, normalizeEndpointUrl, type PrmS3
  * rewrite adds no PRM-S3 traffic and no DB reads per response.
  */
 
-const PROXY_PATH_RE = /\/api\/prm-s3\/(images|media)\/([A-Za-z0-9_.-]+)/g;
+const PROXY_PATH_RE = /\/api\/prm-s3\/(images|media|faces)\/([A-Za-z0-9_.-]+)/g;
 
 // JSON endpoints whose payloads must keep raw storage paths.
 const EXCLUDED_PREFIXES = ["/api/image-storage/"];
@@ -76,7 +77,7 @@ function getInboundRegex(cfg: PrmS3Config): RegExp {
     const prefix = `${base.protocol}//${base.host}${base.pathname.replace(/\/+$/, "")}/${cfg.bucket}`;
     const escaped = prefix.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
     // The query stops at whitespace, quotes or a backslash (URLs inside JSON-encoded strings).
-    inboundRe = new RegExp(`${escaped}/(images|media)/([A-Za-z0-9_.-]+)(?:\\?X-Amz-[^\\s"'\\\\<>]*)?`, "g");
+    inboundRe = new RegExp(`${escaped}/(images|media|faces)/([A-Za-z0-9_.-]+)(?:\\?X-Amz-[^\\s"'\\\\<>]*)?`, "g");
     inboundReKey = key;
   }
   return inboundRe;

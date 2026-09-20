@@ -648,19 +648,6 @@ export default function ApiDocs() {
           response: `{ "success": true }`,
           example: `fetch('${baseUrl}/api/tasks/task-uuid-1', { method: 'DELETE' })
   .then(res => res.json());`
-        },
-        {
-          id: "mass-refresh-followers",
-          method: "POST",
-          path: "/api/tasks/mass-refresh-follower-count",
-          summary: "Trigger mass follower sync",
-          description: "Enqueues background task worker to sync followers metrics for all accounts.",
-          response: `{
-  "success": true,
-  "taskId": "task-uuid-2"
-}`,
-          example: `fetch('${baseUrl}/api/tasks/mass-refresh-follower-count', { method: 'POST' })
-  .then(res => res.json());`
         }
       ]
     },

@@ -140,18 +140,19 @@ export function registerRoutes(app: Express) {
       res.sendFile(filePath);
     });
 
-    // Serve PRM-S3 images (authenticated).
+    // Serve PRM-S3 objects (authenticated): images, media, and the face crops
+    // PRM-compute writes under faces/.
     // Proxy mode streams the object through this server over the internal
     // endpoint. In direct mode API responses already carry presigned public
     // URLs, so this route is only a safety net for stale clients: redirect
     // to the presigned URL rather than proxying the bytes.
-    app.get("/api/prm-s3/images/:filename", async (req, res) => {
+    app.get("/api/prm-s3/:kind(images|media|faces)/:filename", async (req, res) => {
       if (!req.isAuthenticated()) {
         return res.status(401).json({ error: "Not authenticated" });
       }
       try {
         const safeName = path.basename(req.params.filename);
-        const key = `images/${safeName}`;
+        const key = `${req.params.kind}/${safeName}`;
         const publicUrl = await getPrmS3PublicUrl(key);
         if (publicUrl) {
           // A presigned URL is valid for at least one signing window.
@@ -165,31 +166,7 @@ export function registerRoutes(app: Express) {
         res.setHeader("Cache-Control", "public, max-age=86400");
         stream.pipe(res);
       } catch (err: any) {
-        res.status(404).json({ error: "Image not found on PRM-S3" });
-      }
-    });
-
-    // Serve PRM-S3 media (authenticated); same proxy/direct split as images.
-    app.get("/api/prm-s3/media/:filename", async (req, res) => {
-      if (!req.isAuthenticated()) {
-        return res.status(401).json({ error: "Not authenticated" });
-      }
-      try {
-        const safeName = path.basename(req.params.filename);
-        const key = `media/${safeName}`;
-        const publicUrl = await getPrmS3PublicUrl(key);
-        if (publicUrl) {
-          res.setHeader("Cache-Control", `private, max-age=${PRM_S3_PRESIGN_WINDOW_SECONDS - 600}`);
-          return res.redirect(302, publicUrl);
-        }
-        const { stream, contentType, contentLength, etag } = await getPrmS3ObjectStream(key);
-        if (etag) res.setHeader("ETag", etag);
-        if (contentLength) res.setHeader("Content-Length", contentLength);
-        res.setHeader("Content-Type", contentType);
-        res.setHeader("Cache-Control", "public, max-age=86400");
-        stream.pipe(res);
-      } catch (err: any) {
-        res.status(404).json({ error: "Media not found on PRM-S3" });
+        res.status(404).json({ error: "Object not found on PRM-S3" });
       }
     });
 

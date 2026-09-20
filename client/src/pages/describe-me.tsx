@@ -21,8 +21,8 @@ export default function DescribeMePage() {
   // Non-null while reviewing the extracted bullets.
   const [bullets, setBullets] = useState<string[] | null>(null);
 
-  const { data: settings } = useQuery<{ whisperApiUrl?: string }>({ queryKey: ["/api/ollama/settings"] });
-  const whisperConfigured = !!settings?.whisperApiUrl?.trim();
+  const { data: settings } = useQuery<{ whisperSource?: "prm-compute" | "external" | null }>({ queryKey: ["/api/ollama/settings"] });
+  const whisperConfigured = !!settings?.whisperSource;
 
   const next = useQuery<{ person: Person | null }>({
     queryKey: [`/api/describe-me/next?exclude=${skipped.join(",")}`],
@@ -172,8 +172,9 @@ export default function DescribeMePage() {
           </>
         ) : !whisperConfigured ? (
           <p className="text-sm text-muted-foreground text-center">
-            Describe Me needs a speech-to-text server. Set one up under{" "}
-            <Link href="/settings/intelligence" className="underline">Settings → Intelligence</Link>.
+            Describe Me needs speech-to-text. Connect PRM-Compute under{" "}
+            <Link href="/settings/recognition" className="underline">Settings → Recognition</Link>, or set a Whisper
+            server URL under <Link href="/settings/intelligence" className="underline">Settings → Intelligence</Link>.
           </p>
         ) : (
           <>

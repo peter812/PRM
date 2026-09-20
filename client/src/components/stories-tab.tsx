@@ -43,6 +43,7 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
   const story = stories[index];
   if (!story) return null;
   const meta = (story.metadata ?? {}) as StoryMetadata;
+  const transcript = (story.videoTranscript as { text?: string } | null)?.text;
   const image = firstImage(story);
   const mentions = mentionsOf(story);
   const igLink = (username: string) => (
@@ -133,6 +134,11 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
               </Badge>
             )}
             {story.description && <Row label="Description">{story.description}</Row>}
+            {transcript && (
+              <Row label="Transcript">
+                <p className="whitespace-pre-wrap text-muted-foreground" data-testid="text-story-transcript">{transcript}</p>
+              </Row>
+            )}
             {mentions.length > 0 && (
               <Row label="Mentions">
                 <div className="flex flex-wrap gap-x-3 gap-y-1">{mentions.map(igLink)}</div>

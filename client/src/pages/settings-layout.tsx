@@ -45,7 +45,6 @@ const ImageStorageSettingsPage = lazy(() => import("@/pages/image-storage-settin
 const ImageTablePage = lazy(() => import("@/pages/image-table-page"));
 const ImageTasksSettingsPage = lazy(() => import("@/pages/image-tasks-settings"));
 const RecognitionSettingsPage = lazy(() => import("@/pages/recognition-settings"));
-const RecognitionImagesPage = lazy(() => import("@/pages/recognition-images"));
 const RecognitionFacesPage = lazy(() => import("@/pages/recognition-faces"));
 const SocialGraphSettingsPage = lazy(() => import("@/pages/social-graph-settings"));
 const InstagramImportersPage = lazy(() => import("@/pages/instagram-importers"));
@@ -113,6 +112,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Storage", url: "/settings/image-storage", icon: HardDrive },
       { title: "Image Table", url: "/settings/image-storage/table", icon: Table2 },
+      { title: "Faces", url: "/settings/image-storage/faces", icon: ScanFace },
     ],
   },
   {
@@ -162,10 +162,6 @@ const settingsMenuItems: MenuItem[] = [
     title: "Recognition",
     url: "/settings/recognition",
     icon: Scan,
-    subItems: [
-      { title: "Images", url: "/settings/recognition/images", icon: ImageIcon },
-      { title: "Faces", url: "/settings/recognition/faces", icon: ScanFace },
-    ],
   },
   {
     title: "API Documentation",
@@ -183,7 +179,6 @@ export function SettingsSidebar() {
   const isAdminActive = location.startsWith("/settings/admin");
   const isImportExportActive = location.startsWith("/settings/import-export");
   const isInstagramActive = location.startsWith("/settings/instagram");
-  const isRecognitionActive = location.startsWith("/settings/recognition");
   const isAppOptionsActive =
     location.startsWith("/settings/app") ||
     location.startsWith("/settings/social-graph") ||
@@ -207,7 +202,6 @@ export function SettingsSidebar() {
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
       case "/settings/admin": return isAdminActive;
-      case "/settings/recognition": return isRecognitionActive;
       case "/settings/app": return isAppOptionsActive;
       case "/settings/image-storage": return isImageStorageActive;
       case "/settings/intelligence": return isIntelligenceActive;
@@ -308,6 +302,7 @@ export default function SettingsLayout() {
           <Route path="/image-tasks" component={ImageTasksSettingsPage} />
           <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
           <Route path="/image-storage/table" component={ImageTablePage} />
+          <Route path="/image-storage/faces" component={RecognitionFacesPage} />
           <Route path="/image-storage" component={ImageStorageSettingsPage} />
           <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
           <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
@@ -325,8 +320,7 @@ export default function SettingsLayout() {
           <Route path="/tasks" component={TasksSettingsPage} />
           <Route path="/task/:id" component={TaskDetailPage} />
           <Route path="/social-graph" component={SocialGraphSettingsPage} />
-          <Route path="/recognition/images" component={RecognitionImagesPage} />
-          <Route path="/recognition/faces" component={RecognitionFacesPage} />
+          <Route path="/recognition/faces" component={() => <Redirect to="/settings/image-storage/faces" />} />
           <Route path="/recognition" component={RecognitionSettingsPage} />
           <Route path="/import-export/stories" component={() => <Redirect to="/instagram" />} />
           <Route path="/import-export/contacts" component={ImportContactsPage} />

@@ -28,6 +28,8 @@ function getTaskLabel(type: string): string {
     case "download_img_instagram": return "Download Instagram Image";
     case "analyze_img_full": return "Analyze Image (Full)";
     case "analyze_img_face": return "Analyze Image (Face)";
+    case "analyze_img_ocr": return "Analyze Image (OCR)";
+    case "transcribe_video": return "Transcribe Video";
     case "analyze_img_metadata": return "Analyze Image (Metadata)";
     case "analyze_img_llm": return "Analyze Image (LLM)";
     case "convert_img": return "Convert Image";

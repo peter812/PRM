@@ -71,6 +71,8 @@ function TypeLabel({ type }: { type: string }) {
     download_img_instagram: "DL Instagram",
     analyze_img_full: "Analyze Full",
     analyze_img_face: "Analyze Face",
+    analyze_img_ocr: "OCR",
+    transcribe_video: "Transcribe Video",
     analyze_img_metadata: "Analyze Meta",
     analyze_img_llm: "Analyze LLM",
     convert_img: "Convert",
@@ -144,6 +146,8 @@ export default function ImageTasksSettingsPage() {
             <SelectItem value="download_img_instagram">Download Instagram</SelectItem>
             <SelectItem value="analyze_img_full">Analyze Full</SelectItem>
             <SelectItem value="analyze_img_face">Analyze Face</SelectItem>
+            <SelectItem value="analyze_img_ocr">OCR</SelectItem>
+            <SelectItem value="transcribe_video">Transcribe Video</SelectItem>
             <SelectItem value="analyze_img_metadata">Analyze Metadata</SelectItem>
             <SelectItem value="analyze_img_llm">Analyze LLM</SelectItem>
             <SelectItem value="convert_img">Convert</SelectItem>

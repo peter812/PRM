@@ -592,6 +592,8 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   isDeleted: boolean("is_deleted").notNull().default(false),
   postedAt: timestamp("posted_at"),
   metadata: jsonb("metadata"), // stories: expiresAt, links, hashtags, locations, resharedPost, music, stickers, isAd, videoUrl
+  videoTranscript: jsonb("video_transcript"), // PRM-Compute Whisper result for metadata.videoUrl: { text, language, segments: [{ start, end, text }] }
+  videoTranscriptAt: timestamp("video_transcript_at", { withTimezone: true }),
   scrapedFrom: text("scraped_from"), // stories: the Instagram @username the scraper was logged in as when it saw this
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -662,9 +664,11 @@ export const photos = pgTable("photos", {
   processedAt: timestamp("processed_at"),
   imageDescriptionAt: timestamp("image_description_at"),
   imageDescription: text("image_description"),
-  faceIdAt: timestamp("face_id_at"),
+  faceIdAt: timestamp("face_id_at", { withTimezone: true }),
   faceUuids: jsonb("face_uuids"), // Array of { faceUuid: string, subImagePhotoId: string }
   facialIds: jsonb("facial_ids").default(sql`'[]'::jsonb`),
+  ocrAt: timestamp("ocr_at", { withTimezone: true }),
+  ocrData: jsonb("ocr_data"), // PRM-Compute OCR result: { text, lines: [{ text, score, box }], width, height }
   prmLocation: text("prm_location").notNull(), // e.g. "post:UUID", "interaction:UUID", "profile_image:UUID"
   metadata: jsonb("metadata"), // EXIF / image metadata extracted by analyze_img_metadata
   ogMetadata: jsonb("og_metadata"), // OpenGraph-style metadata captured when the file is added to storage (source URL, content-type, content-length, last-modified, etag, etc.)
@@ -751,7 +755,7 @@ export const tasks = pgTable("tasks", {
 export const imageTasks = pgTable("image_tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  type: text("type").notNull(), // 'download_img_instagram' | 'analyze_img_full' | 'analyze_img_face' | 'analyze_img_metadata' | 'analyze_img_llm' | 'convert_img'
+  type: text("type").notNull(), // 'download_img_instagram' | 'analyze_img_full' | 'analyze_img_face' | 'analyze_img_ocr' | 'transcribe_video' | 'analyze_img_metadata' | 'analyze_img_llm' | 'convert_img'
   status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
   payload: text("payload").notNull().default("{}"),
   result: text("result"),
@@ -780,8 +784,8 @@ export const imageQuestions = pgTable("image_questions", {
   status: text("status").notNull().default("pending"), // 'pending' | 'resolved' | 'ignored'
   resolvedAs: text("resolved_as"), // 'known_person' | 'create_person' | 'unknown'
   resolvedPersonId: varchar("resolved_person_id").references(() => people.id, { onDelete: "set null" }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
 }, (t) => [
   index("image_questions_photo_id_idx").on(t.photoId),
   index("image_questions_resolved_person_id_idx").on(t.resolvedPersonId),
@@ -798,7 +802,7 @@ export const faces = pgTable("faces", {
   personfaceUuid: varchar("personface_uuid"), // optional grouping identity
   detectionConfidence: text("detection_confidence"),
   coordinates: jsonb("coordinates"), // { x, y, w, h } bbox in the source image
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("faces_photo_id_idx").on(t.photoId),
   index("faces_personface_uuid_idx").on(t.personfaceUuid),

@@ -602,6 +602,16 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_synced_at: "TIMESTAMP",
         facial_ids: "JSONB DEFAULT '[]'::jsonb",
         perceptual_hash: "TEXT",
+        // Read/written by PRM-Compute (database.py Photo). PRM-Compute never
+        // alters the schema itself; it fails on startup if these are missing.
+        s3_key: "VARCHAR(512)",
+        file_hash: "TEXT",
+        face_id_at: "TIMESTAMPTZ",
+        ocr_at: "TIMESTAMPTZ",
+        ocr_data: "JSONB",
+      },
+      image_tasks: {
+        logs: "TEXT", // PRM-Compute worker.py writes per-task log text here
       },
       notes: {
         image_uuid: "VARCHAR",
@@ -691,6 +701,8 @@ async function validateAndSyncSchema(): Promise<void> {
         likes_hidden: "BOOLEAN NOT NULL DEFAULT false",
         instagram_pk: "TEXT",
         coauthor_account_ids: "JSONB NOT NULL DEFAULT '[]'::jsonb",
+        video_transcript: "JSONB",
+        video_transcript_at: "TIMESTAMPTZ",
       },
       story_scrape_runs: {
         token_hash: "TEXT",
@@ -1189,7 +1201,7 @@ async function validateAndSyncSchema(): Promise<void> {
           personface_uuid VARCHAR,
           detection_confidence TEXT,
           coordinates JSONB,
-          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
       log("faces table created successfully");
@@ -1209,11 +1221,63 @@ async function validateAndSyncSchema(): Promise<void> {
           status TEXT NOT NULL DEFAULT 'pending',
           resolved_as TEXT,
           resolved_person_id VARCHAR REFERENCES people(id) ON DELETE SET NULL,
-          created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-          resolved_at TIMESTAMP
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          resolved_at TIMESTAMPTZ
         )
       `);
       log("image_questions table created successfully");
+    }
+
+    // PRM-Compute's own tables (database.py ApiKey / SetupState / OsintJob).
+    // PRM owns the schema for the shared database; PRM-Compute only validates
+    // it on startup and errors out if anything it expects is missing.
+    if (!(await tableExists("prm_face_api_keys"))) {
+      log("Creating prm_face_api_keys table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS prm_face_api_keys (
+          id VARCHAR(36) PRIMARY KEY,
+          key_hash VARCHAR(64) NOT NULL UNIQUE,
+          label VARCHAR(255),
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+          created_at TIMESTAMPTZ,
+          last_used_at TIMESTAMPTZ
+        )
+      `);
+      log("prm_face_api_keys table created successfully");
+    }
+
+    if (!(await tableExists("setup_state"))) {
+      log("Creating setup_state table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS setup_state (
+          id VARCHAR(4) PRIMARY KEY,
+          setup_completed BOOLEAN NOT NULL DEFAULT FALSE,
+          setup_code_hash VARCHAR(64)
+        )
+      `);
+      log("setup_state table created successfully");
+    }
+
+    if (!(await tableExists("osint_jobs"))) {
+      log("Creating osint_jobs table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS osint_jobs (
+          id VARCHAR(36) PRIMARY KEY,
+          tool VARCHAR(64) NOT NULL,
+          target VARCHAR(128) NOT NULL,
+          target_type VARCHAR(32) NOT NULL,
+          options JSON NOT NULL,
+          status VARCHAR(16) NOT NULL DEFAULT 'pending',
+          created_at TIMESTAMPTZ NOT NULL,
+          started_at TIMESTAMPTZ,
+          finished_at TIMESTAMPTZ,
+          result JSON,
+          error TEXT,
+          raw_output_path TEXT
+        )
+      `);
+      await pool.query(`CREATE INDEX IF NOT EXISTS ix_osint_jobs_status ON osint_jobs(status)`);
+      log("osint_jobs table created successfully");
     }
 
     // Ensure people.tps_id exists (TruePeopleSearch person link)
