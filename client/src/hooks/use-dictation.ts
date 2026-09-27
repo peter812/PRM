@@ -3,21 +3,43 @@ import { useToast } from "@/hooks/use-toast";
 
 export type DictationStatus = "idle" | "recording" | "transcribing";
 
+export interface UseDictationOptions {
+  deviceId?: string;
+  onPermissionGranted?: () => void;
+}
+
 /**
  * Microphone dictation: records with MediaRecorder, sends the clip to the
  * Whisper proxy (/api/daily-notes/transcribe) and hands back the text.
  * Errors are surfaced as toasts; the mic is released on stop and on unmount.
  */
-export function useDictation(onTranscript: (text: string) => void) {
+export function useDictation(
+  onTranscript: (text: string) => void,
+  options?: UseDictationOptions
+) {
   const { toast } = useToast();
   const [status, setStatus] = useState<DictationStatus>("idle");
+  const [audioLevel, setAudioLevel] = useState<number>(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const animFrameRef = useRef<number | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const releaseMic = () => {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    setAudioLevel(0);
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
   };
@@ -44,8 +66,60 @@ export function useDictation(onTranscript: (text: string) => void) {
   const start = async () => {
     if (status !== "idle") return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const selectedDeviceId = optionsRef.current?.deviceId;
+      const constraints: MediaStreamConstraints = {
+        audio: selectedDeviceId && selectedDeviceId !== "default"
+          ? { deviceId: { exact: selectedDeviceId } }
+          : true,
+      };
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (deviceErr) {
+        if (selectedDeviceId && selectedDeviceId !== "default") {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } else {
+          throw deviceErr;
+        }
+      }
       streamRef.current = stream;
+      optionsRef.current?.onPermissionGranted?.();
+
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          const ctx = new AudioContextClass();
+          const source = ctx.createMediaStreamSource(stream);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 256;
+          analyser.smoothingTimeConstant = 0.4;
+          source.connect(analyser);
+          audioContextRef.current = ctx;
+
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          const checkVolume = () => {
+            if (recorderRef.current && recorderRef.current.state === "recording") {
+              analyser.getByteFrequencyData(dataArray);
+              let sum = 0;
+              const count = Math.min(dataArray.length, 32);
+              for (let i = 0; i < count; i++) {
+                sum += dataArray[i];
+              }
+              const avg = sum / count;
+              const normalized = Math.min(1, Math.max(0, avg / 80));
+              setAudioLevel(normalized);
+              animFrameRef.current = requestAnimationFrame(checkVolume);
+            } else {
+              setAudioLevel(0);
+            }
+          };
+          animFrameRef.current = requestAnimationFrame(checkVolume);
+        }
+      } catch {
+        // Web Audio visualizer setup shouldn't interrupt recording
+      }
+
       const mimeType = MediaRecorder.isTypeSupported("audio/webm")
         ? "audio/webm"
         : MediaRecorder.isTypeSupported("audio/ogg")
@@ -89,5 +163,5 @@ export function useDictation(onTranscript: (text: string) => void) {
   // Stop the mic if the component unmounts mid-recording.
   useEffect(() => () => { stop(); releaseMic(); }, []);
 
-  return { status, toggle };
+  return { status, toggle, start, stop, audioLevel };
 }

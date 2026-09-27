@@ -731,6 +731,17 @@ export const dailyNoteAuditLogs = pgTable("daily_note_audit_logs", {
   index("daily_note_audit_logs_daily_note_id_idx").on(t.dailyNoteId),
 ]);
 
+// Map demo geocode cache (map-page-plan.md §2). Keyed by the normalized address
+// string, so editing an address just misses the cache — nothing to invalidate.
+export const geocodes = pgTable("geocodes", {
+  query: text("query").primaryKey(), // lower(regexp_replace(trim(address), '\s+', ' ', 'g'))
+  status: text("status").notNull(), // 'ok' | 'not_found' | 'manual'
+  latitude: real("latitude"), // null when not_found
+  longitude: real("longitude"),
+  displayName: text("display_name"), // what the geocoder matched
+  geocodedAt: timestamp("geocoded_at").notNull().defaultNow(),
+});
+
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1021,6 +1032,35 @@ export const trackingJobs = pgTable("tracking_jobs", {
   index("tracking_jobs_status_idx").on(t.status),
   index("tracking_jobs_account_idx").on(t.socialAccountId, t.createdAt),
   index("tracking_jobs_batch_idx").on(t.batchId),
+]);
+
+// An account PRM can no longer check (account-issues-plan.md). Opened by the
+// tracking result handler, closed by a later job that gets through or by a
+// person on the Issues page. One open row per account and kind; an open
+// not_found row keeps the account out of scheduled claims.
+export const ISSUE_KINDS = ["not_found", "private"] as const;
+export type IssueKind = (typeof ISSUE_KINDS)[number];
+
+export const socialAccountIssues = pgTable("social_account_issues", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(), // IssueKind
+  status: text("status").notNull().default("open"), // open | resolved | dismissed
+  /** The job that raised (or last re-raised) it, and what it was doing. */
+  jobId: varchar("job_id").references(() => trackingJobs.id, { onDelete: "set null" }),
+  jobKind: text("job_kind"), // TrackingKind
+  /** Times a job hit the same wall while the issue stayed open. */
+  timesSeen: integer("times_seen").notNull().default(1),
+  firstSeenAt: timestamp("first_seen_at").notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+  /** How it closed: renamed | recheck_ok | became_public | dismissed. */
+  resolution: text("resolution"),
+  previousUsername: text("previous_username"), // set on 'renamed'
+  resolvedBy: integer("resolved_by").references(() => users.id, { onDelete: "set null" }),
+  resolvedAt: timestamp("resolved_at"),
+}, (t) => [
+  uniqueIndex("social_account_issues_open_uniq").on(t.socialAccountId, t.kind).where(sql`status = 'open'`),
+  index("social_account_issues_account_idx").on(t.socialAccountId),
 ]);
 
 // Relations
@@ -1722,6 +1762,7 @@ export type OsintScanQueueRow = typeof osintScanQueue.$inferSelect;
 export type StoryScrapeRun = typeof storyScrapeRuns.$inferSelect;
 export type StoryImporter = typeof storyImporters.$inferSelect;
 export type TrackingJob = typeof trackingJobs.$inferSelect;
+export type SocialAccountIssue = typeof socialAccountIssues.$inferSelect;
 
 // Types
 export type User = typeof users.$inferSelect;

@@ -40,6 +40,7 @@ import {
   requeueJob,
 } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
+import { raiseIssue, resolveIssues } from "../account-issues";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -224,6 +225,7 @@ export function registerTracking(app: Express) {
             isPrivate: meta.isPrivate ?? account.isPrivate,
           })
           .where(eq(socialAccounts.id, account.id));
+        if (meta.isPrivate === false) await resolveIssues(account.id, ["private"], "became_public");
         res.json({ ok: true, imageReplaced: Boolean(image), imageChange: image?.imageChange ?? null });
       });
     } catch (error) {
@@ -488,6 +490,11 @@ export function registerTracking(app: Express) {
         if (r.status === "completed" || reason === "private" || reason === "not_found") {
           await markChecked(account.id, job.kind as TrackingKind);
         }
+        // Issues (account-issues-plan.md §3): a wall opens one, a check that got through closes it.
+        const kind = job.kind as TrackingKind;
+        if (reason === "not_found") await raiseIssue(account.id, "not_found", { id: job.id, kind });
+        else if (reason === "private" && kind !== "info") await raiseIssue(account.id, "private", { id: job.id, kind });
+        else if (r.status === "completed") await resolveIssues(account.id, kind === "info" ? ["not_found"] : ["not_found", "private"], "recheck_ok");
         sseManager.broadcast("social_account.updated", { id: account.id });
         syncEntityInBackground("social_account", account.id);
         res.json({ ok: true });

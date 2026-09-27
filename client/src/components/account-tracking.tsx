@@ -6,6 +6,7 @@
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +40,9 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
   const { toast } = useToast();
   const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
   const { data: jobs } = useQuery<TrackingJob[]>({ queryKey: [`/api/social-accounts/${account.id}/tracking-jobs`], refetchInterval: 30_000 });
+  // An open not_found issue keeps the account off the schedule (account-issues-plan.md §4).
+  const { data: issues } = useQuery<{ issue: { kind: string } }[]>({ queryKey: ["/api/account-issues", { accountId: account.id }] });
+  const paused = issues?.some((r) => r.issue.kind === "not_found") ?? false;
   const cadence = resolveCadence(account, parseLevelCadences(settings?.tracking_level_defaults));
   const [editing, setEditing] = useState(false);
 
@@ -79,6 +83,11 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
         Edit tracking
         {open.length > 0 && <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4 leading-none">{open.length} queued</Badge>}
       </Button>
+      {paused && (
+        <p className="text-[11px] text-destructive mt-1" data-testid="text-tracking-paused">
+          Paused — profile not found. Fix it on the <Link href="/social-accounts/issues" className="underline">Issues</Link> page.
+        </p>
+      )}
 
       <Dialog open={editing} onOpenChange={setEditing}>
         <DialogContent className="max-w-2xl" data-testid="dialog-tracking">

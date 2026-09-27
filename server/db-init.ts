@@ -895,6 +895,31 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_post_comments_post_id_idx ON social_post_comments (post_id);
       CREATE INDEX IF NOT EXISTS social_post_comments_username_idx ON social_post_comments (username);
       ALTER TABLE social_account_posts DROP COLUMN IF EXISTS comments;
+      CREATE TABLE IF NOT EXISTS social_account_issues (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        job_id VARCHAR REFERENCES tracking_jobs(id) ON DELETE SET NULL,
+        job_kind TEXT,
+        times_seen INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TIMESTAMP NOT NULL DEFAULT now(),
+        last_seen_at TIMESTAMP NOT NULL DEFAULT now(),
+        resolution TEXT,
+        previous_username TEXT,
+        resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        resolved_at TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS social_account_issues_open_uniq ON social_account_issues (social_account_id, kind) WHERE status = 'open';
+      CREATE INDEX IF NOT EXISTS social_account_issues_account_idx ON social_account_issues (social_account_id);
+      -- Accounts already broken before the table existed: their latest job says not_found.
+      -- No-op once an issue of that kind exists for the account, whatever its status.
+      INSERT INTO social_account_issues (social_account_id, kind, job_id, job_kind, first_seen_at, last_seen_at)
+      SELECT j.social_account_id, 'not_found', j.id, j.kind, COALESCE(j.finished_at, now()), COALESCE(j.finished_at, now())
+      FROM tracking_jobs j
+      WHERE j.status = 'skipped' AND j.result->>'reason' = 'not_found'
+        AND j.id = (SELECT id FROM tracking_jobs WHERE social_account_id = j.social_account_id AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1)
+        AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = j.social_account_id AND i.kind = 'not_found');
     `);
 
     // Check and add missing columns
@@ -1372,6 +1397,18 @@ async function validateAndSyncSchema(): Promise<void> {
         log(`Error dropping unique constraint on true_person_search.tps_id: ${err}`);
       }
     }
+
+    // Map demo geocode cache (map-page-plan.md §2)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS geocodes (
+        query TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        latitude REAL,
+        longitude REAL,
+        display_name TEXT,
+        geocoded_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
 
     log("Schema validation completed");
   } catch (error) {

@@ -822,9 +822,9 @@
     "semantic_hash": "d6f7674a4e898bcdaf0baa216c1b3b03"
   },
   "client/src/pages/social-accounts-list.tsx": {
-    "mtime": 1789880603.9495773,
-    "seen": 1789892567.7407422,
-    "ast_hash": "d97f8f85de1a6a9dce8729422c923ba3",
+    "mtime": 1789938477.1215186,
+    "seen": 1789938530.2112112,
+    "ast_hash": "6cff153ddef65efb032430e8a608ea07",
     "semantic_hash": ""
   },
   "client/src/pages/social-graph-3d.tsx": {
@@ -1776,15 +1776,15 @@
     "semantic_hash": ""
   },
   "client/src/hooks/use-dictation.ts": {
-    "mtime": 1789464295.2006688,
-    "seen": 1789499437.4819784,
-    "ast_hash": "acaf23d5f46756e0357bda4e140c03d9",
+    "mtime": 1789942462.9140666,
+    "seen": 1789942537.5199928,
+    "ast_hash": "7f0c8d2d5ce498760652313858204380",
     "semantic_hash": ""
   },
   "client/src/pages/describe-me.tsx": {
-    "mtime": 1789845552.9050176,
-    "seen": 1789872222.286272,
-    "ast_hash": "08b321595aba126fbcc611ae3c3aa52f",
+    "mtime": 1789942469.7496173,
+    "seen": 1789942537.5282588,
+    "ast_hash": "a748cbe868e8c8727924cbbc74a0c91a",
     "semantic_hash": ""
   },
   "client/src/pages/import-messages.tsx": {
@@ -2145,6 +2145,12 @@
     "mtime": 1789878401.316156,
     "seen": 1789892567.7701705,
     "ast_hash": "6268024c84900fbf4a31023e3476e9b5",
+    "semantic_hash": ""
+  },
+  "client/src/hooks/use-audio-devices.ts": {
+    "mtime": 1789942241.5923164,
+    "seen": 1789942348.36922,
+    "ast_hash": "fd27ccc795bed93c441400f542570049",
     "semantic_hash": ""
   }
 }

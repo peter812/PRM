@@ -12,8 +12,10 @@ import { registerRoutes as registerTps } from "./routes/tps";
 import { registerPendingImportsRoutes } from "./routes/pending-imports";
 import { registerStories } from "./routes/stories";
 import { registerTracking } from "./routes/tracking";
+import { registerAccountIssues } from "./routes/account-issues";
 import { registerRoutes as registerBackups } from "./routes/backups";
 import { registerRoutes as registerDescribeMe } from "./routes/describe-me";
+import { registerRoutes as registerDemosMap } from "./routes/demos-map";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Register sub-route modules.
@@ -31,6 +33,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerPendingImportsRoutes(app);
   registerStories(app);
   registerTracking(app);
+  registerAccountIssues(app);
   registerAiVector(app);
   registerFamily(app);
   registerMessages(app);
@@ -38,6 +41,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerInsights(app);
   registerBackups(app);
   registerDescribeMe(app);
+  registerDemosMap(app);
 
   const httpServer = createServer(app);
   return httpServer;

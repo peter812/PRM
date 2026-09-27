@@ -16,6 +16,7 @@ import {
   ScanText,
   Mic,
   TrendingUp,
+  Map as MapIcon,
   Sparkles,
   MessagesSquare,
   MessageSquareText,
@@ -29,6 +30,7 @@ import {
   Radar,
   Inbox,
   Activity,
+  AlertTriangle,
 } from "lucide-react";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 import { Link, useLocation } from "wouter";
@@ -106,6 +108,11 @@ const menuItems = [
         title: "Tracking",
         url: "/social-accounts/tracking",
         icon: Activity,
+      },
+      {
+        title: "Issues",
+        url: "/social-accounts/issues",
+        icon: AlertTriangle,
       },
     ],
   },
@@ -187,6 +194,11 @@ const menuItems = [
         url: "/demos/account-timeline",
         icon: TrendingUp,
       },
+      {
+        title: "Map",
+        url: "/demos/map",
+        icon: MapIcon,
+      },
     ],
   },
 ];
@@ -208,6 +220,11 @@ export function AppSidebar() {
 
   const { data: questions = [] } = useQuery<any[]>({
     queryKey: ["/api/image-questions/pending"],
+  });
+
+  const { data: issues } = useQuery<{ open: number }>({
+    queryKey: ["/api/account-issues/count"],
+    refetchInterval: 60_000,
   });
 
   const { data: gitData } = useQuery<{ branch: string }>({
@@ -339,6 +356,11 @@ export function AppSidebar() {
                                   >
                                     <sub.icon className="h-4 w-4" />
                                     <span>{sub.title}</span>
+                                    {sub.title === "Issues" && (issues?.open ?? 0) > 0 && (
+                                      <span className="ml-auto bg-primary text-primary-foreground text-[10px] font-bold h-5 min-w-5 px-1 flex items-center justify-center rounded-full" data-testid="badge-issues-count">
+                                        {issues!.open}
+                                      </span>
+                                    )}
                                   </Link>
                                 </SidebarMenuSubButton>
                               </SidebarMenuSubItem>

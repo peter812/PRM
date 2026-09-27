@@ -21,7 +21,7 @@ import { runAsSystem } from "../access";
 import { uploadStoryImage, uploadMedia } from "../prm-s3";
 import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, isAdminRole, type StoryImporter } from "@shared/schema";
 import { generateDeterministicUuid } from "./social-media";
-import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
+import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 
@@ -473,12 +473,34 @@ export function registerStories(app: Express) {
       if (!importer) return;
       const apiUrl = storiesServiceUrl(importer);
       if (!apiUrl) return res.status(400).json({ ok: false, reason: "no_service_url" });
-      const upstream = await fetch(`${apiUrl}/login`, { method: "POST", signal: AbortSignal.timeout(60_000) });
+      const upstream = await fetch(`${apiUrl}/login`, { method: "POST", headers: storiesServiceHeaders(importer), signal: AbortSignal.timeout(60_000) });
       const body = (await upstream.json().catch(() => ({}))) as { ok?: boolean; reason?: string };
       res.status(upstream.ok ? 200 : 409).json({ ok: Boolean(body.ok), reason: body.reason ?? null });
     } catch (error) {
       res.status(502).json({ ok: false, reason: "unreachable", error: error instanceof Error ? error.message : String(error) });
     }
+  });
+
+  // Settings page: which account the service's profile is logged in as now. A
+  // re-login as another account otherwise only reaches PRM on the next run.
+  app.post("/api/stories/importers/:id/whoami", requireAdmin, async (req, res) => {
+    const importer = await importerFor(req, res);
+    if (!importer) return;
+    let username: string | null = null;
+    try {
+      const apiUrl = storiesServiceUrl(importer);
+      if (apiUrl) {
+        const upstream = await fetch(`${apiUrl}/whoami`, { method: "POST", headers: storiesServiceHeaders(importer), signal: AbortSignal.timeout(5_000) });
+        const body = (await upstream.json().catch(() => ({}))) as { username?: unknown };
+        if (typeof body.username === "string" && body.username) username = body.username;
+      }
+      if (username && username !== importer.lastUsername) {
+        await db.update(storyImporters).set({ lastUsername: username }).where(eq(storyImporters.id, importer.id));
+      }
+    } catch {
+      // Service offline: keep showing the account from the last run.
+    }
+    res.json({ username: username ?? importer.lastUsername });
   });
 
   // Settings page: trigger this importer's run outside its nightly window.

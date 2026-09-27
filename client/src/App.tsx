@@ -52,6 +52,7 @@ const UnknownFaces = lazy(() => import("@/pages/unknown-faces"));
 const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
 const OcrDemo = lazy(() => import("@/pages/ocr-demo"));
 const WhisperDemo = lazy(() => import("@/pages/whisper-demo"));
+const MapDemo = lazy(() => import("@/pages/map-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
@@ -67,6 +68,7 @@ const SuperSearchPage = lazy(() => import("@/pages/super-search"));
 const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
 const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-imports"));
 const SocialTrackingPage = lazy(() => import("@/pages/social-tracking"));
+const SocialAccountsIssuesPage = lazy(() => import("@/pages/social-accounts-issues"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 
@@ -203,6 +205,7 @@ function Router() {
         <ProtectedRoute path="/social-accounts" component={SocialAccountsList} />
         <ProtectedRoute path="/social-accounts/pending-imports" component={PendingSocialImportsPage} />
         <ProtectedRoute path="/social-accounts/tracking" component={SocialTrackingPage} />
+        <ProtectedRoute path="/social-accounts/issues" component={SocialAccountsIssuesPage} />
         <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
         <ProtectedRoute path="/graph" component={Graph} />
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
@@ -225,6 +228,7 @@ function Router() {
         <ProtectedRoute path="/ocr-demo" component={OcrDemo} />
         <ProtectedRoute path="/demos/ocr" component={OcrDemo} />
         <ProtectedRoute path="/demos/whisper" component={WhisperDemo} />
+        <ProtectedRoute path="/demos/map" component={MapDemo} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />

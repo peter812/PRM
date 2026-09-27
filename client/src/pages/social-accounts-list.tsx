@@ -422,7 +422,7 @@ export default function SocialAccountsList() {
                 {[1, 2, 3, 4, 5].map((i) => (
                   <Card key={i} className="p-2">
                     <div className="flex items-center gap-3">
-                      <Skeleton className="w-10 h-10 rounded-full" />
+                      <Skeleton className="w-14 h-14 rounded-full shrink-0" />
                       <div className="flex-1 space-y-2">
                         <div className="flex items-center gap-2">
                           <Skeleton className="h-4 w-1/3" />
@@ -451,7 +451,7 @@ export default function SocialAccountsList() {
                 {[1, 2, 3, 4].map((i) => (
                   <Card key={i} className="p-4">
                     <div className="flex items-center gap-4">
-                      <Skeleton className="w-16 h-16 rounded-full" />
+                      <Skeleton className="w-20 h-20 sm:w-24 sm:h-24 rounded-full shrink-0" />
                       <div className="flex-1 space-y-2">
                         <div className="flex items-center gap-3">
                           <Skeleton className="h-5 w-1/3" />
@@ -644,14 +644,14 @@ export default function SocialAccountsList() {
                       >
                         <div className="flex items-center gap-3">
                           <AccountCheckbox account={account} checked={selectedIds.has(account.id)} onToggle={() => toggleSelect(account.id)} className="self-stretch pr-1" />
-                          <Avatar className="w-10 h-10">
+                          <Avatar className="w-14 h-14 shrink-0">
                             {account.currentProfile?.imageUrl && (
                               <AvatarImage
                                 src={withImageSize(account.currentProfile.imageUrl, 64)}
                                 alt={account.username}
                               />
                             )}
-                            <AvatarFallback>
+                            <AvatarFallback className="text-base font-medium">
                               {getInitials(account.username)}
                             </AvatarFallback>
                           </Avatar>
@@ -793,14 +793,14 @@ export default function SocialAccountsList() {
                       >
                         <div className="flex items-center gap-4">
                           <AccountCheckbox account={account} checked={selectedIds.has(account.id)} onToggle={() => toggleSelect(account.id)} className="self-stretch pr-1" />
-                          <Avatar className="w-16 h-16">
+                          <Avatar className="w-20 h-20 sm:w-24 sm:h-24 shrink-0">
                             {account.currentProfile?.imageUrl && (
                               <AvatarImage
-                                src={withImageSize(account.currentProfile.imageUrl, 64)}
+                                src={withImageSize(account.currentProfile.imageUrl, 150)}
                                 alt={account.username}
                               />
                             )}
-                            <AvatarFallback className="text-lg">
+                            <AvatarFallback className="text-xl sm:text-2xl">
                               {getInitials(account.username)}
                             </AvatarFallback>
                           </Avatar>
@@ -947,7 +947,7 @@ export default function SocialAccountsList() {
                     {[1, 2].map((i) => (
                       <Card key={`loading-${i}`} className="p-2 animate-pulse">
                         <div className="flex items-center gap-3">
-                          <Skeleton className="w-10 h-10 rounded-full" />
+                          <Skeleton className="w-14 h-14 rounded-full shrink-0" />
                           <div className="flex-1 space-y-2">
                             <Skeleton className="h-4 w-1/3" />
                             <Skeleton className="h-3 w-1/4" />
@@ -964,7 +964,7 @@ export default function SocialAccountsList() {
                     {[1, 2].map((i) => (
                       <Card key={`loading-${i}`} className="p-4 animate-pulse">
                         <div className="flex items-center gap-4">
-                          <Skeleton className="w-16 h-16 rounded-full" />
+                          <Skeleton className="w-20 h-20 sm:w-24 sm:h-24 rounded-full shrink-0" />
                           <div className="flex-1 space-y-2">
                             <Skeleton className="h-5 w-1/3" />
                             <Skeleton className="h-4 w-1/4" />

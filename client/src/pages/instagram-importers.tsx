@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, HelpCircle, Loader2, LogIn, Play, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -96,6 +96,15 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
   const { toast } = useToast();
   const session = sessionFromRuns(runs);
   const hasUrl = Boolean(importer.serviceUrl);
+  // Asks the service directly, so a re-login as another account shows before the next run;
+  // refetching on focus catches the person coming back from the login window.
+  const { data: whoami } = useQuery({
+    queryKey: [...IMPORTERS_KEY, importer.id, "whoami"],
+    queryFn: async () => (await apiRequest("POST", `/api/stories/importers/${importer.id}/whoami`)).json() as Promise<{ username: string | null }>,
+    enabled: isAdmin && hasUrl,
+    refetchOnWindowFocus: true,
+  });
+  const username = whoami?.username ?? importer.lastUsername;
 
   const [label, setLabel] = useState(importer.label);
   const [apiUrl, setApiUrl] = useState(importer.serviceUrl);
@@ -200,8 +209,8 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               aria-label="Importer name"
               data-testid={`input-importer-label-${importer.id}`}
             />
-            {importer.lastUsername && (
-              <p className="text-sm text-muted-foreground" data-testid={`text-importer-username-${importer.id}`}>@{importer.lastUsername}</p>
+            {username && (
+              <p className="text-sm text-muted-foreground" data-testid={`text-importer-username-${importer.id}`}>@{username}</p>
             )}
           </div>
           {isAdmin && (

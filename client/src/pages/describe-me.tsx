@@ -7,11 +7,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { Person } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDictation } from "@/hooks/use-dictation";
+import { useAudioDevices } from "@/hooks/use-audio-devices";
 
 export default function DescribeMePage() {
   const { toast } = useToast();
@@ -53,11 +61,19 @@ export default function DescribeMePage() {
     onError: (error: any) => toast({ title: "Couldn't save note", description: error.message, variant: "destructive" }),
   });
 
-  const dictation = useDictation((text) => {
-    if (!text) return toast({ title: "Nothing heard", description: "The recording came back empty. Try again.", variant: "destructive" });
-    setTranscript(text);
-    extract.mutate(text);
-  });
+  const { devices, selectedDeviceId, setSelectedDeviceId, refreshDevices } = useAudioDevices();
+
+  const dictation = useDictation(
+    (text) => {
+      if (!text) return toast({ title: "Nothing heard", description: "The recording came back empty. Try again.", variant: "destructive" });
+      setTranscript(text);
+      extract.mutate(text);
+    },
+    {
+      deviceId: selectedDeviceId,
+      onPermissionGranted: refreshDevices,
+    }
+  );
 
   const reset = () => {
     setTranscript(null);
@@ -178,27 +194,84 @@ export default function DescribeMePage() {
           </p>
         ) : (
           <>
-            <Button
-              className="w-full h-14 text-base"
-              variant={dictation.status === "recording" ? "destructive" : "default"}
-              onClick={dictation.toggle}
-              disabled={dictation.status === "transcribing" || extract.isPending}
-            >
-              {dictation.status === "recording" ? (
-                <><Square className="h-5 w-5 mr-2 fill-current" /> Stop</>
-              ) : dictation.status === "transcribing" ? (
-                <><Loader2 className="h-5 w-5 mr-2 animate-spin" /> Transcribing…</>
-              ) : extract.isPending ? (
-                <><Loader2 className="h-5 w-5 mr-2 animate-spin" /> Extracting bullet points…</>
-              ) : (
-                <><Mic className="h-5 w-5 mr-2" /> Record</>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <Mic className="h-3.5 w-3.5" />
+                Microphone
+              </label>
+              <Select
+                value={selectedDeviceId}
+                onValueChange={setSelectedDeviceId}
+                disabled={busy}
+              >
+                <SelectTrigger className="w-full text-xs h-9" aria-label="Select audio input device">
+                  <SelectValue placeholder="Select microphone" />
+                </SelectTrigger>
+                <SelectContent>
+                  {devices.map((device) => (
+                    <SelectItem key={device.deviceId} value={device.deviceId} className="text-xs">
+                      {device.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="relative w-full">
+              {dictation.status === "recording" && (
+                <div
+                  className="absolute -inset-0.5 rounded-md bg-destructive transition-all duration-75 pointer-events-none"
+                  style={{
+                    opacity: dictation.audioLevel > 0.05 ? Math.min(0.6, 0.2 + dictation.audioLevel * 0.5) : 0,
+                    transform: `scale(${1 + dictation.audioLevel * 0.05})`,
+                    filter: "blur(6px)",
+                  }}
+                />
               )}
-            </Button>
+              <Button
+                className="relative w-full h-14 text-base"
+                variant={dictation.status === "recording" ? "destructive" : "default"}
+                onClick={dictation.toggle}
+                disabled={dictation.status === "transcribing" || extract.isPending}
+              >
+                {dictation.status === "recording" ? (
+                  <><Square className="h-5 w-5 mr-2 fill-current" /> Stop</>
+                ) : dictation.status === "transcribing" ? (
+                  <><Loader2 className="h-5 w-5 mr-2 animate-spin" /> Transcribing…</>
+                ) : extract.isPending ? (
+                  <><Loader2 className="h-5 w-5 mr-2 animate-spin" /> Extracting bullet points…</>
+                ) : (
+                  <><Mic className="h-5 w-5 mr-2" /> Record</>
+                )}
+              </Button>
+            </div>
             {dictation.status === "recording" && (
-              <p className="flex items-center justify-center gap-1.5 text-xs text-destructive">
-                <span className="inline-block h-2 w-2 rounded-full bg-destructive animate-pulse" />
-                Recording… click Stop when finished.
-              </p>
+              <div className="flex flex-col items-center justify-center gap-1.5 py-1">
+                <div className="flex items-center justify-center gap-1 h-6">
+                  {[0.5, 0.8, 1.2, 0.7, 1.0].map((multiplier, i) => {
+                    const height = Math.max(4, Math.min(24, Math.round(dictation.audioLevel * 24 * multiplier)));
+                    return (
+                      <span
+                        key={i}
+                        className="w-1 rounded-full bg-destructive transition-all duration-75 ease-out"
+                        style={{
+                          height: `${height}px`,
+                          opacity: dictation.audioLevel > 0.04 ? 0.95 : 0.35,
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+                <p className="flex items-center justify-center gap-2 text-xs text-destructive font-medium">
+                  <span
+                    className="inline-block h-2 w-2 rounded-full bg-destructive transition-transform duration-75"
+                    style={{
+                      transform: `scale(${1 + dictation.audioLevel * 1.5})`,
+                    }}
+                  />
+                  {dictation.audioLevel > 0.05 ? "Hearing you speak…" : "Listening… click Stop when finished"}
+                </p>
+              </div>
             )}
             <Button className="w-full h-10 text-sm" variant="ghost" onClick={skip} disabled={busy}>
               <SkipForward className="h-4 w-4 mr-2" /> Skip for now

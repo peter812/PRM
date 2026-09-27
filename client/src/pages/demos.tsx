@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Radar, Scan, Sparkles, ScanText, TrendingUp, Mic } from "lucide-react";
+import { Radar, Scan, Sparkles, ScanText, TrendingUp, Mic, Map as MapIcon } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 
@@ -119,6 +119,20 @@ export default function DemosPage() {
               </CardTitle>
               <CardDescription>
                 Graph of when tracked accounts were created, oldest to youngest, by monthly volume.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/map">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MapIcon className="h-5 w-5" />
+                Map
+              </CardTitle>
+              <CardDescription>
+                People pinned on an OpenStreetMap map by their address.
               </CardDescription>
             </CardHeader>
           </Card>

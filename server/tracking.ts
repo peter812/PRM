@@ -201,6 +201,8 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
     // follows are skipped above MAX_FOLLOWS. Blocked rows are left out here rather
     // than filtered afterwards so they can't crowd the due list forever. A kind
     // checked in the last RECENT_CHECK_HOURS (by hand, say) stays due but waits.
+    // An account whose profile 404'd (an open not_found issue) waits for a person
+    // to rename, dismiss or delete it; only manual jobs reach it meanwhile.
     const notRecent = skipRecent ? sql`AND NOT (${recentlyChecked(sql`k.checked`)})` : sql``;
     const due = await tx.execute<ClaimedRow>(sql`
       INSERT INTO tracking_jobs (social_account_id, kind, origin, status, importer_id, started_at, attempts)
@@ -221,6 +223,7 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
             AND (k.kind <> 'follows' OR GREATEST(COALESCE(sa.reported_followers_count, 0), COALESCE(sa.reported_following_count, 0)) <= ${MAX_FOLLOWS})
           ))
           AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
+          AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = sa.id AND i.kind = 'not_found' AND i.status = 'open')
         ORDER BY k.due ASC
         LIMIT ${remaining}
         FOR UPDATE OF sa SKIP LOCKED
