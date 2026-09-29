@@ -22,6 +22,7 @@ import {
   Crosshair,
   ExternalLink,
   Download,
+  Users,
 } from "lucide-react";
 import {
   FamilyTreeFlow,
@@ -782,6 +783,16 @@ export function FamilyTreeExplorer({
         </div>
 
         <div className="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate("/family-tree/potential")}
+            title="View Potential Families grouped by surname"
+            data-testid="button-potential-families"
+          >
+            <Users className="h-4 w-4 mr-1 text-primary" />
+            Potential Families
+          </Button>
           <Button
             variant="outline"
             size="sm"

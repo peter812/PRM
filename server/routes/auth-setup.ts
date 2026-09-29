@@ -75,6 +75,8 @@ let isUserCreationAllowed = false;
 const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/setup/status",
   "/setup/initialize",
+  "/setup/services/health",
+  "/setup/onboarding-status",
   "/sso-config/status",
   "/sso/login",
   "/sso/callback",
@@ -94,7 +96,11 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/v1/account-status",
 ]);
 
-function isPublicApiPath(path: string): boolean {
+function isPublicApiPath(path: string, method?: string): boolean {
+  // Setup mutations require authentication
+  if (method === "POST" && (path === "/setup/onboarding-status" || path === "/setup/seed-data-types")) {
+    return false;
+  }
   if (PUBLIC_API_PATHS.has(path)) return true;
   if (path.startsWith("/v1/pending-imports")) return true;
   if (path.startsWith("/v1/scrape-results")) return true;
@@ -106,7 +112,7 @@ function isPublicApiPath(path: string): boolean {
 
 export function registerRoutes(app: Express) {
     app.use("/api", (req, res, next) => {
-      if (isPublicApiPath(req.path)) return next();
+      if (isPublicApiPath(req.path, req.method)) return next();
       return requireAuth(req, res, next);
     });
   
@@ -3194,6 +3200,7 @@ export function registerRoutes(app: Express) {
           "posts_comment_limit",
           "posts_scan_limit",
           "posts_download_videos",
+          "connection_strength",
         ];
         const settings: Record<string, string | null> = {};
         for (const key of keys) {

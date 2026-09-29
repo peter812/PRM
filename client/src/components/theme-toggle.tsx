@@ -1,10 +1,10 @@
-import { Moon, Sun, Monitor, Leaf } from "lucide-react";
+import { Moon, Sun, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 
-type ThemeMode = "light" | "dark" | "system" | "aero";
+type ThemeMode = "light" | "dark" | "system";
 
-function getEffectiveTheme(mode: ThemeMode): "light" | "dark" | "aero" {
+function getEffectiveTheme(mode: ThemeMode): "light" | "dark" {
   if (mode === "system") {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   }
@@ -14,7 +14,6 @@ function getEffectiveTheme(mode: ThemeMode): "light" | "dark" | "aero" {
 function applyTheme(mode: ThemeMode) {
   const effective = getEffectiveTheme(mode);
   document.documentElement.classList.toggle("dark", effective === "dark");
-  document.documentElement.classList.toggle("aero", effective === "aero");
   window.dispatchEvent(new Event("theme-change"));
 }
 
@@ -38,7 +37,7 @@ export function ThemeToggle() {
   }, [theme]);
 
   const cycleTheme = () => {
-    const order: ThemeMode[] = ["light", "dark", "aero", "system"];
+    const order: ThemeMode[] = ["light", "dark", "system"];
     const next = order[(order.indexOf(theme) + 1) % order.length];
     setTheme(next);
     localStorage.setItem("theme", next);
@@ -55,22 +54,17 @@ export function ThemeToggle() {
           ? "System theme"
           : theme === "light"
           ? "Light mode"
-          : theme === "dark"
-          ? "Dark mode"
-          : "Frutiger Aero mode"
+          : "Dark mode"
       }
       data-testid="button-theme-toggle"
     >
       {theme === "system" ? (
         <Monitor className="h-5 w-5" />
       ) : theme === "light" ? (
-        <Moon className="h-5 w-5" />
-      ) : theme === "dark" ? (
-        <Leaf className="h-5 w-5 text-emerald-500" />
-      ) : (
         <Sun className="h-5 w-5" />
+      ) : (
+        <Moon className="h-5 w-5" />
       )}
     </Button>
   );
 }
-

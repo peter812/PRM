@@ -24,9 +24,9 @@ import {
   Home,
   Image,
   HelpCircle,
+  ScanFace,
   Gamepad2,
   ChevronRight,
-  Leaf,
   Radar,
   Inbox,
   Activity,
@@ -83,6 +83,18 @@ const menuItems = [
     title: "Family Tree",
     url: "/family-tree",
     icon: GitBranch,
+    subItems: [
+      {
+        title: "Tree Visualizer",
+        url: "/family-tree",
+        icon: GitBranch,
+      },
+      {
+        title: "Potential Families",
+        url: "/family-tree/potential",
+        icon: Users,
+      },
+    ],
   },
   {
     title: "Groups",
@@ -127,8 +139,13 @@ const menuItems = [
     icon: BookOpen,
   },
   {
-    title: "Unknown Faces",
-    url: "/unknown-faces",
+    title: "Faces",
+    url: "/faces",
+    icon: ScanFace,
+  },
+  {
+    title: "Face review",
+    url: "/face-review",
     icon: HelpCircle,
   },
   {
@@ -206,7 +223,7 @@ const menuItems = [
 export function AppSidebar() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
-  const [theme, setTheme] = useState<"light" | "dark" | "system" | "aero">("system");
+  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
 
   const { data: settings } = useQuery<Record<string, string>>({
     queryKey: ["/api/settings"],
@@ -218,9 +235,11 @@ export function AppSidebar() {
   });
   const osintConfigured = !!osintStatus?.configured;
 
-  const { data: questions = [] } = useQuery<any[]>({
-    queryKey: ["/api/image-questions/pending"],
+  const { data: faceReviewCounts } = useQuery<{ total: number }>({
+    queryKey: ["/api/face-review/counts"],
+    refetchInterval: 60_000,
   });
+  const faceReviewTotal = faceReviewCounts?.total ?? 0;
 
   const { data: issues } = useQuery<{ open: number }>({
     queryKey: ["/api/account-issues/count"],
@@ -253,14 +272,13 @@ export function AppSidebar() {
   }, [demosEnabled, osintConfigured]);
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | "aero" | null;
+    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | null;
     const initialTheme = savedTheme || "system";
     setTheme(initialTheme);
     const effective = initialTheme === "system"
       ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
       : initialTheme;
     document.documentElement.classList.toggle("dark", effective === "dark");
-    document.documentElement.classList.toggle("aero", effective === "aero");
     window.dispatchEvent(new Event("theme-change"));
   }, []);
 
@@ -271,7 +289,6 @@ export function AppSidebar() {
     const handler = () => {
       const effective = mql.matches ? "dark" : "light";
       document.documentElement.classList.toggle("dark", effective === "dark");
-      document.documentElement.classList.toggle("aero", false);
       window.dispatchEvent(new Event("theme-change"));
     };
     mql.addEventListener("change", handler);
@@ -279,7 +296,7 @@ export function AppSidebar() {
   }, [theme]);
 
   const handleThemeToggle = () => {
-    const order: Array<"light" | "dark" | "aero" | "system"> = ["light", "dark", "aero", "system"];
+    const order: Array<"light" | "dark" | "system"> = ["light", "dark", "system"];
     const next = order[(order.indexOf(theme) + 1) % order.length];
     setTheme(next);
     localStorage.setItem("theme", next);
@@ -287,7 +304,6 @@ export function AppSidebar() {
       ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
       : next;
     document.documentElement.classList.toggle("dark", effective === "dark");
-    document.documentElement.classList.toggle("aero", effective === "aero");
     window.dispatchEvent(new Event("theme-change"));
   };
 
@@ -334,7 +350,7 @@ export function AppSidebar() {
                           >
                             <Link
                               href={item.url}
-                              data-testid={`link-${item.title.toLowerCase().replace(/\\s+/g, "-")}`}
+                              data-testid={`link-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
                             >
                               <item.icon />
                               <span>{item.title}</span>
@@ -385,9 +401,9 @@ export function AppSidebar() {
                       >
                         <item.icon />
                         <span>{item.title}</span>
-                        {item.title === "Unknown Faces" && questions.length > 0 && (
-                          <span className="ml-auto bg-primary text-primary-foreground text-[10px] font-bold h-5 w-5 flex items-center justify-center rounded-full" data-testid="badge-unknown-faces-count">
-                            {questions.length}
+                        {item.title === "Face review" && faceReviewTotal > 0 && (
+                          <span className="ml-auto bg-primary text-primary-foreground text-[10px] font-bold h-5 min-w-5 px-1 flex items-center justify-center rounded-full" data-testid="badge-face-review-count">
+                            {faceReviewTotal > 99 ? "99+" : faceReviewTotal}
                           </span>
                         )}
                       </Link>
@@ -423,8 +439,6 @@ export function AppSidebar() {
                   ? "System theme"
                   : theme === "light"
                   ? "Dark mode"
-                  : theme === "dark"
-                  ? "Frutiger Aero mode"
                   : "Light mode"
               }
               data-testid="sidebar-button-theme"
@@ -433,8 +447,6 @@ export function AppSidebar() {
                 <Monitor />
               ) : theme === "light" ? (
                 <Moon />
-              ) : theme === "dark" ? (
-                <Leaf className="text-emerald-500" />
               ) : (
                 <Sun />
               )}
@@ -443,8 +455,6 @@ export function AppSidebar() {
                   ? "System theme"
                   : theme === "light"
                   ? "Dark mode"
-                  : theme === "dark"
-                  ? "Aero mode"
                   : "Light mode"}
               </span>
             </SidebarMenuButton>

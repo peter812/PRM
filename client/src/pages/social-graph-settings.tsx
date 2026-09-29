@@ -11,6 +11,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { ConnectionWeightsCard } from "@/components/connection-weights-card";
 import {
   DENSE_THRESHOLD_STEPS,
   EXTRAS_STEPS,
@@ -664,6 +665,8 @@ export default function SocialGraphSettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      <ConnectionWeightsCard />
       </div>
 
       <div className="flex flex-wrap gap-2">

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useLocation } from "wouter";
-import ForceGraph3D from "3d-force-graph";
+import ForceGraph3D from "@/lib/force-graph-3d";
 import type { RelationshipsGroupedResponse } from "@shared/schema";
 
 interface MiniGraphNode {
@@ -56,6 +56,8 @@ interface MiniPersonGraphProps {
 export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fgRef = useRef<ForceGraphInstance | null>(null);
+  const currentPersonIdRef = useRef(personId);
+  currentPersonIdRef.current = personId;
   const [, navigate] = useLocation();
 
   useEffect(() => {
@@ -128,14 +130,14 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
         .enableNavigationControls(true)
         .showNavInfo(false)
         .onNodeClick((node) => {
-          if (node.id && node.id !== personId) {
+          if (node.id && node.id !== currentPersonIdRef.current) {
             navigate(`/person/${node.id}`);
           }
         })
         .onNodeHover((node) => {
           if (containerRef.current) {
             containerRef.current.style.cursor =
-              node && node.id !== personId ? "pointer" : "default";
+              node && node.id !== currentPersonIdRef.current ? "pointer" : "default";
           }
         })
         .d3AlphaDecay(0.02)

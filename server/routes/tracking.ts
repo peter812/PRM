@@ -24,7 +24,7 @@ import { generateDeterministicUuid } from "./social-media";
 import { authedRun } from "./stories";
 import { kickManualTrackingJobs, manualImporter, rateLimitedUntil } from "../stories-scheduler";
 import { applySnapshot, recordPostsCapture, type CaptureScope } from "../social-account-history";
-import { profileImageFromBuffer, classifyProfileImage, applyProfileImageVerdict, type ProfileImageOutcome } from "../profile-image";
+import { profileImageFromBuffer, classifyProfileImage, applyProfileImageVerdict, getImageDimensions, type ProfileImageOutcome } from "../profile-image";
 import { resolveScrapedAccounts } from "../task-worker";
 import {
   INSTAGRAM_TYPE_ID,
@@ -371,13 +371,14 @@ export function registerTracking(app: Express) {
         // Bytes go to storage first; the rows land together, so a failed insert
         // can't leave photos pointing at a post that doesn't exist. The post row
         // goes first so a duplicate (racing job) writes nothing instead of failing.
-        const stored: { url: string; fileHash: string }[] = [];
-        for (const [i, slide] of slides.entries()) {
-          const fileHash = crypto.createHash("sha256").update(slide.buffer).digest("hex");
-          let url = (await storage.getPhotoByFileHash(fileHash))?.location;
-          if (!url) url = await uploadPostImage(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg");
-          stored.push({ url, fileHash });
-        }
+        const stored = await Promise.all(
+          slides.map(async (slide, i) => {
+            const fileHash = crypto.createHash("sha256").update(slide.buffer).digest("hex");
+            let url = (await storage.getPhotoByFileHash(fileHash))?.location;
+            if (!url) url = await uploadPostImage(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg");
+            return { url, fileHash, dims: getImageDimensions(slide.buffer) };
+          })
+        );
         const photoIds = await db.transaction(async (tx) => {
           const [post] = await tx
             .insert(socialAccountPosts)
@@ -394,13 +395,14 @@ export function registerTracking(app: Express) {
           if (!post) return null;
           const created = await tx
             .insert(photos)
-            .values(stored.map(({ url, fileHash }, i) => ({
+            .values(stored.map(({ url, fileHash, dims }, i) => ({
               location: url,
               prmLocation: `post:${id}`,
               isSubImage: false,
               fileHash,
-              widthPx: meta.slides[i]?.width ?? null,
-              heightPx: meta.slides[i]?.height ?? null,
+              // Measured from the stored file (face boxes use its pixels); Instagram's reported size is a fallback.
+              widthPx: dims?.width ?? meta.slides[i]?.width ?? null,
+              heightPx: dims?.height ?? meta.slides[i]?.height ?? null,
               ogMetadata: { source: "instagram-post", pk: meta.pk, code: meta.code, slide: i, takenAt: meta.takenAt },
             })))
             .returning({ id: photos.id });

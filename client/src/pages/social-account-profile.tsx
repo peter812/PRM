@@ -46,6 +46,7 @@ import { MessagesTab } from "@/components/messages-tab";
 import { StoriesTab } from "@/components/stories-tab";
 import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
 import { InsightsTab } from "@/components/insights-tab";
+import { ConnectionsTab } from "@/components/connections-tab";
 import { SocialAccountRow } from "@/components/social-account-row";
 import { AccountTracking } from "@/components/account-tracking";
 import {
@@ -72,7 +73,7 @@ export default function SocialAccountProfile() {
   // The path alone misses a ?postId change on this same page, e.g. from the history tab.
   const search = useSearch();
   const { toast } = useToast();
-  const VALID_TABS = ["account", "follow", "posts", "stories", "messages", "history", "insights"];
+  const VALID_TABS = ["account", "follow", "posts", "stories", "messages", "connections", "history", "insights"];
 
   const getTabFromSearch = () => {
     if (typeof window === "undefined") return "account";
@@ -784,6 +785,13 @@ export default function SocialAccountProfile() {
                 data-testid="tab-messages"
               >
                 Messages
+              </TabsTrigger>
+              <TabsTrigger
+                value="connections"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-connections"
+              >
+                Connections
               </TabsTrigger>
               <TabsTrigger
                 value="history"
@@ -1615,6 +1623,10 @@ export default function SocialAccountProfile() {
 
           <TabsContent value="messages" className="mt-0 flex-1 min-h-0">
             <MessagesTab socialAccountId={account.id} />
+          </TabsContent>
+
+          <TabsContent value="connections" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <ConnectionsTab socialAccountId={account.id} />
           </TabsContent>
 
           {/* History Tab */}

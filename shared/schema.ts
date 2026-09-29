@@ -783,6 +783,7 @@ export const imageTasks = pgTable("image_tasks", {
   index("image_tasks_photo_id_idx").on(t.photoId),
   index("image_tasks_status_idx").on(t.status),
   index("image_tasks_user_id_status_idx").on(t.userId, t.status),
+  index("image_tasks_pending_idx").on(t.type, t.createdAt).where(sql`status = 'pending'`),
 ]);
 
 // Image questions table - tracks unrecognized face assignments needed from the user
@@ -814,10 +815,28 @@ export const faces = pgTable("faces", {
   detectionConfidence: text("detection_confidence"),
   coordinates: jsonb("coordinates"), // { x, y, w, h } bbox in the source image
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  dismissedAt: timestamp("dismissed_at", { withTimezone: true }), // "not someone I track": Face review stops asking about this face
+  autoMatchScore: real("auto_match_score"), // set = PRM auto-assigned this face to its group at this look-alike score, unconfirmed; null = set by a person (or by compute's grouping)
 }, (t) => [
   index("faces_photo_id_idx").on(t.photoId),
   index("faces_personface_uuid_idx").on(t.personfaceUuid),
 ]);
+
+// Face pair dismissals table - stores pairs of face identities that the user confirmed are NOT the same
+export const facePairDismissals = pgTable("face_pair_dismissals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  groupAUuid: varchar("group_a_uuid").notNull(),
+  groupBUuid: varchar("group_b_uuid").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+}, (t) => [
+  uniqueIndex("face_pair_dismissals_pair_idx").on(t.groupAUuid, t.groupBUuid),
+  index("face_pair_dismissals_group_a_idx").on(t.groupAUuid),
+  index("face_pair_dismissals_group_b_idx").on(t.groupBUuid),
+]);
+
+export type FacePairDismissal = typeof facePairDismissals.$inferSelect;
+export type InsertFacePairDismissal = typeof facePairDismissals.$inferInsert;
 
 // AI chats table - stores historical AI chat conversations so they can be recalled and continued
 export const aiChats = pgTable("ai_chats", {
@@ -2115,6 +2134,61 @@ export type PersonWithRelations = Person & {
   socialAccounts?: SocialAccountWithCurrentProfile[];
 };
 
+export interface PotentialFamilyMember {
+  id: string;
+  firstName: string;
+  lastName: string;
+  maidenName?: string | null;
+  imageUrl?: string | null;
+  sex?: string;
+  isStarred?: number;
+  company?: string | null;
+  title?: string | null;
+  isMaidenMatch?: boolean;
+  inGroupConnections: Array<{
+    relatedPersonId: string;
+    relatedPersonName: string;
+    type: "parent" | "child" | "spouse";
+  }>;
+}
+
+export interface PotentialFamilySocialAccount {
+  id: string;
+  username: string;
+  nickname?: string | null;
+  imageUrl?: string | null;
+  typeName?: string | null;
+  typeColor?: string | null;
+  ownerUuid?: string | null;
+  ownerName?: string | null;
+  isLinked: boolean;
+  matchSource: "owner" | "display_name" | "username";
+}
+
+export interface PotentialFamilyGroup {
+  surname: string;
+  totalCount: number;
+  peopleCount: number;
+  socialCount: number;
+  connectedPeopleCount: number;
+  unconnectedPeopleCount: number;
+  unlinkedSocialCount: number;
+  hasExistingTreeLinks: boolean;
+  people: PotentialFamilyMember[];
+  socialAccounts: PotentialFamilySocialAccount[];
+}
+
+export interface PotentialFamiliesResponse {
+  families: PotentialFamilyGroup[];
+  stats: {
+    totalFamilies: number;
+    totalPeople: number;
+    totalSocialAccounts: number;
+    unlinkedSocialCount: number;
+    unconnectedPeopleCount: number;
+  };
+}
+
 export type GroupWithNotes = Group & {
   notes: GroupNote[];
 };
@@ -2452,4 +2526,60 @@ export function getTruePeopleSearchUrl(phone: string | null | undefined): string
   const searchNumber = digits.startsWith("1") ? digits.slice(1) : digits;
   return `https://www.truepeoplesearch.com/results?name=${searchNumber}`;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Describe Me LLM Hooks & Selective Apply Schemas
+// ────────────────────────────────────────────────────────────────────────────
+
+export const potentialInteractionSchema = z.object({
+  id: z.string(),
+  title: z.string().trim().default(""),
+  date: z.string(), // ISO-8601 or YYYY-MM-DD
+  description: z.string().trim().default(""),
+  type: z.string().optional(),
+  selected: z.boolean().default(true),
+});
+export type PotentialInteraction = z.infer<typeof potentialInteractionSchema>;
+
+export const potentialNoteSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+  content: z.string().trim().min(1),
+  selected: z.boolean().default(true),
+});
+export type PotentialNote = z.infer<typeof potentialNoteSchema>;
+
+export const potentialTagSchema = z.object({
+  id: z.string(),
+  tag: z.string().trim().min(1),
+  selected: z.boolean().default(true),
+});
+export type PotentialTag = z.infer<typeof potentialTagSchema>;
+
+export const describeMeExtractionResultSchema = z.object({
+  potentialInteractions: z.array(potentialInteractionSchema),
+  potentialNotes: z.array(potentialNoteSchema),
+  potentialTags: z.array(potentialTagSchema),
+  transcript: z.string().optional(),
+});
+export type DescribeMeExtractionResult = z.infer<typeof describeMeExtractionResultSchema>;
+
+export const applyDescribeMeSchema = z.object({
+  personId: z.string().min(1),
+  notes: z.array(z.object({
+    title: z.string().optional(),
+    content: z.string().trim().min(1),
+  })).max(50).default([]),
+  interactions: z.array(z.object({
+    title: z.string().trim().optional(),
+    description: z.string().trim().optional(),
+    date: z.string().min(1),
+    type: z.string().optional(),
+    typeId: z.string().optional(),
+  })).max(50).default([]),
+  tags: z.array(z.string().trim().min(1)).max(100).default([]),
+  bullets: z.array(z.string().trim().min(1)).max(50).optional(), // legacy compatibility
+});
+export type ApplyDescribeMeInput = z.infer<typeof applyDescribeMeSchema>;
+
 

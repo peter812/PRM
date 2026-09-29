@@ -19,7 +19,14 @@ interface StoryMetadata {
   links?: { url: string; display: string | null }[];
   hashtags?: string[];
   locations?: { name: string; pk: string | null }[];
-  resharedPost?: { mediaId: string; code: string | null } | null;
+  /** Older stories carry only mediaId/code; kind, url and ownerUsername came later. */
+  resharedPost?: {
+    kind?: "post" | "reel" | "story";
+    mediaId?: string | null;
+    code: string | null;
+    url?: string;
+    ownerUsername?: string | null;
+  } | null;
   music?: { title: string | null; artist: string | null } | null;
   isAd?: boolean;
 }
@@ -167,16 +174,23 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
               </Row>
             )}
             {!!meta.locations?.length && <Row label="Location">{meta.locations.map((l) => l.name).join(", ")}</Row>}
-            {meta.resharedPost && (
-              <Row label="Reshared post">
-                {meta.resharedPost.code ? (
-                  <a href={`https://www.instagram.com/p/${meta.resharedPost.code}/`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline">
-                    instagram.com/p/{meta.resharedPost.code}
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                ) : meta.resharedPost.mediaId}
-              </Row>
-            )}
+            {meta.resharedPost && (() => {
+              const r = meta.resharedPost;
+              const url = r.url ?? (r.code ? `https://www.instagram.com/p/${r.code}/` : null);
+              return (
+                <Row label={`Reshared ${r.kind ?? "post"}`}>
+                  <div className="space-y-1">
+                    {url && (
+                      <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline break-all">
+                        {url.replace(/^https:\/\/www\./, "")}
+                        <ExternalLink className="h-3 w-3 shrink-0" />
+                      </a>
+                    )}
+                    {r.ownerUsername && <div>by {igLink(r.ownerUsername)}</div>}
+                  </div>
+                </Row>
+              );
+            })()}
             {meta.music && (meta.music.title || meta.music.artist) && (
               <Row label="Music">{[meta.music.title, meta.music.artist].filter(Boolean).join(" — ")}</Row>
             )}

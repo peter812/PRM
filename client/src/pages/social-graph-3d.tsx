@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
-import ForceGraph3D from "3d-force-graph";
+import ForceGraph3D from "@/lib/force-graph-3d";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -45,6 +45,7 @@ import {
 } from "@/lib/social-graph-defaults";
 import { GraphResourceCache, applyRendererPerfSettings } from "@/lib/graph-three-resources";
 import { DenseGraphRenderer } from "@/lib/dense-graph-renderer";
+import { withImageSize } from "@shared/image-size";
 import GraphLayoutWorker from "@/lib/graph-layout.worker?worker";
 import type { LayoutRequest } from "@/lib/graph-layout.worker";
 
@@ -1617,7 +1618,7 @@ function SocialGraphContent({
                 >
                   {selectedAccount.currentProfile?.imageUrl ? (
                     <AvatarImage
-                      src={selectedAccount.currentProfile.imageUrl}
+                      src={withImageSize(selectedAccount.currentProfile.imageUrl, 150)}
                       alt={selectedAccount.username}
                     />
                   ) : null}
@@ -1682,7 +1683,7 @@ function SocialGraphContent({
                     >
                       <Avatar className="h-6 w-6">
                         {selectedAccountOwner.imageUrl && (
-                          <AvatarImage src={selectedAccountOwner.imageUrl} alt={selectedAccountOwner.name} />
+                          <AvatarImage src={withImageSize(selectedAccountOwner.imageUrl, 150)} alt={selectedAccountOwner.name} />
                         )}
                         <AvatarFallback className="text-[10px]">
                           {selectedAccountOwner.name.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase()}

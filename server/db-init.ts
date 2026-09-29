@@ -1278,6 +1278,50 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("faces table created successfully");
     }
+    await addColumnIfNotExists("faces", "dismissed_at", "TIMESTAMPTZ");
+    await addColumnIfNotExists("faces", "auto_match_score", "REAL");
+    await pool.query(`CREATE INDEX IF NOT EXISTS faces_photo_id_idx ON faces (photo_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS faces_personface_uuid_idx ON faces (personface_uuid)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS people_personface_uuid_idx ON people (personface_uuid)`);
+
+    // Ensure face_pair_dismissals table exists
+    const facePairDismissalsExists = await tableExists("face_pair_dismissals");
+    if (!facePairDismissalsExists) {
+      log("Creating face_pair_dismissals table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS face_pair_dismissals (
+          id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+          group_a_uuid VARCHAR NOT NULL,
+          group_b_uuid VARCHAR NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+        )
+      `);
+      log("face_pair_dismissals table created successfully");
+    }
+    // Ensure unique constraint/index on face_pair_dismissals (group_a_uuid, group_b_uuid)
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_indexes 
+          WHERE tablename = 'face_pair_dismissals' 
+            AND indexname = 'face_pair_dismissals_pair_idx'
+        ) THEN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'face_pair_dismissals_pair_idx' AND i.indisunique
+          ) THEN
+            DROP INDEX face_pair_dismissals_pair_idx;
+          END IF;
+        END IF;
+      END $$;
+    `);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS face_pair_dismissals_pair_idx ON face_pair_dismissals (group_a_uuid, group_b_uuid)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS face_pair_dismissals_group_a_idx ON face_pair_dismissals (group_a_uuid)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS face_pair_dismissals_group_b_idx ON face_pair_dismissals (group_b_uuid)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS image_tasks_pending_idx ON image_tasks (type, created_at) WHERE status = 'pending'`);
 
     // Ensure image_questions table exists
     const imageQuestionsExists = await tableExists("image_questions");

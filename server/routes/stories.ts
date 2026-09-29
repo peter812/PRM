@@ -24,6 +24,7 @@ import { generateDeterministicUuid } from "./social-media";
 import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
+import { getImageDimensions } from "../profile-image";
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 // A story video (≤ 60 s) is usually 3–15 MB; the scraper skips anything over its own cap (50 MB by default).
@@ -228,13 +229,15 @@ export function registerStories(app: Express) {
 
         let photoId = existingPhoto?.id;
         if (!photoId) {
+          // The stored file can be smaller than the size Instagram reports; face boxes use the file's pixels.
+          const dims = getImageDimensions(buffer);
           photoId = (await storage.insertPhoto({
             location: imageUrl,
             prmLocation: `post:${postId}`,
             isSubImage: false,
             fileHash,
-            widthPx: width ?? null,
-            heightPx: height ?? null,
+            widthPx: dims?.width ?? width ?? null,
+            heightPx: dims?.height ?? height ?? null,
             ogMetadata: { source: "instagram-story", storyPk: cleanStoryPk, takenAt },
           })).id;
         }

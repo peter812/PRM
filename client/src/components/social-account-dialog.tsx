@@ -26,15 +26,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { URL_TYPE_MAPPINGS } from "@/lib/constants";
-import { insertSocialAccountSchema, type SocialAccountType, type SocialAccount, type SocialAccountWithCurrentProfile } from "@shared/schema";
+import { insertSocialAccountSchema, INSTAGRAM_TYPE_ID, type SocialAccountType, type SocialAccount, type SocialAccountWithCurrentProfile } from "@shared/schema";
 import { z } from "zod";
 import { ImageUpload } from "./image-upload";
-import { Upload, FileText, CheckCircle2, AlertCircle, X } from "lucide-react";
+import { Upload, FileText, X } from "lucide-react";
 
 const socialAccountFormSchema = insertSocialAccountSchema.extend({
   nickname: z.string().nullable().optional(),
@@ -67,9 +68,22 @@ export function SocialAccountDialog({
   const [isTypeAutoSelected, setIsTypeAutoSelected] = useState(false);
   const [selectedXmlFile, setSelectedXmlFile] = useState<File | null>(null);
 
+  // Tracking job checkboxes (add mode only)
+  const [queueInfo, setQueueInfo] = useState(true);
+  const [queuePosts, setQueuePosts] = useState(true);
+  const [queueFollows, setQueueFollows] = useState(true);
+
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
   });
+
+  // Find the Instagram type to use as default
+  const instagramType = socialAccountTypes?.find(
+    (t) => t.id === INSTAGRAM_TYPE_ID || t.name.toLowerCase() === "instagram"
+  );
+
+  const isInstagramSelected = selectedTypeId === INSTAGRAM_TYPE_ID ||
+    (instagramType && selectedTypeId === instagramType.id);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(socialAccountFormSchema),
@@ -106,8 +120,13 @@ export function SocialAccountDialog({
         });
       } else {
         setImageUrl(null);
-        setSelectedTypeId("");
+        // Default to Instagram type when opening in add mode
+        const defaultTypeId = instagramType?.id || "";
+        setSelectedTypeId(defaultTypeId);
         setSelectedXmlFile(null);
+        setQueueInfo(true);
+        setQueuePosts(true);
+        setQueueFollows(true);
         form.reset({
           username: "",
           nickname: "",
@@ -122,7 +141,7 @@ export function SocialAccountDialog({
       }
       setIsTypeAutoSelected(false);
     }
-  }, [open, account, isEdit, form]);
+  }, [open, account, isEdit, form, instagramType]);
 
   useEffect(() => {
     if (!socialAccountTypes) return;
@@ -159,6 +178,28 @@ export function SocialAccountDialog({
     setIsTypeAutoSelected(false);
   };
 
+  /** Dispatch tracking jobs for checked kinds after account creation. */
+  const dispatchTrackingJobs = async (accountId: string) => {
+    const kinds: string[] = [];
+    if (queueInfo) kinds.push("info");
+    if (queuePosts) kinds.push("posts");
+    if (queueFollows) kinds.push("follows");
+
+    const results = await Promise.allSettled(
+      kinds.map((kind) =>
+        apiRequest("POST", `/api/social-accounts/${accountId}/tracking-jobs`, { kind })
+      )
+    );
+
+    const queued = results.filter((r) => r.status === "fulfilled").length;
+    if (queued > 0) {
+      toast({
+        title: "Queued",
+        description: `${queued} tracking job${queued > 1 ? "s" : ""} dispatched to the queue.`,
+      });
+    }
+  };
+
   const mutation = useMutation({
     mutationFn: async (data: FormValues) => {
       if (isEdit && account) {
@@ -191,6 +232,12 @@ export function SocialAccountDialog({
         description: isEdit ? "Social account updated successfully" : "Social account added successfully",
       });
       onOpenChange(false);
+
+      // Dispatch tracking jobs for newly created Instagram accounts
+      if (!isEdit && data?.id && isInstagramSelected) {
+        void dispatchTrackingJobs(data.id);
+      }
+
       if (!isEdit && onAccountCreated) onAccountCreated(data);
     },
     onError: () => {
@@ -265,7 +312,8 @@ export function SocialAccountDialog({
     importXmlMutation.mutate(selectedXmlFile);
   };
 
-  const formFields = (
+  // ── Edit mode form (unchanged — full fields) ────────────────────────────
+  const editFormFields = (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
         <div>
@@ -290,7 +338,7 @@ export function SocialAccountDialog({
                   placeholder="https://instagram.com/johndoe"
                   {...field}
                   value={field.value || ""}
-                  data-testid={isEdit ? "input-edit-account-url" : "input-account-url"}
+                  data-testid="input-edit-account-url"
                 />
               </FormControl>
               <FormMessage />
@@ -308,7 +356,7 @@ export function SocialAccountDialog({
                 <Input
                   placeholder="johndoe"
                   {...field}
-                  data-testid={isEdit ? "input-edit-username" : "input-username"}
+                  data-testid="input-edit-username"
                 />
               </FormControl>
               <FormMessage />
@@ -327,7 +375,7 @@ export function SocialAccountDialog({
                   placeholder="John Doe"
                   {...field}
                   value={field.value || ""}
-                  data-testid={isEdit ? "input-edit-nickname" : "input-nickname"}
+                  data-testid="input-edit-nickname"
                 />
               </FormControl>
               <FormMessage />
@@ -339,7 +387,7 @@ export function SocialAccountDialog({
           <FormLabel>Account Type *</FormLabel>
           <Select onValueChange={handleTypeChange} value={selectedTypeId}>
             <FormControl>
-              <SelectTrigger data-testid={isEdit ? "select-edit-account-type" : "select-account-type"}>
+              <SelectTrigger data-testid="select-edit-account-type">
                 <SelectValue placeholder="Select type" />
               </SelectTrigger>
             </FormControl>
@@ -359,22 +407,122 @@ export function SocialAccountDialog({
             type="button"
             variant="outline"
             onClick={() => onOpenChange(false)}
-            data-testid={isEdit ? "button-edit-cancel" : "button-cancel"}
+            data-testid="button-edit-cancel"
           >
             Cancel
           </Button>
           <Button
             type="submit"
             disabled={mutation.isPending}
-            data-testid={isEdit ? "button-edit-submit" : "button-submit"}
+            data-testid="button-edit-submit"
           >
-            {mutation.isPending
-              ? isEdit
-                ? "Saving..."
-                : "Adding..."
-              : isEdit
-              ? "Save Changes"
-              : "Add Account"}
+            {mutation.isPending ? "Saving..." : "Save Changes"}
+          </Button>
+        </div>
+      </form>
+    </Form>
+  );
+
+  // ── Add mode form (simplified: type → username → tracking checkboxes) ──
+  const addFormFields = (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        {/* Account Type — first, defaults to Instagram */}
+        <FormItem>
+          <FormLabel>Account Type *</FormLabel>
+          <Select onValueChange={handleTypeChange} value={selectedTypeId}>
+            <FormControl>
+              <SelectTrigger data-testid="select-account-type">
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
+            </FormControl>
+            <SelectContent>
+              <SelectItem value="none">None</SelectItem>
+              {socialAccountTypes?.map((type) => (
+                <SelectItem key={type.id} value={type.id}>
+                  {type.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormItem>
+
+        {/* Username */}
+        <FormField
+          control={form.control}
+          name="username"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Username *</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder="johndoe"
+                  {...field}
+                  data-testid="input-username"
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        {/* Tracking job checkboxes — only for Instagram */}
+        {isInstagramSelected && (
+          <div className="space-y-3 pt-2 border-t">
+            <Label className="text-sm font-medium">Account Info</Label>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="queue-info"
+                  checked={queueInfo}
+                  onCheckedChange={(checked) => setQueueInfo(checked === true)}
+                  data-testid="checkbox-queue-info"
+                />
+                <Label htmlFor="queue-info" className="text-sm font-normal cursor-pointer">
+                  Get this person's account info?
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="queue-posts"
+                  checked={queuePosts}
+                  onCheckedChange={(checked) => setQueuePosts(checked === true)}
+                  data-testid="checkbox-queue-posts"
+                />
+                <Label htmlFor="queue-posts" className="text-sm font-normal cursor-pointer">
+                  Get this person's posts?
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="queue-follows"
+                  checked={queueFollows}
+                  onCheckedChange={(checked) => setQueueFollows(checked === true)}
+                  data-testid="checkbox-queue-follows"
+                />
+                <Label htmlFor="queue-follows" className="text-sm font-normal cursor-pointer">
+                  Get this person's followers/following?
+                </Label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3 pt-4 border-t justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            data-testid="button-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            disabled={mutation.isPending}
+            data-testid="button-submit"
+          >
+            {mutation.isPending ? "Adding..." : "Add Account"}
           </Button>
         </div>
       </form>
@@ -394,7 +542,7 @@ export function SocialAccountDialog({
         </DialogHeader>
 
         {isEdit ? (
-          formFields
+          editFormFields
         ) : (
           <Tabs defaultValue="manual" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
@@ -403,7 +551,7 @@ export function SocialAccountDialog({
             </TabsList>
 
             <TabsContent value="manual" className="pt-4">
-              {formFields}
+              {addFormFields}
             </TabsContent>
 
             <TabsContent value="import" className="pt-4">

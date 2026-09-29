@@ -264,7 +264,15 @@ export function registerRoutes(app: Express) {
           }
         }
   
-        res.json(people.map(p => ({ uuid: p.id, name: `${p.firstName} ${p.lastName}`.trim() })));
+        res.json(people.map(p => ({
+          id: p.id,
+          uuid: p.id,
+          name: `${p.firstName} ${p.lastName}`.trim(),
+          firstName: p.firstName,
+          lastName: p.lastName,
+          imageUrl: p.imageUrl,
+          title: p.title,
+        })));
       } catch (error) {
         console.error("Error searching people:", error);
         res.status(500).json({ error: "Failed to search people" });

@@ -20,6 +20,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Redirect } from "wouter";
 import { useState } from "react";
+import { UnifiedSetupContent } from "@/components/unified-setup-dialog";
 
 const setupSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -75,11 +76,17 @@ const FEATURES = [
 
 export default function WelcomePage() {
   const { toast } = useToast();
-  const [setupComplete, setSetupComplete] = useState(false);
+  const [accountCreated, setAccountCreated] = useState(false);
+  const [onboardingFinished, setOnboardingFinished] = useState(false);
 
   const { data: currentUser } = useQuery({
     queryKey: ["/api/user"],
     retry: false,
+  });
+
+  const { data: onboardingStatus } = useQuery<{ completed: boolean; dismissed: boolean }>({
+    queryKey: ["/api/setup/onboarding-status"],
+    enabled: !!currentUser || accountCreated,
   });
 
   const form = useForm<SetupFormData>({
@@ -101,10 +108,10 @@ export default function WelcomePage() {
       queryClient.setQueryData(["/api/setup/status"], { isSetupNeeded: false });
       queryClient.setQueryData(["/api/user"], user);
       toast({
-        title: "Setup Complete",
-        description: "Your account has been created successfully!",
+        title: "Account Created!",
+        description: "Welcome to People Manager! Let's get your setup configured.",
       });
-      setSetupComplete(true);
+      setAccountCreated(true);
     },
     onError: (error: Error) => {
       toast({
@@ -115,12 +122,24 @@ export default function WelcomePage() {
     },
   });
 
-  if (currentUser) {
+  if (onboardingFinished) {
     return <Redirect to="/me" />;
   }
 
-  if (setupComplete) {
+  // If already logged in and onboarding is completed or dismissed, redirect to /me
+  if (currentUser && !accountCreated && (onboardingStatus?.completed || onboardingStatus?.dismissed)) {
     return <Redirect to="/me" />;
+  }
+
+  // If account was just created OR logged in without completed onboarding, show unified onboarding wizard
+  if (accountCreated || (currentUser && !onboardingStatus?.completed && !onboardingStatus?.dismissed)) {
+    return (
+      <div className="min-h-screen bg-muted/30 flex flex-col items-center justify-center p-3 md:p-6">
+        <div className="w-full max-w-5xl h-[88vh] bg-background border rounded-2xl shadow-xl overflow-hidden flex flex-col">
+          <UnifiedSetupContent onFinish={() => setOnboardingFinished(true)} />
+        </div>
+      </div>
+    );
   }
 
   const handleSubmit = (data: SetupFormData) => {

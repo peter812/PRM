@@ -320,12 +320,14 @@ export interface IStorage {
   deleteLineage(id: string): Promise<void>;
   updateLineage(id: string, data: Partial<InsertLineage>): Promise<Lineage | undefined>;
   getLineageForPerson(personId: string): Promise<Lineage[]>;
+  getAllLineage(): Promise<Lineage[]>;
 
   // Partnership operations
   createPartnership(data: InsertPartnership): Promise<Partnership>;
   deletePartnership(id: string): Promise<void>;
   updatePartnership(id: string, data: Partial<InsertPartnership>): Promise<Partnership | undefined>;
   getPartnershipsForPerson(personId: string): Promise<Partnership[]>;
+  getAllPartnerships(): Promise<Partnership[]>;
 
   // Relationship type operations
   getAllRelationshipTypes(): Promise<RelationshipType[]>;
@@ -553,7 +555,7 @@ export interface IStorage {
   // Image task operations
   createImageTask(task: InsertImageTask): Promise<ImageTask>;
   getImageTaskById(id: string): Promise<ImageTask | undefined>;
-  getNextPendingImageTask(excludeTypes?: string[]): Promise<ImageTask | undefined>;
+  claimNextImageTask(filter: { types?: string[]; excludeTypes?: string[] }): Promise<ImageTask | undefined>;
   updateImageTaskStatus(id: string, status: string, result?: string): Promise<void>;
   updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void>;
   getCurrentImageTasks(recentWindowSeconds?: number, limit?: number): Promise<ImageTask[]>;
@@ -2091,6 +2093,10 @@ export class DatabaseStorage implements IStorage {
       );
   }
 
+  async getAllLineage(): Promise<Lineage[]> {
+    return db.select().from(lineage);
+  }
+
   // Partnership operations
   async createPartnership(data: InsertPartnership): Promise<Partnership> {
     const person1Id = data.person1Id < data.person2Id ? data.person1Id : data.person2Id;
@@ -2132,6 +2138,10 @@ export class DatabaseStorage implements IStorage {
           eq(partnerships.person2Id, personId)
         )
       );
+  }
+
+  async getAllPartnerships(): Promise<Partnership[]> {
+    return db.select().from(partnerships);
   }
 
   async getPeopleByLastName(lastName: string): Promise<Person[]> {
@@ -5054,15 +5064,30 @@ export class DatabaseStorage implements IStorage {
     return task || undefined;
   }
 
-  /** Queue polling — deliberately unfiltered; the worker runs it as the system. */
-  async getNextPendingImageTask(excludeTypes?: string[]): Promise<ImageTask | undefined> {
-    const pending = eq(imageTasks.status, "pending");
-    const [task] = await db
-      .select()
+  /**
+   * Queue polling — deliberately unfiltered; the worker runs it as the system.
+   * Atomically moves the oldest pending task matching the filter to in_progress
+   * (SKIP LOCKED), so several lanes can claim at once without doubling up.
+   */
+  async claimNextImageTask(filter: { types?: string[]; excludeTypes?: string[] }): Promise<ImageTask | undefined> {
+    const conds = [eq(imageTasks.status, "pending")];
+    if (filter.types) {
+      if (filter.types.length === 0) return undefined;
+      conds.push(inArray(imageTasks.type, filter.types));
+    }
+    if (filter.excludeTypes?.length) conds.push(notInArray(imageTasks.type, filter.excludeTypes));
+    const next = db
+      .select({ id: imageTasks.id })
       .from(imageTasks)
-      .where(excludeTypes?.length ? and(pending, notInArray(imageTasks.type, excludeTypes)) : pending)
+      .where(and(...conds))
       .orderBy(imageTasks.createdAt)
-      .limit(1);
+      .limit(1)
+      .for("update", { skipLocked: true });
+    const [task] = await db
+      .update(imageTasks)
+      .set({ status: "in_progress", startedAt: new Date() })
+      .where(eq(imageTasks.id, sql`(${next})`))
+      .returning();
     return task || undefined;
   }
 

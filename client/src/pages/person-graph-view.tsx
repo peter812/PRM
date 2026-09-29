@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import ForceGraph3D from "3d-force-graph";
+import ForceGraph3D from "@/lib/force-graph-3d";
 import { Button } from "@/components/ui/button";
 import { Settings, X, Users } from "lucide-react";
 import { useLocation } from "wouter";
@@ -605,20 +605,6 @@ export default function PersonGraphView({
       fgRef.current.graphData(gData);
       setTimeout(updateBoundingSphere, 100);
     }
-
-    return () => {
-      if (fgRef.current) {
-        crowdSphereMeshesMapRef.current.forEach((mesh) => {
-          fgRef.current?.scene().remove(mesh);
-          (mesh.material as THREE.Material)?.dispose();
-        });
-        crowdSphereMeshesMapRef.current.clear();
-        fgRef.current._destructor();
-        fgRef.current = null;
-      }
-      resourcesRef.current?.dispose();
-      resourcesRef.current = null;
-    };
   }, [
     people,
     visiblePersonIds,
@@ -631,12 +617,28 @@ export default function PersonGraphView({
     highlightedGroupId,
     anonymizePeople,
     meData?.id,
-    selectedPersonId,
     setSelectedPersonId,
     showCrowds,
     crowdColorScheme,
-    crowdSphereOpacity,
   ]);
+
+  // Clean up WebGL renderer and shared Three.js resources only on component unmount
+  useEffect(() => {
+    return () => {
+      if (fgRef.current) {
+        crowdSphereMeshesMapRef.current.forEach((mesh) => {
+          fgRef.current?.scene().remove(mesh);
+          mesh.geometry?.dispose();
+          (mesh.material as THREE.Material)?.dispose();
+        });
+        crowdSphereMeshesMapRef.current.clear();
+        fgRef.current._destructor();
+        fgRef.current = null;
+      }
+      resourcesRef.current?.dispose();
+      resourcesRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     crowdSphereMeshesMapRef.current.forEach((mesh) => {

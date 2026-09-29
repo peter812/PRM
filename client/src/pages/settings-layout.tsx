@@ -23,6 +23,7 @@ import {
 import { lazy, Suspense } from "react";
 
 const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
+const UnifiedSetupPage = lazy(() => import("@/pages/unified-setup-page"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
 const AdminSettingsPage = lazy(() => import("@/pages/admin-settings"));
 const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
@@ -77,6 +78,11 @@ const settingsMenuItems: MenuItem[] = [
     title: "Home",
     url: "/settings/home",
     icon: Home,
+  },
+  {
+    title: "Unified Setup",
+    url: "/settings/setup",
+    icon: Sparkles,
   },
   {
     title: "Admin",
@@ -294,6 +300,7 @@ export default function SettingsLayout() {
         <Switch>
           <Route path="/" component={() => <Redirect to="/home" />} />
           <Route path="/home" component={SettingsHomePage} />
+          <Route path="/setup" component={UnifiedSetupPage} />
           <Route path="/user" component={UserOptionsPage} />
           <Route path="/app" component={AppOptionsPage} />
           <Route path="/search" component={SearchSettingsPage} />

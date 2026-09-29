@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, isAdminRole, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
 import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
@@ -35,10 +35,15 @@ import { fetchImageBuffer, uploadImage, syncFaceCropStorage } from "../prm-s3";
 import {
   runFaceRecognition, runOcr, runOcrOnBuffer, transcribeBuffer, ComputeUnreachableError, getComputeConnection,
   getAutoRecognitionSettings, setAutoRecognitionSettings, backfillCounts, runBackfill, associateProfileFaces,
-  type AutoRecognitionKind, type AutoRecognitionJob,
+  getComputeLanes, COMPUTE_LANE_KEYS, COMPUTE_LANE_MAX,
+  connectFace, disassociateFace, RecognitionRequestError, FaceMergeConflictError,
+  type AutoRecognitionKind, type AutoRecognitionJob, type ComputeLanes,
 } from "../recognition";
 import { hashPassword, requireAuth } from "../auth";
-import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
+import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, refreshImageLanes } from "../task-worker";
+import { canReadShared } from "../access";
+import { identityIsVisible, faceGroupUuid } from "../faces";
+import { faceInReadablePhoto } from "./face-review";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import fs from "fs";
@@ -318,25 +323,25 @@ export function registerRoutes(app: Express) {
       enabled: (await storage.getAppSetting("compute_idle_unload_enabled")) === "true",
       minutes: Number(await storage.getAppSetting("compute_idle_unload_minutes")) || 10,
     });
-    const computeIdleUnload = async (
-      path: string,
-      method: "GET" | "POST",
-    ): Promise<{ loaded: any[] | null; computeError?: string }> => {
+    const computeJson = async (path: string, method: "GET" | "POST"): Promise<{ data?: any; computeError?: string }> => {
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiUrl || !apiKey) return { loaded: null, computeError: "PRM-Compute is not configured." };
+      if (!apiUrl || !apiKey) return { computeError: "PRM-Compute is not configured." };
       try {
         const response = await fetch(`${prmBase(apiUrl)}${path}`, {
           method,
           headers: { "x-api-key": apiKey },
           signal: AbortSignal.timeout(10000),
         });
-        if (!response.ok) return { loaded: null, computeError: `PRM-Compute error: ${await response.text()}` };
-        const data = await response.json();
-        return { loaded: Array.isArray(data.loaded) ? data.loaded : [] };
+        if (!response.ok) return { computeError: `PRM-Compute error: ${await response.text()}` };
+        return { data: await response.json() };
       } catch (error: any) {
-        return { loaded: null, computeError: `Failed to contact PRM-Compute: ${error.message}` };
+        return { computeError: `Failed to contact PRM-Compute: ${error.message}` };
       }
+    };
+    const computeIdleUnload = async (path: string, method: "GET" | "POST") => {
+      const { data, computeError } = await computeJson(path, method);
+      return data ? { loaded: Array.isArray(data.loaded) ? data.loaded : [] } : { loaded: null, computeError };
     };
 
     app.get("/api/prm-face/idle-unload", async (req, res) => {
@@ -355,6 +360,30 @@ export function registerRoutes(app: Express) {
       await storage.setAppSetting("compute_idle_unload_enabled", enabled ? "true" : "false");
       await storage.setAppSetting("compute_idle_unload_minutes", String(mins));
       res.json({ ...(await idleUnloadSetting()), ...(await computeIdleUnload("/api/face/idle-unload/reload", "POST")) });
+    });
+
+    // Parallel processing lanes: same ownership as idle unload. After a save,
+    // PRM-Compute resizes its limiters (POST /api/compute/lanes/reload) and the
+    // task worker picks up the new limits. `status` is compute's live
+    // running/waiting counts per engine, or null when it's offline.
+    app.get("/api/prm-face/lanes", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { data: status = null, computeError } = await computeJson("/api/compute/status", "GET");
+      res.json({ lanes: await getComputeLanes(), max: COMPUTE_LANE_MAX, status, computeError });
+    });
+
+    app.post("/api/prm-face/lanes", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (!isAdminRole((req.user as any)?.role)) return res.status(403).json({ error: "Admin access required." });
+      const keys = Object.keys(COMPUTE_LANE_KEYS) as (keyof ComputeLanes)[];
+      const bad = keys.find((key) => {
+        const n = req.body?.[key];
+        return !Number.isInteger(n) || n < 1 || n > COMPUTE_LANE_MAX[key];
+      });
+      if (bad) return res.status(400).json({ error: `${bad} must be a whole number between 1 and ${COMPUTE_LANE_MAX[bad]}.` });
+      await Promise.all(keys.map((key) => storage.setAppSetting(COMPUTE_LANE_KEYS[key], String(req.body[key]))));
+      const { data: status = null, computeError } = await computeJson("/api/compute/lanes/reload", "POST");
+      res.json({ lanes: await refreshImageLanes(), max: COMPUTE_LANE_MAX, status, computeError });
     });
 
     // Delete all recognition-pipeline images & faces and reset PRM-Face.
@@ -1241,7 +1270,7 @@ export function registerRoutes(app: Express) {
     });
 
     const backfillBody = z.object({
-      kind: z.enum(["profile", "post", "story"]),
+      kind: z.enum(["profile", "post", "story", "message"]),
       job: z.enum(["face", "ocr", "transcribe"]),
     });
     app.post("/api/recognition/auto/backfill", async (req, res) => {
@@ -3897,50 +3926,22 @@ Respond with ONLY a JSON array, no other text.`;
     app.post("/api/prm-face/face/disassociate", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const { faceUuid } = req.body;
-      if (!faceUuid) {
+      if (!faceUuid || typeof faceUuid !== "string") {
         return res.status(400).json({ error: "faceUuid is required." });
       }
 
+      const group = await faceGroupUuid(faceUuid);
+      if (!group || !(await identityIsVisible(group)) || !(await faceInReadablePhoto(faceUuid))) {
+        return res.status(404).json({ error: "Face not found or inaccessible." });
+      }
+
       try {
-        const [face] = await db.select().from(faces).where(eq(faces.id, faceUuid));
-        if (!face) {
-          return res.status(404).json({ error: "Face not found." });
-        }
-
-        const newGroupUuid = crypto.randomUUID();
-
-        await db.update(faces)
-          .set({ personfaceUuid: newGroupUuid })
-          .where(eq(faces.id, faceUuid));
-
-        if (face.photoId) {
-          const [photo] = await db.select().from(photos).where(eq(photos.id, face.photoId));
-          if (photo && photo.facialIds) {
-            let facialIds = (photo.facialIds as any[]) || [];
-            let updated = false;
-            facialIds = facialIds.map(fid => {
-              if (fid.faceUuid === faceUuid) {
-                updated = true;
-                return {
-                  ...fid,
-                  personId: null,
-                  socialAccountId: null
-                };
-              }
-              return fid;
-            });
-            if (updated) {
-              await db.update(photos)
-                .set({ facialIds })
-                .where(eq(photos.id, face.photoId));
-            }
-          }
-        }
-
+        const { newGroupUuid } = await disassociateFace(faceUuid);
         res.json({ success: true, newGroupUuid });
       } catch (error: any) {
+        if (error instanceof RecognitionRequestError) return res.status(error.status).json({ error: error.message });
         console.error("Error in face/disassociate:", error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: "Failed to disassociate face." });
       }
     });
 
@@ -3957,149 +3958,45 @@ Respond with ONLY a JSON array, no other text.`;
         return res.status(400).json({ error: "personId or socialAccountId is required." });
       }
 
+      if (faceUuid && typeof faceUuid === "string") {
+        const group = await faceGroupUuid(faceUuid);
+        if (!group || !(await identityIsVisible(group)) || !(await faceInReadablePhoto(faceUuid))) {
+          return res.status(404).json({ error: "Face not found or inaccessible." });
+        }
+      } else if (personfaceUuid && typeof personfaceUuid === "string") {
+        if (!(await identityIsVisible(personfaceUuid))) {
+          return res.status(404).json({ error: "Face group not found or inaccessible." });
+        }
+      }
+
+      if (personId && typeof personId === "string") {
+        const [targetPerson] = await db
+          .select({ visibility: people.visibility, createdByUserId: people.createdByUserId })
+          .from(people)
+          .where(eq(people.id, personId));
+        if (!targetPerson || !canReadShared(targetPerson)) {
+          return res.status(404).json({ error: "Person not found or inaccessible." });
+        }
+      }
+
+      if (socialAccountId && typeof socialAccountId === "string") {
+        const [targetAccount] = await db
+          .select({ visibility: socialAccounts.visibility, createdByUserId: socialAccounts.createdByUserId })
+          .from(socialAccounts)
+          .where(eq(socialAccounts.id, socialAccountId));
+        if (!targetAccount || !canReadShared(targetAccount)) {
+          return res.status(404).json({ error: "Social account not found or inaccessible." });
+        }
+      }
+
       try {
-        let targetPersonfaceUuid = personfaceUuid;
-        let resolvedPersonId: string | null = personId || null;
-
-        if (!targetPersonfaceUuid && faceUuid) {
-          const [f] = await db.select().from(faces).where(eq(faces.id, faceUuid));
-          if (f) {
-            targetPersonfaceUuid = f.personfaceUuid;
-            if (!targetPersonfaceUuid) {
-              targetPersonfaceUuid = crypto.randomUUID();
-              await db.update(faces)
-                .set({ personfaceUuid: targetPersonfaceUuid })
-                .where(eq(faces.id, faceUuid));
-            }
-          }
-        }
-
-        let sa: any = null;
-        if (socialAccountId) {
-          const [foundSa] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, socialAccountId));
-          if (!foundSa) {
-            return res.status(404).json({ error: "Social account not found." });
-          }
-          sa = foundSa;
-          // If no personId was explicitly passed, inherit the social account's owner if one exists
-          if (!resolvedPersonId && sa.ownerUuid) {
-            resolvedPersonId = sa.ownerUuid;
-          }
-          // If targetPersonfaceUuid wasn't established yet, try using the social account's existing group
-          if (!targetPersonfaceUuid && sa.personfaceUuid) {
-            targetPersonfaceUuid = sa.personfaceUuid;
-          }
-        }
-
-        let person: any = null;
-        if (resolvedPersonId) {
-          const [foundPerson] = await db.select().from(people).where(eq(people.id, resolvedPersonId));
-          if (foundPerson) {
-            person = foundPerson;
-            if (!targetPersonfaceUuid && person.personfaceUuid) {
-              targetPersonfaceUuid = person.personfaceUuid;
-            }
-          } else if (personId) {
-            return res.status(404).json({ error: "Person not found." });
-          }
-        }
-
-        if (!targetPersonfaceUuid) {
-          targetPersonfaceUuid = crypto.randomUUID();
-        }
-
-        // If faceUuid was passed and has no personfaceUuid or had a different one, update it
-        if (faceUuid) {
-          await db.update(faces)
-            .set({ personfaceUuid: targetPersonfaceUuid })
-            .where(eq(faces.id, faceUuid));
-        }
-
-        // If personId / resolvedPersonId exists, link person to the group
-        if (resolvedPersonId) {
-          await db.update(people)
-            .set({ personfaceUuid: targetPersonfaceUuid })
-            .where(eq(people.id, resolvedPersonId));
-        }
-
-        // If socialAccountId exists, link social account to the group
-        if (socialAccountId) {
-          await db.update(socialAccounts)
-            .set({ personfaceUuid: targetPersonfaceUuid })
-            .where(eq(socialAccounts.id, socialAccountId));
-        }
-
-        // Update photos.facialIds for all faces in this group
-        const groupFaces = await db.select().from(faces).where(eq(faces.personfaceUuid, targetPersonfaceUuid));
-        for (const gf of groupFaces) {
-          if (gf.photoId) {
-            const [photo] = await db.select().from(photos).where(eq(photos.id, gf.photoId));
-            if (photo && photo.facialIds) {
-              let facialIds = (photo.facialIds as any[]) || [];
-              let updated = false;
-              facialIds = facialIds.map(fid => {
-                if (fid.faceUuid === gf.id) {
-                  updated = true;
-                  return {
-                    ...fid,
-                    // Person takes precedence if resolved, otherwise keep whatever was previously set
-                    personId: resolvedPersonId !== null ? resolvedPersonId : (fid.personId || null),
-                    // Social account is linked if provided, otherwise preserve existing social account link
-                    socialAccountId: socialAccountId || fid.socialAccountId || null,
-                  };
-                }
-                return fid;
-              });
-              if (updated) {
-                await db.update(photos)
-                  .set({ facialIds })
-                  .where(eq(photos.id, gf.photoId));
-              }
-            }
-          }
-        }
-
-        // Sync with external PRM-Face microservice if configured
-        const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-        const apiKey = await getPrmFaceSetting("prm_face_api_key");
-        if (apiUrl && apiKey && (resolvedPersonId || socialAccountId)) {
-          // Person takes precedence for naming/UUID in PRM-Face
-          const identityUuid = resolvedPersonId || socialAccountId;
-          const displayName = person
-            ? `${person.firstName} ${person.lastName}`
-            : (sa ? `@${sa.username}` : "User");
-
-          for (const gf of groupFaces) {
-            try {
-              const params = new URLSearchParams();
-              params.append("face_uuid", gf.id);
-              params.append("person_uuid", identityUuid);
-              params.append("name", displayName);
-
-              await fetch(`${prmBase(apiUrl)}/api/face/assign`, {
-                method: "POST",
-                headers: {
-                  "x-api-key": apiKey,
-                  "Content-Type": "application/x-www-form-urlencoded"
-                },
-                body: params.toString(),
-                signal: AbortSignal.timeout(5000),
-              });
-            } catch (err: any) {
-              console.warn(`[PRM-Face] failed to assign face ${gf.id}:`, err.message);
-            }
-          }
-        }
-
-        res.json({
-          success: true,
-          personId: resolvedPersonId || null,
-          socialAccountId: socialAccountId || null,
-          personfaceUuid: targetPersonfaceUuid,
-        });
+        const result = await connectFace({ faceUuid, personfaceUuid, personId, socialAccountId });
+        res.json({ success: true, ...result });
       } catch (error: any) {
+        if (error instanceof RecognitionRequestError) return res.status(error.status).json({ error: error.message });
+        if (error instanceof FaceMergeConflictError) return res.status(409).json({ error: error.message });
         console.error("Error in face/connect:", error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: "Failed to connect face." });
       }
     });
 
@@ -4336,30 +4233,6 @@ Respond with ONLY a JSON array, no other text.`;
       if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/face/with-name?page=${page}&page_size=${pageSize}`, {
-          headers: { "x-api-key": apiKey },
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!response.ok) {
-          const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
-        }
-        res.json(await response.json());
-      } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
-      }
-    });
-
-    // List orphan faces
-    app.get("/api/prm-face/face/without-name", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const page = req.query.page || "1";
-      const pageSize = req.query.page_size || req.query.pageSize || "25";
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
-      const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
-      try {
-        const response = await fetch(`${prmBase(apiUrl)}/api/face/without-name?page=${page}&page_size=${pageSize}`, {
           headers: { "x-api-key": apiKey },
           signal: AbortSignal.timeout(15000),
         });

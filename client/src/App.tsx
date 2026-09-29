@@ -20,12 +20,15 @@ import { AddNoteDialog } from "@/components/add-note-dialog";
 import { UniversalAddButton } from "@/components/universal-add-button";
 import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { BubblesBackground } from "@/components/bubbles-background";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { PrmS3StatusGuard } from "@/components/prm-s3-status";
 import { Button } from "@/components/ui/button";
-import { Settings, LogOut, Home, Loader2 } from "lucide-react";
+import { Settings, LogOut, Home, Loader2, Sparkles } from "lucide-react";
 import { SettingsSidebar } from "@/pages/settings-layout";
+
+const UnifiedSetupDialog = lazy(() =>
+  import("@/components/unified-setup-dialog").then((m) => ({ default: m.UnifiedSetupDialog }))
+);
 
 const PeopleList = lazy(() => import("@/pages/people-list"));
 const PersonProfile = lazy(() => import("@/pages/person-profile"));
@@ -48,11 +51,14 @@ const GuessTheSex = lazy(() => import("@/pages/guess-the-sex"));
 const AccountMatching = lazy(() => import("@/pages/account-matching"));
 const PrmFaceDemo = lazy(() => import("@/pages/prm-face-demo"));
 const PrmFaceSaveDemo = lazy(() => import("@/pages/prm-face-save-demo"));
-const UnknownFaces = lazy(() => import("@/pages/unknown-faces"));
+const FaceReview = lazy(() => import("@/pages/face-review"));
+const Faces = lazy(() => import("@/pages/faces"));
 const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
 const OcrDemo = lazy(() => import("@/pages/ocr-demo"));
 const WhisperDemo = lazy(() => import("@/pages/whisper-demo"));
 const MapDemo = lazy(() => import("@/pages/map-demo"));
+const WordCloudDemo = lazy(() => import("@/pages/word-cloud-demo"));
+const BioWordCloudDemo = lazy(() => import("@/pages/bio-word-cloud-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
@@ -66,6 +72,7 @@ const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
 const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
 const SuperSearchPage = lazy(() => import("@/pages/super-search"));
 const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
+const PotentialFamiliesPage = lazy(() => import("@/pages/potential-families"));
 const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-imports"));
 const SocialTrackingPage = lazy(() => import("@/pages/social-tracking"));
 const SocialAccountsIssuesPage = lazy(() => import("@/pages/social-accounts-issues"));
@@ -211,6 +218,8 @@ function Router() {
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
         <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
         <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
+        <ProtectedRoute path="/family-tree/potential" component={PotentialFamiliesPage} />
+        <ProtectedRoute path="/family-tree/potential-families" component={PotentialFamiliesPage} />
         <ProtectedRoute path="/elo-ranking" component={EloRanking} />
         <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
         <ProtectedRoute path="/account-matching" component={AccountMatching} />
@@ -223,12 +232,16 @@ function Router() {
         <ProtectedRoute path="/political-leaning-game" component={PoliticalLeaningGamePage} />
         <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
         <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
-        <ProtectedRoute path="/unknown-faces" component={UnknownFaces} />
+        <ProtectedRoute path="/face-review" component={FaceReview} />
+        <ProtectedRoute path="/unknown-faces" component={FaceReview} />
+        <ProtectedRoute path="/faces" component={Faces} />
         <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
         <ProtectedRoute path="/ocr-demo" component={OcrDemo} />
         <ProtectedRoute path="/demos/ocr" component={OcrDemo} />
         <ProtectedRoute path="/demos/whisper" component={WhisperDemo} />
         <ProtectedRoute path="/demos/map" component={MapDemo} />
+        <ProtectedRoute path="/demos/word-cloud" component={WordCloudDemo} />
+        <ProtectedRoute path="/demos/bio-word-cloud" component={BioWordCloudDemo} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />
@@ -267,6 +280,7 @@ function AppLayout() {
   const [isAddInteractionDialogOpen, setIsAddInteractionDialogOpen] = useState(false);
   const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
   const [isAddPhotoDialogOpen, setIsAddPhotoDialogOpen] = useState(false);
+  const [isSetupAssistantOpen, setIsSetupAssistantOpen] = useState(false);
   useExportNotifier();
   useSignedMediaRefresh();
   const isAuthPage = location === "/auth" || location === "/auth-direct";
@@ -306,7 +320,6 @@ function AppLayout() {
 
   return (
     <SidebarProvider style={style as React.CSSProperties}>
-      <BubblesBackground />
       <div className="flex h-screen w-full">
         {isSettingsPage ? <SettingsSidebar /> : <AppSidebar />}
         <div className="flex flex-col flex-1 overflow-hidden">
@@ -357,6 +370,16 @@ function AppLayout() {
                         <Settings className="h-4 w-4" />
                       </Button>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-primary"
+                      onClick={() => setIsSetupAssistantOpen(true)}
+                      title="Unified Setup Assistant"
+                      data-testid="header-button-setup-assistant"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                    </Button>
                     <ThemeToggle />
                     <Button
                       variant="ghost"
@@ -394,6 +417,14 @@ function AppLayout() {
           <AddNoteDialog open={isAddNoteDialogOpen} onOpenChange={setIsAddNoteDialogOpen} personId="" />
           <PhotoUploadDialog open={isAddPhotoDialogOpen} onClose={() => setIsAddPhotoDialogOpen(false)} />
           <TaskTrackerModal />
+          {isSetupAssistantOpen && (
+            <Suspense fallback={null}>
+              <UnifiedSetupDialog
+                open={isSetupAssistantOpen}
+                onOpenChange={setIsSetupAssistantOpen}
+              />
+            </Suspense>
+          )}
         </>
       )}
     </SidebarProvider>

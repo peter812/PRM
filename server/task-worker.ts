@@ -80,11 +80,12 @@ import {
   truePersonSearch,
   faces,
   type SocialAccountHistoryDelta,
+  type ImageTask,
   cleanPhoneNumberForStorage,
   formatPhoneNumberForDisplay,
 } from "@shared/schema";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
-import { runFaceRecognition, runOcr, transcribeVideo, ComputeUnreachableError, RECOGNITION_TASK_TYPES } from "./recognition";
+import { runFaceRecognition, runOcr, transcribeVideo, ComputeUnreachableError, ComputeBusyError, RECOGNITION_TASK_TYPES, JOB_TASK_TYPE, getComputeLanes, COMPUTE_LANE_DEFAULTS, enqueueAutoRecognition } from "./recognition";
 
 const POLL_INTERVAL_MS = 60_000;
 const IMAGE_DOWNLOAD_DELAY_MS = 1_000;
@@ -95,12 +96,26 @@ let isPaused = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ── Image task worker state ───────────────────────────────────────────────────
-let isImageProcessing = false;
+// Tasks run in lanes: one per PRM-Compute engine plus "other" (downloads and
+// stubs, one at a time with a pause between to keep Instagram gentle). Each
+// recognition lane runs up to its limit side by side, bounded overall by the
+// total cap — the same limits PRM-Compute enforces (Settings → Recognition).
+type ImageLane = "face" | "ocr" | "stt" | "other";
+const IMAGE_LANES: ImageLane[] = ["face", "ocr", "stt", "other"];
+const LANE_TASK_TYPE = { face: JOB_TASK_TYPE.face, ocr: JOB_TASK_TYPE.ocr, stt: JOB_TASK_TYPE.transcribe };
+const laneOf = (type: string) => (IMAGE_LANES.find((l) => l !== "other" && LANE_TASK_TYPE[l] === type) ?? "other");
+let laneLimits = { ...COMPUTE_LANE_DEFAULTS };
+const inFlight: Record<ImageLane, number> = { face: 0, ocr: 0, stt: 0, other: 0 };
+const lanePausedUntil: Record<ImageLane, number> = { face: 0, ocr: 0, stt: 0, other: 0 };
+let isDispatching = false;
+let redispatch = false;
 let imageTaskPollTimer: ReturnType<typeof setTimeout> | null = null;
 // While PRM-Compute is unreachable, recognition tasks stay pending and are
 // skipped until this passes; downloads and the rest keep flowing.
 const COMPUTE_BACKOFF_MS = 5 * 60_000;
 let recognitionPausedUntil = 0;
+// Compute answered busy: only that lane waits, briefly.
+const COMPUTE_BUSY_BACKOFF_MS = 5_000;
 
 // ── Image task handlers ───────────────────────────────────────────────────────
 
@@ -191,14 +206,8 @@ async function processConvertImg(imageTaskId: string, payload: { photoId?: strin
   return JSON.stringify({ stub: true, note: "Image conversion not yet implemented" });
 }
 
-async function processNextImageTask(): Promise<boolean> {
-  const excludeTypes = Date.now() < recognitionPausedUntil ? RECOGNITION_TASK_TYPES : undefined;
-  const task = await runAsSystem(() => storage.getNextPendingImageTask(excludeTypes));
-  if (!task) return false;
-
+async function processImageTask(task: ImageTask): Promise<void> {
   log(`[ImageWorker] Processing image task ${task.id} (type: ${task.type})`);
-  await runAsSystem(() => storage.updateImageTaskStatus(task.id, "in_progress"));
-
   const effectiveUserId = task.userId || (await runAsSystem(() => storage.getAllUsers()))[0]?.id;
 
   return runAsUser(effectiveUserId, async () => {
@@ -243,56 +252,106 @@ async function processNextImageTask(): Promise<boolean> {
         await storage.updateImageTaskStatus(task.id, "completed", result);
         log(`[ImageWorker] Image task ${task.id} completed`);
       }
-      return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       // Only write failed state if not already cancelled
       const postErrorTask = await storage.getImageTaskById(task.id).catch(() => null);
-      if (postErrorTask && postErrorTask.status === "cancelled") return true;
+      if (postErrorTask && postErrorTask.status === "cancelled") return;
       if (error instanceof ComputeUnreachableError) {
         // Not the task's fault: hand it back to the queue and try again later.
         recognitionPausedUntil = Date.now() + COMPUTE_BACKOFF_MS;
         log(`[ImageWorker] ${errorMessage} — recognition tasks paused for ${COMPUTE_BACKOFF_MS / 60_000} min`);
         await storage.updateImageTaskStatus(task.id, "pending");
-        return true;
+        return;
+      }
+      if (error instanceof ComputeBusyError) {
+        const lane = laneOf(task.type);
+        lanePausedUntil[lane] = Date.now() + COMPUTE_BUSY_BACKOFF_MS;
+        log(`[ImageWorker] ${errorMessage} — ${lane} lane retries in ${COMPUTE_BUSY_BACKOFF_MS / 1000}s`);
+        await storage.updateImageTaskStatus(task.id, "pending");
+        setTimeout(dispatchImageTasks, COMPUTE_BUSY_BACKOFF_MS);
+        return;
       }
       log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
       await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
-      return true;
     }
   });
 }
 
-async function runImageTaskWorkerLoop() {
-  if (isImageProcessing || isPaused) return;
-  isImageProcessing = true;
+function laneHasRoom(lane: ImageLane): boolean {
+  if (Date.now() < lanePausedUntil[lane]) return false;
+  if (lane === "other") return inFlight.other < 1;
+  if (Date.now() < recognitionPausedUntil) return false;
+  return inFlight[lane] < laneLimits[lane] && inFlight.face + inFlight.ocr + inFlight.stt < laneLimits.total;
+}
+
+function claimForLane(lane: ImageLane): Promise<ImageTask | undefined> {
+  const filter = lane === "other" ? { excludeTypes: RECOGNITION_TASK_TYPES } : { types: [LANE_TASK_TYPE[lane]] };
+  return runAsSystem(() => storage.claimNextImageTask(filter));
+}
+
+let nextLaneIndex = 0;
+
+/** Fill every lane that has room; re-runs whenever a task finishes. */
+async function dispatchImageTasks() {
+  if (isPaused) return;
+  if (isDispatching) {
+    redispatch = true;
+    return;
+  }
+  isDispatching = true;
   try {
-    let hasMore = true;
-    while (hasMore && !isPaused) {
-      hasMore = await processNextImageTask();
-      if (hasMore && !isPaused) {
-        await new Promise(resolve => setTimeout(resolve, IMAGE_DOWNLOAD_DELAY_MS));
-      }
-    }
+    do {
+      redispatch = false;
+      let claimedAny = false;
+      do {
+        claimedAny = false;
+        for (let i = 0; i < IMAGE_LANES.length; i++) {
+          if (isPaused) break;
+          const lane = IMAGE_LANES[(nextLaneIndex + i) % IMAGE_LANES.length];
+          if (laneHasRoom(lane)) {
+            const task = await claimForLane(lane);
+            if (task) {
+              claimedAny = true;
+              inFlight[lane]++;
+              void processImageTask(task)
+                .catch((error) => log(`[ImageWorker] Task ${task.id} error: ${error instanceof Error ? error.message : String(error)}`))
+                .finally(() => {
+                  // "other" holds its slot a moment longer so downloads stay spaced out.
+                  setTimeout(() => {
+                    inFlight[lane]--;
+                    dispatchImageTasks();
+                  }, lane === "other" ? IMAGE_DOWNLOAD_DELAY_MS : 0);
+                });
+            }
+          }
+        }
+        nextLaneIndex = (nextLaneIndex + 1) % IMAGE_LANES.length;
+      } while (claimedAny && !isPaused && IMAGE_LANES.some((l) => laneHasRoom(l)));
+    } while (redispatch && !isPaused);
   } catch (error) {
-    log(`[ImageWorker] Worker loop error: ${error instanceof Error ? error.message : String(error)}`);
+    log(`[ImageWorker] Dispatch error: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
-    isImageProcessing = false;
+    isDispatching = false;
     if (!isPaused) scheduleImagePoll();
   }
 }
 
 function scheduleImagePoll() {
   if (imageTaskPollTimer) clearTimeout(imageTaskPollTimer);
-  imageTaskPollTimer = setTimeout(() => {
-    runImageTaskWorkerLoop();
-  }, POLL_INTERVAL_MS);
+  imageTaskPollTimer = setTimeout(dispatchImageTasks, POLL_INTERVAL_MS);
 }
 
 export function triggerImageTaskWorker() {
-  if (isImageProcessing || isPaused) return;
-  if (imageTaskPollTimer) clearTimeout(imageTaskPollTimer);
-  runImageTaskWorkerLoop();
+  dispatchImageTasks();
+}
+
+/** Re-read the lane limits (after Settings → Recognition saves them) and fill any new room. */
+export async function refreshImageLanes() {
+  laneLimits = await getComputeLanes();
+  log(`[ImageWorker] Lanes: face ${laneLimits.face} · ocr ${laneLimits.ocr} · stt ${laneLimits.stt} · total ${laneLimits.total}`);
+  dispatchImageTasks();
+  return laneLimits;
 }
 
 /** Legacy task type; nothing creates these any more. Same pipeline as the image worker. */
@@ -2384,6 +2443,7 @@ async function importOneDmThread(
   }
 
   const existingExternalIds = await storage.getMessageExternalIds(conversation.id);
+  const importedPhotoIds: string[] = [];
 
   const total = parsed.messages.length;
   for (let i = 0; i < total; i++) {
@@ -2501,6 +2561,7 @@ async function importOneDmThread(
           ogMetadata: { source: "instagram-export", originalUri: media.uri },
         });
         imageUuids.push(photo.id);
+        importedPhotoIds.push(photo.id);
         summary.photosImported++;
       } else {
         // video / audio
@@ -2548,6 +2609,8 @@ async function importOneDmThread(
       importHashDate: importDate.toISOString(),
     },
   });
+
+  if (importedPhotoIds.length) await enqueueAutoRecognition({ kind: "message", photoIds: importedPhotoIds });
 
   return summary;
 }
@@ -4165,7 +4228,7 @@ export function startTaskWorker() {
   log("[TaskWorker] Starting background task worker");
   void recoverStaleTasksOnStartup().finally(() => {
     runWorkerLoop();
-    runImageTaskWorkerLoop();
+    void refreshImageLanes();
   });
 }
 
@@ -4181,6 +4244,10 @@ export function pauseTaskWorker() {
     clearTimeout(pollTimer);
     pollTimer = null;
   }
+  if (imageTaskPollTimer) {
+    clearTimeout(imageTaskPollTimer);
+    imageTaskPollTimer = null;
+  }
   log("[TaskWorker] Worker paused");
 }
 
@@ -4188,6 +4255,7 @@ export function resumeTaskWorker() {
   isPaused = false;
   log("[TaskWorker] Worker resumed");
   runWorkerLoop();
+  dispatchImageTasks();
 }
 
 export function isTaskWorkerPaused(): boolean {

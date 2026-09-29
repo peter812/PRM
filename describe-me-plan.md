@@ -98,42 +98,36 @@ eligible rows (one extra query, only on the empty path).
 
 ### `POST /api/describe-me/extract`
 Body `{ personId, transcript }`. Checks `ollama_enabled`,
-`buildOllamaChatContext()`, model = `ollama_text_model` → `ollama_model`
-(identical block to `messages.ts:281-287` — pull it into a small
-`resolveTextModel()` helper in `people-groups.ts` next to
-`buildOllamaChatContext` so it is not copied a third time). Calls
-`extractBulletsFromTranscript({ ollama, model, personName, transcript })`
-→ `{ bullets: string[] }`.
+`buildOllamaChatContext()`, model = `ollama_text_model` → `ollama_model`.
+Exposes 3 LLM tools/hooks to Ollama chat:
+1. `create_potential_interaction({ title, date, description, type })`
+2. `create_potential_note({ content, title })`
+3. `create_potential_tags({ tags: string[] })`
 
-Prompt (system): you are given a spoken description of *Name*; return
-`{"bullets": string[]}` — each bullet one concrete fact or trait about them,
-third person, present tense, no filler, no duplicates, keep the speaker's
-wording where it is specific (names, places, numbers). Drop anything that is
-not about the person. `format: "json"`, non-streaming, 2-minute timeout,
-`extractJsonObject` for parsing (already exported from `family-tree-ai.ts`).
-Validation: array of non-empty strings, trimmed, leading "-"/"•" stripped,
-capped at 30.
+Extracts both native tool calls (`message.tool_calls`) and structured JSON fallback (`message.content`), assigning unique IDs to each item and returning:
+`{ potentialInteractions, potentialNotes, potentialTags, transcript, bullets }`.
 
-### `POST /api/describe-me/save`
-Body `{ personId, bullets: string[] }` (zod: 1–30 non-empty strings).
+### `POST /api/describe-me/apply` (and `/save`)
+Body `{ personId, notes, interactions, tags, bullets? }` (`applyDescribeMeSchema`).
 1. `storage.getPersonById` → 404 if missing / not visible.
-2. `storage.createNote({ personId, userId, content })` with the content
-   format above.
-3. `storage.updatePerson(personId, { lastDescribedAt: new Date() })`.
-4. `syncEntityInBackground("note", note.id)` (same as `POST /api/notes`).
-5. Return `{ note }`.
-
-Not using `POST /api/notes` from the client because the timestamp must be
-set in the same request as the note; two client calls could leave a note
-without the cooldown.
+2. For approved notes: `storage.createNote({ personId, userId, content })` with `(describe me)` trailer, followed by `syncEntityInBackground("note", note.id)`.
+3. For approved interactions: maps interaction type if specified, links `[personId, mePerson.id]`, saves via `storage.createInteraction`, followed by `syncEntityInBackground("interaction", interaction.id)`.
+4. For approved tags: case-insensitively merges new tags into `person.tags`.
+5. `storage.updatePerson(personId, { tags, lastDescribedAt: new Date() })` to start 90-day cooldown.
+6. Return `{ success: true, applied: { notes, interactions, tags } }`.
 
 ## Client
 
-`client/src/pages/describe-me.tsx`, rewritten. Uses `useQuery` for
-`/api/describe-me/next` (keyed on the exclude list, `refetchOnWindowFocus:
-false`), `useMutation` for extract and save, `useDictation` for the mic.
-After save: invalidate `/api/people`, `/api/notes`, and refetch next. Bullet
-editing is local state only.
+`client/src/pages/describe-me.tsx`. Uses `useQuery` for `/api/describe-me/next`,
+`useMutation` for extract and apply, `useDictation` for the mic.
+After transcription & extraction:
+- Renders structured review interface with master "Select All" / "Deselect All" and count pill.
+- Interactive tags section: badge chips toggleable with checkmarks, custom tag input, and remove buttons.
+- Interactive notes section: card per note with checkbox, textarea, remove button, and "+ Add note".
+- Interactive interactions section: card per interaction with checkbox, title input, date picker, details textarea, remove button, and "+ Add interaction".
+- Collapsible spoken transcript viewer.
+- Action bar: "Apply Selected (N)", "Re-record", "Skip".
+After apply: invalidates `/api/people`, `/api/notes`, `/api/interactions`, `/api/me`, and refetches next person.
 
 ## Files
 

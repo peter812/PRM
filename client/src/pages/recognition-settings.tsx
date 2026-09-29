@@ -16,7 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders, ScanText, Download, Mic, Timer, Sparkles } from "lucide-react";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders, ScanText, Download, Mic, Timer, Sparkles, Layers } from "lucide-react";
 import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -480,6 +480,7 @@ export default function RecognitionSettingsPage() {
               requestNoun="transcription"
             />
             <IdleUnloadCard />
+            <ParallelLanesCard />
           </>
         )}
 
@@ -749,6 +750,37 @@ type IdleUnloadStatus = {
   computeError?: string;
 };
 
+type Lanes = { face: number; ocr: number; stt: number; total: number; busyWait: number };
+type LaneLoad = { limit: number; running: number; waiting: number };
+type LanesStatus = {
+  lanes: Lanes;
+  max: Lanes;
+  status: {
+    lanes: { face: LaneLoad; ocr: LaneLoad; whisper: LaneLoad; total: LaneLoad };
+    cpu_count: number;
+    devices: { face: string; ocr: string; whisper: string };
+  } | null;
+  computeError?: string;
+};
+
+const LANE_PRESETS: { id: string; label: string; lanes: Omit<Lanes, "busyWait">; hint: string }[] = [
+  { id: "serial", label: "Serial", lanes: { face: 1, ocr: 1, stt: 1, total: 1 }, hint: "One job at a time. Low-memory box or debugging." },
+  { id: "balanced", label: "Balanced", lanes: { face: 1, ocr: 1, stt: 1, total: 3 }, hint: "One face, one OCR and one transcription side by side." },
+  { id: "fast", label: "Fast", lanes: { face: 2, ocr: 2, stt: 1, total: 4 }, hint: "4+ CPU cores, or a GPU with 8 GB or more." },
+  { id: "max", label: "Max", lanes: { face: 4, ocr: 4, stt: 2, total: 8 }, hint: "A GPU with 16 GB or more, or many CPU cores." },
+];
+const LANE_FIELDS: { key: keyof Lanes; label: string }[] = [
+  { key: "face", label: "Face" },
+  { key: "ocr", label: "OCR" },
+  { key: "stt", label: "Speech-to-text" },
+  { key: "total", label: "Total cap" },
+  { key: "busyWait", label: "Busy wait (s)" },
+];
+
+function presetOf(l: Lanes) {
+  return LANE_PRESETS.find((p) => Object.entries(p.lanes).every(([k, v]) => l[k as keyof Lanes] === v))?.id ?? "custom";
+}
+
 function formatIdle(seconds: number) {
   if (seconds < 60) return `${seconds}s`;
   const m = Math.floor(seconds / 60);
@@ -758,10 +790,12 @@ function formatIdle(seconds: number) {
 // Automatic recognition: what to queue for PRM-Compute when prm-stories delivers
 // new stories, posts and profile pictures. Toggles only affect new arrivals;
 // "Run on existing" queues the unprocessed backlog through the image task queue.
-type AutoRecognitionKind = "profile" | "post" | "story";
+type AutoRecognitionKind = "profile" | "post" | "story" | "message";
 type AutoRecognitionJob = "face" | "ocr" | "transcribe";
 type AutoRecognitionSettings = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>> & {
   profileLink?: { minFacePct: number };
+  lookalike?: { minScore: number };
+  autoAssign?: { minScore: number };
 };
 type BackfillCounts = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, number>>>;
 
@@ -779,6 +813,9 @@ const AUTO_RECOGNITION_SECTIONS: { kind: AutoRecognitionKind; title: string; nou
     { job: "ocr", label: "OCR", hint: "Extract any text in the story image." },
     { job: "transcribe", label: "Videos: speech to text", hint: "Transcribe the audio of video stories with Whisper." },
   ] },
+  { kind: "message", title: "Messages", noun: "message", jobs: [
+    { job: "face", label: "Facial recognition", hint: "Detect faces on images sent in imported messages." },
+  ] },
 ];
 
 const JOB_NOUN: Record<AutoRecognitionJob, string> = { face: "facial recognition", ocr: "OCR", transcribe: "speech to text" };
@@ -787,26 +824,51 @@ function AutoRecognitionCard() {
   const { toast } = useToast();
   const [pendingBackfill, setPendingBackfill] = useState<{ kind: AutoRecognitionKind; job: AutoRecognitionJob; count: number } | null>(null);
   const [minFacePct, setMinFacePct] = useState("");
+  const [minScore, setMinScore] = useState("");
+  const [autoAssignScore, setAutoAssignScore] = useState("");
 
   const { data: settings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
   useEffect(() => {
     if (settings?.profileLink) setMinFacePct(String(settings.profileLink.minFacePct));
   }, [settings?.profileLink?.minFacePct]);
+  useEffect(() => {
+    if (settings?.lookalike) setMinScore(String(settings.lookalike.minScore));
+  }, [settings?.lookalike?.minScore]);
+  useEffect(() => {
+    if (settings?.autoAssign) setAutoAssignScore(String(settings.autoAssign.minScore));
+  }, [settings?.autoAssign?.minScore]);
   const { data: counts, isFetching: countsLoading } = useQuery<BackfillCounts>({
     queryKey: ["/api/recognition/auto/backfill-counts"],
     refetchInterval: 30000,
   });
 
   const saveMutation = useMutation({
-    mutationFn: async (update: Partial<AutoRecognitionSettings> | { profileLink: { minFacePct: number } }) => {
+    mutationFn: async (update: Partial<AutoRecognitionSettings>) => {
       const res = await apiRequest("POST", "/api/recognition/auto", update);
       return res.json() as Promise<AutoRecognitionSettings>;
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["/api/recognition/auto"], data);
+      // Look-alike threshold and profile-link settings change what the review queue suggests.
+      queryClient.invalidateQueries({ queryKey: ["/api/face-review"] });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update setting", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const autoAssignMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/face-review/auto-assign");
+      return res.json() as Promise<{ scanned: number; assigned: number }>;
+    },
+    onSuccess: ({ scanned, assigned }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/face-review"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
+      toast({ title: assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Auto-assign failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -936,6 +998,73 @@ function AutoRecognitionCard() {
                     data-testid="input-profile-link-min-face-pct"
                   />
                   <span className="text-sm text-muted-foreground">%</span>
+                </div>
+              </div>
+            )}
+            {section.kind === "profile" && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="lookalike-min-score" className="text-sm font-medium">Min look-alike score</Label>
+                  <p className="text-xs text-muted-foreground">
+                    On Face Review, an unidentified face is shown as a possible match to a known person or
+                    account when its similarity reaches at least this score (0-1).
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Input
+                    id="lookalike-min-score"
+                    type="number"
+                    min={0.01}
+                    max={1}
+                    step={0.01}
+                    className="w-20"
+                    value={minScore}
+                    onChange={(e) => setMinScore(e.target.value)}
+                    onBlur={() => {
+                      const score = Number(minScore);
+                      if (score > 0 && score <= 1 && score !== settings?.lookalike?.minScore) saveMutation.mutate({ lookalike: { minScore: score } });
+                    }}
+                    disabled={!settings || saveMutation.isPending}
+                    data-testid="input-lookalike-min-score"
+                  />
+                </div>
+              </div>
+            )}
+            {section.kind === "profile" && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="auto-assign-min-score" className="text-sm font-medium">Auto-assign score</Label>
+                  <p className="text-xs text-muted-foreground">
+                    A face whose best match reaches this score (0-1) is named automatically and marked "Auto" until you
+                    confirm or remove it. Near ties (within 0.01) are left for review. Runs after each recognition and hourly.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Input
+                    id="auto-assign-min-score"
+                    type="number"
+                    min={0.01}
+                    max={1}
+                    step={0.01}
+                    className="w-20"
+                    value={autoAssignScore}
+                    onChange={(e) => setAutoAssignScore(e.target.value)}
+                    onBlur={() => {
+                      const score = Number(autoAssignScore);
+                      if (score > 0 && score <= 1 && score !== settings?.autoAssign?.minScore) saveMutation.mutate({ autoAssign: { minScore: score } });
+                    }}
+                    disabled={!settings || saveMutation.isPending}
+                    data-testid="input-auto-assign-min-score"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={autoAssignMutation.isPending}
+                    onClick={() => autoAssignMutation.mutate()}
+                    data-testid="button-auto-assign-now"
+                  >
+                    {autoAssignMutation.isPending ? "Matching…" : "Run now"}
+                  </Button>
                 </div>
               </div>
             )}
@@ -1095,6 +1224,132 @@ function IdleUnloadCard() {
               </div>
             ))
           )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Parallel processing: how many face / OCR / transcription jobs PRM-Compute
+// runs at once. Saved in PRM (app_settings); PRM-Compute and the task worker
+// both pick it up on save.
+function ParallelLanesCard() {
+  const { toast } = useToast();
+  const [draft, setDraft] = useState<Lanes | null>(null);
+  const [custom, setCustom] = useState(false);
+
+  const { data } = useQuery<LanesStatus>({
+    queryKey: ["/api/prm-face/lanes"],
+    refetchInterval: 5000,
+  });
+
+  const values = draft ?? data?.lanes;
+  const valid = !!values && !!data && LANE_FIELDS.every(({ key }) => Number.isInteger(values[key]) && values[key] >= 1 && values[key] <= data.max[key]);
+  const dirty = !!draft && !!data && LANE_FIELDS.some(({ key }) => draft[key] !== data.lanes[key]);
+  const preset = custom || !values ? "custom" : presetOf(values);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/prm-face/lanes", values);
+      return res.json() as Promise<LanesStatus>;
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData(["/api/prm-face/lanes"], result);
+      setDraft(null);
+      toast({
+        title: "Parallel processing saved",
+        description: result.computeError ? `PRM-Compute will pick it up on its next start: ${result.computeError}` : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to save parallel processing", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const choosePreset = (id: string) => {
+    const p = LANE_PRESETS.find((x) => x.id === id);
+    setCustom(!p);
+    if (p && values) setDraft({ ...values, ...p.lanes });
+  };
+
+  const live = data?.status;
+  const load = (name: string, l: LaneLoad) => `${name} ${l.running}/${l.limit}`;
+  const waiting = live ? live.lanes.face.waiting + live.lanes.ocr.waiting + live.lanes.whisper.waiting : 0;
+  const onGpu = live ? Object.values(live.devices).some((d) => d === "cuda") : false;
+
+  return (
+    <Card data-testid="card-parallel-lanes">
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Layers className="h-4 w-4" />
+          Parallel Processing
+        </CardTitle>
+        <CardDescription>
+          How many recognition jobs PRM-Compute runs at once. Each type has its own lanes, so face, OCR
+          and speech-to-text work side by side; the total cap bounds them all. Raise it on a GPU or a
+          machine with many cores; lower it if PRM-Compute runs out of memory.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Preset">
+          {[...LANE_PRESETS, { id: "custom", label: "Custom" }].map((p) => (
+            <Button
+              key={p.id}
+              size="sm"
+              variant={preset === p.id ? "default" : "outline"}
+              role="radio"
+              aria-checked={preset === p.id}
+              onClick={() => choosePreset(p.id)}
+              disabled={!values}
+              data-testid={`button-lanes-preset-${p.id}`}
+            >
+              {p.label}
+            </Button>
+          ))}
+        </div>
+        <p className="text-sm text-muted-foreground">
+          {LANE_PRESETS.find((p) => p.id === preset)?.hint ?? "Set each lane yourself (1–16)."}
+        </p>
+
+        {preset === "custom" && values && data && (
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {LANE_FIELDS.map(({ key, label }) => (
+              <div key={key} className="space-y-1">
+                <Label htmlFor={`lanes-${key}`} className="text-xs">{label}</Label>
+                <Input
+                  id={`lanes-${key}`}
+                  type="number"
+                  min={1}
+                  max={data.max[key]}
+                  value={values[key] || ""}
+                  onChange={(e) => setDraft({ ...values, [key]: Number(e.target.value) })}
+                  data-testid={`input-lanes-${key}`}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+        {!valid && values && data && (
+          <p className="text-xs text-destructive">
+            Lanes must be whole numbers from 1 to 16; busy wait from 1 to {data.max.busyWait} seconds.
+          </p>
+        )}
+
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-xs text-muted-foreground" data-testid="text-lanes-status">
+            {live
+              ? `Now: ${load("face", live.lanes.face)} · ${load("ocr", live.lanes.ocr)} · ${load("stt", live.lanes.whisper)}` +
+                (waiting ? ` · ${waiting} waiting` : "") +
+                ` — ${onGpu ? "GPU" : `CPU, ${live.cpu_count} cores`}`
+              : data?.computeError ?? "Loading…"}
+          </p>
+          <Button
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending || !valid || !dirty}
+            data-testid="button-save-lanes"
+          >
+            {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
+          </Button>
         </div>
       </CardContent>
     </Card>

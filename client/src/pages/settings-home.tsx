@@ -1,5 +1,7 @@
+import { useState, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import {
   Scan,
@@ -12,10 +14,16 @@ import {
   Camera,
   Settings,
   Loader2,
-  Archive
+  Archive,
+  Sparkles,
+  HardDrive,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { imageDetailHref } from "@/lib/image-link";
+
+const UnifiedSetupDialog = lazy(() =>
+  import("@/components/unified-setup-dialog").then((m) => ({ default: m.UnifiedSetupDialog }))
+);
 
 type ServiceStatus = "loading" | "grey" | "green" | "yellow" | "red";
 
@@ -240,6 +248,8 @@ function ImportExportCard() {
 }
 
 export default function SettingsHomePage() {
+  const [isSetupOpen, setIsSetupOpen] = useState(false);
+
   // 1. PRM-compute
   const { data: prmComputeSettings } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-compute/settings"],
@@ -327,6 +337,33 @@ export default function SettingsHomePage() {
           Welcome to settings. Monitor active microservices, review recently added photos, and access import/export utilities.
         </p>
       </div>
+
+      {/* Unified Setup Assistant Hero Banner */}
+      <div className="mb-6 p-4 rounded-xl border bg-gradient-to-r from-primary/10 via-background to-background flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-primary" />
+            <h2 className="text-base font-semibold">Unified Setup Assistant</h2>
+            <span className="text-[10px] bg-primary/15 text-primary px-2 py-0.5 rounded-full font-medium">Quick Wizard</span>
+          </div>
+          <p className="text-xs text-muted-foreground max-w-xl">
+            Configure PRM companion sub-services, test health connections, set tracking cadences, manage data types, and review AI options all in one pop-up.
+          </p>
+        </div>
+        <Button
+          onClick={() => setIsSetupOpen(true)}
+          className="gap-2 shrink-0 self-start sm:self-auto"
+          size="sm"
+        >
+          <Sparkles className="h-3.5 w-3.5" /> Launch Setup Assistant
+        </Button>
+      </div>
+
+      {isSetupOpen && (
+        <Suspense fallback={null}>
+          <UnifiedSetupDialog open={isSetupOpen} onOpenChange={setIsSetupOpen} />
+        </Suspense>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
         {/* Column 1: Microservices */}

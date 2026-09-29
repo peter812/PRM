@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Radar, Scan, Sparkles, ScanText, TrendingUp, Mic, Map as MapIcon } from "lucide-react";
+import { Radar, Scan, Sparkles, ScanText, TrendingUp, Mic, Map as MapIcon, Cloud } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { OSINT_TOOLS } from "@/lib/osint-tools";
 
@@ -133,6 +133,34 @@ export default function DemosPage() {
               </CardTitle>
               <CardDescription>
                 People pinned on an OpenStreetMap map by their address.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/word-cloud">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Cloud className="h-5 w-5" />
+                Word Cloud
+              </CardTitle>
+              <CardDescription>
+                Turn any text into a word cloud with shape, color, and emotion options.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/bio-word-cloud">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Cloud className="h-5 w-5" />
+                Bio Word Cloud
+              </CardTitle>
+              <CardDescription>
+                Every social account bio combined into one word cloud.
               </CardDescription>
             </CardHeader>
           </Card>
