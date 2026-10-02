@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, ScanFace, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare, Radar, Instagram, Server, History } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare, Radar, Instagram, Server, History } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -38,7 +38,6 @@ const DeleteOptionsPage = lazy(() => import("@/pages/delete-options"));
 const ImportExportHome = lazy(() => import("@/pages/import-export-home"));
 const ImportContactsPage = lazy(() => import("@/pages/import-contacts"));
 const BackupsPage = lazy(() => import("@/pages/backups-page"));
-const ImagePassInPage = lazy(() => import("@/pages/image-pass-in"));
 const ImportMessagesPage = lazy(() => import("@/pages/import-messages"));
 const ExtensionImportsSettingsPage = lazy(() => import("@/pages/extension-imports-settings"));
 const TasksSettingsPage = lazy(() => import("@/pages/tasks-settings"));
@@ -46,12 +45,12 @@ const ImageStorageSettingsPage = lazy(() => import("@/pages/image-storage-settin
 const ImageTablePage = lazy(() => import("@/pages/image-table-page"));
 const ImageTasksSettingsPage = lazy(() => import("@/pages/image-tasks-settings"));
 const RecognitionSettingsPage = lazy(() => import("@/pages/recognition-settings"));
-const RecognitionFacesPage = lazy(() => import("@/pages/recognition-faces"));
 const SocialGraphSettingsPage = lazy(() => import("@/pages/social-graph-settings"));
 const InstagramImportersPage = lazy(() => import("@/pages/instagram-importers"));
 const InstagramTrackingPage = lazy(() => import("@/pages/instagram-tracking"));
 const InstagramPostsPage = lazy(() => import("@/pages/instagram-posts"));
 const SocialTasksPage = lazy(() => import("@/pages/social-tasks"));
+const OsintTasksPage = lazy(() => import("@/pages/osint-tasks"));
 const IntelligenceSettingsPage = lazy(() => import("@/pages/intelligence-settings"));
 const IntelligenceToolsSettingsPage = lazy(() => import("@/pages/intelligence-tools-settings"));
 const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelligence-external-tools-settings"));
@@ -118,7 +117,6 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Storage", url: "/settings/image-storage", icon: HardDrive },
       { title: "Image Table", url: "/settings/image-storage/table", icon: Table2 },
-      { title: "Faces", url: "/settings/image-storage/faces", icon: ScanFace },
     ],
   },
   {
@@ -140,6 +138,7 @@ const settingsMenuItems: MenuItem[] = [
     subItems: [
       { title: "Image Tasks", url: "/settings/image-storage/tasks", icon: ImageIcon },
       { title: "Social Tasks", url: "/settings/tasks/social", icon: History },
+      { title: "OSINT Tasks", url: "/settings/tasks/osint", icon: Radar },
     ],
   },
   {
@@ -151,7 +150,6 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Messages", url: "/settings/import-export/messages", icon: MessageSquare },
       { title: "Extension Imports", url: "/settings/import-export/extension-imports", icon: Chrome },
       { title: "Backups", url: "/settings/import-export/backups", icon: Archive },
-      { title: "Image Pass In", url: "/settings/import-export/image-pass-in", icon: ImageIcon },
     ],
   },
   {
@@ -309,7 +307,7 @@ export default function SettingsLayout() {
           <Route path="/image-tasks" component={ImageTasksSettingsPage} />
           <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />
           <Route path="/image-storage/table" component={ImageTablePage} />
-          <Route path="/image-storage/faces" component={RecognitionFacesPage} />
+          <Route path="/image-storage/faces" component={() => <Redirect to="/faces" />} />
           <Route path="/image-storage" component={ImageStorageSettingsPage} />
           <Route path="/intelligence/tools" component={IntelligenceToolsSettingsPage} />
           <Route path="/intelligence/external-tools" component={IntelligenceExternalToolsSettingsPage} />
@@ -323,11 +321,12 @@ export default function SettingsLayout() {
           <Route path="/instagram/runs" component={() => <Redirect to="/settings/tasks/social" />} />
           <Route path="/instagram" component={InstagramImportersPage} />
           <Route path="/tasks/social" component={SocialTasksPage} />
+          <Route path="/tasks/osint" component={OsintTasksPage} />
           <Route path="/social-tasks" component={SocialTasksPage} />
           <Route path="/tasks" component={TasksSettingsPage} />
           <Route path="/task/:id" component={TaskDetailPage} />
           <Route path="/social-graph" component={SocialGraphSettingsPage} />
-          <Route path="/recognition/faces" component={() => <Redirect to="/settings/image-storage/faces" />} />
+          <Route path="/recognition/faces" component={() => <Redirect to="/faces" />} />
           <Route path="/recognition" component={RecognitionSettingsPage} />
           <Route path="/import-export/stories" component={() => <Redirect to="/instagram" />} />
           <Route path="/import-export/contacts" component={ImportContactsPage} />
@@ -337,7 +336,7 @@ export default function SettingsLayout() {
           <Route path="/import-export/backups" component={BackupsPage} />
           <Route path="/backups" component={BackupsPage} />
           <Route path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
-          <Route path="/import-export/image-pass-in" component={ImagePassInPage} />
+          <Route path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export" />} />
           <Route path="/import-export" component={ImportExportHome} />
           <Route path="/admin/users" component={AdminUsersPage} />
           <Route path="/admin" component={AdminSettingsPage} />

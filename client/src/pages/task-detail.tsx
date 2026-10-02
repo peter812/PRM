@@ -113,7 +113,7 @@ export default function TaskDetailPage() {
   if (taskError || !task) {
     return (
       <div className="container max-w-3xl py-8 px-4">
-        <Link href="/settings/tasks" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
+        <Link href="~/settings/tasks" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground">
           <ChevronLeft className="h-4 w-4 mr-1" /> Back to Tasks
         </Link>
         <div className="mt-8 text-center text-muted-foreground">Task not found.</div>
@@ -124,7 +124,7 @@ export default function TaskDetailPage() {
   return (
     <div className="container max-w-5xl py-6 px-4">
       <div className="mb-4">
-        <Link href="/settings/tasks" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground" data-testid="link-back">
+        <Link href="~/settings/tasks" className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground" data-testid="link-back">
           <ChevronLeft className="h-4 w-4 mr-1" /> Back to Tasks
         </Link>
       </div>

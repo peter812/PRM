@@ -106,7 +106,7 @@ export type FacialId = {
 
 export type ProfileLinkReason =
   | "not_profile" | "no_faces" | "multiple_faces" | "no_box" | "face_too_small"
-  | "face_missing" | "group_conflict";
+  | "face_missing" | "group_conflict" | "no_face_account";
 
 /** What linking a profile picture's face to its account came to. */
 export type ProfileLinkOutcome =
@@ -574,6 +574,12 @@ type ProfileLinkCheck =
 async function profileLinkCheck(photo: Photo, detected: DetectedFace[], getBuffer: () => Promise<Buffer>): Promise<ProfileLinkCheck> {
   const accountId = profileAccountId(photo);
   if (!accountId) return { ok: false, reason: "not_profile" };
+  const [account] = await db
+    .select({ ownerUuid: socialAccounts.ownerUuid, personfaceUuid: socialAccounts.personfaceUuid, noFace: socialAccounts.noFace })
+    .from(socialAccounts)
+    .where(eq(socialAccounts.id, accountId));
+  if (!account) return { ok: false, reason: "not_profile" };
+  if (account.noFace) return { ok: false, reason: "no_face_account" };
   if (detected.length === 0) return { ok: false, reason: "no_faces" };
   if (detected.length > 1) return { ok: false, reason: "multiple_faces" };
 
@@ -596,11 +602,6 @@ async function profileLinkCheck(photo: Photo, detected: DetectedFace[], getBuffe
     : [];
   if (!faceRow) return { ok: false, reason: "face_missing" };
 
-  const [account] = await db
-    .select({ ownerUuid: socialAccounts.ownerUuid, personfaceUuid: socialAccounts.personfaceUuid })
-    .from(socialAccounts)
-    .where(eq(socialAccounts.id, accountId));
-  if (!account) return { ok: false, reason: "not_profile" };
   const [owner] = account.ownerUuid
     ? await db.select({ id: people.id, personfaceUuid: people.personfaceUuid }).from(people).where(eq(people.id, account.ownerUuid))
     : [];
@@ -664,6 +665,7 @@ export async function associateProfileFaces(): Promise<AssociateProfileFacesResu
       gte(photos.widthPx, HQ_MIN_WIDTH),
       isNotNull(photos.faceIdAt),
       isNull(socialAccounts.personfaceUuid),
+      eq(socialAccounts.noFace, false),
       eq(photos.location, socialAccounts.imageUrl),
     ));
   const result: AssociateProfileFacesResult = { examined: rows.length, linked: 0, skipped: {} };
@@ -674,6 +676,42 @@ export async function associateProfileFaces(): Promise<AssociateProfileFacesResu
     else result.skipped[outcome.reason] = (result.skipped[outcome.reason] ?? 0) + 1;
   }
   return result;
+}
+
+export type NoFaceImpact = { personfaceUuid: string | null; unlinkedFaces: number };
+
+/**
+ * What marking an account "no face" with clearLinks would undo: its face group,
+ * and how many faces go back to unidentified (none when a person or another
+ * account still names that group).
+ */
+export async function noFaceImpact(accountId: string): Promise<NoFaceImpact> {
+  const [account] = await db.select({ personfaceUuid: socialAccounts.personfaceUuid }).from(socialAccounts).where(eq(socialAccounts.id, accountId));
+  if (!account) throw new RecognitionRequestError(404, "Social account not found.");
+  const group = account.personfaceUuid;
+  if (!group) return { personfaceUuid: null, unlinkedFaces: 0 };
+  const [row] = await db.select({
+    count: sql<number>`count(*)::int`,
+    namedElsewhere: sql<boolean>`EXISTS (SELECT 1 FROM ${people} WHERE ${people.personfaceUuid} = ${group})
+      OR EXISTS (SELECT 1 FROM ${socialAccounts} WHERE ${socialAccounts.personfaceUuid} = ${group} AND ${socialAccounts.id} <> ${accountId})`,
+  }).from(faces).where(eq(faces.personfaceUuid, group));
+  return { personfaceUuid: group, unlinkedFaces: row?.namedElsewhere ? 0 : row?.count ?? 0 };
+}
+
+/**
+ * "This account doesn't have a face": face review and the profile auto-link
+ * stop matching faces to it. With clearLinks, its face group is dropped too,
+ * so faces named only by this account go back to unidentified.
+ */
+export async function setAccountNoFace(accountId: string, noFace: boolean, clearLinks: boolean): Promise<void> {
+  const [account] = await db.select({ personfaceUuid: socialAccounts.personfaceUuid }).from(socialAccounts).where(eq(socialAccounts.id, accountId));
+  if (!account) throw new RecognitionRequestError(404, "Social account not found.");
+  const group = noFace && clearLinks ? account.personfaceUuid : null;
+  await db.transaction(async (tx) => {
+    await tx.update(socialAccounts).set(group ? { noFace, personfaceUuid: null } : { noFace }).where(eq(socialAccounts.id, accountId));
+    if (group) await refreshFacialIdsForGroups([group], tx);
+  });
+  if (group) markFaceIdentitiesDirty();
 }
 
 /** Big enough for recognition: the 150px tier is skipped everywhere. */
@@ -943,10 +981,22 @@ export async function enqueueRecognitionTasks(input: {
   jobs: AutoRecognitionJob[];
   photoIds?: string[];
   videoPostIds?: string[];
+  imageTaskGroupId?: string;
 }): Promise<number> {
   const userId = await queueOwnerId();
   if (!userId) return 0;
   let queued = 0;
+
+  let groupId = input.imageTaskGroupId;
+  if (!groupId && ((input.photoIds && input.photoIds.length > 0) || (input.videoPostIds && input.videoPostIds.length > 0))) {
+    const count = (input.photoIds?.length ?? 0) + (input.videoPostIds?.length ?? 0);
+    const grp = await storage.createImageTaskGroup({
+      userId,
+      title: `Recognition Batch (${count} item${count !== 1 ? "s" : ""})`,
+      kind: "recognition_batch",
+    });
+    groupId = grp.id;
+  }
 
   for (const job of input.jobs) {
     const type = JOB_TASK_TYPE[job];
@@ -955,7 +1005,7 @@ export async function enqueueRecognitionTasks(input: {
       const live = await alreadyQueued(type, ids, "postId");
       for (const postId of ids) {
         if (live.has(postId)) continue;
-        await storage.createImageTask({ userId, type, payload: JSON.stringify({ postId }) });
+        await storage.createImageTask({ userId, type, imageTaskGroupId: groupId || undefined, payload: JSON.stringify({ postId }) });
         queued++;
       }
     } else {
@@ -963,7 +1013,7 @@ export async function enqueueRecognitionTasks(input: {
       const live = await alreadyQueued(type, ids, "photoId");
       for (const photoId of ids) {
         if (live.has(photoId)) continue;
-        await storage.createImageTask({ userId, type, photoId, payload: JSON.stringify({ photoId }) });
+        await storage.createImageTask({ userId, type, photoId, imageTaskGroupId: groupId || undefined, payload: JSON.stringify({ photoId }) });
         queued++;
       }
     }
@@ -981,6 +1031,7 @@ export async function enqueueAutoRecognition(input: {
   photoIds: string[];
   /** The post whose metadata.videoUrl should be transcribed, when it has one. */
   videoPostId?: string;
+  imageTaskGroupId?: string;
 }): Promise<void> {
   try {
     const settings = (await getAutoRecognitionSettings())[input.kind] as Partial<Record<AutoRecognitionJob, boolean>>;
@@ -990,6 +1041,7 @@ export async function enqueueAutoRecognition(input: {
       jobs,
       photoIds: input.photoIds,
       videoPostIds: input.videoPostId ? [input.videoPostId] : [],
+      imageTaskGroupId: input.imageTaskGroupId,
     });
     if (queued) log(`[AutoRecognition] queued ${queued} ${input.kind} task(s) for ${input.photoIds.length} photo(s)`);
   } catch (err) {

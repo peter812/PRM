@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, ExternalLink, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Trash2, Image as ImageIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -22,8 +22,16 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { TRACKING_KIND_LABEL } from "@shared/interest-level";
 import { RUNS_KEY, useStoryRuns, type RunItem, type StoryRun, type TrackItem } from "@/lib/instagram";
+import { ImageTaskGroupModal } from "@/components/image-task-group-modal";
 
 const finalOutcome = (i: RunItem) => i.prmOutcome ?? i.outcome;
+
+/** A stories run is "Stories"; a tracking run lists the job kinds it ran. */
+function runKindLabel(run: StoryRun): string {
+  if (run.kind !== "tracking") return "Stories";
+  const kinds = Array.from(new Set((run.items as unknown as TrackItem[]).map((i) => i.kind)));
+  return kinds.length ? kinds.map((k) => TRACKING_KIND_LABEL[k] ?? k).join(", ") : "Tracking";
+}
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   completed: "default",
@@ -46,12 +54,14 @@ function RunRow({
   onToggleSelect,
   onDelete,
   isAdmin,
+  onOpenImageTaskGroup,
 }: {
   run: StoryRun;
   isSelected: boolean;
   onToggleSelect: (id: string) => void;
   onDelete: (run: StoryRun) => void;
   isAdmin: boolean;
+  onOpenImageTaskGroup?: (groupId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -76,20 +86,56 @@ function RunRow({
         )}
         <TableCell>{new Date(run.startedAt).toLocaleString()}</TableCell>
         <TableCell className="text-muted-foreground">{run.importerLabel ?? "—"}</TableCell>
-        <TableCell className="text-muted-foreground">{run.kind}</TableCell>
+        <TableCell className="text-muted-foreground">{runKindLabel(run)}</TableCell>
         <TableCell><Badge variant={STATUS_VARIANT[run.status] ?? "outline"}>{run.status}</Badge></TableCell>
         {run.kind === "tracking" ? (
           <>
             <TableCell className="text-right">{c.completed ?? 0} / {c.jobs ?? 0}</TableCell>
             <TableCell className="text-right">{c.skipped ?? 0}</TableCell>
             <TableCell className="text-right">{c.failed ?? 0}</TableCell>
-            <TableCell className="text-right">—</TableCell>
+            <TableCell className="text-right">
+              {run.imageTaskGroup ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 text-xs font-semibold text-primary hover:underline gap-1 ml-auto inline-flex items-center"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenImageTaskGroup?.(run.imageTaskGroup!.id);
+                  }}
+                  title="View Image Tasks"
+                >
+                  <ImageIcon className="h-3 w-3" />
+                  Images
+                </Button>
+              ) : (
+                "—"
+              )}
+            </TableCell>
           </>
         ) : (
           <>
             <TableCell className="text-right">{c.accountsOpened ?? 0} / {c.accountsInTray ?? 0}</TableCell>
             <TableCell className="text-right">{c.storiesSeen ?? 0}</TableCell>
-            <TableCell className="text-right">{c.imagesSaved ?? 0}</TableCell>
+            <TableCell className="text-right">
+              {run.imageTaskGroup ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 text-xs font-semibold text-primary hover:underline gap-1 ml-auto inline-flex items-center"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenImageTaskGroup?.(run.imageTaskGroup!.id);
+                  }}
+                  title="View Image Tasks"
+                >
+                  <ImageIcon className="h-3 w-3" />
+                  {c.imagesSaved ?? 0}
+                </Button>
+              ) : (
+                c.imagesSaved ?? 0
+              )}
+            </TableCell>
             <TableCell className="text-right">{noAccount}</TableCell>
           </>
         )}
@@ -112,6 +158,29 @@ function RunRow({
         <TableRow>
           <TableCell colSpan={isAdmin ? 11 : 9} className="bg-muted/30 p-4">
             {run.error && <p className="text-sm text-destructive mb-3">{run.error}</p>}
+            {run.imageTaskGroup && (
+              <div className="mb-3 flex items-center justify-between p-2.5 rounded-md bg-muted/60 border border-border">
+                <div className="flex items-center gap-2 text-sm">
+                  <ImageIcon className="h-4 w-4 text-primary" />
+                  <span className="font-medium">Image Tasks Associated:</span>
+                  <Badge variant="outline" className="text-xs">
+                    {run.imageTaskGroup.status}
+                  </Badge>
+                </div>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 text-xs gap-1.5"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenImageTaskGroup?.(run.imageTaskGroup!.id);
+                  }}
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  View Image Tasks
+                </Button>
+              </div>
+            )}
             {run.kind === "tracking" ? (
               <TrackItems items={run.items as unknown as TrackItem[]} />
             ) : run.items.length === 0 ? (
@@ -225,6 +294,7 @@ export default function SocialTasksPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [runToDelete, setRunToDelete] = useState<StoryRun | null>(null);
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+  const [modalGroupId, setModalGroupId] = useState<string | null>(null);
 
   const handleToggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -352,6 +422,7 @@ export default function SocialTasksPage() {
                 onToggleSelect={handleToggleSelect}
                 onDelete={(r) => setRunToDelete(r)}
                 isAdmin={Boolean(isAdmin)}
+                onOpenImageTaskGroup={setModalGroupId}
               />
             ))
           )}
@@ -406,6 +477,12 @@ export default function SocialTasksPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ImageTaskGroupModal
+        groupId={modalGroupId}
+        open={!!modalGroupId}
+        onOpenChange={(open) => !open && setModalGroupId(null)}
+      />
     </div>
   );
 }

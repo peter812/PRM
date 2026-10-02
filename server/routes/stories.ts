@@ -19,7 +19,7 @@ import { storage } from "../storage";
 import { requireAdmin } from "../auth";
 import { runAsSystem } from "../access";
 import { uploadStoryImage, uploadMedia } from "../prm-s3";
-import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, isAdminRole, type StoryImporter } from "@shared/schema";
+import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, imageTaskGroups, isAdminRole, type StoryImporter } from "@shared/schema";
 import { generateDeterministicUuid } from "./social-media";
 import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
@@ -58,17 +58,22 @@ const runSchema = z.object({
 });
 
 const timeOfDay = /^\d{1,2}:\d{2}$/;
+const timeWindow = (name: string) =>
+  z.string().refine((w) => {
+    const [a, b] = w.split("-");
+    return Boolean(a && b && timeOfDay.test(a) && timeOfDay.test(b) && a < b);
+  }, `${name} must be HH:MM-HH:MM with the end after the start`);
 const importerPatchSchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
   serviceUrl: z.string().trim().max(500).optional(),
   enabled: z.boolean().optional(),
   runEveryDays: z.number().int().min(1).max(30).optional(),
-  runWindow: z.string().refine((w) => {
-    const [a, b] = w.split("-");
-    return Boolean(a && b && timeOfDay.test(a) && timeOfDay.test(b) && a < b);
-  }, "runWindow must be HH:MM-HH:MM with the end after the start").optional(),
+  runWindow: timeWindow("runWindow").optional(),
   skipDayProbability: z.number().min(0).max(1).optional(),
   downloadVideos: z.boolean().optional(),
+  trackingEnabled: z.boolean().optional(),
+  trackingWindow: timeWindow("trackingWindow").optional(),
+  trackingMaxJobs: z.number().int().min(1).max(500).optional(),
 }).strict();
 
 /** The importer for `:id`, or null with a 404 already sent. */
@@ -262,9 +267,30 @@ export function registerStories(app: Express) {
           return res.status(200).json({ outcome: "duplicate", postId });
         }
 
+        let imageTaskGroupId: string | undefined;
+        const currentRunId = req.params.runId;
+        if (currentRunId) {
+          const [existingGroup] = await db
+            .select({ id: imageTaskGroups.id })
+            .from(imageTaskGroups)
+            .where(eq(imageTaskGroups.socialRunId, currentRunId))
+            .limit(1);
+          if (existingGroup) {
+            imageTaskGroupId = existingGroup.id;
+          } else {
+            const grp = await storage.createImageTaskGroup({
+              userId: (account as any).createdByUserId || 1,
+              title: `Story Run - @${username}`,
+              kind: "story_run",
+              socialRunId: currentRunId,
+              socialAccountId: account.id,
+            });
+            imageTaskGroupId = grp.id;
+          }
+        }
         await db.update(socialAccounts).set({ lastScrapedAt: new Date() }).where(eq(socialAccounts.id, account.id));
+        void enqueueAutoRecognition({ kind: "story", photoIds: [photoId], videoPostId: metadata.videoUrl ? postId : undefined, imageTaskGroupId });
         res.status(201).json({ outcome: "stored", postId });
-        void enqueueAutoRecognition({ kind: "story", photoIds: [photoId], videoPostId: metadata.videoUrl ? postId : undefined });
       });
     } catch (error) {
       console.error("Error storing story:", error);
@@ -306,6 +332,7 @@ export function registerStories(app: Express) {
           id: storyScrapeRuns.id,
           importerId: storyScrapeRuns.importerId,
           importerLabel: storyImporters.label,
+          kind: storyScrapeRuns.kind,
           status: storyScrapeRuns.status,
           startedAt: storyScrapeRuns.startedAt,
           finishedAt: storyScrapeRuns.finishedAt,
@@ -349,6 +376,21 @@ export function registerStories(app: Express) {
         }
       }
 
+      const runIds = runs.map((r) => r.id);
+      const groupsForRuns = runIds.length > 0 ? await db
+        .select({
+          id: imageTaskGroups.id,
+          socialRunId: imageTaskGroups.socialRunId,
+          status: imageTaskGroups.status,
+        })
+        .from(imageTaskGroups)
+        .where(inArray(imageTaskGroups.socialRunId, runIds)) : [];
+
+      const groupMap = new Map<string, { id: string; status: string }>();
+      for (const g of groupsForRuns) {
+        if (g.socialRunId) groupMap.set(g.socialRunId, { id: g.id, status: g.status });
+      }
+
       const enrichedRuns = runs.map((run) => {
         const items = Array.isArray(run.items) ? (run.items as any[]) : [];
         const enrichedItems = items.map((item) => {
@@ -363,6 +405,7 @@ export function registerStories(app: Express) {
         return {
           ...run,
           items: enrichedItems,
+          imageTaskGroup: groupMap.get(run.id) ?? null,
         };
       });
 
@@ -444,9 +487,13 @@ export function registerStories(app: Express) {
         (patch.serviceUrl !== undefined && patch.serviceUrl !== importer.serviceUrl) ||
         (patch.runWindow !== undefined && patch.runWindow !== importer.runWindow) ||
         (patch.runEveryDays !== undefined && patch.runEveryDays !== importer.runEveryDays);
+      // Same for tracking: a new window, or switching it on or off, drops the planned tracking run.
+      const rescheduleTracking =
+        (patch.trackingWindow !== undefined && patch.trackingWindow !== importer.trackingWindow) ||
+        (patch.trackingEnabled !== undefined && patch.trackingEnabled !== importer.trackingEnabled);
       const [updated] = await db
         .update(storyImporters)
-        .set({ ...patch, ...(reschedule ? { nextRunAt: null } : {}) })
+        .set({ ...patch, ...(reschedule ? { nextRunAt: null } : {}), ...(rescheduleTracking ? { nextTrackingRunAt: null } : {}) })
         .where(eq(storyImporters.id, importer.id))
         .returning();
       res.json(updated);

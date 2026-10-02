@@ -1,14 +1,12 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, HelpCircle, Loader2, LogIn, Play, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, HelpCircle, Loader2, LogIn, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -65,9 +63,11 @@ function HowToCard({ defaultOpen }: { defaultOpen: boolean }) {
                 so you only repeat this when Instagram logs it out.
               </li>
               <li>
-                <strong>Set the schedule and enable it.</strong> Choose how often to run and the time-of-day window. PRM picks a
-                random minute inside the window each time so the runs don't look automated. Press <em>Run now</em> to check
-                that everything works — it reports right away whether the login is still good.
+                <strong>Set the schedule and enable it.</strong> On{" "}
+                <Link href="~/social-accounts/tracking" className="text-primary hover:underline">Social Accounts → Tracking</Link>, choose
+                how often to run and the time-of-day window. PRM picks a random minute inside the window each time so the runs
+                don't look automated. Press <em>Run now</em> there to check that everything works — it reports right away
+                whether the login is still good.
               </li>
             </ol>
             <p className="text-muted-foreground">
@@ -82,15 +82,7 @@ function HowToCard({ defaultOpen }: { defaultOpen: boolean }) {
 }
 
 
-const EVERY_DAYS_OPTIONS = [
-  { value: "1", label: "Every day" },
-  { value: "2", label: "Every 2 days" },
-  { value: "3", label: "Every 3 days" },
-  { value: "7", label: "Once a week" },
-];
-
-
-/** One prm-stories install: its URL, schedule, login and run controls. */
+/** One prm-stories install: its URL, secret and login. Schedules live on Social Accounts → Tracking. */
 function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: StoryRun[]; onDelete: (i: Importer) => void }) {
   const { isAdmin } = useAuth();
   const { toast } = useToast();
@@ -109,58 +101,12 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
   const [label, setLabel] = useState(importer.label);
   const [apiUrl, setApiUrl] = useState(importer.serviceUrl);
   const [secret, setSecret] = useState("");
-  const [start, setStart] = useState(importer.runWindow.split("-")[0] ?? "19:30");
-  const [end, setEnd] = useState(importer.runWindow.split("-")[1] ?? "22:30");
-  const [skip, setSkip] = useState(String(importer.skipDayProbability));
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const windowValid = Boolean(start && end && start < end);
-  const nextRunAt = importer.nextRunAt ? new Date(importer.nextRunAt) : null;
-  const [trackStart, setTrackStart] = useState(importer.trackingWindow.split("-")[0] ?? "07:00");
-  const [trackEnd, setTrackEnd] = useState(importer.trackingWindow.split("-")[1] ?? "10:00");
-  const [maxJobs, setMaxJobs] = useState(String(importer.trackingMaxJobs));
-  const trackWindowValid = Boolean(trackStart && trackEnd && trackStart < trackEnd);
-  const nextTrackingRunAt = importer.nextTrackingRunAt ? new Date(importer.nextTrackingRunAt) : null;
 
   const save = useMutation({
-    mutationFn: async (patch: Partial<Omit<Importer, "id" | "nextRunAt" | "nextTrackingRunAt" | "lastUsername" | "createdAt" | "serviceSecretSet">> & { serviceSecret?: string }) =>
+    mutationFn: async (patch: { label?: string; serviceUrl?: string; serviceSecret?: string }) =>
       apiRequest("PATCH", `/api/stories/importers/${importer.id}`, patch),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY }),
     onError: (error: Error) => toast({ title: "Failed to save importer", description: error.message, variant: "destructive" }),
-  });
-
-  const saveWindow = () => {
-    const w = `${start}-${end}`;
-    if (windowValid && w !== importer.runWindow) save.mutate({ runWindow: w });
-  };
-  const saveSkip = () => {
-    const n = Number(skip);
-    if (Number.isFinite(n) && n >= 0 && n <= 1 && n !== importer.skipDayProbability) save.mutate({ skipDayProbability: n });
-    else setSkip(String(importer.skipDayProbability));
-  };
-  const saveTrackWindow = () => {
-    const w = `${trackStart}-${trackEnd}`;
-    if (trackWindowValid && w !== importer.trackingWindow) save.mutate({ trackingWindow: w });
-  };
-  const saveMaxJobs = () => {
-    const n = Number(maxJobs);
-    if (Number.isInteger(n) && n >= 1 && n <= 500 && n !== importer.trackingMaxJobs) save.mutate({ trackingMaxJobs: n });
-    else setMaxJobs(String(importer.trackingMaxJobs));
-  };
-
-  const trackNow = useMutation({
-    mutationFn: async () =>
-      (await apiRequest("POST", `/api/stories/importers/${importer.id}/track-now`)).json() as Promise<{ status: string; error: string | null; jobs: number }>,
-    onSuccess: (r) => {
-      toast({
-        title: r.status === "running" ? `Tracking run started with ${r.jobs} jobs` : r.status === "nothing_due" ? "Nothing to check" : `Run not started: ${r.status}`,
-        description: r.error ?? (r.status === "nothing_due" ? "No account is due and no manual job is queued." : undefined),
-        variant: r.status === "running" || r.status === "nothing_due" ? "default" : "destructive",
-      });
-      queryClient.invalidateQueries({ queryKey: RUNS_KEY });
-      queryClient.invalidateQueries({ queryKey: ["/api/tracking/jobs"] });
-      queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY });
-    },
-    onError: (error: Error) => toast({ title: "Failed to trigger tracking run", description: error.message, variant: "destructive" }),
   });
 
   const openLogin = useMutation({
@@ -178,21 +124,6 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
       }
     },
     onError: (error: Error) => toast({ title: "Failed to reach the service", description: error.message, variant: "destructive" }),
-  });
-
-  const runNow = useMutation({
-    mutationFn: async () =>
-      (await apiRequest("POST", `/api/stories/importers/${importer.id}/run-now`)).json() as Promise<{ status: string; error: string | null; username: string | null }>,
-    onSuccess: (r) => {
-      toast({
-        title: r.status === "running" ? `Run started${r.username ? ` as @${r.username}` : ""}` : `Run not started: ${r.status}`,
-        description: r.error ?? "The scraper is logged in and watching the tray.",
-        variant: r.status === "running" ? "default" : "destructive",
-      });
-      queryClient.invalidateQueries({ queryKey: RUNS_KEY });
-      queryClient.invalidateQueries({ queryKey: IMPORTERS_KEY });
-    },
-    onError: (error: Error) => toast({ title: "Failed to trigger run", description: error.message, variant: "destructive" }),
   });
 
   return (
@@ -268,159 +199,7 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               data-testid={`input-importer-secret-${importer.id}`}
             />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor={`every-${importer.id}`}>How often</Label>
-            <Select
-              value={String(importer.runEveryDays)}
-              disabled={!isAdmin}
-              onValueChange={(v) => save.mutate({ runEveryDays: Number(v) })}
-            >
-              <SelectTrigger id={`every-${importer.id}`} data-testid={`select-importer-every-${importer.id}`}><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {EVERY_DAYS_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                {!EVERY_DAYS_OPTIONS.some((o) => o.value === String(importer.runEveryDays)) && (
-                  <SelectItem value={String(importer.runEveryDays)}>Every {importer.runEveryDays} days</SelectItem>
-                )}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">Stories disappear after 24 hours, so anything less than daily will miss some.</p>
-          </div>
-          <div className="space-y-2">
-            <Label>Time of day</Label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="time"
-                value={start}
-                disabled={!isAdmin}
-                onChange={(e) => setStart(e.target.value)}
-                onBlur={saveWindow}
-                aria-label="Earliest"
-                data-testid={`input-importer-window-start-${importer.id}`}
-              />
-              <span className="text-muted-foreground">to</span>
-              <Input
-                type="time"
-                value={end}
-                disabled={!isAdmin}
-                onChange={(e) => setEnd(e.target.value)}
-                onBlur={saveWindow}
-                aria-label="Latest"
-                data-testid={`input-importer-window-end-${importer.id}`}
-              />
-            </div>
-            {windowValid ? (
-              <p className="text-xs text-muted-foreground">A random minute inside this window, in the PRM server's time zone.</p>
-            ) : (
-              <p className="text-xs text-destructive">The latest time must be after the earliest.</p>
-            )}
-          </div>
         </div>
-
-        <div className="flex items-center justify-between rounded-md border px-3 py-2">
-          <div className="pr-4">
-            <Label htmlFor={`enabled-${importer.id}`} className="cursor-pointer">Enable auto run</Label>
-            <p className="text-xs text-muted-foreground">
-              {importer.enabled && nextRunAt
-                ? <>Next run: <strong data-testid={`text-importer-next-run-${importer.id}`}>{nextRunAt.toLocaleString()}</strong></>
-                : importer.enabled ? "Planning the next run…" : "Runs only when you press Run now."}
-            </p>
-          </div>
-          <Switch
-            id={`enabled-${importer.id}`}
-            checked={importer.enabled}
-            disabled={!isAdmin}
-            onCheckedChange={(v) => save.mutate({ enabled: v })}
-            data-testid={`switch-importer-enabled-${importer.id}`}
-          />
-        </div>
-
-        <div className="rounded-md border px-3 py-3 space-y-3" data-testid={`section-tracking-${importer.id}`}>
-          <div className="flex items-center justify-between">
-            <div className="pr-4">
-              <Label htmlFor={`tracking-${importer.id}`} className="cursor-pointer">Account tracking (mornings)</Label>
-              <p className="text-xs text-muted-foreground">
-                {importer.trackingEnabled && nextTrackingRunAt
-                  ? <>Next tracking run: <strong data-testid={`text-importer-next-tracking-${importer.id}`}>{nextTrackingRunAt.toLocaleString()}</strong></>
-                  : importer.trackingEnabled ? "Planning the next tracking run…" : "Refreshes accounts by interest level: profile info, follow lists, posts."}
-              </p>
-            </div>
-            <Switch
-              id={`tracking-${importer.id}`}
-              checked={importer.trackingEnabled}
-              disabled={!isAdmin}
-              onCheckedChange={(v) => save.mutate({ trackingEnabled: v })}
-              data-testid={`switch-importer-tracking-${importer.id}`}
-            />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label>Tracking window</Label>
-              <div className="flex items-center gap-2">
-                <Input type="time" value={trackStart} disabled={!isAdmin} onChange={(e) => setTrackStart(e.target.value)} onBlur={saveTrackWindow} aria-label="Earliest" data-testid={`input-importer-track-start-${importer.id}`} />
-                <span className="text-muted-foreground">to</span>
-                <Input type="time" value={trackEnd} disabled={!isAdmin} onChange={(e) => setTrackEnd(e.target.value)} onBlur={saveTrackWindow} aria-label="Latest" data-testid={`input-importer-track-end-${importer.id}`} />
-              </div>
-              {!trackWindowValid && <p className="text-xs text-destructive">The latest time must be after the earliest.</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`maxjobs-${importer.id}`}>Checks per run</Label>
-              <Input
-                id={`maxjobs-${importer.id}`}
-                type="number"
-                min={1}
-                max={500}
-                value={maxJobs}
-                disabled={!isAdmin}
-                onChange={(e) => setMaxJobs(e.target.value)}
-                onBlur={saveMaxJobs}
-                data-testid={`input-importer-max-jobs-${importer.id}`}
-              />
-              <p className="text-xs text-muted-foreground">The run ends when the window does; whatever it didn't reach stays due.</p>
-            </div>
-          </div>
-        </div>
-
-        <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-          <CollapsibleTrigger asChild>
-            <button type="button" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground" data-testid={`button-importer-advanced-${importer.id}`}>
-              {advancedOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              Advanced
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="pt-3">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor={`skip-${importer.id}`}>Chance to skip a run (0–1)</Label>
-                <Input
-                  id={`skip-${importer.id}`}
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={skip}
-                  disabled={!isAdmin}
-                  onChange={(e) => setSkip(e.target.value)}
-                  onBlur={saveSkip}
-                  data-testid={`input-importer-skip-${importer.id}`}
-                />
-                <p className="text-xs text-muted-foreground">An occasional day off keeps the pattern from looking scripted.</p>
-              </div>
-              <div className="flex items-center justify-between rounded-md border px-3 py-2 self-start">
-                <div className="pr-4">
-                  <Label htmlFor={`videos-${importer.id}`} className="cursor-pointer">Download videos</Label>
-                  <p className="text-xs text-muted-foreground">Keep the video of a video story, not just its cover frame. Up to 50 MB each.</p>
-                </div>
-                <Switch
-                  id={`videos-${importer.id}`}
-                  checked={importer.downloadVideos}
-                  disabled={!isAdmin}
-                  onCheckedChange={(v) => save.mutate({ downloadVideos: v })}
-                  data-testid={`switch-importer-videos-${importer.id}`}
-                />
-              </div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
 
         {isAdmin && (
           <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -428,15 +207,10 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               {openLogin.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LogIn className="mr-2 h-4 w-4" />}
               {openLogin.isPending ? "Opening Chrome…" : "Open Instagram login"}
             </Button>
-            <Button onClick={() => runNow.mutate()} disabled={runNow.isPending || !hasUrl} data-testid={`button-importer-run-now-${importer.id}`}>
-              {runNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-              {runNow.isPending ? "Checking Instagram login…" : "Run now"}
-            </Button>
-            <Button variant="outline" onClick={() => trackNow.mutate()} disabled={trackNow.isPending || !hasUrl} data-testid={`button-importer-track-now-${importer.id}`}>
-              {trackNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-              {trackNow.isPending ? "Starting…" : "Run tracking now"}
-            </Button>
             {!hasUrl && <span className="text-sm text-muted-foreground">Set the service URL first.</span>}
+            <Link href="~/social-accounts/tracking" className="text-sm text-primary hover:underline ml-auto" data-testid={`link-importer-schedule-${importer.id}`}>
+              Schedules and run buttons →
+            </Link>
           </div>
         )}
       </CardContent>

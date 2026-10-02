@@ -474,7 +474,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm">Remove Duplicate Social Accounts</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Merges profiles sharing the platform and username. Keeps the oldest account, updates contacts, and merges posts/history.
+                  Merges duplicate accounts sharing the same platform and username.
                 </p>
               </div>
               <Button
@@ -501,7 +501,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm">Remove Duplicate Types</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Merges relationship and interaction types sharing the same name. Keeps the oldest type and reassigns all references.
+                  Merges duplicate relationship and interaction types by name.
                 </p>
               </div>
               <Button
@@ -528,7 +528,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm">Correct Phone Number Schema</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Corrects all phone numbers in the database to standard format (1 followed by digits with no spaces).
+                  Normalizes phone numbers to standard format.
                 </p>
               </div>
               <Button
@@ -572,7 +572,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Remove All Social Accounts</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Permanently deletes all social profiles, social posts, follow relations, and linked contacts.
+                  Deletes all social profiles, posts, and relations.
                 </p>
               </div>
               <Button
@@ -591,7 +591,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Remove All Family Relationships</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Permanently deletes all family tree associations. Custom categories (e.g. Friends, Colleagues) are unaffected.
+                  Deletes family lineage connections. People remain intact.
                 </p>
               </div>
               <Button
@@ -610,7 +610,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Reset Database</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Removes all tables and reinstalls a fresh copy. Optionally seed mockup records for testing.
+                  Reinstalls a clean database. Optional mockup seed.
                 </p>
               </div>
               <Button
@@ -629,7 +629,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Reset Images &amp; Faces (PRM-Compute)</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Deletes all recognition images and detected faces from PRM-Compute and PRM-S3, and clears face links. Profile pictures and avatars are preserved.
+                  Deletes face detection data. Avatars and photos are preserved.
                 </p>
               </div>
               <Button
@@ -648,7 +648,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Delete All Chats</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Permanently deletes all AI chat conversations and their message history. Other data is unaffected.
+                  Deletes all AI chat conversations and history.
                 </p>
               </div>
               <Button
@@ -667,7 +667,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Delete Messages</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Permanently deletes message conversations and their history — all of them, or only a chosen type (Instagram, SMS, email, etc.).
+                  Deletes imported conversation histories by channel.
                 </p>
               </div>
               <Button
@@ -686,7 +686,7 @@ export default function DeleteOptionsPage() {
               <div className="space-y-1">
                 <h4 className="font-semibold text-sm text-destructive">Delete People Created in Past 24 Hours</h4>
                 <p className="text-xs text-muted-foreground max-w-md">
-                  Permanently deletes all contacts created in the past 24 hours (e.g. accidental imports). Your "Me" profile and social accounts are preserved.
+                  Deletes contacts created in the last 24 hours (for accidental imports).
                 </p>
               </div>
               <Button

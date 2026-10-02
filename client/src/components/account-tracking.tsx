@@ -171,6 +171,30 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
   );
 }
 
+/** Read-only: how often each kind is checked for this account, when it last ran and when it's next due. */
+export function TrackingSchedule({ account }: { account: SocialAccount }) {
+  const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
+  const cadence = resolveCadence(account, parseLevelCadences(settings?.tracking_level_defaults));
+  return (
+    <div className="space-y-1 text-sm" data-testid="tracking-schedule">
+      {TRACKING_KINDS.map((kind) => {
+        const blocker = trackingBlocker(account, kind);
+        const days = cadence[kind];
+        return (
+          <div key={kind} className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2">
+            <span className="font-medium">{TRACKING_KIND_LABEL[kind]}</span>
+            <span className="text-muted-foreground">{days == null ? "never" : `every ${days} ${days === 1 ? "day" : "days"}`}</span>
+            <span className="text-muted-foreground">last {when(account[ROW[kind].checked])}</span>
+            <span className="text-muted-foreground">
+              {blocker ? BLOCKER_TEXT[blocker] : days == null ? "not scheduled" : `next ${when(account[ROW[kind].due])}`}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Days between checks; empty means "inherit", shown as the level's number in the placeholder. */
 function CadenceInput({ value, inherited, disabled, onCommit }: { value: number | null; inherited: number | null; disabled: boolean; onCommit: (days: number | null) => void }) {
   const [text, setText] = useState(value == null ? "" : String(value));

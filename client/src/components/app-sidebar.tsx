@@ -27,14 +27,12 @@ import {
   ScanFace,
   Gamepad2,
   ChevronRight,
-  Radar,
   Inbox,
   Activity,
   AlertTriangle,
 } from "lucide-react";
-import { OSINT_TOOLS } from "@/lib/osint-tools";
 import { Link, useLocation } from "wouter";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Sidebar,
@@ -230,11 +228,6 @@ export function AppSidebar() {
   });
   const demosEnabled = settings?.experimental_demos_enabled === "true";
 
-  const { data: osintStatus } = useQuery<{ configured: boolean }>({
-    queryKey: ["/api/osint/status"],
-  });
-  const osintConfigured = !!osintStatus?.configured;
-
   const { data: faceReviewCounts } = useQuery<{ total: number }>({
     queryKey: ["/api/face-review/counts"],
     refetchInterval: 60_000,
@@ -250,26 +243,7 @@ export function AppSidebar() {
     queryKey: ["/api/git/branch"],
   });
 
-  const displayedMenuItems = useMemo(() => {
-    if (!demosEnabled) return menuItems.filter(item => item.title !== "Demos");
-    // Append the OSINT tool demos under "Demos" only when PRM-osint is configured.
-    if (!osintConfigured) return menuItems;
-    return menuItems.map(item =>
-      item.title === "Demos"
-        ? {
-            ...item,
-            subItems: [
-              ...(item.subItems ?? []),
-              ...OSINT_TOOLS.map(tool => ({
-                title: tool.label,
-                url: `/demos/osint/${tool.name}`,
-                icon: Radar,
-              })),
-            ],
-          }
-        : item,
-    );
-  }, [demosEnabled, osintConfigured]);
+  const displayedMenuItems = demosEnabled ? menuItems : menuItems.filter(item => item.title !== "Demos");
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | null;

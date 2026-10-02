@@ -35,7 +35,10 @@ import {
   faces,
   imageQuestions,
   appSettings,
+  imageTaskGroups,
   imageTasks,
+  type ImageTaskGroup,
+  type InsertImageTaskGroup,
   dailyNotes,
   dailyNoteEvents,
   dailyNoteInvolvedParties,
@@ -45,10 +48,10 @@ import {
   type PendingSocialAccountImport,
   type InsertPendingSocialAccountImport,
   insights,
-  osintScanQueue,
+  osintScans,
   type Insight,
   type InsertInsight,
-  type OsintScanQueueRow,
+  type OsintScan,
   type DailyNote,
   type InsertDailyNote,
   type DailyNoteEvent,
@@ -153,7 +156,7 @@ import { computeFamilyLabels } from "./family-relations-helper";
 import { visibleShared, ownedByCurrentUser, currentAccess, actingUserId } from "./access";
 import { db, pool } from "./db";
 import { legacyHqImageUrls } from "./db-init";
-import { eq, ne, or, and, ilike, sql, inArray, notInArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull } from "drizzle-orm";
+import { eq, ne, or, and, ilike, sql, inArray, notInArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull, getTableColumns } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { deleteImageFromPrmS3, isPrmS3ImageUrl, deletePrmS3ObjectKey, normalizePrmS3Key } from "./prm-s3";
@@ -552,6 +555,20 @@ export interface IStorage {
     postsCleared: number;
   }>;
 
+  createImageTaskGroup(group: InsertImageTaskGroup): Promise<ImageTaskGroup>;
+  getImageTaskGroupById(id: string): Promise<(ImageTaskGroup & {
+    counts?: { total: number; pending: number; in_progress: number; completed: number; failed: number; cancelled: number };
+  }) | undefined>;
+  listImageTaskGroups(options?: { kind?: string; status?: string; search?: string; limit?: number; offset?: number }): Promise<{
+    items: (ImageTaskGroup & {
+      counts: { total: number; pending: number; in_progress: number; completed: number; failed: number; cancelled: number };
+    })[];
+    total: number;
+  }>;
+  syncImageTaskGroupStatus(groupId: string): Promise<void>;
+  cancelImageTaskGroup(id: string): Promise<number>;
+  deleteImageTaskGroup(id: string): Promise<void>;
+
   // Image task operations
   createImageTask(task: InsertImageTask): Promise<ImageTask>;
   getImageTaskById(id: string): Promise<ImageTask | undefined>;
@@ -559,7 +576,7 @@ export interface IStorage {
   updateImageTaskStatus(id: string, status: string, result?: string): Promise<void>;
   updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void>;
   getCurrentImageTasks(recentWindowSeconds?: number, limit?: number): Promise<ImageTask[]>;
-  listImageTasks(options?: { type?: string; status?: string; parentTaskId?: string; limit?: number; offset?: number }): Promise<{ items: ImageTask[]; total: number }>;
+  listImageTasks(options?: { type?: string; status?: string; parentTaskId?: string; imageTaskGroupId?: string; limit?: number; offset?: number }): Promise<{ items: ImageTask[]; total: number }>;
   cancelImageTask(id: string): Promise<void>;
 
   // Daily note operations
@@ -629,11 +646,17 @@ export interface IStorage {
   // OSINT scan queue
   getMeUserIdForSocialAccount(socialAccountId: string): Promise<number | null>;
   getMeOwnedSocialAccountIds(): Promise<string[]>;
-  enqueueOsintScans(targetIds: string[], tools: string[], requestedByUserId: number, skipIfScannedWithinDays: number): Promise<number>;
+  getSocialAccountIdsAtLevels(levels?: string[]): Promise<string[]>;
+  enqueueOsintScans(targetIds: string[], tools: string[], requestedByUserId: number | null, skipIfScannedWithinDays: number): Promise<number>;
+  createOsintScan(scan: Pick<OsintScan, "tool" | "target" | "targetType" | "options" | "requestedByUserId"> & Partial<Pick<OsintScan, "socialAccountId" | "personId">>): Promise<OsintScan | undefined>;
+  getLatestOsintScans(owner: { socialAccountIds: string[] } | { personId: string }): Promise<Pick<OsintScan, "socialAccountId" | "target" | "targetType" | "tool" | "completedAt" | "result">[]>;
+  getOsintScan(id: string): Promise<OsintScan | undefined>;
   resetRunningOsintScans(): Promise<void>;
-  claimNextOsintScan(): Promise<(OsintScanQueueRow & { username: string }) | undefined>;
-  updateOsintScan(id: string, patch: Partial<Pick<OsintScanQueueRow, "status" | "error" | "completedAt">>): Promise<void>;
-  getOsintScanQueue(): Promise<{ counts: Record<string, number>; rows: (OsintScanQueueRow & { username: string })[] }>;
+  claimNextOsintScan(): Promise<OsintScan | undefined>;
+  getRunningOsintScans(): Promise<OsintScan[]>;
+  updateOsintScan(id: string, patch: Partial<Pick<OsintScan, "status" | "computeJobId" | "error" | "result" | "completedAt">>): Promise<boolean>;
+  cancelOsintScan(id: string): Promise<OsintScan | undefined>;
+  getOsintScans(status?: string): Promise<{ counts: Record<string, number>; rows: Omit<OsintScan, "result">[] }>;
   deleteOsintScans(status: string): Promise<number>;
 
   // Session store
@@ -5045,6 +5068,200 @@ export class DatabaseStorage implements IStorage {
     return subImage || undefined;
   }
 
+  private computeGroupStatus(
+    fallback: string,
+    counts: { total: number; pending: number; in_progress: number; completed: number; failed: number; cancelled: number }
+  ): string {
+    if (counts.total === 0) return fallback;
+    if (counts.in_progress > 0 || (counts.pending > 0 && (counts.completed > 0 || counts.failed > 0))) {
+      return "in_progress";
+    }
+    if (counts.pending > 0) {
+      return "pending";
+    }
+    if (counts.cancelled === counts.total) {
+      return "cancelled";
+    }
+    if (counts.failed > 0 && counts.completed === 0) {
+      return "failed";
+    }
+    return "completed";
+  }
+
+  // Image task group operations
+  async createImageTaskGroup(group: InsertImageTaskGroup): Promise<ImageTaskGroup> {
+    const effectiveUserId = (group as any).userId ?? (actingUserId() || undefined);
+    const data = {
+      ...group,
+      userId: effectiveUserId,
+    };
+    const [created] = await db.insert(imageTaskGroups).values(data).returning();
+    return created;
+  }
+
+  async getImageTaskGroupById(id: string): Promise<(ImageTaskGroup & {
+    counts?: { total: number; pending: number; in_progress: number; completed: number; failed: number; cancelled: number };
+  }) | undefined> {
+    const [group] = await db
+      .select()
+      .from(imageTaskGroups)
+      .where(and(eq(imageTaskGroups.id, id), ownedByCurrentUser(imageTaskGroups.userId)));
+    if (!group) return undefined;
+
+    const [counts] = await db
+      .select({
+        total: sql<number>`count(*)::int`,
+        pending: sql<number>`count(*) filter (where ${imageTasks.status} = 'pending')::int`,
+        inProgress: sql<number>`count(*) filter (where ${imageTasks.status} = 'in_progress')::int`,
+        completed: sql<number>`count(*) filter (where ${imageTasks.status} = 'completed')::int`,
+        failed: sql<number>`count(*) filter (where ${imageTasks.status} = 'failed')::int`,
+        cancelled: sql<number>`count(*) filter (where ${imageTasks.status} = 'cancelled')::int`,
+      })
+      .from(imageTasks)
+      .where(eq(imageTasks.imageTaskGroupId, id));
+
+    return {
+      ...group,
+      counts: counts ? {
+        total: counts.total,
+        pending: counts.pending,
+        in_progress: counts.inProgress,
+        completed: counts.completed,
+        failed: counts.failed,
+        cancelled: counts.cancelled,
+      } : { total: 0, pending: 0, in_progress: 0, completed: 0, failed: 0, cancelled: 0 },
+    };
+  }
+
+  async syncImageTaskGroupStatus(groupId: string): Promise<void> {
+    const [counts] = await db
+      .select({
+        total: sql<number>`count(*)::int`,
+        pending: sql<number>`count(*) filter (where ${imageTasks.status} = 'pending')::int`,
+        inProgress: sql<number>`count(*) filter (where ${imageTasks.status} = 'in_progress')::int`,
+        completed: sql<number>`count(*) filter (where ${imageTasks.status} = 'completed')::int`,
+        failed: sql<number>`count(*) filter (where ${imageTasks.status} = 'failed')::int`,
+        cancelled: sql<number>`count(*) filter (where ${imageTasks.status} = 'cancelled')::int`,
+      })
+      .from(imageTasks)
+      .where(eq(imageTasks.imageTaskGroupId, groupId));
+
+    if (!counts || counts.total === 0) return;
+
+    const [group] = await db.select().from(imageTaskGroups).where(eq(imageTaskGroups.id, groupId));
+    if (!group) return;
+
+    const computedStatus = this.computeGroupStatus(group.status, {
+      total: counts.total,
+      pending: counts.pending,
+      in_progress: counts.inProgress,
+      completed: counts.completed,
+      failed: counts.failed,
+      cancelled: counts.cancelled,
+    });
+
+    const updates: Partial<typeof imageTaskGroups.$inferInsert> = { status: computedStatus };
+    if (computedStatus === "in_progress" && !group.startedAt) {
+      updates.startedAt = new Date();
+    }
+    if ((computedStatus === "completed" || computedStatus === "failed" || computedStatus === "cancelled") && !group.completedAt) {
+      updates.completedAt = new Date();
+    }
+    await db.update(imageTaskGroups).set(updates).where(eq(imageTaskGroups.id, groupId));
+  }
+
+  async listImageTaskGroups(options: { kind?: string; status?: string; search?: string; limit?: number; offset?: number } = {}) {
+    const { kind, status, search, limit = 25, offset = 0 } = options;
+    const conditions = [];
+    if (kind && kind !== "all") conditions.push(eq(imageTaskGroups.kind, kind));
+    if (status && status !== "all") conditions.push(eq(imageTaskGroups.status, status));
+    if (search && search.trim()) {
+      conditions.push(sql`${imageTaskGroups.title} ILIKE ${'%' + search.trim() + '%'}`);
+    }
+    const ownerFilter = ownedByCurrentUser(imageTaskGroups.userId);
+    if (ownerFilter) conditions.push(ownerFilter);
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [groups, totalResult] = await Promise.all([
+      whereClause
+        ? db.select().from(imageTaskGroups).where(whereClause).orderBy(desc(imageTaskGroups.createdAt)).limit(limit).offset(offset)
+        : db.select().from(imageTaskGroups).orderBy(desc(imageTaskGroups.createdAt)).limit(limit).offset(offset),
+      whereClause
+        ? db.select({ count: sql<number>`count(*)::int` }).from(imageTaskGroups).where(whereClause)
+        : db.select({ count: sql<number>`count(*)::int` }).from(imageTaskGroups),
+    ]);
+
+    if (groups.length === 0) {
+      return { items: [], total: totalResult[0]?.count ?? 0 };
+    }
+
+    const groupIds = groups.map(g => g.id);
+
+    const countsRows = await db
+      .select({
+        groupId: imageTasks.imageTaskGroupId,
+        total: sql<number>`count(*)::int`,
+        pending: sql<number>`count(*) filter (where ${imageTasks.status} = 'pending')::int`,
+        inProgress: sql<number>`count(*) filter (where ${imageTasks.status} = 'in_progress')::int`,
+        completed: sql<number>`count(*) filter (where ${imageTasks.status} = 'completed')::int`,
+        failed: sql<number>`count(*) filter (where ${imageTasks.status} = 'failed')::int`,
+        cancelled: sql<number>`count(*) filter (where ${imageTasks.status} = 'cancelled')::int`,
+      })
+      .from(imageTasks)
+      .where(inArray(imageTasks.imageTaskGroupId, groupIds))
+      .groupBy(imageTasks.imageTaskGroupId);
+
+    const countsMap = new Map<string, { total: number; pending: number; in_progress: number; completed: number; failed: number; cancelled: number }>();
+    for (const row of countsRows) {
+      if (row.groupId) {
+        countsMap.set(row.groupId, {
+          total: row.total,
+          pending: row.pending,
+          in_progress: row.inProgress,
+          completed: row.completed,
+          failed: row.failed,
+          cancelled: row.cancelled,
+        });
+      }
+    }
+
+    const items = groups.map(g => {
+      const counts = countsMap.get(g.id) ?? { total: 0, pending: 0, in_progress: 0, completed: 0, failed: 0, cancelled: 0 };
+      const computedStatus = this.computeGroupStatus(g.status, counts);
+      return {
+        ...g,
+        status: computedStatus,
+        counts,
+      };
+    });
+
+    return { items, total: totalResult[0]?.count ?? 0 };
+  }
+
+  async cancelImageTaskGroup(id: string): Promise<number> {
+    const ownerFilter = ownedByCurrentUser(imageTaskGroups.userId);
+    const whereGroup = ownerFilter ? and(eq(imageTaskGroups.id, id), ownerFilter) : eq(imageTaskGroups.id, id);
+    await db
+      .update(imageTaskGroups)
+      .set({ status: "cancelled", completedAt: new Date() })
+      .where(whereGroup);
+
+    const updated = await db
+      .update(imageTasks)
+      .set({ status: "cancelled", completedAt: new Date() })
+      .where(and(eq(imageTasks.imageTaskGroupId, id), sql`${imageTasks.status} IN ('pending', 'in_progress')`))
+      .returning({ id: imageTasks.id });
+
+    return updated.length;
+  }
+
+  async deleteImageTaskGroup(id: string): Promise<void> {
+    const ownerFilter = ownedByCurrentUser(imageTaskGroups.userId);
+    const whereGroup = ownerFilter ? and(eq(imageTaskGroups.id, id), ownerFilter) : eq(imageTaskGroups.id, id);
+    await db.delete(imageTasks).where(eq(imageTasks.imageTaskGroupId, id));
+    await db.delete(imageTaskGroups).where(whereGroup);
+  }
+
   // Image task operations
   async createImageTask(task: InsertImageTask): Promise<ImageTask> {
     const effectiveUserId = (task as any).userId ?? (actingUserId() || undefined);
@@ -5088,6 +5305,9 @@ export class DatabaseStorage implements IStorage {
       .set({ status: "in_progress", startedAt: new Date() })
       .where(eq(imageTasks.id, sql`(${next})`))
       .returning();
+    if (task?.imageTaskGroupId) {
+      void this.syncImageTaskGroupStatus(task.imageTaskGroupId);
+    }
     return task || undefined;
   }
 
@@ -5099,7 +5319,15 @@ export class DatabaseStorage implements IStorage {
       if (status === "completed") updates.progress = 100;
     }
     if (result !== undefined) updates.result = result;
-    await db.update(imageTasks).set(updates).where(eq(imageTasks.id, id));
+    const [task] = await db
+      .update(imageTasks)
+      .set(updates)
+      .where(eq(imageTasks.id, id))
+      .returning({ imageTaskGroupId: imageTasks.imageTaskGroupId });
+
+    if (task?.imageTaskGroupId) {
+      await this.syncImageTaskGroupStatus(task.imageTaskGroupId);
+    }
   }
 
   async updateImageTaskProgress(id: string, progress: number, message?: string): Promise<void> {
@@ -5126,12 +5354,13 @@ export class DatabaseStorage implements IStorage {
     return rows as ImageTask[];
   }
 
-  async listImageTasks(options: { type?: string; status?: string; parentTaskId?: string; limit?: number; offset?: number } = {}): Promise<{ items: ImageTask[]; total: number }> {
-    const { type, status, parentTaskId, limit = 25, offset = 0 } = options;
+  async listImageTasks(options: { type?: string; status?: string; parentTaskId?: string; imageTaskGroupId?: string; limit?: number; offset?: number } = {}): Promise<{ items: ImageTask[]; total: number }> {
+    const { type, status, parentTaskId, imageTaskGroupId, limit = 25, offset = 0 } = options;
     const conditions = [];
-    if (type) conditions.push(eq(imageTasks.type, type));
-    if (status) conditions.push(eq(imageTasks.status, status));
+    if (type && type !== "all") conditions.push(eq(imageTasks.type, type));
+    if (status && status !== "all") conditions.push(eq(imageTasks.status, status));
     if (parentTaskId) conditions.push(eq(imageTasks.parentTaskId, parentTaskId));
+    if (imageTaskGroupId) conditions.push(eq(imageTasks.imageTaskGroupId, imageTaskGroupId));
     const ownerFilter = ownedByCurrentUser(imageTasks.userId);
     if (ownerFilter) conditions.push(ownerFilter);
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -5148,10 +5377,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async cancelImageTask(id: string): Promise<void> {
-    await db
+    const [task] = await db
       .update(imageTasks)
       .set({ status: "cancelled", completedAt: new Date() })
-      .where(and(eq(imageTasks.id, id), sql`${imageTasks.status} IN ('pending', 'in_progress')`));
+      .where(and(eq(imageTasks.id, id), sql`${imageTasks.status} IN ('pending', 'in_progress')`))
+      .returning({ imageTaskGroupId: imageTasks.imageTaskGroupId });
+    if (task?.imageTaskGroupId) {
+      await this.syncImageTaskGroupStatus(task.imageTaskGroupId);
+    }
   }
 
   // Daily note helpers
@@ -5623,6 +5856,7 @@ export class DatabaseStorage implements IStorage {
     // 2. Every image task (not just face analysis), then the face data and
     //    associations the cascade above didn't reach.
     const imageTasksDeleted = (await db.delete(imageTasks).returning({ id: imageTasks.id })).length;
+    await db.delete(imageTaskGroups);
     const { facesDeleted, imageQuestionsDeleted, peopleCleared, postsCleared } = await this.clearFaceData();
 
     return {
@@ -6325,72 +6559,147 @@ export class DatabaseStorage implements IStorage {
     return rows.map(r => r.id);
   }
 
+  /** Visible accounts at any of these tracking levels, or every visible account. */
+  async getSocialAccountIdsAtLevels(levels?: string[]): Promise<string[]> {
+    const rows = await db.select({ id: socialAccounts.id }).from(socialAccounts).where(and(
+      levels ? inArray(socialAccounts.interestLevel, levels) : undefined,
+      visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId),
+    ));
+    return rows.map(r => r.id);
+  }
+
   /**
    * Queue every (target, tool) pair in one statement. Pairs already live in
-   * the queue, or with an OSINT insight from that tool newer than the cutoff,
-   * are left out. Returns how many rows were added.
+   * the queue, or that tool scanned (an OSINT insight) or gave up on (a failed
+   * row) since the cutoff, are left out. Returns how many rows were added.
    */
-  async enqueueOsintScans(targetIds: string[], tools: string[], requestedByUserId: number, skipIfScannedWithinDays: number): Promise<number> {
+  async enqueueOsintScans(targetIds: string[], tools: string[], requestedByUserId: number | null, skipIfScannedWithinDays: number): Promise<number> {
     if (!targetIds.length || !tools.length) return 0;
+    const cutoff = sql`now() - make_interval(days => ${skipIfScannedWithinDays})`;
+    // One string parameter each: drizzle would spread an array into one parameter
+    // per element, and a sweep can pass tens of thousands of ids.
+    const textArray = (list: string[]) => sql`string_to_array(${list.join(",")}, ',')`;
     const result = await db.execute(sql`
-      INSERT INTO osint_scan_queue (social_account_id, tool, requested_by_user_id)
-      SELECT sa.id, t.tool, ${requestedByUserId}
+      INSERT INTO osint_scans (social_account_id, tool, target, requested_by_user_id)
+      SELECT sa.id, t.tool, sa.username, ${requestedByUserId}
       FROM social_accounts sa
-      CROSS JOIN unnest(${tools}::text[]) AS t(tool)
-      WHERE sa.id = ANY(${targetIds}::text[])
+      CROSS JOIN unnest(${textArray(tools)}) AS t(tool)
+      WHERE sa.id = ANY(${textArray(targetIds)})
         AND NOT EXISTS (
           SELECT 1 FROM insights i
           WHERE i.type = 'osint' AND i.source = t.tool
-            AND i.applicable_social_account_ids @> ARRAY[sa.id]
-            AND i.collected_at > now() - make_interval(days => ${skipIfScannedWithinDays})
+            AND i.applicable_social_account_ids @> ARRAY[sa.id::text]
+            AND i.collected_at > ${cutoff}
         )
-      ON CONFLICT (social_account_id, tool) WHERE status IN ('pending','running') DO NOTHING
+        AND NOT EXISTS (
+          SELECT 1 FROM osint_scans s
+          WHERE s.social_account_id = sa.id AND s.tool = t.tool
+            AND s.status = 'failed' AND s.completed_at > ${cutoff}
+        )
+      ON CONFLICT DO NOTHING
     `);
     return result.rowCount ?? 0;
   }
 
-  /** A row left 'running' by a crashed process is picked up again. */
-  async resetRunningOsintScans(): Promise<void> {
-    await db.update(osintScanQueue).set({ status: "pending" }).where(eq(osintScanQueue.status, "running"));
+  /** Undefined when that owner already has a live scan of this target with this tool. */
+  async createOsintScan(
+    scan: Pick<OsintScan, "tool" | "target" | "targetType" | "options" | "requestedByUserId"> & Partial<Pick<OsintScan, "socialAccountId" | "personId">>,
+  ): Promise<OsintScan | undefined> {
+    const [row] = await db.insert(osintScans).values(scan).onConflictDoNothing().returning();
+    return row;
   }
 
-  async claimNextOsintScan(): Promise<(OsintScanQueueRow & { username: string }) | undefined> {
+  /**
+   * The latest finished scan per tool for each of these accounts, or for each
+   * of a person's OSINT Runs targets. An account's scans group regardless of
+   * target, so a rename doesn't hide its earlier results.
+   */
+  async getLatestOsintScans(owner: { socialAccountIds: string[] } | { personId: string }) {
+    if ("socialAccountIds" in owner && owner.socialAccountIds.length === 0) return [];
+    const key = sql`coalesce(${osintScans.socialAccountId}, ${osintScans.personId} || ':' || ${osintScans.target})`;
+    return db
+      .selectDistinctOn([key, osintScans.tool], {
+        socialAccountId: osintScans.socialAccountId,
+        target: osintScans.target,
+        targetType: osintScans.targetType,
+        tool: osintScans.tool,
+        completedAt: osintScans.completedAt,
+        result: osintScans.result,
+      })
+      .from(osintScans)
+      .where(and(
+        eq(osintScans.status, "done"),
+        "personId" in owner ? eq(osintScans.personId, owner.personId) : inArray(osintScans.socialAccountId, owner.socialAccountIds),
+      ))
+      .orderBy(key, osintScans.tool, desc(osintScans.completedAt));
+  }
+
+  async getOsintScan(id: string): Promise<OsintScan | undefined> {
+    const [row] = await db.select().from(osintScans).where(eq(osintScans.id, id));
+    return row;
+  }
+
+  /**
+   * A row a crashed process claimed but never handed to PRM-compute goes back
+   * to pending. Rows with a compute job id are still running there, and the
+   * runner resumes polling them.
+   */
+  async resetRunningOsintScans(): Promise<void> {
+    await db.update(osintScans).set({ status: "pending" })
+      .where(and(eq(osintScans.status, "running"), isNull(osintScans.computeJobId)));
+  }
+
+  async claimNextOsintScan(): Promise<OsintScan | undefined> {
     const [row] = await db
-      .update(osintScanQueue)
-      .set({ status: "running", attempts: sql`${osintScanQueue.attempts} + 1` })
-      .where(eq(osintScanQueue.id, sql`(
-        SELECT id FROM osint_scan_queue WHERE status = 'pending'
+      .update(osintScans)
+      .set({ status: "running", attempts: sql`${osintScans.attempts} + 1`, startedAt: new Date(), computeJobId: null })
+      .where(eq(osintScans.id, sql`(
+        SELECT id FROM osint_scans WHERE status = 'pending'
         ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
       )`))
       .returning();
-    if (!row) return undefined;
-    const [account] = await db.select({ username: socialAccounts.username }).from(socialAccounts).where(eq(socialAccounts.id, row.socialAccountId));
-    return { ...row, username: account?.username ?? "" };
+    return row;
   }
 
-  async updateOsintScan(id: string, patch: Partial<Pick<OsintScanQueueRow, "status" | "error" | "completedAt">>): Promise<void> {
-    await db.update(osintScanQueue).set(patch).where(eq(osintScanQueue.id, id));
+  /** Scans handed to PRM-compute and not yet finished. */
+  async getRunningOsintScans(): Promise<OsintScan[]> {
+    return db.select().from(osintScans)
+      .where(and(eq(osintScans.status, "running"), isNotNull(osintScans.computeJobId)));
   }
 
-  async getOsintScanQueue(): Promise<{ counts: Record<string, number>; rows: (OsintScanQueueRow & { username: string })[] }> {
+  /** Only a running row changes, so a scan cancelled meanwhile stays cancelled. */
+  async updateOsintScan(id: string, patch: Partial<Pick<OsintScan, "status" | "computeJobId" | "error" | "result" | "completedAt">>): Promise<boolean> {
+    const rows = await db.update(osintScans).set(patch)
+      .where(and(eq(osintScans.id, id), eq(osintScans.status, "running")))
+      .returning({ id: osintScans.id });
+    return rows.length > 0;
+  }
+
+  async cancelOsintScan(id: string): Promise<OsintScan | undefined> {
+    const [row] = await db.update(osintScans).set({ status: "cancelled", completedAt: new Date() })
+      .where(and(eq(osintScans.id, id), inArray(osintScans.status, ["pending", "running"])))
+      .returning();
+    return row;
+  }
+
+  /** Rows come without `result`, which can be large; getOsintScan has it. */
+  async getOsintScans(status?: string): Promise<{ counts: Record<string, number>; rows: Omit<OsintScan, "result">[] }> {
     const countRows = await db
-      .select({ status: osintScanQueue.status, count: sql<number>`COUNT(*)::int` })
-      .from(osintScanQueue)
-      .groupBy(osintScanQueue.status);
+      .select({ status: osintScans.status, count: sql<number>`COUNT(*)::int` })
+      .from(osintScans)
+      .groupBy(osintScans.status);
+    const { result: _result, ...columns } = getTableColumns(osintScans);
     const rows = await db
-      .select({ row: osintScanQueue, username: socialAccounts.username })
-      .from(osintScanQueue)
-      .innerJoin(socialAccounts, eq(socialAccounts.id, osintScanQueue.socialAccountId))
-      .orderBy(desc(osintScanQueue.createdAt))
-      .limit(100);
-    return {
-      counts: Object.fromEntries(countRows.map(r => [r.status, r.count])),
-      rows: rows.map(r => ({ ...r.row, username: r.username })),
-    };
+      .select(columns)
+      .from(osintScans)
+      .where(status ? eq(osintScans.status, status) : undefined)
+      .orderBy(desc(osintScans.createdAt))
+      .limit(200);
+    return { counts: Object.fromEntries(countRows.map(r => [r.status, r.count])), rows };
   }
 
   async deleteOsintScans(status: string): Promise<number> {
-    const result = await db.delete(osintScanQueue).where(eq(osintScanQueue.status, status)).returning({ id: osintScanQueue.id });
+    const result = await db.delete(osintScans).where(eq(osintScans.status, status)).returning({ id: osintScans.id });
     return result.length;
   }
 }

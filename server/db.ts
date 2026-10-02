@@ -22,6 +22,14 @@ export const pool = new Pool({
   max: 20,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
+  keepAlive: true,
+});
+
+// Idle clients can be dropped by the server/network (ECONNRESET). pg-pool emits
+// 'error' on the pool for these; without a listener Node crashes the process.
+// The pool discards the dead client and reconnects on the next query.
+pool.on('error', (err) => {
+  console.error('[db] idle client error:', err.message);
 });
 
 export const db = drizzle({ client: pool, schema });

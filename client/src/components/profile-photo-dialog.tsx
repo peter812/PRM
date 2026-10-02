@@ -34,6 +34,7 @@ const REASON_LABEL: Record<string, string> = {
   face_missing: "PRM-Face did not keep the face",
   group_conflict: "the face already belongs to a different identity",
   not_profile: "not a profile picture",
+  no_face_account: "this account is marked as having no face",
 };
 
 const describeLink = (link: ProfileLink) =>

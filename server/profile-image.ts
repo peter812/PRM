@@ -438,6 +438,7 @@ export async function applyProfileImageVerdict(
   verdict: Extract<ProfileImageVerdict, { replace: true }>,
   /** When the bytes are already in storage (a manual upload), the row to reuse. */
   stored?: { cdnUrl: string; photoId: string },
+  imageTaskGroupId?: string,
 ): Promise<ProfileImageOutcome> {
   const { imageChange } = verdict;
 
@@ -464,7 +465,7 @@ export async function applyProfileImageVerdict(
         ...facts,
       });
     }
-    void enqueueAutoRecognition({ kind: "profile", photoIds: [photo.id] });
+    void enqueueAutoRecognition({ kind: "profile", photoIds: [photo.id], imageTaskGroupId });
     return {
       imageUrl: current.imageUrl,
       isHqImage: true,
@@ -477,7 +478,7 @@ export async function applyProfileImageVerdict(
   const { cdnUrl, photoId } = stored ?? (await storeProfileImage(fetched, socialAccountId));
   const isHq = fetched.tier === "hq";
   if (isHq) {
-    void enqueueAutoRecognition({ kind: "profile", photoIds: [photoId] });
+    void enqueueAutoRecognition({ kind: "profile", photoIds: [photoId], imageTaskGroupId });
   }
   return {
     imageUrl: cdnUrl,

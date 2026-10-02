@@ -234,9 +234,7 @@ export default function ImageStorageSettingsPage() {
               PRM-S3 Server Configuration
             </CardTitle>
             <CardDescription>
-              Configure the connection settings for your dedicated PRM-s3 service. The server has two
-              addresses: an internal one this app and its tools use for uploads and processing, and a
-              public one your browser loads images from.
+              Connection settings for the PRM-s3 object storage service.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -251,7 +249,7 @@ export default function ImageStorageSettingsPage() {
                   data-testid="input-prm-s3-endpoint"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Used by the PRM server and other tools on the local network (PRM-s3 <code>internal_address</code>).
+                  Internal LAN address for backend uploads.
                 </p>
               </div>
 
@@ -265,8 +263,7 @@ export default function ImageStorageSettingsPage() {
                   data-testid="input-prm-s3-public-endpoint"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Address browsers load media from in direct mode (PRM-s3 <code>public_scheme://domain</code>).
-                  Required for direct mode; if blank, media is proxied through the PRM server.
+                  Public address for browser direct loading. If blank, media is proxied.
                 </p>
               </div>
 
@@ -283,8 +280,8 @@ export default function ImageStorageSettingsPage() {
                 </Select>
                 <p className="text-xs text-muted-foreground">
                   {form.deliveryMode === "direct"
-                    ? "API responses contain 24-hour signed URLs and the browser loads media straight from PRM-S3 via the public endpoint."
-                    : "Media travels PRM-S3 → PRM → browser through /api/prm-s3/. Slower, but PRM-S3 needs no public address."}
+                    ? "Direct: Browser loads signed URLs directly from PRM-S3."
+                    : "Proxy: Media streams securely through the PRM server."}
                 </p>
               </div>
 
@@ -436,9 +433,9 @@ export default function ImageStorageSettingsPage() {
               <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-backfill-danger">
                 <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-destructive">Danger — do at your own risk</p>
+                  <p className="text-sm font-medium text-destructive">Caution</p>
                   <p className="text-xs text-muted-foreground">
-                    This scans every image URL in the database and registers it in the photos table. It is safe to run multiple times (duplicates are skipped), but may be slow on large datasets. New uploads are registered automatically going forward.
+                    Scans database image URLs and registers missing entries in the photos table. Safe to run multiple times.
                   </p>
                 </div>
               </div>
@@ -464,7 +461,7 @@ export default function ImageStorageSettingsPage() {
                 Migrate Profile Image Tiers
               </h3>
               <p className="text-xs text-muted-foreground">
-                Migrates social accounts to single canonical image URLs with PRM-S3 ?s= size variants, consolidates people and history references, and removes obsolete generated 150px thumbnails. Safe to run more than once; runs as a background task.
+                Migrates social accounts to canonical image URLs with PRM-S3 size variants. Runs as background task.
               </p>
               <Button
                 variant="outline"
@@ -488,7 +485,7 @@ export default function ImageStorageSettingsPage() {
                 Bake Image Variants
               </h3>
               <p className="text-xs text-muted-foreground">
-                Pre-bake webp size variants (64px, 150px, 1080px) for all existing images and face crops in PRM-S3. Images already baked are skipped; safe to run anytime. Runs as a background task.
+                Pre-bakes WebP size variants (64px, 150px, 1080px) for all images in PRM-S3.
               </p>
               <Button
                 variant="outline"
@@ -512,14 +509,14 @@ export default function ImageStorageSettingsPage() {
                 Delete Instagram &amp; Facebook CDN Image URLs
               </h3>
               <p className="text-xs text-muted-foreground">
-                Remove temporary CDN URLs (cdninstagram.com and fbcdn.net) from images and social profile versions.
+                Remove temporary CDN URLs (cdninstagram.com and fbcdn.net) from images and profiles.
               </p>
               <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-instagram-danger">
                 <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-destructive">Danger — this is destructive and cannot be undone</p>
+                  <p className="text-sm font-medium text-destructive">Destructive action</p>
                   <p className="text-xs text-muted-foreground">
-                    Removes all image URLs from social media posts and social profile photos, and removes all photo DB table entries that have cdninstagram.com or fbcdn.net as their image URL.
+                    Removes all temporary CDN URLs from posts and profile photos.
                   </p>
                 </div>
               </div>
@@ -545,14 +542,14 @@ export default function ImageStorageSettingsPage() {
                 Delete Orphan Images
               </h3>
               <p className="text-xs text-muted-foreground">
-                Remove image records and files that are no longer associated with any people, notes, interactions, groups, or social profile posts.
+                Remove unreferenced image files and database records.
               </p>
               <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-delete-orphans-danger">
                 <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-destructive">Danger — this will permanently delete files and DB records</p>
+                  <p className="text-sm font-medium text-destructive">Destructive action</p>
                   <p className="text-xs text-muted-foreground">
-                    This scans the database for photos that are no longer referenced by any active entity. It will permanently delete these files from storage and remove their entries from the database.
+                    Permanently deletes files from storage and removes unreferenced database entries.
                   </p>
                 </div>
               </div>

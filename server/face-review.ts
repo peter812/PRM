@@ -75,7 +75,7 @@ export type FaceReviewItem = {
   conversationId?: string;
   postedAt?: string;
   caption?: string;
-  account: { id: string; username: string; imageUrl: string | null; ownerId: string | null; ownerName: string | null } | null;
+  account: { id: string; username: string; imageUrl: string | null; ownerId: string | null; ownerName: string | null; noFace: boolean } | null;
   faces: FaceReviewFace[];
   suggestions: FaceReviewSuggestion[];
   profileLinkReason?: ProfileLinkReason;
@@ -125,6 +125,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
         SELECT 1 FROM ${socialAccounts}
         WHERE ${socialAccounts.id} = substring(${photos.prmLocation} from 15)
           AND ${socialAccounts.imageUrl} = ${photos.location}
+          AND NOT ${socialAccounts.noFace}
           AND (${accountVisible()})
           AND (
             ${socialAccounts.personfaceUuid} IS NULL
@@ -141,6 +142,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
           SELECT 1 FROM ${socialAccounts}
           WHERE ${socialAccounts.id} = substring(${photos.prmLocation} from 15)
             AND ${socialAccounts.imageUrl} = ${photos.location}
+            AND NOT ${socialAccounts.noFace}
             AND (${accountVisible()})
         )`,
         faceQualifies(true),
@@ -203,22 +205,16 @@ export async function getFaceReviewCounts(): Promise<FaceReviewCounts> {
 
 export type FaceReviewPage = { items: FaceReviewItem[]; nextCursor: string | null };
 
-function decodeCursor(cursor: string | undefined): { uploadedAt: Date; id: string } | null {
-  if (!cursor) return null;
-  const idx = cursor.lastIndexOf("_");
-  if (idx < 0) return null;
-  const iso = cursor.slice(0, idx);
-  const id = cursor.slice(idx + 1);
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime()) || !id) return null;
-  return { uploadedAt: date, id };
-}
-const encodeCursor = (p: Pick<Photo, "uploadedAt" | "id">) => `${p.uploadedAt.toISOString()}_${p.id}`;
+// The cursor is the last photo's id; its uploaded_at is read back in SQL. Carrying the timestamp
+// through a JS Date dropped its microseconds, and photos imported together share one timestamp, so
+// the rest of that batch fell outside the next page. (Takes the text after the last "_" so a
+// cursor from a still-open page in the old `<iso>_<id>` form keeps working.)
+const decodeCursor = (cursor: string | undefined) => cursor?.slice(cursor.lastIndexOf("_") + 1) || null;
 
 export async function getFaceReviewQueue(kind: FaceReviewKind, dismissed: boolean, cursor: string | undefined, limit: number): Promise<FaceReviewPage> {
   const cur = decodeCursor(cursor);
   const conditions = [queueCondition(kind, dismissed)];
-  if (cur) conditions.push(sql`(${photos.uploadedAt}, ${photos.id}) < (${cur.uploadedAt}, ${cur.id})`);
+  if (cur) conditions.push(sql`(${photos.uploadedAt}, ${photos.id}) < (SELECT uploaded_at, id FROM ${photos} WHERE id = ${cur})`);
 
   const rows = await db
     .select()
@@ -230,7 +226,7 @@ export async function getFaceReviewQueue(kind: FaceReviewKind, dismissed: boolea
   const page = rows.slice(0, limit);
   const items = await buildItems(page, kind);
 
-  return { items, nextCursor: rows.length > limit ? encodeCursor(page[page.length - 1]) : null };
+  return { items, nextCursor: rows.length > limit ? page[page.length - 1].id : null };
 }
 
 /** A photo readable by the caller (§3's per-mutation check), or null (404). */
@@ -284,7 +280,7 @@ export async function getFaceReviewItem(photoId: string, kind: FaceReviewKind): 
 const displayName = (p: { firstName: string; lastName: string } | null | undefined) =>
   p ? [p.firstName, p.lastName].filter(Boolean).join(" ").trim() || null : null;
 
-type AccountInfo = { id: string; username: string; imageUrl: string | null; ownerId: string | null; ownerName: string | null };
+type AccountInfo = { id: string; username: string; imageUrl: string | null; ownerId: string | null; ownerName: string | null; noFace: boolean };
 type PersonInfo = { id: string; name: string | null };
 type IdentityInfo = { personId?: string; socialAccountId?: string; label: string };
 
@@ -354,6 +350,7 @@ async function buildAccountCache(ids: string[]): Promise<Map<string, AccountInfo
       username: socialAccounts.username,
       imageUrl: socialAccounts.imageUrl,
       ownerId: socialAccounts.ownerUuid,
+      noFace: socialAccounts.noFace,
       ownerFirstName: people.firstName,
       ownerLastName: people.lastName,
     })
@@ -366,6 +363,7 @@ async function buildAccountCache(ids: string[]): Promise<Map<string, AccountInfo
       username: r.username,
       imageUrl: r.imageUrl,
       ownerId: r.ownerId,
+      noFace: r.noFace,
       ownerName: displayName(r.ownerFirstName != null ? { firstName: r.ownerFirstName, lastName: r.ownerLastName ?? "" } : null),
     });
   }
@@ -492,16 +490,23 @@ async function buildPageCaches(pagePhotos: Photo[], kind: FaceReviewKind): Promi
  * One suggestion per identity. Identities already on a face in this photo are kept (one person
  * can appear in a photo more than once); the page lists them last.
  */
-function dedupeSuggestions(suggestions: FaceReviewSuggestion[]): FaceReviewSuggestion[] {
+function dedupeSuggestions(suggestions: (FaceReviewSuggestion | null)[]): FaceReviewSuggestion[] {
   const seen = new Set<string>();
   const out: FaceReviewSuggestion[] = [];
   for (const s of suggestions) {
+    if (!s) continue;
     const key = s.socialAccountId ?? s.personId ?? s.label;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(s);
   }
   return out;
+}
+
+/** An account as a suggestion chip, or null for a no-face account (never matched to a face). */
+function accountSuggestion(a: AccountInfo | null | undefined, reason: FaceReviewSuggestion["reason"]): FaceReviewSuggestion | null {
+  if (!a || a.noFace) return null;
+  return { socialAccountId: a.id, username: a.username, imageUrl: a.imageUrl, ownerName: a.ownerName, label: `@${a.username}`, reason };
 }
 
 function buildFacesFromCache(photo: Photo, caches: PageCaches): FaceReviewFace[] {
@@ -540,7 +545,7 @@ function buildFacesFromCache(photo: Photo, caches: PageCaches): FaceReviewFace[]
 }
 
 function toAccountShape(a: AccountInfo) {
-  return { id: a.id, username: a.username, imageUrl: a.imageUrl, ownerId: a.ownerId, ownerName: a.ownerName };
+  return { id: a.id, username: a.username, imageUrl: a.imageUrl, ownerId: a.ownerId, ownerName: a.ownerName, noFace: a.noFace };
 }
 
 function buildProfileItem(photo: Photo, caches: PageCaches): FaceReviewItem {
@@ -548,9 +553,7 @@ function buildProfileItem(photo: Photo, caches: PageCaches): FaceReviewItem {
   const account = caches.accountCache.get(accountId) ?? null;
   const faceList = buildFacesFromCache(photo, caches);
 
-  const suggestions: FaceReviewSuggestion[] = account
-    ? [{ socialAccountId: account.id, username: account.username, imageUrl: account.imageUrl, ownerName: account.ownerName, label: `@${account.username}`, reason: "profile_account" }]
-    : [];
+  const suggestions = [accountSuggestion(account, "profile_account")];
 
   return {
     photoId: photo.id,
@@ -571,17 +574,12 @@ function buildPostItem(photo: Photo, kind: "post" | "story", caches: PageCaches)
   const faceList = buildFacesFromCache(photo, caches);
   const slide = resolveSlide(photo, post);
 
-  const suggestions: FaceReviewSuggestion[] = [];
-  if (account) suggestions.push({ socialAccountId: account.id, username: account.username, imageUrl: account.imageUrl, ownerName: account.ownerName, label: `@${account.username}`, reason: "owner" });
+  const suggestions = [accountSuggestion(account, "owner")];
   if (post) {
-    for (const coId of post.coauthorAccountIds ?? []) {
-      const co = caches.accountCache.get(coId);
-      if (co) suggestions.push({ socialAccountId: co.id, username: co.username, imageUrl: co.imageUrl, ownerName: co.ownerName, label: `@${co.username}`, reason: "coauthor" });
-    }
+    for (const coId of post.coauthorAccountIds ?? []) suggestions.push(accountSuggestion(caches.accountCache.get(coId), "coauthor"));
     for (const handle of mentionedHandlesFor(photo, post, slide)) {
       const id = caches.mentionAccountIdByHandle.get(handle.toLowerCase());
-      const acc = id ? caches.accountCache.get(id) : undefined;
-      if (acc) suggestions.push({ socialAccountId: acc.id, username: acc.username, imageUrl: acc.imageUrl, ownerName: acc.ownerName, label: `@${acc.username}`, reason: "mentioned" });
+      suggestions.push(accountSuggestion(id ? caches.accountCache.get(id) : undefined, "mentioned"));
     }
   }
 
@@ -606,19 +604,17 @@ function buildMessageItem(photo: Photo, caches: PageCaches): FaceReviewItem {
   const message = caches.messageById.get(messageId);
   const faceList = buildFacesFromCache(photo, caches);
 
-  const suggestions: FaceReviewSuggestion[] = [];
+  const suggestions: (FaceReviewSuggestion | null)[] = [];
   if (message) {
     if (message.senderSocialAccountId) {
-      const sender = caches.accountCache.get(message.senderSocialAccountId);
-      if (sender) suggestions.push({ socialAccountId: sender.id, username: sender.username, imageUrl: sender.imageUrl, ownerName: sender.ownerName, label: `@${sender.username}`, reason: "sender" });
+      suggestions.push(accountSuggestion(caches.accountCache.get(message.senderSocialAccountId), "sender"));
     } else if (message.senderPersonId) {
       const sender = caches.personCache.get(message.senderPersonId);
       if (sender) suggestions.push({ personId: sender.id, label: sender.name ?? "Sender", reason: "sender" });
     }
     for (const p of caches.participantsByConversation.get(message.conversationId) ?? []) {
       if (p.socialAccountId) {
-        const acc = caches.accountCache.get(p.socialAccountId);
-        if (acc) suggestions.push({ socialAccountId: acc.id, username: acc.username, imageUrl: acc.imageUrl, ownerName: acc.ownerName, label: `@${acc.username}`, reason: "participant" });
+        suggestions.push(accountSuggestion(caches.accountCache.get(p.socialAccountId), "participant"));
       } else if (p.personId) {
         const person = caches.personCache.get(p.personId);
         if (person) suggestions.push({ personId: person.id, label: person.name ?? "Participant", reason: "participant" });

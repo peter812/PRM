@@ -1,22 +1,17 @@
-import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { AlertCircle, Loader2, Radar, ScanSearch } from "lucide-react";
 import { Link } from "wouter";
-import { OSINT_TOOLS } from "@/lib/osint-tools";
-import type { OsintScanQueueRow } from "@shared/schema";
+import { OsintDemoRunCard } from "@/components/osint-demo-run";
+import type { OsintScan } from "@shared/schema";
 
-type ScanQueue = { counts: Record<string, number>; rows: (OsintScanQueueRow & { username: string })[] };
-
-const USERNAME_TOOLS = OSINT_TOOLS.filter((t) => t.supportedTargetTypes.includes("username"));
+type ScanQueue = { counts: Record<string, number>; rows: Omit<OsintScan, "result">[] };
 
 function OsintAutoScanSection({
   settings,
@@ -27,14 +22,6 @@ function OsintAutoScanSection({
 }) {
   const { toast } = useToast();
   const enabled = settings.osint_auto_scan_enabled === "true";
-  const tools = (settings.osint_auto_scan_tools ?? "sherlock").split(",").filter(Boolean);
-  const [intervalSeconds, setIntervalSeconds] = useState(settings.osint_auto_scan_interval_seconds ?? "180");
-
-  useEffect(() => {
-    if (settings.osint_auto_scan_interval_seconds !== undefined && settings.osint_auto_scan_interval_seconds !== null) {
-      setIntervalSeconds(settings.osint_auto_scan_interval_seconds);
-    }
-  }, [settings.osint_auto_scan_interval_seconds]);
 
   const { data: queue } = useQuery<ScanQueue>({
     queryKey: ["/api/osint/scan-queue"],
@@ -50,11 +37,6 @@ function OsintAutoScanSection({
     onError: (error: Error) => toast({ title: "Queue action failed", description: error.message, variant: "destructive" }),
   });
 
-  const toggleTool = (name: string, on: boolean) => {
-    const next = on ? [...tools, name] : tools.filter((t) => t !== name);
-    saveSetting("osint_auto_scan_tools", next.join(","));
-  };
-
   const counts = queue?.counts ?? {};
 
   return (
@@ -66,8 +48,8 @@ function OsintAutoScanSection({
         </CardTitle>
         <CardDescription>
           When a social account linked to your Me profile is added or updated, every account it
-          follows is queued for a username scan. Scans run one at a time on the interval below
-          and land in the Insights tab of each account.
+          follows is queued for a username scan. Queued scans are fed to PRM-Compute a few at a
+          time as earlier ones finish, and land in the Insights tab of each account.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -83,31 +65,10 @@ function OsintAutoScanSection({
           />
         </div>
 
-        <div className="space-y-2">
-          <Label>Tools</Label>
-          <div className="flex flex-wrap gap-4">
-            {USERNAME_TOOLS.map((t) => (
-              <label key={t.name} className="flex items-center gap-2 text-sm cursor-pointer">
-                <Checkbox checked={tools.includes(t.name)} onCheckedChange={(v) => toggleTool(t.name, v === true)} />
-                {t.label}
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="osint-interval">Seconds between scans</Label>
-          <Input
-            id="osint-interval"
-            type="number"
-            min={60}
-            className="w-32"
-            value={intervalSeconds}
-            onChange={(e) => setIntervalSeconds(e.target.value)}
-            onBlur={() => saveSetting("osint_auto_scan_interval_seconds", intervalSeconds)}
-            data-testid="input-osint-interval"
-          />
-        </div>
+        <p className="text-sm text-muted-foreground">
+          Scans use the scanners picked on the{" "}
+          <Link href="~/social-accounts/tracking" className="underline">Tracking</Link> page.
+        </p>
 
         <div className="flex flex-wrap items-center gap-2 text-sm">
           {["pending", "running", "done", "failed"].map((status) => (
@@ -125,30 +86,10 @@ function OsintAutoScanSection({
           >
             Queue my network now
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!counts.failed || queueMutation.isPending}
-            onClick={() => queueMutation.mutate({ method: "DELETE", path: "/api/osint/scan-queue?status=failed" })}
-          >
-            Clear failed
+          <Button variant="outline" size="sm" asChild>
+            <Link href="~/settings/tasks/osint" data-testid="link-osint-tasks">View tasks</Link>
           </Button>
         </div>
-
-        {queue && queue.rows.length > 0 && (
-          <div className="max-h-64 overflow-y-auto rounded-md border divide-y text-sm">
-            {queue.rows.map((row) => (
-              <div key={row.id} className="flex items-center gap-3 px-3 py-1.5" data-testid={`scan-queue-row-${row.id}`}>
-                <span className="font-medium truncate">@{row.username}</span>
-                <span className="text-muted-foreground">{row.tool}</span>
-                <Badge variant={row.status === "failed" ? "destructive" : "outline"} className="ml-auto shrink-0">
-                  {row.status}
-                </Badge>
-                {row.error && <span className="truncate text-xs text-destructive max-w-[40%]">{row.error}</span>}
-              </div>
-            ))}
-          </div>
-        )}
       </CardContent>
     </Card>
   );
@@ -178,10 +119,10 @@ export default function OsintSettingsPage() {
     },
   });
 
-  const { data: computeSettings } = useQuery<{ apiUrl: string; hasApiKey: boolean }>({
-    queryKey: ["/api/prm-compute/settings"],
+  const { data: osintStatus } = useQuery<{ configured: boolean; enabled: boolean; hasApiUrl: boolean }>({
+    queryKey: ["/api/osint/status"],
   });
-  const isComputeConfigured = !!computeSettings?.apiUrl && !!computeSettings?.hasApiKey;
+  const isComputeConfigured = Boolean(osintStatus?.configured);
 
   if (isLoading) {
     return (
@@ -210,7 +151,7 @@ export default function OsintSettingsPage() {
             <span>PRM-Compute is not configured. OSINT scans require an active PRM-Compute server.</span>
           </div>
           <Button variant="outline" size="sm" asChild>
-            <Link href="/settings/recognition">Configure PRM-Compute</Link>
+            <Link href="~/settings/recognition">Configure PRM-Compute</Link>
           </Button>
         </div>
       )}
@@ -220,6 +161,7 @@ export default function OsintSettingsPage() {
           settings={settings ?? {}}
           saveSetting={(key, value) => updateSettingMutation.mutate({ key, value })}
         />
+        <OsintDemoRunCard disabled={!isComputeConfigured} />
       </div>
     </div>
   );

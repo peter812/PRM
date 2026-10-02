@@ -25,6 +25,7 @@ import { RelationshipDialog } from "@/components/relationship-dialog";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
+import { PersonSocialAccountsCard, PersonOsintRunsCard } from "@/components/person-osint";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
@@ -489,6 +490,9 @@ export default function PersonProfile() {
                     )}
                   </Card>
                 </div>
+
+                <PersonSocialAccountsCard person={person} />
+                <PersonOsintRunsCard person={person} />
 
                 {/* Summaries: Education & Career */}
                 <Card className="p-4 space-y-3 shadow-none">

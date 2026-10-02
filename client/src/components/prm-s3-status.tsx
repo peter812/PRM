@@ -24,6 +24,10 @@ export function PrmS3StatusGuard({ enabled }: { enabled: boolean }) {
     refetchIntervalInBackground: false,
   });
   const down = isError || data?.ok === false;
+  // The health route always answers 200, so a failed request means the PRM
+  // backend itself is unreachable rather than PRM-S3.
+  const backendOffline = isError;
+  const title = backendOffline ? "Backend offline" : "PRM-S3 is not connected";
   const message = data?.message || (error instanceof Error ? error.message : "");
 
   // A recovered connection re-arms the modal for the next outage.
@@ -49,7 +53,9 @@ export function PrmS3StatusGuard({ enabled }: { enabled: boolean }) {
       >
         <ServerOff className="h-4 w-4 shrink-0" />
         <span className="flex-1 min-w-0 truncate">
-          PRM-S3 is not connected — images and uploads will not work.{message ? ` ${message}` : ""}
+          {backendOffline
+            ? "Backend offline — the PRM server cannot be reached."
+            : `PRM-S3 is not connected — images and uploads will not work.${message ? ` ${message}` : ""}`}
         </span>
         <Link href="/settings/image-storage" className="underline shrink-0">Settings</Link>
         {retry}
@@ -63,12 +69,18 @@ export function PrmS3StatusGuard({ enabled }: { enabled: boolean }) {
         <AlertDialogHeader>
           <AlertDialogTitle className="flex items-center gap-2 text-destructive">
             <ServerOff className="h-5 w-5" />
-            PRM-S3 is not connected
+            {title}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            PRM stores every photo, video and face crop in PRM-S3, and it cannot be reached right now.
-            Uploads will fail and images will not load until the service is back. Make sure the PRM-S3
-            server is running and its endpoint is correct in Settings → Image Storage.
+            {backendOffline ? (
+              <>The PRM backend server is not responding. Make sure it is running, then retry.</>
+            ) : (
+              <>
+                PRM stores every photo, video and face crop in PRM-S3, and it cannot be reached right now.
+                Uploads will fail and images will not load until the service is back. Make sure the PRM-S3
+                server is running and its endpoint is correct in Settings → Image Storage.
+              </>
+            )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         {message && (

@@ -271,10 +271,7 @@ export default function RecognitionSettingsPage() {
               API Key
             </CardTitle>
             <CardDescription>
-              On first startup, PRM-Compute prints a one-time setup code to its console
-              (<code className="text-xs bg-muted px-1 rounded">[Config] Setup code: ...</code>).
-              Paste it here to generate and store an API key for this application.
-              The key is stored securely and never displayed again.
+              Enter the setup code printed by PRM-Compute at startup to generate an API key.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -491,10 +488,7 @@ export default function RecognitionSettingsPage() {
               Facial Intelligence Features
             </CardTitle>
             <CardDescription>
-              Enable advanced facial intelligence features across the application. When enabled, a
-              dedicated <strong>Photos</strong> tab appears on every person profile, showing all images
-              in which that person has been identified. Disabling this hides those features and stops
-              sending any facial recognition data to the client.
+              Enables the Photos tab on person profiles and facial recognition data.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -529,8 +523,7 @@ export default function RecognitionSettingsPage() {
               Danger Zone
             </CardTitle>
             <CardDescription>
-              Permanently delete every detected face, face crop, pending face question, and
-              person-to-face link. Photos are kept and will be scanned again. This action cannot be undone.
+              Permanently delete detected faces and assignments. Photos are preserved.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -666,14 +659,8 @@ function ComputeModelCard({
         <CardDescription>
           {blurb}
           {models && (
-            <>
-              {" "}Inference runs on{" "}
-              <span className="font-medium text-foreground" data-testid={`text-${engine}-device`}>
-                {models.models[0]?.device === "cuda" ? "GPU (CUDA)" : "CPU"}
-              </span>.
-            </>
+            <> (Device: <span className="font-medium text-foreground" data-testid={`text-${engine}-device`}>{models.models[0]?.device === "cuda" ? "GPU" : "CPU"}</span>)</>
           )}
-          {" "}Download a model before selecting it; the first {requestNoun} otherwise waits for the download.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -912,10 +899,7 @@ function AutoRecognitionCard() {
           Automatic Recognition
         </CardTitle>
         <CardDescription>
-          Run recognition on content as prm-stories delivers it. Each job is queued as an image
-          task and processed by PRM-Compute in the background; follow along on the{" "}
-          <Link href="/settings/image-tasks" className="underline">Image Tasks</Link> page. Toggles
-          apply to new arrivals; <strong>Run on existing</strong> queues what has never been processed.
+          Automatically queue recognition for new arrivals. Track queue on <Link href="~/settings/image-tasks" className="underline">Image Tasks</Link>.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -957,7 +941,7 @@ function AutoRecognitionCard() {
                 <div className="space-y-0.5">
                   <p className="text-sm font-medium">Accounts and faces</p>
                   <p className="text-xs text-muted-foreground">
-                    Link each already-recognised profile picture with one face to its account, without running recognition again.
+                    Link single-face profile pictures to their account.
                   </p>
                 </div>
                 <Button
@@ -977,8 +961,7 @@ function AutoRecognitionCard() {
                 <div className="space-y-0.5">
                   <Label htmlFor="profile-link-min-face-pct" className="text-sm font-medium">Min face size to link the account</Label>
                   <p className="text-xs text-muted-foreground">
-                    A profile picture with exactly one face at least this big (% of the image's shorter side)
-                    is taken to show the account holder, so that face is linked to the account.
+                    Minimum face size (% of shorter side) to link to account holder.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1006,8 +989,7 @@ function AutoRecognitionCard() {
                 <div className="space-y-0.5">
                   <Label htmlFor="lookalike-min-score" className="text-sm font-medium">Min look-alike score</Label>
                   <p className="text-xs text-muted-foreground">
-                    On Face Review, an unidentified face is shown as a possible match to a known person or
-                    account when its similarity reaches at least this score (0-1).
+                    Minimum similarity (0–1) to suggest matches on Face Review.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1035,8 +1017,7 @@ function AutoRecognitionCard() {
                 <div className="space-y-0.5">
                   <Label htmlFor="auto-assign-min-score" className="text-sm font-medium">Auto-assign score</Label>
                   <p className="text-xs text-muted-foreground">
-                    A face whose best match reaches this score (0-1) is named automatically and marked "Auto" until you
-                    confirm or remove it. Near ties (within 0.01) are left for review. Runs after each recognition and hourly.
+                    Minimum similarity (0–1) to auto-assign faces. Near ties are left for review.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1154,9 +1135,7 @@ function IdleUnloadCard() {
           Idle Model Unload
         </CardTitle>
         <CardDescription>
-          OCR and Whisper models stay in RAM / VRAM once loaded. Turn this on to have PRM-Compute
-          unload any model that hasn't been used for a while; the next request reloads it (a few
-          seconds, ~20 s for Whisper big). Face models are never unloaded.
+          Unload idle OCR and Whisper models from memory after a period of inactivity. Face models stay resident.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -1285,9 +1264,7 @@ function ParallelLanesCard() {
           Parallel Processing
         </CardTitle>
         <CardDescription>
-          How many recognition jobs PRM-Compute runs at once. Each type has its own lanes, so face, OCR
-          and speech-to-text work side by side; the total cap bounds them all. Raise it on a GPU or a
-          machine with many cores; lower it if PRM-Compute runs out of memory.
+          Configure concurrent recognition job limits for face, OCR, and speech recognition.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

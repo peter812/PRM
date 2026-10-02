@@ -248,10 +248,8 @@ export default function ChromeExtensionSettingsPage() {
               className="font-mono"
               data-testid="input-extension-id"
             />
-            <p className="text-sm text-muted-foreground">
-              Open <span className="font-mono">chrome://extensions</span>, enable Developer mode, and copy the
-              ID shown under PRM. An unpacked extension gets a new ID each time it is reinstalled, so re-paste
-              it if extraction stops working.
+            <p className="text-xs text-muted-foreground">
+              Found in <span className="font-mono">chrome://extensions</span> under PRM Extension.
             </p>
           </div>
 
@@ -267,9 +265,8 @@ export default function ChromeExtensionSettingsPage() {
               className="max-w-[200px]"
               data-testid="input-extension-max-records"
             />
-            <p className="text-sm text-muted-foreground">
-              Applied to followers and following separately. Instagram is walked about 50 accounts every six
-              seconds, so {DEFAULT_MAX_RECORDS.toLocaleString()} takes roughly six minutes per side.
+            <p className="text-xs text-muted-foreground">
+              Maximum followers/following extracted per operation (~50 accounts/6s).
             </p>
           </div>
         </CardContent>

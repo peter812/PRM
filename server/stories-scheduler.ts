@@ -14,12 +14,12 @@
 //
 // Everything here is instance-wide (story_importers / app_settings), not per user.
 import crypto from "crypto";
-import { desc, eq, gt, inArray, and, lt } from "drizzle-orm";
+import { desc, eq, gt, inArray, and, lt, or } from "drizzle-orm";
 import { db } from "./db";
 import { runAsSystem } from "./access";
 import { log } from "./vite";
 import { storyImporters, storyScrapeRuns, trackingJobs, type StoryImporter } from "@shared/schema";
-import { claimTrackingJobs, failUnfinishedJobs, postSettings, releaseTrackingJobs, type ClaimedJob } from "./tracking";
+import { claimTrackingJobs, failUnfinishedJobs, postSettings, releaseTrackingJobs, rollForwardDueDates, type ClaimedJob } from "./tracking";
 
 export const DEFAULT_WINDOW = "19:30-22:30";
 const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
@@ -340,13 +340,24 @@ async function reapStaleRuns(now: Date): Promise<void> {
   if (stale.length) kickManualTrackingJobsAfterRun();
 }
 
-/** Every enabled importer is independent: a slow service answering one must not hold up the others. */
+/**
+ * Stories (`enabled`) and tracking (`trackingEnabled`) are separate switches; an
+ * importer ticks for whichever is on. Every importer is independent: a slow
+ * service answering one must not hold up the others.
+ */
 async function tick(): Promise<void> {
   const now = new Date();
   await reapStaleRuns(now);
-  const importers = await db.select().from(storyImporters).where(eq(storyImporters.enabled, true));
+  const importers = await db.select().from(storyImporters).where(or(eq(storyImporters.enabled, true), eq(storyImporters.trackingEnabled, true)));
+  // With nothing auto-tracking, keep due dates ahead of today.
+  if (!importers.some((i) => i.trackingEnabled)) await rollForwardDueDates();
   if (importers.length === 0) return;
-  const results = await Promise.allSettled(importers.map((i) => tickStories(i, now).then(() => tickTracking(i, now))));
+  const results = await Promise.allSettled(
+    importers.map(async (i) => {
+      if (i.enabled) await tickStories(i, now);
+      await tickTracking(i, now);
+    }),
+  );
   results.forEach((r, idx) => {
     if (r.status === "rejected") log(`[Stories] ${importers[idx].label}: ${r.reason instanceof Error ? r.reason.message : r.reason}`);
   });

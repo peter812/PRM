@@ -5,7 +5,7 @@ import ForceGraph3D from "@/lib/force-graph-3d";
 import * as THREE from "three";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Settings, X, Filter, Palette, Users, Gauge } from "lucide-react";
+import { Settings, X, Filter, Palette, Users, Gauge, ChevronDown, ChevronRight } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -13,6 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Select,
   SelectContent,
@@ -418,6 +419,7 @@ function SocialGraphContent({
   const [centerPull, setCenterPull] = useState(1);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; accountId: string } | null>(null);
   const [showCrowds, setShowCrowds] = useState(true);
+  const [crowdsSectionOpen, setCrowdsSectionOpen] = useState(false);
   const [crowdPalette, setCrowdPalette] = useState<CrowdPalette>('vivid');
   const [recolorNonCrowd, setRecolorNonCrowd] = useState(false);
   const [nonCrowdColor, setNonCrowdColor] = useState('#d1d5db');
@@ -2106,11 +2108,29 @@ function SocialGraphContent({
                   </div>
                 )}
 
-              <div className="pt-2 border-t space-y-3">
-                <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5" />
-                  Crowds Settings
-                </h4>
+              <Collapsible
+                open={crowdsSectionOpen}
+                onOpenChange={setCrowdsSectionOpen}
+                className="pt-2 border-t"
+              >
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between py-1 text-left cursor-pointer group"
+                    data-testid="button-toggle-crowds-section"
+                  >
+                    <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5" />
+                      Crowds Settings
+                    </h4>
+                    {crowdsSectionOpen ? (
+                      <ChevronDown className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+                    )}
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-3 pt-3">
                 <div className="space-y-2">
                     <Label htmlFor="social-crowd-group-select" className="text-xs">Active Group</Label>
                     <Select
@@ -2313,7 +2333,8 @@ function SocialGraphContent({
                     />
                   </div>
                 )}
-                </div>
+                </CollapsibleContent>
+              </Collapsible>
               </TabsContent>
 
               <TabsContent value="color" className="space-y-4" data-testid="tab-content-color">
@@ -2620,11 +2641,6 @@ function SocialGraphContent({
                     <span>Spread out</span>
                     <span>Default</span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Turning this down pushes the nodes apart, so a graph that settles into one
-                    dense knot opens up enough to read. It only changes how the layout spends its
-                    space &mdash; nothing is added to or removed from the graph.
-                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -2639,16 +2655,6 @@ function SocialGraphContent({
                       <SelectItem value="off" data-testid="option-dense-off">Always off</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Draws the whole graph in two batched passes and moves the layout onto a
-                    background thread, which keeps very large scenes smooth. Nothing is clickable
-                    while it is on &mdash; no hover labels, selection, context menu or dragging.{' '}
-                    {denseModeSetting === 'auto'
-                      ? (denseEnabled
-                        ? `Currently on (${renderedCounts.nodes} nodes, at or over the ${denseModeThreshold} threshold).`
-                        : `Currently off (${renderedCounts.nodes} nodes, under the ${denseModeThreshold} threshold).`)
-                      : (denseEnabled ? 'Currently on.' : 'Currently off.')}
-                  </p>
                 </div>
 
                 {denseModeSetting === 'auto' && (
@@ -2685,15 +2691,6 @@ function SocialGraphContent({
                       <SelectItem value="off" data-testid="option-arrows-off">Always off</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Each one-way arrow is its own cone mesh and is re-aimed every frame &mdash; the
-                    single most expensive thing in a dense graph.{' '}
-                    {linkArrowMode === 'auto'
-                      ? (arrowsEnabled
-                        ? `Currently on (${renderedCounts.links} links, under the ${arrowAutoThreshold} threshold).`
-                        : `Currently off (${renderedCounts.links} links, over the ${arrowAutoThreshold} threshold).`)
-                      : (arrowsEnabled ? 'Currently on.' : 'Currently off.')}
-                  </p>
                 </div>
 
                 {linkArrowMode === 'auto' && (
@@ -2723,10 +2720,6 @@ function SocialGraphContent({
                       data-testid="switch-antialias"
                     />
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Smooths sphere and line edges. Turning it off helps most when the view is
-                    filled with overlapping nodes. Changing this rebuilds the renderer.
-                  </p>
                 </div>
 
                 <div className="space-y-2 pt-3 border-t">
@@ -2749,11 +2742,6 @@ function SocialGraphContent({
                     <span>1.75x</span>
                     <span>2x</span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    2x matches the default. On a hi-DPI screen, dropping to 1x quarters the pixels
-                    the GPU has to shade &mdash; usually a bigger win than antialiasing, at the cost
-                    of a softer image.
-                  </p>
                 </div>
 
                 <div className="space-y-2 pt-3 border-t">
@@ -2774,10 +2762,6 @@ function SocialGraphContent({
                       <span key={step}>{step}</span>
                     ))}
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Sphere subdivision for every node. 16 is the default; coarser spheres are hard
-                    to tell apart at normal zoom and cut vertex count sharply.
-                  </p>
                 </div>
               </TabsContent>
             </Tabs>

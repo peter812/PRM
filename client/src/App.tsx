@@ -61,7 +61,6 @@ const WordCloudDemo = lazy(() => import("@/pages/word-cloud-demo"));
 const BioWordCloudDemo = lazy(() => import("@/pages/bio-word-cloud-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
-const OsintDemoPage = lazy(() => import("@/pages/osint-demo"));
 const AccountCreationTimelinePage = lazy(() => import("@/pages/account-creation-timeline"));
 const GamesPage = lazy(() => import("@/pages/games"));
 const DescribeMePage = lazy(() => import("@/pages/describe-me"));
@@ -224,7 +223,6 @@ function Router() {
         <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
         <ProtectedRoute path="/account-matching" component={AccountMatching} />
         <ProtectedRoute path="/demos" component={DemosPage} />
-        <ProtectedRoute path="/demos/osint/:tool" component={OsintDemoPage} />
         <ProtectedRoute path="/demos/account-timeline" component={AccountCreationTimelinePage} />
         <ProtectedRoute path="/games" component={GamesPage} />
         <ProtectedRoute path="/describe-me" component={DescribeMePage} />
@@ -256,7 +254,7 @@ function Router() {
         <ProtectedRoute path="/import-export/messages" component={() => <Redirect to="/settings/import-export/messages" />} />
         <ProtectedRoute path="/import-export/extension-imports" component={() => <Redirect to="/settings/import-export/extension-imports" />} />
         <ProtectedRoute path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export" />} />
-        <ProtectedRoute path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export/image-pass-in" />} />
+        <ProtectedRoute path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export" />} />
         <ProtectedRoute path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
         <ProtectedRoute path="/osint" component={() => <Redirect to="/settings/osint" />} />
         <ProtectedRoute path="/settings/social-accounts/:uuid*" component={({ params }) => {

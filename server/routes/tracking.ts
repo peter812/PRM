@@ -18,7 +18,7 @@ import { runAsSystem, visibleShared } from "../access";
 import { sseManager } from "../middleware/sse";
 import { uploadImage, uploadMedia, uploadPostImage } from "../prm-s3";
 import { syncEntityInBackground } from "../vector-universal";
-import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
+import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, imageTaskGroups, type SocialAccount, type TrackingJob } from "@shared/schema";
 import { TRACKING_KINDS, type TrackingKind } from "@shared/interest-level";
 import { generateDeterministicUuid } from "./social-media";
 import { authedRun } from "./stories";
@@ -38,6 +38,7 @@ import {
   queueFollowingRefresh,
   queueManualJob,
   requeueJob,
+  upcomingChecks,
 } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { raiseIssue, resolveIssues } from "../account-issues";
@@ -411,8 +412,28 @@ export function registerTracking(app: Express) {
         if (!photoIds) return res.json({ outcome: "duplicate", postId: id });
         await upsertComments(id, meta.comments ?? []);
         for (const photoId of photoIds) syncEntityInBackground("image", photoId);
+        let imageTaskGroupId: string | undefined;
+        if (ctx.job.runId) {
+          const [existingGroup] = await db
+            .select({ id: imageTaskGroups.id })
+            .from(imageTaskGroups)
+            .where(eq(imageTaskGroups.socialRunId, ctx.job.runId))
+            .limit(1);
+          if (existingGroup) {
+            imageTaskGroupId = existingGroup.id;
+          } else {
+            const grp = await storage.createImageTaskGroup({
+              userId: (ctx.account as any).createdByUserId || 1,
+              title: `Tracking - @${ctx.account.username}`,
+              kind: "tracking_job",
+              socialRunId: ctx.job.runId,
+              socialAccountId: ctx.account.id,
+            });
+            imageTaskGroupId = grp.id;
+          }
+        }
+        void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined, imageTaskGroupId });
         res.status(201).json({ outcome: "stored", postId: id });
-        void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined });
       });
     } catch (error) {
       fail(res, "store post", error);
@@ -603,6 +624,27 @@ export function registerTracking(app: Express) {
       });
     } catch (error) {
       fail(res, "read tracking status", error);
+    }
+  });
+
+  // Tracking page, "Next to get updated": what the next morning run would check.
+  // With auto tracking off there is no run; show what a run a day from now would take.
+  app.get("/api/tracking/upcoming", requireAuth, async (_req, res) => {
+    try {
+      const importers = await db.select().from(storyImporters).where(eq(storyImporters.trackingEnabled, true));
+      const next = importers.sort((a, b) => (a.nextTrackingRunAt?.getTime() ?? 0) - (b.nextTrackingRunAt?.getTime() ?? 0))[0] ?? (await manualImporter());
+      const trackingEnabled = Boolean(next?.trackingEnabled);
+      const runAt = trackingEnabled ? (next!.nextTrackingRunAt ?? new Date()) : new Date(Date.now() + 86_400_000);
+      const limit = next?.trackingMaxJobs ?? 40;
+      res.json({
+        trackingEnabled,
+        runAt,
+        importerLabel: next?.label ?? null,
+        limit,
+        checks: await upcomingChecks(runAt, limit),
+      });
+    } catch (error) {
+      fail(res, "read upcoming checks", error);
     }
   });
 

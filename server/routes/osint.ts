@@ -20,7 +20,11 @@ import {
   osintFetch,
   type OsintConfig,
 } from "../osint-client";
-import { queueOsintScansForAllMeAccounts } from "../osint-scan-queue";
+import { z } from "zod";
+import { cancelOsintScan, queueOsintScansForAllMeAccounts, queueOsintScansForLevel, queueOsintScansForTarget, wakeOsintRunner } from "../osint-scan-queue";
+import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
+import { OSINT_TOOLS, mergeOsintScans, type OsintResults, type OsintTargetType } from "@shared/osint-tools";
+import { isAdminRole, type OsintScan } from "@shared/schema";
 
 async function setOsintSetting(key: string, value: string): Promise<void> {
   await storage.setAppSetting(key, value);
@@ -145,65 +149,168 @@ export function registerRoutes(app: Express) {
     }
   });
 
+  // Scans are queued in osint_scans and fed to PRM-compute by the runner
+  // (osint-scan-queue.ts). Responses keep PRM-compute's job shape so the tool
+  // pages can poll them the same way.
+  const toJob = (row: OsintScan) => ({
+    id: row.id,
+    tool: row.tool,
+    target: row.target,
+    target_type: row.targetType,
+    status: row.status === "failed" ? "error" : row.status,
+    error: row.error,
+    result: row.result,
+    created_at: row.createdAt,
+    started_at: row.startedAt,
+    finished_at: row.completedAt,
+  });
+
+  const createScanSchema = z.object({
+    tool: z.string().refine(t => OSINT_TOOLS.some(m => m.name === t), "Unsupported OSINT tool"),
+    target_type: z.enum(["username", "email", "phone"]),
+    target: z.string().trim().min(1).max(255).regex(/^[a-zA-Z0-9@._+\- ]+$/, "Invalid characters in target"),
+    options: z.record(z.unknown()).optional().default({}),
+  });
+
   app.post("/api/osint/scans", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     const cfg = await requireConfigured(res);
     if (!cfg) return;
-    const { tool, target, target_type, options } = req.body ?? {};
+    const parsed = createScanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid scan parameters" });
+    }
+    const { tool, target_type, options } = parsed.data;
+    const target = target_type === "email" ? parsed.data.target.toLowerCase() : parsed.data.target;
     try {
-      const response = await osintFetch(cfg.apiUrl, cfg.apiKey, "/scans", {
-        method: "POST",
-        body: JSON.stringify({ tool, target, target_type, options: options ?? {} }),
+      const row = await storage.createOsintScan({
+        tool,
+        target,
+        targetType: target_type,
+        options,
+        requestedByUserId: req.user!.id,
       });
-      const body = await response.text();
-      res.status(response.status).type("application/json").send(body);
+      if (!row) {
+        return res.status(409).json({ error: "A live scan for this target and tool is already queued or running" });
+      }
+      wakeOsintRunner();
+      res.status(202).json(toJob(row));
     } catch (error: any) {
-      res.status(502).json({ error: `Failed to contact PRM-Compute: ${error?.message ?? error}` });
+      res.status(500).json({ error: `Failed to queue scan: ${error?.message ?? error}` });
     }
   });
 
   app.get("/api/osint/scans/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-    const cfg = await requireConfigured(res);
-    if (!cfg) return;
-    try {
-      const response = await osintFetch(
-        cfg.apiUrl,
-        cfg.apiKey,
-        `/scans/${encodeURIComponent(req.params.id)}`,
-        { method: "GET" },
-      );
-      const body = await response.text();
-      res.status(response.status).type("application/json").send(body);
-    } catch (error: any) {
-      res.status(502).json({ error: `Failed to contact PRM-Compute: ${error?.message ?? error}` });
+    const row = await storage.getOsintScan(req.params.id);
+    if (!row) return res.status(404).json({ error: "Scan not found" });
+
+    const isAdmin = isAdminRole(req.user!.role);
+    const isOwner = row.requestedByUserId === req.user!.id;
+    if (!isAdmin && !isOwner) {
+      if (row.personId) {
+        const person = await storage.getPersonById(row.personId);
+        if (!person) return res.status(404).json({ error: "Scan not found" });
+      } else if (row.socialAccountId) {
+        const account = await storage.getSocialAccountById(row.socialAccountId);
+        if (!account) return res.status(404).json({ error: "Scan not found" });
+      } else {
+        return res.status(403).json({ error: "Forbidden" });
+      }
     }
+    res.json(toJob(row));
   });
 
   app.delete("/api/osint/scans/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-    const cfg = await requireConfigured(res);
-    if (!cfg) return;
+    const row = await storage.getOsintScan(req.params.id);
+    if (!row) return res.status(404).json({ error: "Scan not found" });
+    const isAdmin = isAdminRole(req.user!.role);
+    const isOwner = row.requestedByUserId === req.user!.id;
+    if (!isAdmin && !isOwner) {
+      return res.status(403).json({ error: "You can only cancel your own scans" });
+    }
+    await cancelOsintScan(req.params.id);
+    res.status(204).end();
+  });
+
+  // ── Results of known accounts and people ─────────────────────────────────
+  // ?socialAccountIds=a,b → keyed by account id; ?personId=x → keyed by OSINT
+  // Runs target. A target with no finished scan has no key (shown "unchecked").
+  app.get("/api/osint/results", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     try {
-      const response = await osintFetch(
-        cfg.apiUrl,
-        cfg.apiKey,
-        `/scans/${encodeURIComponent(req.params.id)}`,
-        { method: "DELETE" },
-      );
-      if (response.status === 204) return res.status(204).end();
-      const body = await response.text();
-      res.status(response.status).type("application/json").send(body);
+      const { personId, socialAccountIds } = req.query;
+      let rows;
+      if (typeof personId === "string") {
+        if (!await storage.getPersonById(personId)) return res.status(404).json({ error: "Person not found" });
+        rows = await storage.getLatestOsintScans({ personId });
+      } else {
+        const ids = String(socialAccountIds ?? "").split(",").filter(Boolean);
+        const visible = (await storage.getSocialAccountsByIds(ids)).map(a => a.id);
+        rows = await storage.getLatestOsintScans({ socialAccountIds: visible });
+      }
+      const byKey = new Map<string, typeof rows>();
+      for (const row of rows) {
+        const key = typeof personId === "string"
+          ? (row.targetType === "email" ? row.target.toLowerCase() : row.target)
+          : row.socialAccountId!;
+        byKey.set(key, [...(byKey.get(key) ?? []), row]);
+      }
+      const results: Record<string, OsintResults> = {};
+      byKey.forEach((scans, key) => { results[key] = mergeOsintScans(scans); });
+      res.json(results);
     } catch (error: any) {
-      res.status(502).json({ error: `Failed to contact PRM-Compute: ${error?.message ?? error}` });
+      res.status(500).json({ error: `Failed to load OSINT results: ${error?.message ?? error}` });
+    }
+  });
+
+  // Run scan: { socialAccountId } scans the account's username; { personId,
+  // target, targetType } scans one of the person's OSINT Runs targets.
+  app.post("/api/osint/results", async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+    if (!await requireConfigured(res)) return;
+    const { socialAccountId, personId, target, targetType } = req.body ?? {};
+    try {
+      let queued: number;
+      if (typeof socialAccountId === "string") {
+        const account = await storage.getSocialAccountById(socialAccountId);
+        if (!account) return res.status(404).json({ error: "Social account not found" });
+        queued = await queueOsintScansForTarget({ socialAccountId }, account.username, "username", req.user!.id);
+      } else if (typeof personId === "string" && typeof target === "string" && ["email", "phone", "username"].includes(targetType)) {
+        const cleanTarget = targetType === "email" ? target.trim().toLowerCase() : target.trim();
+        if (!cleanTarget) return res.status(400).json({ error: "Target cannot be empty" });
+        const person = await storage.getPersonById(personId);
+        if (!person) return res.status(404).json({ error: "Person not found" });
+
+        // Validate that target exists on person to prevent arbitrary insight pollution
+        const declared = new Set([
+          ...(person.osintRuns?.emails ?? []),
+          ...(person.osintRuns?.phones ?? []),
+          ...(person.osintRuns?.usernames ?? []),
+          person.email?.toLowerCase(),
+          person.phone,
+          ...(person.additionalEmails ?? []).map(e => e.toLowerCase()),
+          ...(person.additionalPhones ?? []),
+        ].filter(Boolean));
+        if (!declared.has(cleanTarget)) {
+          return res.status(400).json({ error: "Target is not registered for this person" });
+        }
+        queued = await queueOsintScansForTarget({ personId }, cleanTarget, targetType as OsintTargetType, req.user!.id);
+      } else {
+        return res.status(400).json({ error: "socialAccountId, or personId with target and targetType, is required" });
+      }
+      res.status(202).json({ queued });
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to queue scan: ${error?.message ?? error}` });
     }
   });
 
   // ── Auto-scan queue ───────────────────────────────────────────────────────
-  app.get("/api/osint/scan-queue", async (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+  app.get("/api/osint/scan-queue", requireAdmin, async (_req, res) => {
     try {
-      res.json(await storage.getOsintScanQueue());
+      const status = typeof _req.query.status === "string" && _req.query.status !== "all" ? _req.query.status : undefined;
+      res.json(await storage.getOsintScans(status));
     } catch (error: any) {
       res.status(500).json({ error: `Failed to load scan queue: ${error?.message ?? error}` });
     }
@@ -214,7 +321,21 @@ export function registerRoutes(app: Express) {
   app.post("/api/osint/scan-queue/backfill", requireAdmin, async (_req, res) => {
     try {
       await queueOsintScansForAllMeAccounts();
-      res.json(await storage.getOsintScanQueue());
+      res.json(await storage.getOsintScans());
+    } catch (error: any) {
+      res.status(500).json({ error: `Failed to queue scans: ${error?.message ?? error}` });
+    }
+  });
+
+  // Tracking page: every account the caller can see at { level } or above.
+  app.post("/api/osint/scan-queue/level", requireAdmin, async (req, res) => {
+    const level = req.body?.level;
+    if (!INTEREST_LEVELS.includes(level) || level === "none") {
+      return res.status(400).json({ error: "level must be a tracking level above none" });
+    }
+    if (!await requireConfigured(res)) return;
+    try {
+      res.status(202).json({ queued: await queueOsintScansForLevel(level as InterestLevel, req.user!.id) });
     } catch (error: any) {
       res.status(500).json({ error: `Failed to queue scans: ${error?.message ?? error}` });
     }
@@ -222,8 +343,8 @@ export function registerRoutes(app: Express) {
 
   app.delete("/api/osint/scan-queue", requireAdmin, async (req, res) => {
     const status = String(req.query.status ?? "");
-    if (!["pending", "done", "failed"].includes(status)) {
-      return res.status(400).json({ error: "status must be pending, done, or failed" });
+    if (!["pending", "done", "failed", "cancelled"].includes(status)) {
+      return res.status(400).json({ error: "status must be pending, done, failed, or cancelled" });
     }
     try {
       res.json({ deleted: await storage.deleteOsintScans(status) });

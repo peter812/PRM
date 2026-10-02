@@ -16,6 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useNoFaceToggle } from "@/components/no-face-account";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -46,6 +47,7 @@ import { MessagesTab } from "@/components/messages-tab";
 import { StoriesTab } from "@/components/stories-tab";
 import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
 import { InsightsTab } from "@/components/insights-tab";
+import { AccountOsintCard } from "@/components/osint-results";
 import { ConnectionsTab } from "@/components/connections-tab";
 import { SocialAccountRow } from "@/components/social-account-row";
 import { AccountTracking } from "@/components/account-tracking";
@@ -140,13 +142,14 @@ export default function SocialAccountProfile() {
     }
   }, [location, search, selectedPost?.id, activeTab]);
 
-  const { data: account, isLoading, isError, error } = useQuery<SocialAccountWithCurrentProfile>({
+  const { data: account, isLoading, isError, error } = useQuery<SocialAccountWithCurrentProfile & { bioMentions?: { id: string; username: string }[] }>({
     queryKey: ["/api/social-accounts", uuid],
     enabled: !!uuid,
   });
 
   const [profileImgSrc, setProfileImgSrc] = useState<string | null | undefined>(undefined);
   const [profilePhotoOpen, setProfilePhotoOpen] = useState(false);
+  const noFace = useNoFaceToggle();
 
   useEffect(() => {
     setProfileImgSrc(account?.currentProfile?.imageUrl ?? null);
@@ -708,6 +711,10 @@ export default function SocialAccountProfile() {
                 <GraphTriangleIcon className="h-4 w-4 mr-2" />
                 Open in Graph
               </DropdownMenuItem>
+              <DropdownMenuItem disabled={noFace.isPending} onClick={() => noFace.toggle(account)} data-testid="button-toggle-no-face">
+                <ScanFace className="h-4 w-4 mr-2" />
+                {account.noFace ? "Match faces again" : "Has no face"}
+              </DropdownMenuItem>
               {accountType?.name?.toLowerCase() === "instagram" && (
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger data-testid="button-extract-menu">
@@ -742,6 +749,7 @@ export default function SocialAccountProfile() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {noFace.dialog}
         </div>
       </div>
 
@@ -952,6 +960,18 @@ export default function SocialAccountProfile() {
                       {account.currentProfile.bio}
                     </p>
                   )}
+                  {!!account.bioMentions?.length && (
+                    <div className="flex flex-wrap gap-1.5 pt-1" data-testid="bio-mentions">
+                      {account.bioMentions.map((m) => (
+                        <Link key={m.id} href={`/social-accounts/${m.id}`}>
+                          <Badge variant="secondary" className="cursor-pointer text-xs gap-1" data-testid={`chip-bio-mention-${m.username}`}>
+                            <AtSign className="h-3 w-3" />
+                            {m.username}
+                          </Badge>
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 {/* Quick Actions Action Areas */}
@@ -1110,6 +1130,8 @@ export default function SocialAccountProfile() {
                 </Card>
                 </div>
 
+                <AccountOsintCard socialAccountId={account.id} />
+
                 {/* Summaries: Activity & Import Info */}
                 <Card className="p-4 space-y-3 shadow-none">
                   <h3 className="font-semibold text-sm flex items-center justify-between">
@@ -1241,6 +1263,17 @@ export default function SocialAccountProfile() {
                         )}
                       </div>
                     </div>
+
+                    {/* No face: organisation account, never matched to faces */}
+                    {account.noFace && (
+                      <div>
+                        <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Faces</span>
+                        <div className="flex items-center gap-1.5 mt-0.5" data-testid="text-details-no-face">
+                          <ScanFace className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="text-foreground">Not matched (no single owner)</span>
+                        </div>
+                      </div>
+                    )}
 
                     {/* External Profile Link */}
                     {account.currentProfile?.accountUrl && (

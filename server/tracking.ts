@@ -53,7 +53,7 @@ export async function skipRecentlyChecked(): Promise<boolean> {
 }
 
 /** SQL: `checkedAt` (a timestamp expression) is within the last RECENT_CHECK_HOURS; false, not null, when never checked, so `NOT` works. */
-const recentlyChecked = (checkedAt: SQL) => sql`COALESCE(${checkedAt} >= now() - ${RECENT_CHECK_HOURS} * interval '1 hour', false)`;
+const recentlyChecked = (checkedAt: SQL, at: SQL = sql`now()`) => sql`COALESCE(${checkedAt} >= ${at} - ${RECENT_CHECK_HOURS} * interval '1 hour', false)`;
 
 /**
  * Somewhere in the next `days` days (at least tomorrow); null when the kind is off.
@@ -120,6 +120,32 @@ export async function markChecked(accountId: string, kind: TrackingKind): Promis
     .where(eq(socialAccounts.id, accountId));
 }
 
+const DUE_SQL_COLUMN = { info: "info_due_at", follows: "follows_due_at", posts: "posts_due_at" } as const;
+const OVERRIDE_SQL_COLUMN = { info: "info_every_days", follows: "follows_every_days", posts: "posts_every_days" } as const;
+
+/**
+ * While nothing is auto-tracking, a lapsed due date is moved forward by whole
+ * cadences to the next one still ahead, so the account page always shows a
+ * real next date and turning tracking back on doesn't bring every account due
+ * at once. Whole steps keep each account's place in the spread.
+ */
+export async function rollForwardDueDates(): Promise<void> {
+  const defaults = await levelCadences();
+  for (const kind of TRACKING_KINDS) {
+    const due = sql.identifier(DUE_SQL_COLUMN[kind]);
+    const levelDays = sql.join(
+      INTEREST_LEVELS.map((l) => sql`WHEN ${l} THEN ${defaults[l][kind]}::int`),
+      sql` `,
+    );
+    const days = sql`COALESCE(${sql.identifier(OVERRIDE_SQL_COLUMN[kind])}, CASE interest_level ${levelDays} END)`;
+    await db.execute(sql`
+      UPDATE social_accounts
+      SET ${due} = ${due} + (floor(extract(epoch FROM now() - ${due}) / (${days} * 86400)) + 1) * ${days} * interval '1 day'
+      WHERE ${due} <= now() AND ${days} >= 1
+    `);
+  }
+}
+
 /** Accounts with a me person as owner — the ones whose network the "me" rule grades. */
 const ME_ACCOUNTS = sql`SELECT sa.id FROM social_accounts sa JOIN people p ON p.id = sa.owner_uuid WHERE p.user_id IS NOT NULL`;
 
@@ -170,6 +196,39 @@ const toClaimed = (r: ClaimedRow): ClaimedJob => ({
 });
 
 /**
+ * FROM/WHERE over `sa` (the account) and `k` (kind, due, checked): one row per
+ * account and kind the schedule would pick up at `at`. Shared by the claim and
+ * the Tracking page's preview so the two can't drift.
+ *
+ * The blocker rule here must match `trackingBlocker` in shared/interest-level.ts,
+ * which the account page uses: private accounts get only info checks, and
+ * follows are skipped above MAX_FOLLOWS. Blocked rows are left out here rather
+ * than filtered afterwards so they can't crowd the due list forever. A kind
+ * checked in the last RECENT_CHECK_HOURS (by hand, say) stays due but waits.
+ * An account whose profile 404'd (an open not_found issue) waits for a person
+ * to rename, dismiss or delete it; only manual jobs reach it meanwhile.
+ */
+function dueAt(at: SQL, skipRecent: boolean): SQL {
+  const notRecent = skipRecent ? sql`AND NOT (${recentlyChecked(sql`k.checked`, at)})` : sql``;
+  return sql`
+    FROM social_accounts sa
+    CROSS JOIN LATERAL (VALUES
+      ('info', sa.info_due_at, sa.info_checked_at),
+      ('follows', sa.follows_due_at, sa.follows_checked_at),
+      ('posts', sa.posts_due_at, sa.posts_checked_at)
+    ) AS k(kind, due, checked)
+    WHERE sa.type_id = ${INSTAGRAM_TYPE_ID}
+      AND k.due <= ${at}
+      ${notRecent}
+      AND (k.kind = 'info' OR (
+        sa.is_private IS NOT TRUE
+        AND (k.kind <> 'follows' OR GREATEST(COALESCE(sa.reported_followers_count, 0), COALESCE(sa.reported_following_count, 0)) <= ${MAX_FOLLOWS})
+      ))
+      AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
+      AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = sa.id AND i.kind = 'not_found' AND i.status = 'open')`;
+}
+
+/**
  * Claim up to `limit` jobs for `importerId`, marked running on the spot so two
  * importers (or the morning tick and a manual kick) can never take the same
  * one: queued manual jobs first (oldest first), then one schedule job per due
@@ -196,34 +255,12 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
     const remaining = limit - manual.rows.length;
     if (opts.manualOnly || remaining <= 0) return manual.rows.map(toClaimed);
 
-    // The blocker rule here must match `trackingBlocker` in shared/interest-level.ts,
-    // which the account page uses: private accounts get only info checks, and
-    // follows are skipped above MAX_FOLLOWS. Blocked rows are left out here rather
-    // than filtered afterwards so they can't crowd the due list forever. A kind
-    // checked in the last RECENT_CHECK_HOURS (by hand, say) stays due but waits.
-    // An account whose profile 404'd (an open not_found issue) waits for a person
-    // to rename, dismiss or delete it; only manual jobs reach it meanwhile.
-    const notRecent = skipRecent ? sql`AND NOT (${recentlyChecked(sql`k.checked`)})` : sql``;
     const due = await tx.execute<ClaimedRow>(sql`
       INSERT INTO tracking_jobs (social_account_id, kind, origin, status, importer_id, started_at, attempts)
       SELECT d.id, d.kind, 'schedule', 'running', ${importerId}, now(), 1
       FROM (
         SELECT sa.id, k.kind
-        FROM social_accounts sa
-        CROSS JOIN LATERAL (VALUES
-          ('info', sa.info_due_at, sa.info_checked_at),
-          ('follows', sa.follows_due_at, sa.follows_checked_at),
-          ('posts', sa.posts_due_at, sa.posts_checked_at)
-        ) AS k(kind, due, checked)
-        WHERE sa.type_id = ${INSTAGRAM_TYPE_ID}
-          AND k.due <= now()
-          ${notRecent}
-          AND (k.kind = 'info' OR (
-            sa.is_private IS NOT TRUE
-            AND (k.kind <> 'follows' OR GREATEST(COALESCE(sa.reported_followers_count, 0), COALESCE(sa.reported_following_count, 0)) <= ${MAX_FOLLOWS})
-          ))
-          AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
-          AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = sa.id AND i.kind = 'not_found' AND i.status = 'open')
+        ${dueAt(sql`now()`, skipRecent)}
         ORDER BY k.due ASC
         LIMIT ${remaining}
         FOR UPDATE OF sa SKIP LOCKED
@@ -233,6 +270,55 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
     `);
     return [...manual.rows, ...due.rows].map(toClaimed);
   });
+}
+
+export type UpcomingCheck = {
+  accountId: string;
+  username: string;
+  nickname: string | null;
+  interestLevel: string;
+  kind: TrackingKind;
+  origin: "manual" | "schedule";
+  /** Schedule rows: the due date. Manual rows: when it was queued. */
+  at: Date;
+};
+
+/**
+ * What `claimTrackingJobs` would take at `at` with this `limit`, without
+ * claiming: queued manual jobs, then due schedule rows. Only accounts the
+ * caller can see are listed, so the list can be shorter than the run.
+ */
+export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingCheck[]> {
+  const skipRecent = await skipRecentlyChecked();
+  const visible = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId) ?? sql`true`;
+  const rows = await db.execute<{ id: string; username: string; nickname: string | null; interest_level: string; kind: TrackingKind; origin: "manual" | "schedule"; at: Date }>(sql`
+    WITH manual AS (
+      SELECT j.social_account_id AS id, j.kind, 'manual' AS origin, j.created_at AS at, 0 AS rank
+      FROM tracking_jobs j
+      WHERE j.status = 'queued' AND j.origin = 'manual'
+      ORDER BY j.created_at
+      LIMIT ${limit}
+    ), scheduled AS (
+      SELECT sa.id, k.kind, 'schedule' AS origin, k.due AS at, 1 AS rank
+      ${dueAt(sql`${at.toISOString()}::timestamptz`, skipRecent)}
+      ORDER BY k.due ASC
+      LIMIT greatest(${limit} - (SELECT count(*) FROM manual), 0)
+    )
+    SELECT u.id, social_accounts.username, social_accounts.nickname, social_accounts.interest_level, u.kind, u.origin, u.at
+    FROM (SELECT * FROM manual UNION ALL SELECT * FROM scheduled) u
+    JOIN social_accounts ON social_accounts.id = u.id
+    WHERE ${visible}
+    ORDER BY u.rank, u.at
+  `);
+  return rows.rows.map((r) => ({
+    accountId: r.id,
+    username: r.username,
+    nickname: r.nickname,
+    interestLevel: r.interest_level,
+    kind: r.kind,
+    origin: r.origin,
+    at: r.at,
+  }));
 }
 
 /**

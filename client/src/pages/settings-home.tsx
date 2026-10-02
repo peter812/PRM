@@ -209,12 +209,6 @@ function ImportExportCard() {
       icon: Archive,
       url: "/import-export/backups",
     },
-    {
-      title: "Image Pass In",
-      description: "Inherit missing profile pictures.",
-      icon: ImageIcon,
-      url: "/import-export/image-pass-in",
-    },
   ];
 
   return (

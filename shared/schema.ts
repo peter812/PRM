@@ -192,6 +192,8 @@ export const people = pgTable("people", {
   address: text("address"),
   additionalEmails: jsonb("additional_emails").$type<string[]>().default(sql`'[]'::jsonb`),
   additionalPhones: jsonb("additional_phones").$type<string[]>().default(sql`'[]'::jsonb`),
+  // Targets the user chose to OSINT-scan for this person; results live in osint_scans.
+  osintRuns: jsonb("osint_runs").$type<OsintRuns>().notNull().default(sql`'{"emails":[],"phones":[],"usernames":[]}'::jsonb`),
   deniedRecommendations: jsonb("denied_recommendations").$type<string[]>().default(sql`'[]'::jsonb`),
   lastDescribedAt: timestamp("last_described_at"), // last time the Describe Me game saved a note for this person (90-day cooldown)
   politicalLeftRight: real("political_left_right"), // Left (-10) to Right (+10)
@@ -439,6 +441,9 @@ export const socialAccounts = pgTable("social_accounts", {
   // so a face seen elsewhere can be named "@username" before anyone attaches a
   // person. Set by recognition.ts when a profile picture has exactly one face.
   personfaceUuid: varchar("personface_uuid"),
+  // An organisation/brand account with no single owner: face review and the
+  // profile auto-link never try to match a face to it.
+  noFace: boolean("no_face").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("social_accounts_username_idx").on(t.username),
@@ -762,10 +767,33 @@ export const tasks = pgTable("tasks", {
   index("tasks_user_id_status_idx").on(t.userId, t.status),
 ]);
 
+// Image task groups table - overarching groups for batch/pipeline image operations
+export const imageTaskGroups = pgTable("image_task_groups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: text("title").notNull(),
+  kind: text("kind").notNull().default("general"), // 'social_import' | 'story_run' | 'tracking_job' | 'message_import' | 'recognition_batch' | 'manual'
+  status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  parentTaskId: varchar("parent_task_id").references(() => tasks.id, { onDelete: "set null" }),
+  socialRunId: varchar("social_run_id").references((): AnyPgColumn => storyScrapeRuns.id, { onDelete: "set null" }),
+  socialAccountId: varchar("social_account_id").references((): AnyPgColumn => socialAccounts.id, { onDelete: "set null" }),
+  metadata: jsonb("metadata").$type<Record<string, any>>().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+}, (t) => [
+  index("image_task_groups_user_id_idx").on(t.userId),
+  index("image_task_groups_status_idx").on(t.status),
+  index("image_task_groups_parent_task_id_idx").on(t.parentTaskId),
+  index("image_task_groups_social_run_id_idx").on(t.socialRunId),
+  index("image_task_groups_created_at_idx").on(t.createdAt),
+]);
+
 // Image tasks table - specialized operations performed on images
 export const imageTasks = pgTable("image_tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  imageTaskGroupId: varchar("image_task_group_id").references((): AnyPgColumn => imageTaskGroups.id, { onDelete: "cascade" }),
   type: text("type").notNull(), // 'download_img_instagram' | 'analyze_img_full' | 'analyze_img_face' | 'analyze_img_ocr' | 'transcribe_video' | 'analyze_img_metadata' | 'analyze_img_llm' | 'convert_img'
   status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
   payload: text("payload").notNull().default("{}"),
@@ -778,6 +806,7 @@ export const imageTasks = pgTable("image_tasks", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
 }, (t) => [
+  index("image_tasks_group_id_idx").on(t.imageTaskGroupId),
   index("image_tasks_parent_task_id_idx").on(t.parentTaskId),
   index("image_tasks_user_id_idx").on(t.userId),
   index("image_tasks_photo_id_idx").on(t.photoId),
@@ -962,23 +991,39 @@ export const insights = pgTable("insights", {
   index("insights_social_accounts_gin").using("gin", t.applicableSocialAccountIds),
 ]);
 
-// OSINT scan queue: one row per (account, tool) the drip runner still has to
-// run, or has run. Rows are drained one at a time on a slow interval so the
-// OSINT endpoint is never hammered.
-export const osintScanQueue = pgTable("osint_scan_queue", {
+// OSINT scans: every scan PRM sends to PRM-compute, queued here first. The
+// runner keeps a few in flight on PRM-compute and submits the next pending row
+// as each one finishes, so a burst of hundreds is fed through without flooding
+// it. Finished rows keep their result as history.
+export const osintScans = pgTable("osint_scans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
   tool: text("tool").notNull(),
-  status: text("status").notNull().default("pending"), // pending | running | done | failed
+  target: text("target").notNull(),
+  targetType: text("target_type").notNull().default("username"),
+  options: jsonb("options").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  // Set for scans of a known account or of a person's OSINT Runs target; their results also become an Insight.
+  socialAccountId: varchar("social_account_id").references(() => socialAccounts.id, { onDelete: "cascade" }),
+  personId: varchar("person_id").references(() => people.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"), // pending | running | done | failed | cancelled
   requestedByUserId: integer("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
   attempts: integer("attempts").notNull().default(0),
+  computeJobId: text("compute_job_id"), // PRM-compute's job id while running
   error: text("error"),
+  result: jsonb("result"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
 }, (t) => [
-  index("osint_scan_queue_status_created_idx").on(t.status, t.createdAt),
-  // At most one live row per account+tool; finished rows stay as history.
-  uniqueIndex("osint_scan_queue_live_uniq").on(t.socialAccountId, t.tool).where(sql`status IN ('pending','running')`),
+  index("osint_scans_status_created_idx").on(t.status, t.createdAt),
+  index("osint_scans_social_tool_status_idx").on(t.socialAccountId, t.tool, t.status, t.completedAt),
+  index("osint_scans_person_tool_status_idx").on(t.personId, t.tool, t.status, t.completedAt),
+  // At most one live row per owner+tool+target; finished rows stay as history.
+  uniqueIndex("osint_scans_live_owner_uniq")
+    .on(sql`coalesce(${t.socialAccountId}, ${t.personId})`, t.tool, t.target)
+    .where(sql`status IN ('pending','running')`),
+  uniqueIndex("osint_scans_live_demo_uniq")
+    .on(t.tool, t.target, t.requestedByUserId)
+    .where(sql`${t.socialAccountId} IS NULL AND ${t.personId} IS NULL AND status IN ('pending','running')`),
 ]);
 
 // One row per prm-stories run, instance-wide (stories are an admin feature, not
@@ -1317,6 +1362,11 @@ export type OwnershipInput = { createdByUserId?: number | null };
 /** Same idea for the user-private bucket, where the owner is stamped by the server. */
 export type UserOwnedInput = { userId?: number };
 
+/** A person's OSINT Runs: the emails, phones and non-social usernames to scan. */
+export type OsintRuns = { emails: string[]; phones: string[]; usernames: string[] };
+const osintTargetList = z.array(z.string().trim().min(1).max(255)).max(100).transform((list) => Array.from(new Set(list.map((t) => t.trim()).filter(Boolean))));
+const osintEmailTargetList = z.array(z.string().trim().min(1).max(255)).max(100).transform((list) => Array.from(new Set(list.map((t) => t.trim().toLowerCase()).filter(Boolean))));
+
 export const insertPersonSchema = createInsertSchema(people)
   .omit({
     id: true,
@@ -1330,6 +1380,7 @@ export const insertPersonSchema = createInsertSchema(people)
     address: z.string().optional().nullable(),
     additionalEmails: z.array(z.string()).optional(),
     additionalPhones: z.array(z.string()).optional(),
+    osintRuns: z.object({ emails: osintEmailTargetList, phones: osintTargetList, usernames: osintTargetList }).optional(),
     deniedRecommendations: z.array(z.string()).optional(),
     politicalLeftRight: z.number().min(-10).max(10).optional().nullable(),
     politicalLibAuth: z.number().min(-10).max(10).optional().nullable(),
@@ -1709,6 +1760,14 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   userId: true,
 });
 
+export const insertImageTaskGroupSchema = createInsertSchema(imageTaskGroups).omit({
+  id: true,
+  createdAt: true,
+  startedAt: true,
+  completedAt: true,
+  userId: true,
+});
+
 export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
   id: true,
   createdAt: true,
@@ -1777,7 +1836,7 @@ export type InsertPendingSocialAccountImport = z.infer<typeof insertPendingSocia
 
 export type Insight = typeof insights.$inferSelect;
 export type InsertInsight = typeof insights.$inferInsert;
-export type OsintScanQueueRow = typeof osintScanQueue.$inferSelect;
+export type OsintScan = typeof osintScans.$inferSelect;
 export type StoryScrapeRun = typeof storyScrapeRuns.$inferSelect;
 export type StoryImporter = typeof storyImporters.$inferSelect;
 export type TrackingJob = typeof trackingJobs.$inferSelect;
@@ -1994,6 +2053,9 @@ export type InsertPhoto = z.infer<typeof insertPhotoSchema> & OwnershipInput;
 
 export type Task = typeof tasks.$inferSelect;
 export type InsertTask = z.infer<typeof insertTaskSchema> & UserOwnedInput;
+
+export type ImageTaskGroup = typeof imageTaskGroups.$inferSelect;
+export type InsertImageTaskGroup = z.infer<typeof insertImageTaskGroupSchema> & UserOwnedInput;
 
 export type ImageTask = typeof imageTasks.$inferSelect;
 export type InsertImageTask = z.infer<typeof insertImageTaskSchema> & UserOwnedInput;

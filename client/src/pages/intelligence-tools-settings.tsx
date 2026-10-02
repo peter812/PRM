@@ -197,9 +197,7 @@ export default function IntelligenceToolsSettingsPage() {
             <ShieldCheck className="h-5 w-5" /> AI tool execution
           </CardTitle>
           <CardDescription>
-            Controls whether the AI may modify your PRM data. Read-only tools (searches, lookups)
-            are always available when AI tools are enabled below — these options govern write tools
-            (create / update) only.
+            Controls whether the AI may modify PRM data. Governs write tools only.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -211,45 +209,43 @@ export default function IntelligenceToolsSettingsPage() {
           >
             <label
               htmlFor="exec-off"
-              className="flex cursor-pointer items-start gap-3 rounded-md border p-4 hover-elevate"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-3 hover-elevate"
             >
               <RadioGroupItem value="off" id="exec-off" data-testid="radio-execution-off" />
               <div className="space-y-0.5">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <ShieldOff className="h-4 w-4" /> No AI writes
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  AI models have no access to tools that write or edit aspects of PRM. The model
-                  may only read.
+                <p className="text-xs text-muted-foreground">
+                  Read-only mode. AI models cannot write or edit data.
                 </p>
               </div>
             </label>
             <label
               htmlFor="exec-auth"
-              className="flex cursor-pointer items-start gap-3 rounded-md border p-4 hover-elevate"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-3 hover-elevate"
             >
               <RadioGroupItem value="auth" id="exec-auth" data-testid="radio-execution-auth" />
               <div className="space-y-0.5">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <ShieldAlert className="h-4 w-4" /> User auth requests
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  The AI must request every change. A popup appears in the lower-left corner (top
-                  center on mobile) and you can accept, examine, or reject the request.
+                <p className="text-xs text-muted-foreground">
+                  Prompts for confirmation before executing any create or edit tool.
                 </p>
               </div>
             </label>
             <label
               htmlFor="exec-open"
-              className="flex cursor-pointer items-start gap-3 rounded-md border p-4 hover-elevate"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-3 hover-elevate"
             >
               <RadioGroupItem value="open" id="exec-open" data-testid="radio-execution-open" />
               <div className="space-y-0.5">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <ShieldCheck className="h-4 w-4" /> Unrestricted
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  All create and edit tools are accessible to the LLM with no auth required.
+                <p className="text-xs text-muted-foreground">
+                  All enabled write tools execute automatically without prompting.
                 </p>
               </div>
             </label>
@@ -263,19 +259,15 @@ export default function IntelligenceToolsSettingsPage() {
             <Wrench className="h-5 w-5" /> AI Tools
           </CardTitle>
           <CardDescription>
-            Tools (also called "skills") let the AI chat read and (when allowed above) modify data
-            in your PRM during a conversation. The model decides when to call a tool based on what
-            you ask. Disabled tools are hidden from the model entirely; turning the master switch
-            off forces the chat to rely only on its prompt and the message history.
+            Allow the AI chat assistant to call tools to read and update data.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-between rounded-md border p-4">
             <div className="space-y-0.5">
               <Label htmlFor="tools-master" className="text-base">Enable AI tool calls</Label>
-              <p className="text-sm text-muted-foreground">
-                Master switch. When off, the chat will not be offered any tools regardless of the
-                per-tool settings below.
+              <p className="text-xs text-muted-foreground">
+                Master switch. When off, no tools are exposed to the AI model.
               </p>
             </div>
             <Switch

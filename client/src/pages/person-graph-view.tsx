@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "@/lib/force-graph-3d";
 import { Button } from "@/components/ui/button";
-import { Settings, X, Users } from "lucide-react";
+import { Settings, X, Users, ChevronDown, ChevronRight } from "lucide-react";
 import { useLocation } from "wouter";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -130,6 +131,7 @@ export default function PersonGraphView({
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [showCrowds, setShowCrowds] = useState(true);
+  const [crowdsSectionOpen, setCrowdsSectionOpen] = useState(false);
   const [crowdColorScheme, setCrowdColorScheme] = useState<"pastel" | "emerald" | "amber" | "sky">("pastel");
   const [crowdSphereOpacity, setCrowdSphereOpacity] = useState(0.15);
   const crowdSphereMeshesMapRef = useRef<Map<string, THREE.Mesh>>(new Map());
@@ -934,120 +936,139 @@ export default function PersonGraphView({
                 />
               </div>
 
-              <div className="pt-4 border-t space-y-3">
-                <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5" />
-                  Crowds Settings
-                </h4>
-                <div className="space-y-2">
-                  <Label htmlFor="person-crowd-group-select" className="text-xs">Active Group</Label>
-                  <Select
-                    value={highlightedGroupId || "none"}
-                    onValueChange={(val) => setHighlightedGroupId(val === "none" ? null : val)}
+              <Collapsible
+                open={crowdsSectionOpen}
+                onOpenChange={setCrowdsSectionOpen}
+                className="pt-4 border-t"
+              >
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between py-1 text-left cursor-pointer group"
+                    data-testid="button-toggle-crowds-section"
                   >
-                    <SelectTrigger id="person-crowd-group-select" className="h-8" data-testid="select-crowd-group">
-                      <SelectValue placeholder="Select group to visualize crowd..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No group (Crowds inactive)</SelectItem>
-                      <SelectItem value="all" className="font-semibold text-primary">All Groups (Show all crowds)</SelectItem>
-                      {groups.map((g) => (
-                        <SelectItem key={g.id} value={g.id}>
-                          {g.name} {g.crowdMembers && g.crowdMembers.length > 0 ? `(${g.crowdMembers.length} in crowd)` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                    <h4 className="font-semibold text-xs text-primary uppercase tracking-wider flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5" />
+                      Crowds Settings
+                    </h4>
+                    {crowdsSectionOpen ? (
+                      <ChevronDown className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-foreground transition-colors" />
+                    )}
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-3 pt-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="person-crowd-group-select" className="text-xs">Active Group</Label>
+                    <Select
+                      value={highlightedGroupId || "none"}
+                      onValueChange={(val) => setHighlightedGroupId(val === "none" ? null : val)}
+                    >
+                      <SelectTrigger id="person-crowd-group-select" className="h-8" data-testid="select-crowd-group">
+                        <SelectValue placeholder="Select group to visualize crowd..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No group (Crowds inactive)</SelectItem>
+                        <SelectItem value="all" className="font-semibold text-primary">All Groups (Show all crowds)</SelectItem>
+                        {groups.map((g) => (
+                          <SelectItem key={g.id} value={g.id}>
+                            {g.name} {g.crowdMembers && g.crowdMembers.length > 0 ? `(${g.crowdMembers.length} in crowd)` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
 
-                {highlightedGroupId === "all" ? (() => {
-                  const groupsWithCrowds = groups.filter((g) => g.crowdMembers && g.crowdMembers.length > 0);
-                  const totalCrowdMembers = groupsWithCrowds.reduce((sum, g) => sum + (g.crowdMembers?.length || 0), 0);
-                  return (
-                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
-                      <span>Active crowds: <strong>{groupsWithCrowds.length} groups</strong></span>
-                      <span>Total members: <strong>{totalCrowdMembers}</strong></span>
-                    </div>
-                  );
-                })() : highlightedGroupId ? (() => {
-                  const selectedGroup = groups.find((g) => g.id === highlightedGroupId);
-                  if (!selectedGroup) return null;
-                  if (!selectedGroup.centerAccountId) {
+                  {highlightedGroupId === "all" ? (() => {
+                    const groupsWithCrowds = groups.filter((g) => g.crowdMembers && g.crowdMembers.length > 0);
+                    const totalCrowdMembers = groupsWithCrowds.reduce((sum, g) => sum + (g.crowdMembers?.length || 0), 0);
                     return (
-                      <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 p-2 rounded">
-                        This group has no Center Account configured.
+                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                        <span>Active crowds: <strong>{groupsWithCrowds.length} groups</strong></span>
+                        <span>Total members: <strong>{totalCrowdMembers}</strong></span>
                       </div>
                     );
-                  }
-                  if (!selectedGroup.crowdMembers || selectedGroup.crowdMembers.length === 0) {
+                  })() : highlightedGroupId ? (() => {
+                    const selectedGroup = groups.find((g) => g.id === highlightedGroupId);
+                    if (!selectedGroup) return null;
+                    if (!selectedGroup.centerAccountId) {
+                      return (
+                        <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 p-2 rounded">
+                          This group has no Center Account configured.
+                        </div>
+                      );
+                    }
+                    if (!selectedGroup.crowdMembers || selectedGroup.crowdMembers.length === 0) {
+                      return (
+                        <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex flex-col gap-1">
+                          <span>No crowd members found for this group.</span>
+                          <a
+                            href={`/group/${selectedGroup.id}`}
+                            className="text-primary hover:underline font-medium inline-block"
+                          >
+                            Configure or calculate on group page &rarr;
+                          </a>
+                        </div>
+                      );
+                    }
                     return (
-                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex flex-col gap-1">
-                        <span>No crowd members found for this group.</span>
-                        <a
-                          href={`/group/${selectedGroup.id}`}
-                          className="text-primary hover:underline font-medium inline-block"
-                        >
-                          Configure or calculate on group page &rarr;
-                        </a>
+                      <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
+                        <span>Crowd members: <strong>{selectedGroup.crowdMembers.length}</strong></span>
+                        {selectedGroup.crowdLastCalculatedAt && (
+                          <span>{new Date(selectedGroup.crowdLastCalculatedAt).toLocaleDateString()}</span>
+                        )}
                       </div>
                     );
-                  }
-                  return (
-                    <div className="text-xs text-muted-foreground bg-muted p-2 rounded flex justify-between items-center">
-                      <span>Crowd members: <strong>{selectedGroup.crowdMembers.length}</strong></span>
-                      {selectedGroup.crowdLastCalculatedAt && (
-                        <span>{new Date(selectedGroup.crowdLastCalculatedAt).toLocaleDateString()}</span>
-                      )}
-                    </div>
-                  );
-                })() : (
-                  <p className="text-xs text-muted-foreground">
-                    Select a group or &quot;All Groups&quot; to display crowd members and 3D bounding clouds.
-                  </p>
-                )}
+                  })() : (
+                    <p className="text-xs text-muted-foreground">
+                      Select a group or &quot;All Groups&quot; to display crowd members and 3D bounding clouds.
+                    </p>
+                  )}
 
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
-                  <Switch
-                    id="show-crowds"
-                    checked={showCrowds}
-                    onCheckedChange={setShowCrowds}
-                    data-testid="switch-show-crowds"
-                  />
-                </div>
-                {showCrowds && (
-                  <>
-                    <div className="space-y-2">
-                      <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
-                      <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
-                        <SelectTrigger id="crowd-color-scheme" className="h-8">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="pastel">Pastel Green</SelectItem>
-                          <SelectItem value="emerald">Emerald</SelectItem>
-                          <SelectItem value="amber">Amber</SelectItem>
-                          <SelectItem value="sky">Sky Blue</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-xs">
-                        <Label>Crowd Sphere Opacity</Label>
-                        <span className="font-mono">{Math.round(crowdSphereOpacity * 100)}%</span>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="show-crowds" className="text-sm">Show Crowds</Label>
+                    <Switch
+                      id="show-crowds"
+                      checked={showCrowds}
+                      onCheckedChange={setShowCrowds}
+                      data-testid="switch-show-crowds"
+                    />
+                  </div>
+                  {showCrowds && (
+                    <>
+                      <div className="space-y-2">
+                        <Label htmlFor="crowd-color-scheme" className="text-xs">Crowd Color</Label>
+                        <Select value={crowdColorScheme} onValueChange={(val: any) => setCrowdColorScheme(val)}>
+                          <SelectTrigger id="crowd-color-scheme" className="h-8">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="pastel">Pastel Green</SelectItem>
+                            <SelectItem value="emerald">Emerald</SelectItem>
+                            <SelectItem value="amber">Amber</SelectItem>
+                            <SelectItem value="sky">Sky Blue</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
-                      <Slider
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={[Math.round(crowdSphereOpacity * 100)]}
-                        onValueChange={(val) => setCrowdSphereOpacity(val[0] / 100)}
-                        data-testid="slider-crowd-sphere-opacity"
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-xs">
+                          <Label>Crowd Sphere Opacity</Label>
+                          <span className="font-mono">{Math.round(crowdSphereOpacity * 100)}%</span>
+                        </div>
+                        <Slider
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={[Math.round(crowdSphereOpacity * 100)]}
+                          onValueChange={(val) => setCrowdSphereOpacity(val[0] / 100)}
+                          data-testid="slider-crowd-sphere-opacity"
+                        />
+                      </div>
+                    </>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
 
               <div className="pt-4 border-t space-y-2">
                 <Button

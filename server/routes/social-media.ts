@@ -33,7 +33,8 @@ import {
 import multer from "multer";
 import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats } from "../prm-s3";
 import { hashPassword, requireAuth, requireAdmin } from "../auth";
-import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
+import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, resolveScrapedAccounts } from "../task-worker";
+import { extractHandles } from "@shared/connection-strength";
 import { queueOsintScansForMeAccount } from "../osint-scan-queue";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
@@ -45,7 +46,7 @@ import { sendApiError, ErrorCodes } from "../middleware/error-handler";
 import { resolvePhotoSource } from "../photo-source";
 import { recordAccountProfileChanges } from "../social-account-history";
 import { ingestManualProfileImage } from "../profile-image";
-import { profilePhotos, recognizeProfilePhotos } from "../recognition";
+import { profilePhotos, recognizeProfilePhotos, noFaceImpact, setAccountNoFace, RecognitionRequestError } from "../recognition";
 import { updateTracking, type TrackingPatch } from "../tracking";
 import { sseManager } from "../middleware/sse";
 import {
@@ -545,7 +546,15 @@ export function registerRoutes(app: Express) {
         if (!account) {
           return res.status(404).json({ error: "Social account not found" });
         }
-        res.json(account);
+        // Every @handle in the bio becomes a social account (created on first sight)
+        // so the Account tab can link to it.
+        const handles = [...extractHandles(account.currentProfile?.bio).keys()].filter((h) => h !== account.username.toLowerCase());
+        const resolved = await resolveScrapedAccounts(handles.map((username) => ({ username })), account.typeId, {
+          createdByUserId: account.createdByUserId ?? null,
+          creationType: "bio mention",
+        });
+        const bioMentions = handles.flatMap((username) => (resolved.has(username) ? [{ id: resolved.get(username)!, username }] : []));
+        res.json({ ...account, bioMentions });
       } catch (error) {
         console.error("Error fetching social account:", error);
         res.status(500).json({ error: "Failed to fetch social account" });
@@ -830,6 +839,30 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error fetching profile photo info:", error);
         res.status(500).json({ error: "Failed to fetch profile photo info" });
+      }
+    });
+
+    // "This account doesn't have a face" (organisation accounts): see setAccountNoFace.
+    app.get("/api/social-accounts/:id/no-face-impact", async (req, res) => {
+      try {
+        if (!(await storage.getSocialAccountById(req.params.id))) return res.status(404).json({ error: "Social account not found" });
+        res.json(await noFaceImpact(req.params.id));
+      } catch (error) {
+        console.error("Error fetching no-face impact:", error);
+        res.status(500).json({ error: "Failed to fetch no-face impact" });
+      }
+    });
+
+    app.patch("/api/social-accounts/:id/no-face", async (req, res) => {
+      try {
+        if (typeof req.body?.noFace !== "boolean") return res.status(400).json({ error: "noFace must be a boolean" });
+        if (!(await storage.getSocialAccountById(req.params.id))) return res.status(404).json({ error: "Social account not found" });
+        await setAccountNoFace(req.params.id, req.body.noFace, req.body.clearLinks === true);
+        res.json({ ok: true });
+      } catch (error) {
+        if (error instanceof RecognitionRequestError) return res.status(error.status).json({ error: error.message });
+        console.error("Error setting no-face:", error);
+        res.status(500).json({ error: "Failed to update account" });
       }
     });
 
@@ -1799,14 +1832,136 @@ export function registerRoutes(app: Express) {
         const type = typeof req.query.type === "string" ? req.query.type : undefined;
         const status = typeof req.query.status === "string" ? req.query.status : undefined;
         const parentTaskId = typeof req.query.parentTaskId === "string" ? req.query.parentTaskId : undefined;
+        const imageTaskGroupId = typeof req.query.imageTaskGroupId === "string" ? req.query.imageTaskGroupId : undefined;
         const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
-        const limit = 25;
+        const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "25"), 10)));
         const offset = (page - 1) * limit;
-        const result = await storage.listImageTasks({ type, status, parentTaskId, limit, offset });
+        const result = await storage.listImageTasks({ type, status, parentTaskId, imageTaskGroupId, limit, offset });
         res.json({ items: result.items, total: result.total, page, limit, totalPages: Math.ceil(result.total / limit) });
       } catch (error) {
         console.error("Error listing image tasks:", error);
         res.status(500).json({ error: "Failed to list image tasks" });
+      }
+    });
+
+    // ── Image task group endpoints ───────────────────────────────────────────
+
+    // GET /api/image-task-groups — list overarching image task groups
+    app.get("/api/image-task-groups", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const kind = typeof req.query.kind === "string" && req.query.kind !== "all" ? req.query.kind : undefined;
+        const status = typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined;
+        const search = typeof req.query.search === "string" ? req.query.search : undefined;
+        const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
+        const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || "25"), 10)));
+        const offset = (page - 1) * limit;
+        const result = await storage.listImageTaskGroups({ kind, status, search, limit, offset });
+        res.json({ items: result.items, total: result.total, page, limit, totalPages: Math.ceil(result.total / limit) });
+      } catch (error) {
+        console.error("Error listing image task groups:", error);
+        res.status(500).json({ error: "Failed to list image task groups" });
+      }
+    });
+
+    // GET /api/image-task-groups/:id — get a single image task group
+    app.get("/api/image-task-groups/:id", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const group = await storage.getImageTaskGroupById(req.params.id);
+        if (!group) return res.status(404).json({ error: "Image task group not found" });
+        res.json(group);
+      } catch (error) {
+        console.error("Error getting image task group:", error);
+        res.status(500).json({ error: "Failed to get image task group" });
+      }
+    });
+
+    // GET /api/image-task-groups/:id/tasks — get sub-tasks for a group
+    app.get("/api/image-task-groups/:id/tasks", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const type = typeof req.query.type === "string" && req.query.type !== "all" ? req.query.type : undefined;
+        const status = typeof req.query.status === "string" && req.query.status !== "all" ? req.query.status : undefined;
+        const page = Math.max(1, parseInt(String(req.query.page || "1"), 10));
+        const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit || "50"), 10)));
+        const offset = (page - 1) * limit;
+        const result = await storage.listImageTasks({
+          imageTaskGroupId: req.params.id,
+          type,
+          status,
+          limit,
+          offset,
+        });
+        res.json({ items: result.items, total: result.total, page, limit, totalPages: Math.ceil(result.total / limit) });
+      } catch (error) {
+        console.error("Error listing sub-tasks for group:", error);
+        res.status(500).json({ error: "Failed to list sub-tasks for group" });
+      }
+    });
+
+    // DELETE /api/image-task-groups/:id — cancel or delete an image task group
+    app.delete("/api/image-task-groups/:id", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const permanent = req.query.permanent === "true";
+        if (permanent) {
+          await storage.deleteImageTaskGroup(req.params.id);
+          res.json({ success: true, deleted: true });
+        } else {
+          const cancelledCount = await storage.cancelImageTaskGroup(req.params.id);
+          res.json({ success: true, cancelledTasks: cancelledCount });
+        }
+      } catch (error) {
+        console.error("Error cancelling/deleting image task group:", error);
+        res.status(500).json({ error: "Failed to cancel/delete image task group" });
+      }
+    });
+
+    // POST /api/image-task-groups/bulk-cancel — bulk cancel image task groups
+    app.post("/api/image-task-groups/bulk-cancel", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+        let totalCancelled = 0;
+        for (const id of ids) {
+          if (typeof id === "string") {
+            totalCancelled += await storage.cancelImageTaskGroup(id);
+          }
+        }
+        res.json({ success: true, cancelledGroups: ids.length, cancelledTasks: totalCancelled });
+      } catch (error) {
+        console.error("Error bulk cancelling image task groups:", error);
+        res.status(500).json({ error: "Failed to bulk cancel image task groups" });
+      }
+    });
+
+    // POST /api/image-task-groups/bulk-delete — bulk delete image task groups
+    app.post("/api/image-task-groups/bulk-delete", async (req, res) => {
+      if (!req.isAuthenticated() || !req.user) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      try {
+        const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+        for (const id of ids) {
+          if (typeof id === "string") {
+            await storage.deleteImageTaskGroup(id);
+          }
+        }
+        res.json({ success: true, deletedGroups: ids.length });
+      } catch (error) {
+        console.error("Error bulk deleting image task groups:", error);
+        res.status(500).json({ error: "Failed to bulk delete image task groups" });
       }
     });
   
@@ -1845,18 +2000,30 @@ export function registerRoutes(app: Express) {
         return res.status(401).json({ error: "Not authenticated" });
       }
       try {
-        const { socialAccountId, imageUrl, parentTaskId } = req.body;
+        const { socialAccountId, imageUrl, parentTaskId, imageTaskGroupId } = req.body;
         if (!socialAccountId || typeof socialAccountId !== "string") {
           return res.status(400).json({ error: "socialAccountId is required" });
         }
         if (!imageUrl || typeof imageUrl !== "string") {
           return res.status(400).json({ error: "imageUrl is required" });
         }
+        let targetGroupId = imageTaskGroupId;
+        if (!targetGroupId) {
+          const group = await storage.createImageTaskGroup({
+            userId: req.user.id,
+            title: "Instagram Image Download",
+            kind: "manual",
+            parentTaskId: parentTaskId || null,
+            socialAccountId,
+          });
+          targetGroupId = group.id;
+        }
         const task = await storage.createImageTask({
           userId: req.user.id,
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: parentTaskId || null,
+          imageTaskGroupId: targetGroupId,
           payload: JSON.stringify({
             socialAccountId,
             imageUrl,

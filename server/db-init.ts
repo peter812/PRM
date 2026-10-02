@@ -655,6 +655,7 @@ async function validateAndSyncSchema(): Promise<void> {
       },
       image_tasks: {
         logs: "TEXT", // PRM-Compute worker.py writes per-task log text here
+        image_task_group_id: "VARCHAR REFERENCES image_task_groups(id) ON DELETE CASCADE",
       },
       notes: {
         image_uuid: "VARCHAR",
@@ -696,6 +697,7 @@ async function validateAndSyncSchema(): Promise<void> {
         is_private: "BOOLEAN",
         is_hq_image: "BOOLEAN NOT NULL DEFAULT FALSE",
         personface_uuid: "VARCHAR",
+        no_face: "BOOLEAN NOT NULL DEFAULT FALSE",
       },
       ai_chats: {
         vector_id: "TEXT",
@@ -823,18 +825,45 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS insights_collected_at_idx ON insights (collected_at);
       CREATE INDEX IF NOT EXISTS insights_people_gin ON insights USING gin (applicable_people_ids);
       CREATE INDEX IF NOT EXISTS insights_social_accounts_gin ON insights USING gin (applicable_social_account_ids);
-      CREATE TABLE IF NOT EXISTS osint_scan_queue (
+      CREATE TABLE IF NOT EXISTS osint_scans (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
         tool TEXT NOT NULL,
+        target TEXT NOT NULL,
+        target_type TEXT NOT NULL DEFAULT 'username',
+        options JSONB NOT NULL DEFAULT '{}'::jsonb,
+        social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE CASCADE,
         status TEXT NOT NULL DEFAULT 'pending',
         requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
+        compute_job_id TEXT,
         error TEXT,
+        result JSONB,
         created_at TIMESTAMP NOT NULL DEFAULT now(),
+        started_at TIMESTAMP,
         completed_at TIMESTAMP
       );
-      CREATE INDEX IF NOT EXISTS osint_scan_queue_status_created_idx ON osint_scan_queue (status, created_at);
+      CREATE INDEX IF NOT EXISTS osint_scans_status_created_idx ON osint_scans (status, created_at);
+      CREATE INDEX IF NOT EXISTS osint_scans_social_tool_status_idx ON osint_scans (social_account_id, tool, status, completed_at);
+      CREATE INDEX IF NOT EXISTS osint_scans_person_tool_status_idx ON osint_scans (person_id, tool, status, completed_at);
+      ALTER TABLE osint_scans ADD COLUMN IF NOT EXISTS person_id VARCHAR REFERENCES people(id) ON DELETE CASCADE;
+      -- Live rows are unique per owner (account or person) + tool + target: a person has several targets.
+      DROP INDEX IF EXISTS osint_scans_live_uniq;
+      CREATE UNIQUE INDEX IF NOT EXISTS osint_scans_live_owner_uniq ON osint_scans ((coalesce(social_account_id, person_id)), tool, target)
+        WHERE status IN ('pending','running');
+      CREATE UNIQUE INDEX IF NOT EXISTS osint_scans_live_demo_uniq ON osint_scans (tool, target, requested_by_user_id)
+        WHERE social_account_id IS NULL AND person_id IS NULL AND status IN ('pending','running');
+      -- osint_scan_queue (auto scans only) was superseded by osint_scans: carry its rows over once.
+      DO $$ BEGIN
+        IF to_regclass('osint_scan_queue') IS NOT NULL THEN
+          INSERT INTO osint_scans (id, tool, target, social_account_id, status, requested_by_user_id, attempts, error, created_at, completed_at)
+          SELECT q.id, q.tool, sa.username, q.social_account_id,
+                 CASE WHEN q.status = 'running' THEN 'pending' ELSE q.status END,
+                 q.requested_by_user_id, q.attempts, q.error, q.created_at, q.completed_at
+          FROM osint_scan_queue q JOIN social_accounts sa ON sa.id = q.social_account_id
+          ON CONFLICT DO NOTHING;
+          DROP TABLE osint_scan_queue;
+        END IF;
+      END $$;
       CREATE TABLE IF NOT EXISTS story_scrape_runs (
         id VARCHAR PRIMARY KEY,
         status TEXT NOT NULL,
@@ -862,8 +891,6 @@ async function validateAndSyncSchema(): Promise<void> {
         last_username TEXT,
         created_at TIMESTAMP NOT NULL DEFAULT now()
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS osint_scan_queue_live_uniq ON osint_scan_queue (social_account_id, tool)
-        WHERE status IN ('pending','running');
       CREATE TABLE IF NOT EXISTS tracking_jobs (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
@@ -912,6 +939,40 @@ async function validateAndSyncSchema(): Promise<void> {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS social_account_issues_open_uniq ON social_account_issues (social_account_id, kind) WHERE status = 'open';
       CREATE INDEX IF NOT EXISTS social_account_issues_account_idx ON social_account_issues (social_account_id);
+      CREATE TABLE IF NOT EXISTS image_task_groups (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'general',
+        status TEXT NOT NULL DEFAULT 'pending',
+        parent_task_id VARCHAR REFERENCES tasks(id) ON DELETE SET NULL,
+        social_run_id VARCHAR REFERENCES story_scrape_runs(id) ON DELETE SET NULL,
+        social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS image_task_groups_user_id_idx ON image_task_groups (user_id);
+      CREATE INDEX IF NOT EXISTS image_task_groups_status_idx ON image_task_groups (status);
+      CREATE INDEX IF NOT EXISTS image_task_groups_parent_task_id_idx ON image_task_groups (parent_task_id);
+      CREATE INDEX IF NOT EXISTS image_task_groups_social_run_id_idx ON image_task_groups (social_run_id);
+      CREATE INDEX IF NOT EXISTS image_task_groups_created_at_idx ON image_task_groups (created_at);
+      CREATE INDEX IF NOT EXISTS image_tasks_group_id_idx ON image_tasks (image_task_group_id);
+      -- Retroactively sync any completed image task groups
+      UPDATE image_task_groups g
+      SET status = 'completed', completed_at = COALESCE(g.completed_at, now())
+      WHERE g.status IN ('pending', 'in_progress')
+        AND NOT EXISTS (
+          SELECT 1 FROM image_tasks t
+          WHERE t.image_task_group_id = g.id
+            AND t.status IN ('pending', 'in_progress')
+        )
+        AND EXISTS (
+          SELECT 1 FROM image_tasks t
+          WHERE t.image_task_group_id = g.id
+            AND t.status = 'completed'
+        );
       -- Accounts already broken before the table existed: their latest job says not_found.
       -- No-op once an issue of that kind exists for the account, whatever its status.
       INSERT INTO social_account_issues (social_account_id, kind, job_id, job_kind, first_seen_at, last_seen_at)
@@ -1402,6 +1463,7 @@ async function validateAndSyncSchema(): Promise<void> {
     await addColumnIfNotExists("people", "address", "TEXT");
     await addColumnIfNotExists("people", "additional_emails", "JSONB NOT NULL DEFAULT '[]'::jsonb");
     await addColumnIfNotExists("people", "additional_phones", "JSONB NOT NULL DEFAULT '[]'::jsonb");
+    await addColumnIfNotExists("people", "osint_runs", `JSONB NOT NULL DEFAULT '{"emails":[],"phones":[],"usernames":[]}'::jsonb`);
     await addColumnIfNotExists("people", "denied_recommendations", "JSONB NOT NULL DEFAULT '[]'::jsonb");
 
     // Ensure true_person_search table exists (TruePeopleSearch scraped records)

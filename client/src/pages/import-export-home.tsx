@@ -1,6 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Link } from "wouter";
-import { Users, ChevronRight, ImageIcon, Archive, Chrome, MessageSquare } from "lucide-react";
+import { Users, ChevronRight, Archive, Chrome, MessageSquare } from "lucide-react";
 
 const importExportSections = [
   {
@@ -26,12 +26,6 @@ const importExportSections = [
     description: "Searchable history of browser extension scraped payloads, CSV downloads, and ingested social accounts.",
     icon: Chrome,
     url: "/settings/import-export/extension-imports",
-  },
-  {
-    title: "Image Pass In",
-    description: "Automatically fill in missing profile images by pulling them from linked social accounts. People without a profile picture will inherit an image from their first social account that has one.",
-    icon: ImageIcon,
-    url: "/settings/import-export/image-pass-in",
   },
 ];
 

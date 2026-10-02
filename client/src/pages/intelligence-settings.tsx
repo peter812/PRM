@@ -150,7 +150,7 @@ export default function IntelligenceSettingsPage() {
           Intelligence
         </h1>
         <p className="text-muted-foreground">
-          Connect to a local <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">Ollama</a> instance to power AI features such as image descriptions and AI chat.
+          Local Ollama instance configuration for chat and multimodal intelligence.
         </p>
       </div>
 
@@ -159,7 +159,7 @@ export default function IntelligenceSettingsPage() {
           <CardHeader>
             <CardTitle className="text-lg">Enable AI</CardTitle>
             <CardDescription>
-              When enabled, AI-powered features such as image descriptions and AI chat are available.
+              Global toggle for conversational and visual AI features.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -300,8 +300,8 @@ export default function IntelligenceSettingsPage() {
                 </CardTitle>
                 <CardDescription className="text-xs">
                   {urlConfigured
-                    ? "Choose which models power each AI feature. Models must be pulled on your Ollama instance."
-                    : "Configure and save an API URL above to load available models."}
+                    ? "Assign active models for chat and vision features."
+                    : "Configure API URL to load models."}
                 </CardDescription>
               </div>
               <Button

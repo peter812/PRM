@@ -141,7 +141,14 @@ async function processDownloadImgInstagram(imageTaskId: string, payload: {
     return JSON.stringify({ skipped: true, reason: "cancelled", socialAccountId });
   }
 
-  const outcome = await applyProfileImageVerdict(socialAccountId, current, fetched, verdict);
+  const outcome = await applyProfileImageVerdict(
+    socialAccountId,
+    current,
+    fetched,
+    verdict,
+    undefined,
+    freshTask.imageTaskGroupId || undefined,
+  );
 
   // Re-check cancellation again after upload before persisting changes
   const postUploadTask = await storage.getImageTaskById(imageTaskId);
@@ -2101,6 +2108,15 @@ async function processImportInstagram(taskId: string, payload: {
   const processedAccountIds: string[] = [];
   const mutualFollowIds: string[] = [];
 
+  const imageTaskGroup = await storage.createImageTaskGroup({
+    userId: actingUserId(),
+    title: `Instagram Import - @${targetAccountUsername} (${importType})`,
+    kind: "social_import",
+    parentTaskId: taskId,
+    socialAccountId: accountId || null,
+  });
+  const imageTaskGroupId = imageTaskGroup.id;
+
   for (const row of rows) {
     if (await isTaskCancelled(taskId)) {
       return JSON.stringify({ cancelled: true, imported: importedCount, updated: updatedCount });
@@ -2127,6 +2143,7 @@ async function processImportInstagram(taskId: string, payload: {
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
+          imageTaskGroupId,
           payload: JSON.stringify({
             socialAccountId: existingAccount.id,
             imageUrl: profilePicUrl,
@@ -2151,6 +2168,7 @@ async function processImportInstagram(taskId: string, payload: {
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
+          imageTaskGroupId,
           payload: JSON.stringify({
             socialAccountId: newAccount.id,
             imageUrl: profilePicUrl,
@@ -2620,16 +2638,10 @@ async function queueSocialProfileImage(
   imageUrl: string | null | undefined,
   userId: number,
   parentTaskId?: string,
+  imageTaskGroupId?: string,
 ) {
   if (!imageUrl || !imageUrl.trim()) return;
 
-  // The signed Instagram url is a lead for the image worker to follow, never a
-  // display source, so it goes straight onto the account.
-  //
-  // This used to fetch-or-create a profile version first, purely to put its id in the
-  // payload. The worker resolves that itself when the field is absent, so those one or
-  // two queries per image bought nothing — and on a graph import with includeGraphImages
-  // they were tens of thousands of round trips.
   await db
     .update(socialAccounts)
     .set({ externalImageUrl: imageUrl })
@@ -2640,6 +2652,7 @@ async function queueSocialProfileImage(
     type: "download_img_instagram",
     status: "pending",
     parentTaskId: parentTaskId || null,
+    imageTaskGroupId: imageTaskGroupId || undefined,
     payload: JSON.stringify({ socialAccountId, imageUrl }),
   });
 }
@@ -2865,9 +2878,17 @@ export async function processImportSocial(
   //    detection.
   if (includeGraphImages) {
     await storage.updateTaskProgress(taskId, 85, "Queueing profile images...");
+    const group = await storage.createImageTaskGroup({
+      userId,
+      title: `Social Import - @${mainUsername}`,
+      kind: "social_import",
+      parentTaskId: taskId,
+      socialAccountId: mainAccount.id,
+    });
+    const imageTaskGroupId = group.id;
     for (const row of graphRows) {
       const id = resolved.get(handleOf(row));
-      if (id) await queueSocialProfileImage(id, row.profile_pic_url || row.profilePicUrl, userId, taskId);
+      if (id) await queueSocialProfileImage(id, row.profile_pic_url || row.profilePicUrl, userId, taskId, imageTaskGroupId);
     }
   }
 

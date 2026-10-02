@@ -194,10 +194,7 @@ export default function SocialGraphSettingsPage() {
       <div className="space-y-2 max-w-3xl">
         <h1 className="text-2xl font-semibold" data-testid="text-social-graph-settings-title">Social Graph Settings</h1>
         <p className="text-muted-foreground">
-          Configure the default behaviour of the social account graph. These options apply
-          whenever the graph is opened normally. A link that deep-links to something specific
-          &mdash; <code>?selected=...</code> or <code>?highlightGroup=...</code> &mdash; uses the
-          built-in defaults instead, so the link lands on what it points at.
+          Default display and interaction settings for the social account graph.
         </p>
       </div>
 
@@ -375,11 +372,8 @@ export default function SocialGraphSettingsPage() {
                 data-testid="switch-include-me-accounts"
               />
             </div>
-            <p className="text-sm text-muted-foreground">
-              Your own accounts follow nearly everyone, so they land in every crowd while the
-              layout parks them in the middle of the graph &mdash; which drags each crowd&apos;s
-              centre inward and inflates its bounding sphere. Turn this off to leave them out of
-              crowd membership; they stay in the graph either way.
+            <p className="text-xs text-muted-foreground">
+              Excludes personal accounts from crowd bounding spheres to prevent sphere distortion.
             </p>
           </div>
 
@@ -527,8 +521,7 @@ export default function SocialGraphSettingsPage() {
         <CardHeader>
           <CardTitle>Performance</CardTitle>
           <CardDescription>
-            Rendering quality for both 3D graph views. Lower settings trade image quality for
-            frame rate on dense graphs.
+            Rendering performance settings for 3D graphs.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -544,10 +537,8 @@ export default function SocialGraphSettingsPage() {
                 <SelectItem value="off">Always off</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-sm text-muted-foreground">
-              Draws the Social Account graph in two batched passes and runs its layout on a
-              background thread, which keeps very large scenes smooth. In exchange nothing in the
-              scene is clickable: no hover labels, selection, context menu or node dragging.
+            <p className="text-xs text-muted-foreground">
+              Batches rendering and disables node interaction for high FPS on massive graphs.
             </p>
           </div>
 
@@ -587,9 +578,8 @@ export default function SocialGraphSettingsPage() {
                 <SelectItem value="off">Always off</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-sm text-muted-foreground">
-              Every one-way arrow is a separate cone mesh that gets re-aimed each frame, so this
-              is the most expensive option on a dense graph.
+            <p className="text-xs text-muted-foreground">
+              Renders directional cones on links. Can impact FPS on dense networks.
             </p>
           </div>
 

@@ -34,6 +34,7 @@ export interface StoryRun {
   counts: Partial<Record<"accountsInTray" | "accountsOpened" | "storiesSeen" | "imagesSaved" | "unreached" | "jobs" | "completed" | "failed" | "skipped", number>>;
   items: RunItem[];
   error: string | null;
+  imageTaskGroup?: { id: string; status: string } | null;
 }
 
 export type Settings = Record<string, string | null>;
