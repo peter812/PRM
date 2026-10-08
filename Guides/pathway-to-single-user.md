@@ -92,11 +92,13 @@ Run in a transaction:
 5. `DELETE FROM users WHERE id <> MAIN;` — cascades notes, daily_notes,
    ai_chats, tasks, image_tasks, image_task_groups, api_keys, sso_config,
    extension sessions of other users.
-6. Drop indexes, then `ALTER TABLE … DROP COLUMN` for everything in §1.1;
-   `DROP TABLE user_settings;`
+**Done 2026-10-02** via `migrations/0006_single_user_data.sql`: kept user 1
+`zero`; deleted user 6 `peter` (cascaded its stub "Me" person and one
+`sex_guess_queue` row); set `app_settings.me_person_id`. No other user owned
+anything else.
 
-`validateAndSyncSchema` only adds columns, so the drop must be this explicit
-script; update `schemaDefinitions` in the same change or it will re-add them.
+Column drops moved to Phase 3: dropping before the code stops referencing
+them breaks the app.
 
 ### Phase 3 — Server cleanup (~4–6 hrs)
 
@@ -108,6 +110,10 @@ script; update `schemaDefinitions` in the same change or it will re-add them.
 4. Delete `server/access.ts`, admin routes, role helpers, `adminView`.
 5. `getMePerson()` reads `app_settings.me_person_id`.
 6. `tsc` clean.
+7. Drop the columns/indexes in §1.1 and `user_settings` — `drizzle-kit push`
+   only runs on a fresh DB, so db-init's `dropMultiUserColumns()` (replacing
+   `migrateToMultiUser`) drops them idempotently on startup; they're also out
+   of `schemaDefinitions` so `validateAndSyncSchema` can't re-add them.
 
 ### Phase 4 — Client cleanup (~2–3 hrs)
 

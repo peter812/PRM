@@ -17,9 +17,14 @@ import {
   Archive,
   Sparkles,
   HardDrive,
+  Layers,
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { useShowScheduledTasks, setShowScheduledTasks } from "@/components/task-tracker-modal";
 import { Skeleton } from "@/components/ui/skeleton";
 import { imageDetailHref } from "@/lib/image-link";
+import { apiRequest } from "@/lib/queryClient";
+import { useAiProviders } from "@/components/provider-model-picker";
 
 const UnifiedSetupDialog = lazy(() =>
   import("@/components/unified-setup-dialog").then((m) => ({ default: m.UnifiedSetupDialog }))
@@ -30,13 +35,6 @@ type ServiceStatus = "loading" | "grey" | "green" | "yellow" | "red";
 type PrmFaceSettings = {
   apiUrl: string;
   hasApiKey: boolean;
-};
-
-type OllamaSettings = {
-  enabled: boolean;
-  apiUrl: string;
-  model: string;
-  textModel: string;
 };
 
 type VectorSettings = {
@@ -243,6 +241,7 @@ function ImportExportCard() {
 
 export default function SettingsHomePage() {
   const [isSetupOpen, setIsSetupOpen] = useState(false);
+  const showScheduled = useShowScheduledTasks();
 
   // 1. PRM-compute
   const { data: prmComputeSettings } = useQuery<PrmFaceSettings>({
@@ -258,18 +257,16 @@ export default function SettingsHomePage() {
     enabled: !!prmComputeSettings?.apiUrl,
   });
 
-  // 2. Ollama
-  const { data: ollamaSettings } = useQuery<OllamaSettings>({
-    queryKey: ["/api/ollama/settings"],
-  });
-  const { data: ollamaTest, isLoading: isLoadingOllamaTest } = useQuery<TestResult>({
-    queryKey: ["ollama-test"],
+  // 2. AI providers — test the default one
+  const { data: aiProviders } = useAiProviders();
+  const defaultProvider = aiProviders?.find((p) => p.isDefault) ?? aiProviders?.[0];
+  const { data: aiTest, isLoading: isLoadingAiTest } = useQuery<TestResult & { modelCount: number }>({
+    queryKey: ["ai-provider-test", defaultProvider?.id],
     queryFn: async () => {
-      const res = await fetch("/api/ollama/test", { method: "POST" });
-      if (!res.ok) throw new Error("Connection test failed");
+      const res = await apiRequest("POST", "/api/ai/providers/test", { id: defaultProvider!.id });
       return res.json();
     },
-    enabled: !!ollamaSettings?.apiUrl && ollamaSettings?.enabled,
+    enabled: !!defaultProvider,
   });
 
   // 3. Qdrant
@@ -298,15 +295,14 @@ export default function SettingsHomePage() {
     return { status: "green" as const, text: "Online", details: prmComputeTest.message };
   })();
 
-  const ollamaStatus = (() => {
-    if (!ollamaSettings?.enabled || !ollamaSettings?.apiUrl) return { status: "grey" as const, text: "Not Setup" };
-    if (isLoadingOllamaTest) return { status: "loading" as const, text: "Testing..." };
-    if (!ollamaTest) return { status: "loading" as const, text: "Initializing..." };
-    if (!ollamaTest.ok) return { status: "red" as const, text: "Not Working", details: ollamaTest.message };
-    if (ollamaTest.message?.includes("0 models")) {
-      return { status: "yellow" as const, text: "No Models Pulled", details: ollamaTest.message };
-    }
-    return { status: "green" as const, text: "Online", details: ollamaTest.message };
+  const aiStatus = (() => {
+    if (!defaultProvider) return { status: "grey" as const, text: "Not Setup" };
+    if (isLoadingAiTest) return { status: "loading" as const, text: "Testing..." };
+    if (!aiTest) return { status: "loading" as const, text: "Initializing..." };
+    const details = `${defaultProvider.name}: ${aiTest.message}`;
+    if (!aiTest.ok) return { status: "red" as const, text: "Not Working", details };
+    if (aiTest.modelCount === 0) return { status: "yellow" as const, text: "No Models Listed", details };
+    return { status: "green" as const, text: "Online", details };
   })();
 
   const qdrantStatus = (() => {
@@ -353,6 +349,24 @@ export default function SettingsHomePage() {
         </Button>
       </div>
 
+      {/* Background tasks panel: reachable here even when the panel itself is hidden */}
+      <label className="mb-6 p-4 rounded-xl border flex items-center justify-between gap-4 cursor-pointer">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Layers className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">Show scheduled social checks in Background Tasks</h2>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Off hides the morning run's checks from the lower-left panel; checks you queue yourself always show.
+          </p>
+        </div>
+        <Switch
+          checked={showScheduled}
+          onCheckedChange={setShowScheduledTasks}
+          data-testid="switch-show-scheduled-tasks"
+        />
+      </label>
+
       {isSetupOpen && (
         <Suspense fallback={null}>
           <UnifiedSetupDialog open={isSetupOpen} onOpenChange={setIsSetupOpen} />
@@ -373,10 +387,10 @@ export default function SettingsHomePage() {
               icon={Scan}
             />
             <ServiceCard
-              name="Ollama"
-              status={ollamaStatus.status}
-              statusText={ollamaStatus.text}
-              details={ollamaStatus.details}
+              name="AI Providers"
+              status={aiStatus.status}
+              statusText={aiStatus.text}
+              details={aiStatus.details}
               link="/intelligence"
               icon={BrainCircuit}
             />

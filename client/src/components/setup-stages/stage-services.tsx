@@ -65,13 +65,6 @@ export function StageServices() {
     queryKey: ["/api/prm-compute/settings"],
   });
 
-  const { data: ollamaSettings } = useQuery<{
-    enabled: boolean;
-    apiUrl: string;
-  }>({
-    queryKey: ["/api/ollama/settings"],
-  });
-
   const { data: vectorSettings } = useQuery<{
     enabled: boolean;
     qdrantUrl: string;
@@ -86,9 +79,6 @@ export function StageServices() {
 
   const [computeUrl, setComputeUrl] = useState<string>("");
   const [computeSetupCode, setComputeSetupCode] = useState<string>("");
-
-  const [ollamaEnabled, setOllamaEnabled] = useState<boolean>(true);
-  const [ollamaUrl, setOllamaUrl] = useState<string>("");
 
   const [vectorEnabled, setVectorEnabled] = useState<boolean>(true);
   const [vectorUrl, setVectorUrl] = useState<string>("");
@@ -108,13 +98,6 @@ export function StageServices() {
       setComputeUrl(computeSettings.apiUrl || "http://localhost:8001");
     }
   }, [computeSettings]);
-
-  useEffect(() => {
-    if (ollamaSettings) {
-      setOllamaEnabled(ollamaSettings.enabled ?? true);
-      setOllamaUrl(ollamaSettings.apiUrl || "http://localhost:11434");
-    }
-  }, [ollamaSettings]);
 
   useEffect(() => {
     if (vectorSettings) {
@@ -156,21 +139,6 @@ export function StageServices() {
     },
   });
 
-  const saveOllamaMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ollama/settings", {
-        enabled: ollamaEnabled,
-        apiUrl: ollamaUrl || "http://localhost:11434",
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/ollama/settings"] });
-      refetchHealth();
-      toast({ title: "Ollama settings saved" });
-    },
-  });
-
   const saveVectorMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/vector/settings", {
@@ -189,13 +157,13 @@ export function StageServices() {
 
   const saveWhisperMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ollama/settings", {
+      const res = await apiRequest("POST", "/api/ai/settings", {
         whisperApiUrl: whisperUrl || "http://localhost:8000",
       });
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/ollama/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/ai/settings"] });
       refetchHealth();
       toast({ title: "Whisper settings saved" });
     },
@@ -218,14 +186,6 @@ export function StageServices() {
         const data = await res.json();
         toast({
           title: data.ok ? "PRM-Compute Connected" : "PRM-Compute Test Failed",
-          description: data.message,
-          variant: data.ok ? "default" : "destructive",
-        });
-      } else if (service === "ollama") {
-        const res = await apiRequest("POST", "/api/ollama/test");
-        const data = await res.json();
-        toast({
-          title: data.ok ? "Ollama Connected" : "Ollama Test Failed",
           description: data.message,
           variant: data.ok ? "default" : "destructive",
         });
@@ -402,7 +362,7 @@ export function StageServices() {
           </CardContent>
         </Card>
 
-        {/* 2. PRM-Compute / PRM-Face */}
+        {/* 2. PRM Compute */}
         <Card className="border-border">
           <CardHeader className="pb-3">
             <div className="flex items-start justify-between gap-2">
@@ -412,7 +372,7 @@ export function StageServices() {
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-semibold">PRM-Compute / PRM-Face</CardTitle>
+                    <CardTitle className="text-base font-semibold">PRM Compute</CardTitle>
                     <a
                       href="https://github.com/peter812/PRM-face"
                       target="_blank"
@@ -486,7 +446,7 @@ export function StageServices() {
           </CardContent>
         </Card>
 
-        {/* 3. Ollama */}
+        {/* 3. AI providers */}
         <Card className="border-border">
           <CardHeader className="pb-3">
             <div className="flex items-start justify-between gap-2">
@@ -495,75 +455,24 @@ export function StageServices() {
                   <BrainCircuit className="h-5 w-5" />
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-semibold">Ollama (Local LLM)</CardTitle>
-                    <a
-                      href="https://github.com/ollama/ollama"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 hover:underline"
-                    >
-                      GitHub <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </div>
+                  <CardTitle className="text-base font-semibold">AI Providers</CardTitle>
                   <CardDescription className="text-xs">
-                    Local language models for person descriptions, chat, and journal event extraction.
+                    Ollama servers and OpenAI-compatible endpoints for chat, descriptions, and event extraction.
                   </CardDescription>
                 </div>
               </div>
-              <div className="shrink-0">{renderStatusBadge(health?.ollama)}</div>
+              <div className="shrink-0">{renderStatusBadge(health?.ai)}</div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-3 pt-0 text-xs">
-            {health?.ollama?.message && (
-              <p className="text-muted-foreground bg-muted/50 p-2 rounded text-[11px]">
-                {health.ollama.message}
+          <CardContent className="space-y-2 pt-0 text-xs">
+            {health?.ai?.message && (
+              <p className="text-muted-foreground bg-muted/50 p-2 rounded text-[11px] whitespace-pre-line">
+                {health.ai.message}
               </p>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
-              <div className="sm:col-span-2 space-y-1">
-                <Label htmlFor="ollama-url" className="text-xs">Ollama Server URL</Label>
-                <Input
-                  id="ollama-url"
-                  className="h-8 text-xs"
-                  placeholder="http://localhost:11434"
-                  value={ollamaUrl}
-                  onChange={(e) => setOllamaUrl(e.target.value)}
-                />
-              </div>
-              <div className="flex items-center justify-between sm:justify-start gap-3 sm:pt-4">
-                <Label htmlFor="ollama-enabled" className="text-xs cursor-pointer">Enable Ollama</Label>
-                <Switch
-                  id="ollama-enabled"
-                  checked={ollamaEnabled}
-                  onCheckedChange={setOllamaEnabled}
-                />
-              </div>
-            </div>
-            <div className="flex items-center justify-between pt-1">
-              <span className="text-[11px] text-muted-foreground flex items-center gap-1">
-                <Terminal className="h-3 w-3" /> Port 11434 (Run: <code>ollama pull llama3</code>)
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 text-xs"
-                  onClick={() => handleTestService("ollama")}
-                  disabled={testingService === "ollama"}
-                >
-                  {testingService === "ollama" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => saveOllamaMutation.mutate()}
-                  disabled={saveOllamaMutation.isPending}
-                >
-                  <Save className="h-3 w-3 mr-1" /> Save
-                </Button>
-              </div>
-            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Add, test, and choose models for providers in the AI &amp; Intelligence step.
+            </p>
           </CardContent>
         </Card>
 

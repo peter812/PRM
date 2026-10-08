@@ -5,7 +5,6 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import {
   POSTS_COMMENTS_KEY,
@@ -19,7 +18,6 @@ import type { Settings } from "@/lib/instagram";
 
 /** What a posts check fetches (account-tracking-plan.md §3.4). Applies to every importer. */
 export default function InstagramPostsPage() {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
   const { data: settings } = useQuery<Settings>({ queryKey: ["/api/settings"] });
   const posts = parsePostSettings(settings ?? {});
@@ -48,7 +46,7 @@ export default function InstagramPostsPage() {
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="text-base">What a check fetches</CardTitle>
-            <CardDescription>Only admins can change these. They apply to every importer.</CardDescription>
+            <CardDescription>These apply to every importer.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-2 md:max-w-xs">
@@ -58,7 +56,7 @@ export default function InstagramPostsPage() {
                 type="number"
                 min={1}
                 className="h-8 w-28"
-                disabled={!isAdmin}
+               
                 defaultValue={posts.scanLimit}
                 key={posts.scanLimit}
                 onBlur={(e) => commitScanLimit(e.target.value)}
@@ -78,7 +76,7 @@ export default function InstagramPostsPage() {
               <Switch
                 id="posts-videos"
                 checked={posts.videos}
-                disabled={!isAdmin}
+               
                 onCheckedChange={(v) => save.mutate({ key: POSTS_VIDEOS_KEY, value: String(v) })}
                 data-testid="switch-posts-videos"
               />
@@ -92,7 +90,7 @@ export default function InstagramPostsPage() {
               <Switch
                 id="posts-comments"
                 checked={posts.comments}
-                disabled={!isAdmin}
+               
                 onCheckedChange={(v) => save.mutate({ key: POSTS_COMMENTS_KEY, value: String(v) })}
                 data-testid="switch-posts-comments"
               />
@@ -102,7 +100,7 @@ export default function InstagramPostsPage() {
               <Label htmlFor="posts-comment-limit">Comments per post</Label>
               <Select
                 value={String(posts.commentLimit)}
-                disabled={!isAdmin || !posts.comments}
+                disabled={!posts.comments}
                 onValueChange={(v) => save.mutate({ key: POSTS_COMMENT_LIMIT_KEY, value: v })}
               >
                 <SelectTrigger id="posts-comment-limit" data-testid="select-posts-comment-limit"><SelectValue /></SelectTrigger>

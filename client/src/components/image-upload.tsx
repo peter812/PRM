@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { X, Image as ImageIcon } from "lucide-react";
+import { X, Plus, Image as ImageIcon } from "lucide-react";
 import { ImageCropModal } from "./image-crop-modal";
 import { useToast } from "@/hooks/use-toast";
 
@@ -10,6 +10,8 @@ interface ImageUploadProps {
   aspectRatio?: number;
   className?: string;
   prmLocation?: string;
+  /** Render only a square "+" button that fills its container (no preview, no remove). */
+  tile?: boolean;
 }
 
 export function ImageUpload({
@@ -18,6 +20,7 @@ export function ImageUpload({
   aspectRatio,
   className = "",
   prmLocation,
+  tile,
 }: ImageUploadProps) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [cropModalOpen, setCropModalOpen] = useState(false);
@@ -116,7 +119,7 @@ export function ImageUpload({
         data-testid="input-image-file"
       />
 
-      {currentImageUrl ? (
+      {currentImageUrl && !tile ? (
         <div className="relative inline-block">
           <img
             src={currentImageUrl}
@@ -141,7 +144,7 @@ export function ImageUpload({
           variant="outline"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
-          className="h-32 w-32 flex flex-col gap-2"
+          className={tile ? "aspect-square w-full h-auto" : "h-32 w-32 flex flex-col gap-2"}
           data-testid="button-upload-image"
         >
           {uploading ? (
@@ -149,6 +152,8 @@ export function ImageUpload({
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
               <span className="text-xs">Uploading...</span>
             </>
+          ) : tile ? (
+            <Plus className="h-8 w-8" />
           ) : (
             <>
               <ImageIcon className="h-8 w-8" />

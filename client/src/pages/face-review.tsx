@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Search, X, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Search, X, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,9 @@ import { withImageSize } from "@shared/image-size";
 import { FaceBoxOverlay, type OverlayFace } from "@/components/face-box-overlay";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useNoFaceToggle } from "@/components/no-face-account";
-import type { Person, SocialAccount } from "@shared/schema";
+import { SocialAccountDialog } from "@/components/social-account-dialog";
+import { PersonDialog } from "@/components/person-dialog";
+import type { ImageTask, Person, SocialAccount } from "@shared/schema";
 
 type FaceReviewKind = "story" | "profile" | "post" | "message";
 const KINDS: FaceReviewKind[] = ["story", "profile", "post", "message"];
@@ -117,6 +119,38 @@ function reviewImageUrls(item: FaceReviewItem): string[] {
     ...(item.account?.imageUrl ? [item.account.imageUrl] : []),
     ...item.faces.flatMap((f) => [withImageSize(f.cropUrl, 128), ...f.lookAlikes.map((la) => withImageSize(la.cropUrl, 64))]),
   ];
+}
+
+/** A face re-scan task; `settled` is set once its outcome has been applied to the page. */
+type Rescan = { taskId: string; settled?: "completed" | "failed" };
+
+const RESCAN_LABEL: Record<string, string> = { pending: "Queued", in_progress: "Scanning…", completed: "Done", failed: "Failed", cancelled: "Failed" };
+
+/**
+ * Follows one re-scan task (the global task SSE keeps ["/api/image-tasks", …] fresh), reports
+ * its finish once, and shows its status chip while its photo is on screen.
+ */
+function RescanStatus({ rescan, visible, onSettled }: { rescan: Rescan; visible: boolean; onSettled: (task: ImageTask) => void }) {
+  const { data: task } = useQuery<ImageTask>({ queryKey: ["/api/image-tasks", rescan.taskId], enabled: !rescan.settled });
+  const finished = task && ["completed", "failed", "cancelled"].includes(task.status);
+  useEffect(() => {
+    if (finished && !rescan.settled) onSettled(task);
+  }, [finished]);
+
+  if (!visible) return null;
+  const status = rescan.settled ?? task?.status ?? "pending";
+  const failed = status === "failed" || status === "cancelled";
+  return (
+    <Badge
+      variant={failed ? "destructive" : "secondary"}
+      className="shrink-0 gap-1"
+      title={failed ? task?.result ?? undefined : undefined}
+      data-testid="badge-rescan-status"
+    >
+      {status === "in_progress" && <Loader2 className="h-3 w-3 animate-spin" />}
+      {RESCAN_LABEL[status] ?? status}
+    </Badge>
+  );
 }
 
 export default function FaceReviewPage() {
@@ -226,6 +260,12 @@ export default function FaceReviewPage() {
   }, [focusedFace]);
   const [searchFace, setSearchFace] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  // A search that found nobody: create the account/person, then assign it to this face.
+  const [createFor, setCreateFor] = useState<{ kind: "account" | "person"; photoId: string; faceUuid: string; query: string } | null>(null);
+  const newPersonName = useMemo(() => {
+    const [firstName = "", ...rest] = createFor?.kind === "person" ? createFor.query.split(/\s+/) : [];
+    return { firstName, lastName: rest.join(" ") };
+  }, [createFor]);
 
   const currentPhotoId = useRef<string | undefined>(undefined);
   currentPhotoId.current = item?.photoId;
@@ -410,6 +450,39 @@ export default function FaceReviewPage() {
     onError: () => toast({ title: "Auto-assign failed", variant: "destructive" }),
   });
 
+  // Re-scan (⋮ menu): photoId → its task. Kept per photo so stepping away and back keeps the chip.
+  const [rescans, setRescans] = useState<Record<string, Rescan>>({});
+  const rescanMutation = useMutation({
+    mutationFn: async (photoId: string) => {
+      const res = await apiRequest("POST", "/api/face-review/rescan", { photoId });
+      return (await res.json()) as { taskId: string };
+    },
+    onSuccess: ({ taskId }, photoId) => setRescans((r) => ({ ...r, [photoId]: { taskId } })),
+    onError: (err: Error) => toast({ title: "Couldn't start the re-scan", description: err.message, variant: "destructive" }),
+  });
+
+  // The scan replaced every face (new ids, boxes and crops): swap in the refreshed photo. No advancing —
+  // the user asked to see this photo's result.
+  async function applyRescan(photoId: string, task: ImageTask) {
+    const outcome = task.status === "completed" ? "completed" : "failed";
+    setRescans((r) => ({ ...r, [photoId]: { taskId: task.id, settled: outcome } }));
+    if (outcome === "failed") {
+      toast({ title: "Face re-scan failed", description: task.result ?? undefined, variant: "destructive" });
+      return;
+    }
+    window.setTimeout(() => setRescans(({ [photoId]: done, ...rest }) => (done?.taskId === task.id ? rest : { ...rest, [photoId]: done })), 4000);
+    const res = await fetch(`/api/face-review/item?${new URLSearchParams({ photoId, kind })}`, { credentials: "include" });
+    if (!res.ok) return;
+    const updated = (await res.json()) as FaceReviewItem;
+    patchItem(updated);
+    if (currentPhotoId.current === photoId) {
+      setFocusedFace(null);
+      setSearchFace(null);
+    }
+    queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
+    toast({ title: `Re-scan found ${updated.faces.length} face${updated.faces.length === 1 ? "" : "s"}` });
+  }
+
   // Search-as-you-type: people + social accounts (1+ chars, debounced).
   const [debouncedQuery, setDebouncedQuery] = useState("");
   useEffect(() => {
@@ -439,7 +512,7 @@ export default function FaceReviewPage() {
     enabled: searchActive,
   });
 
-  // Keyboard shortcuts (§4.1): 1-9 focuses a face row, arrows prev/next image, D dismisses the focused face.
+  // Keyboard shortcuts (§4.1): 1-9 focuses a face row, arrows prev/next image, D dismisses the focused face, Space skips all.
   const actionableFaces = useMemo(
     () => item?.faces.filter((f) => (dismissedFilter ? f.dismissed : !f.identified && !f.dismissed)) ?? [],
     [item, dismissedFilter],
@@ -457,6 +530,11 @@ export default function FaceReviewPage() {
         handleNext();
       } else if (e.key === "ArrowLeft") {
         setIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === " ") {
+        e.preventDefault();
+        if (item && !dismissedFilter && actionableFaces.length > 0 && !dismissMutation.isPending) {
+          dismissMutation.mutate({ photoId: item.photoId, faceUuids: actionableFaces.map((f) => f.faceUuid) });
+        }
       } else if (e.key.toLowerCase() === "d" && focusedFace && item && !dismissedFilter && !dismissMutation.isPending) {
         dismissMutation.mutate({ photoId: item.photoId, faceUuids: [focusedFace] });
       }
@@ -599,7 +677,7 @@ export default function FaceReviewPage() {
                 onClick={() => dismissMutation.mutate({ photoId: item.photoId, faceUuids: actionableFaces.map((f) => f.faceUuid) })}
                 data-testid="button-dismiss-all"
               >
-                <SkipForward className="h-4 w-4 mr-1.5" /> Skip all ({actionableFaces.length})
+                <SkipForward className="h-4 w-4 mr-1.5" /> Skip all ({actionableFaces.length}) <kbd className="ml-1.5 text-[10px] opacity-60">Space</kbd>
               </Button>
             )}
 
@@ -617,6 +695,14 @@ export default function FaceReviewPage() {
                         <ScanFace className="h-4 w-4 mr-2" />
                         {item.account.noFace ? "Match faces to this account again" : "This account doesn't have a face"}
                       </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={rescanMutation.isPending || (!!rescans[item.photoId] && !rescans[item.photoId].settled)}
+                        onClick={() => rescanMutation.mutate(item.photoId)}
+                        data-testid="button-rescan-faces"
+                      >
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Re-scan faces in this photo
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                   <Avatar className="h-8 w-8">
@@ -633,6 +719,9 @@ export default function FaceReviewPage() {
                 </>
               )}
               {!item.account && <p className="text-sm text-muted-foreground">{contextLine(item)}</p>}
+              {Object.entries(rescans).map(([photoId, rescan]) => (
+                <RescanStatus key={rescan.taskId} rescan={rescan} visible={photoId === item.photoId} onSettled={(task) => applyRescan(photoId, task)} />
+              ))}
             </div>
             {item.caption && item.kind !== "message" && <p className="text-sm text-muted-foreground line-clamp-2 shrink-0">{item.caption}</p>}
 
@@ -838,7 +927,23 @@ export default function FaceReviewPage() {
                             )}
 
                             {!visibleAccountResults.length && !visiblePeopleResults.length && (
-                              <p className="text-xs text-muted-foreground px-2 py-1.5">No matches</p>
+                              <div className="px-2 py-1.5 space-y-1.5">
+                                <p className="text-xs text-muted-foreground">No matches for "{debouncedQuery}"</p>
+                                <div className="flex gap-1.5">
+                                  {(["account", "person"] as const).map((k) => (
+                                    <Button
+                                      key={k}
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 text-xs"
+                                      onClick={() => setCreateFor({ kind: k, photoId: item.photoId, faceUuid: face.faceUuid, query: debouncedQuery })}
+                                      data-testid={`button-create-${k}`}
+                                    >
+                                      <Plus className="h-3 w-3 mr-1" /> {k === "account" ? "Social account" : "Person"}
+                                    </Button>
+                                  ))}
+                                </div>
+                              </div>
                             )}
                           </div>
                         )}
@@ -852,6 +957,19 @@ export default function FaceReviewPage() {
         </div>
       )}
       {noFace.dialog}
+      <SocialAccountDialog
+        open={createFor?.kind === "account"}
+        onOpenChange={(open) => !open && setCreateFor(null)}
+        initialUsername={createFor?.query.replace(/^@/, "")}
+        queueTrackingByDefault={false}
+        onAccountCreated={(a) => createFor && assignMutation.mutate({ photoId: createFor.photoId, faceUuid: createFor.faceUuid, socialAccountId: a.id })}
+      />
+      <PersonDialog
+        open={createFor?.kind === "person"}
+        onOpenChange={(open) => !open && setCreateFor(null)}
+        initialValues={newPersonName}
+        onPersonCreated={(p) => createFor && assignMutation.mutate({ photoId: createFor.photoId, faceUuid: createFor.faceUuid, personId: p.id })}
+      />
     </div>
   );
 }

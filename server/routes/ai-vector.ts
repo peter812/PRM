@@ -3,9 +3,10 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, isAdminRole, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
-import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
-import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChat, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
+import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
+import { describePhoto } from "../ai/describe";
+import { asData, DATA_TAGS_NOTE, resolveModel, chat as aiChat, adapterFor, isAiEnabled, AiConfigError, type ResolvedModel, type AiMessage, type AiToolCall } from "../ai/provider";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, lt, desc, or } from "drizzle-orm";
@@ -41,7 +42,6 @@ import {
 } from "../recognition";
 import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, refreshImageLanes } from "../task-worker";
-import { canReadShared } from "../access";
 import { identityIsVisible, faceGroupUuid } from "../faces";
 import { faceInReadablePhoto } from "./face-review";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -57,6 +57,7 @@ import {
   getVectorSetting,
   testVectorConnection,
   upsertDailyNoteVector,
+  prepareVectorRun,
   deleteDailyNoteVector,
   syncDailyNoteInBackground,
   searchDailyNotes,
@@ -87,12 +88,6 @@ let isUserCreationAllowed = false;
 
 
 // Bridge old settings functions to centralized storage layer
-async function getOllamaSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-async function setOllamaSetting(key: string, value: string): Promise<void> {
-  await storage.setAppSetting(key, value);
-}
 async function getPrmFaceSetting(key: string): Promise<string | null> {
   return storage.getAppSetting(key);
 }
@@ -102,7 +97,7 @@ async function setPrmFaceSetting(key: string, value: string): Promise<void> {
 
 
 export function registerRoutes(app: Express) {
-    // ── PRM-Face integration ──────────────────────────────────────────────────
+    // ── PRM Compute integration ──────────────────────────────────────────────────
   
     async function getPrmFaceSetting(key: string): Promise<string | null> {
       if (key === "prm_face_api_url" || key === "prm_compute_api_url") {
@@ -215,9 +210,9 @@ export function registerRoutes(app: Express) {
     app.get("/api/prm-face/config", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
 
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/face/config`, {
@@ -226,22 +221,22 @@ export function registerRoutes(app: Express) {
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
     app.post("/api/prm-face/config", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
 
-      const { maxFaces, minFaceSize, sureness } = req.body;
+      const { maxFaces, minFaceSize, sureness, detThreshold, excludeProfileFaces, maxYaw } = req.body;
       if (maxFaces === undefined || minFaceSize === undefined || sureness === undefined) {
         return res.status(400).json({ error: "maxFaces, minFaceSize, and sureness are required." });
       }
@@ -257,16 +252,44 @@ export function registerRoutes(app: Express) {
             max_faces: Number(maxFaces),
             min_face_size: Number(minFaceSize),
             sureness: Number(sureness),
+            ...(detThreshold !== undefined && { det_threshold: Number(detThreshold) }),
+            ...(excludeProfileFaces !== undefined && { exclude_profile_faces: Boolean(excludeProfileFaces) }),
+            ...(maxYaw !== undefined && { max_yaw: Number(maxYaw) }),
           }),
           signal: AbortSignal.timeout(10000),
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
+      }
+    });
+
+    // Measure head yaw for stored faces that predate pose estimation (one batch per call).
+    app.post("/api/prm-face/backfill-pose", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
+      const apiKey = await getPrmFaceSetting("prm_face_api_key");
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
+
+      try {
+        const response = await fetch(`${prmBase(apiUrl)}/api/face/backfill-pose`, {
+          method: "POST",
+          headers: { "x-api-key": apiKey },
+          body: new URLSearchParams({ after: String(req.body?.after ?? ""), limit: "50" }),
+          signal: AbortSignal.timeout(120000),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
+        }
+        res.json(await response.json());
+      } catch (error: any) {
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -374,7 +397,6 @@ export function registerRoutes(app: Express) {
 
     app.post("/api/prm-face/lanes", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      if (!isAdminRole((req.user as any)?.role)) return res.status(403).json({ error: "Admin access required." });
       const keys = Object.keys(COMPUTE_LANE_KEYS) as (keyof ComputeLanes)[];
       const bad = keys.find((key) => {
         const n = req.body?.[key];
@@ -386,14 +408,14 @@ export function registerRoutes(app: Express) {
       res.json({ lanes: await refreshImageLanes(), max: COMPUTE_LANE_MAX, status, computeError });
     });
 
-    // Delete all recognition-pipeline images & faces and reset PRM-Face.
-    // Wipes face crops + faces rows on the PRM-Face side, then deletes pipeline
+    // Delete all recognition-pipeline images & faces and reset PRM Compute.
+    // Wipes face crops + faces rows on the PRM Compute side, then deletes pipeline
     // photos (posts/interactions/notes — NOT profile avatars) and their S3
     // files locally, and strips every face association from people and posts.
     app.post("/api/prm-face/reset-images", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        // 1. Reset PRM-Face (best-effort). If it isn't configured or is offline
+        // 1. Reset PRM Compute (best-effort). If it isn't configured or is offline
         //    we still wipe the local pipeline, and report what happened.
         let faceService: { attempted: boolean; ok: boolean; result?: any; error?: string } = {
           attempted: false,
@@ -412,10 +434,10 @@ export function registerRoutes(app: Express) {
               faceService.ok = true;
               faceService.result = await response.json();
             } else {
-              faceService.error = `PRM-Face error ${response.status}: ${await response.text()}`;
+              faceService.error = `PRM Compute error ${response.status}: ${await response.text()}`;
             }
           } catch (err: any) {
-            faceService.error = `Failed to contact PRM-Face: ${err.message}`;
+            faceService.error = `Failed to contact PRM Compute: ${err.message}`;
           }
         }
 
@@ -429,84 +451,6 @@ export function registerRoutes(app: Express) {
         res.status(500).json({ error: `Failed to reset images & faces: ${error.message}` });
       }
     });
-
-    async function getImageBuffer(location: string): Promise<Buffer> {
-      const { buffer } = await fetchImageBuffer(location);
-      return buffer;
-    }
-
-    async function describeImageWithOllama(photoId: string): Promise<string> {
-      const [photo] = await db.select().from(photos).where(eq(photos.id, photoId));
-      if (!photo) throw new Error("Photo not found");
-
-      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
-      if (!apiUrl.trim()) throw new Error("No Ollama API URL configured");
-
-      const model = (await getOllamaSetting("ollama_model")) ?? "llava";
-      
-      const faces = (photo.facialIds as any[]) || [];
-      const resolvedFaces: string[] = [];
-      for (const face of faces) {
-        let name = "unknown person";
-        if (face.personId) {
-          const [person] = await db.select().from(people).where(eq(people.id, face.personId));
-          if (person) {
-            name = `${person.firstName} ${person.lastName}`;
-          }
-        }
-        
-        const coordStr = face.coordinates 
-          ? `at bounds [x:${face.coordinates.x}, y:${face.coordinates.y}, w:${face.coordinates.w}, h:${face.coordinates.h}]`
-          : "";
-        resolvedFaces.push(`Face ${coordStr}: ${name}`);
-      }
-
-      let prompt = (await getOllamaSetting("ollama_prompt")) || "Describe what is happening in this image.";
-      if (resolvedFaces.length > 0) {
-        prompt += `\n\nFor context, the following people have been recognized in the image:\n${resolvedFaces.join("\n")}`;
-      }
-
-      console.log(`[Ollama Describe] prompt: ${prompt}`);
-
-      const buffer = await getImageBuffer(photo.location);
-      const imageBase64 = buffer.toString("base64");
-
-      const base = apiUrl.replace(/\/+$/, "");
-      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (authRequired) {
-        const username = (await getOllamaSetting("ollama_username")) ?? "";
-        const password = (await getOllamaSetting("ollama_password")) ?? "";
-        headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-      }
-
-      const response = await fetch(`${base}/api/generate`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ model, prompt, images: [imageBase64], stream: false }),
-        signal: AbortSignal.timeout(120000),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Ollama API error (${response.status}): ${text}`);
-      }
-
-      const data = await response.json() as { response?: string };
-      const description = data.response ?? "";
-
-      await db.update(photos)
-        .set({
-          imageDescription: description,
-          imageDescriptionAt: new Date(),
-        })
-        .where(eq(photos.id, photoId));
-
-      // The photo now has an AI description, so it's eligible for vector storage.
-      if (description.trim()) syncEntityInBackground("image", photoId);
-
-      return description;
-    }
 
     app.post("/api/prm-face/img/add-interactive", upload.single("image"), async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -545,7 +489,7 @@ export function registerRoutes(app: Express) {
                 image_uuid: data.image_uuid || data.query_image_uuid,
               };
             } else {
-              console.warn("PRM-Face img/add sync call failed with status:", response.status);
+              console.warn("PRM Compute img/add sync call failed with status:", response.status);
             }
           } catch (err: any) {
             console.error("Error communicating with PRM-face for img/add:", err.message);
@@ -596,7 +540,6 @@ export function registerRoutes(app: Express) {
           const [newPerson] = await db.insert(people).values({
             firstName,
             lastName,
-            createdByUserId: req.user?.id || null,
           }).returning();
           resolvedPersonId = newPerson.id;
         } else if (resolution === "known_person") {
@@ -655,10 +598,10 @@ export function registerRoutes(app: Express) {
               signal: AbortSignal.timeout(10000),
             });
             if (!assignRes.ok) {
-              console.warn("[PRM-Face] failed to assign face:", await assignRes.text());
+              console.warn("[PRM Compute] failed to assign face:", await assignRes.text());
             }
           } catch (assignErr: any) {
-            console.warn("[PRM-Face] assign error:", assignErr.message);
+            console.warn("[PRM Compute] assign error:", assignErr.message);
           }
         }
 
@@ -669,13 +612,12 @@ export function registerRoutes(app: Express) {
         let descriptionGenerated = false;
         let description = "";
         if (pendingQuestions.length === 0) {
-          const ollamaEnabled = (await getOllamaSetting("ollama_enabled")) === "true";
-          if (ollamaEnabled) {
+          if (await isAiEnabled()) {
             try {
-              description = await describeImageWithOllama(question.photoId);
+              description = await describePhoto(question.photoId);
               descriptionGenerated = true;
-            } catch (ollamaErr: any) {
-              console.error("Error auto-describing photo:", ollamaErr.message);
+            } catch (aiErr: any) {
+              console.error("Error auto-describing photo:", aiErr.message);
             }
           }
         }
@@ -694,7 +636,7 @@ export function registerRoutes(app: Express) {
 
     app.post("/api/prm-face/photo/save-assignments", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { photoId, assignments, waitOllama } = req.body;
+      const { photoId, assignments, waitDescribe } = req.body;
       if (!photoId || !Array.isArray(assignments)) {
         return res.status(400).json({ error: "photoId and assignments array are required." });
       }
@@ -718,7 +660,6 @@ export function registerRoutes(app: Express) {
             const [newPerson] = await db.insert(people).values({
               firstName,
               lastName,
-              createdByUserId: req.user?.id || null,
             }).returning();
             resolvedPersonId = newPerson.id;
           }
@@ -764,11 +705,11 @@ export function registerRoutes(app: Express) {
           .where(eq(photos.id, photoId));
 
         let description = "";
-        if (waitOllama) {
+        if (waitDescribe) {
           try {
-            description = await describeImageWithOllama(photoId);
+            description = await describePhoto(photoId);
           } catch (err: any) {
-            console.error("Error generating Ollama description:", err.message);
+            console.error("Error generating AI description:", err.message);
           }
         }
 
@@ -787,7 +728,7 @@ export function registerRoutes(app: Express) {
       try {
         const [photo] = await db.select({ id: photos.id, location: photos.location }).from(photos).where(eq(photos.id, id));
         if (!photo) return res.status(404).json({ error: "Photo not found." });
-        if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM-Face service is not configured." });
+        if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM Compute service is not configured." });
 
         const { facesDetected, faces } = await runFaceRecognition(id);
 
@@ -815,7 +756,7 @@ export function registerRoutes(app: Express) {
       if (!photoId) return res.status(400).json({ error: "photoId is required" });
 
       try {
-        const description = await describeImageWithOllama(photoId);
+        const description = await describePhoto(photoId);
         res.json({ success: true, description });
       } catch (error: any) {
         console.error("Error describing image:", error);
@@ -851,9 +792,9 @@ export function registerRoutes(app: Express) {
       const { uuid } = req.query as { uuid?: string };
       if (!uuid) return res.status(400).json({ error: "uuid is required" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const response = await fetch(
           `${prmBase(apiUrl)}/api/img/get?uuid=${encodeURIComponent(uuid)}`,
@@ -861,11 +802,11 @@ export function registerRoutes(app: Express) {
         );
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
   
@@ -874,9 +815,9 @@ export function registerRoutes(app: Express) {
       const { uuid } = req.query as { uuid?: string };
       if (!uuid) return res.status(400).json({ error: "uuid is required" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         // 1. Fetch raw face detail from PRM-face
         const response = await fetch(
@@ -885,7 +826,7 @@ export function registerRoutes(app: Express) {
         );
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         const detail: any = await response.json();
         const rawFaces: any[] = detail?.faces ?? [];
@@ -963,16 +904,16 @@ export function registerRoutes(app: Express) {
   
         res.json({ ...detail, faces: enrichedFaces });
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
   
     app.post("/api/prm-face/face/assign-bulk", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/face/assign-bulk`, {
           method: "POST",
@@ -982,20 +923,20 @@ export function registerRoutes(app: Express) {
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
   
     app.get("/api/prm-face/face/list", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       const { page = "1", page_size = "24" } = req.query as Record<string, string>;
       try {
         const response = await fetch(
@@ -1007,11 +948,11 @@ export function registerRoutes(app: Express) {
             return res.status(401).json({ error: "API_KEY_INVALID" });
           }
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
   
@@ -1020,9 +961,9 @@ export function registerRoutes(app: Express) {
       const { image_uuid } = req.query as Record<string, string>;
       if (!image_uuid) return res.status(400).json({ error: "image_uuid is required." });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const url = new URL(`${prmBase(apiUrl)}/api/img/delete`);
         url.searchParams.set("image_uuid", image_uuid);
@@ -1033,11 +974,11 @@ export function registerRoutes(app: Express) {
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
   
@@ -1045,9 +986,9 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       if (!req.file) return res.status(400).json({ error: "No image provided." });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const formData = new FormData();
         formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
@@ -1063,11 +1004,11 @@ export function registerRoutes(app: Express) {
             return res.status(401).json({ error: "API_KEY_INVALID" });
           }
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
   
@@ -1076,10 +1017,10 @@ export function registerRoutes(app: Express) {
       if (!req.file) return res.status(400).json({ error: "No image provided" });
   
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
   
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured. Generate one in Settings → Recognition." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured. Generate one in Settings → Recognition." });
   
       try {
         const formData = new FormData();
@@ -1095,16 +1036,16 @@ export function registerRoutes(app: Express) {
 
         if (!response.ok) {
           const errBody = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${errBody}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${errBody}` });
         }
 
         const data = await response.json() as { faces_detected?: number; results?: any[]; faces?: any[] };
-        // PRM-Face returns detected faces under `results`; the demo UI reads `faces`.
+        // PRM Compute returns detected faces under `results`; the demo UI reads `faces`.
         const detectedFaces = data.results ?? data.faces ?? [];
         res.json({ faces_detected: data.faces_detected ?? detectedFaces.length, faces: detectedFaces });
       } catch (error: any) {
-        console.error("Error calling PRM-Face pickout-temp:", error);
-        res.status(500).json({ error: `Failed to contact PRM-Face server: ${error.message}` });
+        console.error("Error calling PRM Compute pickout-temp:", error);
+        res.status(500).json({ error: `Failed to contact PRM Compute server: ${error.message}` });
       }
     });
   
@@ -1113,9 +1054,9 @@ export function registerRoutes(app: Express) {
       if (!req.file) return res.status(400).json({ error: "No image provided." });
   
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
   
       let assignments: Array<{ face_index: number; person_uuid?: string; social_account_id?: string; is_social_account: boolean; label?: string }> = [];
       if (req.body.assignments) {
@@ -1127,7 +1068,7 @@ export function registerRoutes(app: Express) {
       }
   
       try {
-        // Step 1: Upload image to PRM-Face
+        // Step 1: Upload image to PRM Compute
         const formData = new FormData();
         formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
         const response = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
@@ -1141,7 +1082,7 @@ export function registerRoutes(app: Express) {
             return res.status(401).json({ error: "API_KEY_INVALID" });
           }
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         const prmData = await response.json() as { image_uuid?: string; faces?: Array<{ face_uuid: string; face_index?: number }> };
   
@@ -1173,16 +1114,16 @@ export function registerRoutes(app: Express) {
             });
             if (!assignRes.ok) {
               const assignBody = await assignRes.text();
-              console.warn("[PRM-Face] face/assign-bulk failed:", assignBody);
+              console.warn("[PRM Compute] face/assign-bulk failed:", assignBody);
             }
           } catch (assignErr: any) {
-            console.warn("[PRM-Face] face/assign-bulk error:", assignErr.message);
+            console.warn("[PRM Compute] face/assign-bulk error:", assignErr.message);
           }
         }
   
         res.json({ ...prmData, assignments });
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
   
@@ -1327,7 +1268,7 @@ export function registerRoutes(app: Express) {
           .where(inArray(faces.personfaceUuid, personfaceUuids));
         const localFaceIds = personFaces.map(f => f.id);
   
-        // 3. Gather face IDs from the external PRM-Face API if enabled
+        // 3. Gather face IDs from the external PRM Compute API if enabled
         let apiFaceIds: string[] = [];
         const enabled = await getPrmFaceSetting("facial_intelligence_enabled");
         const apiUrl = await getPrmFaceSetting("prm_face_api_url");
@@ -1347,7 +1288,7 @@ export function registerRoutes(app: Express) {
                 .map(f => f.face_uuid);
             }
           } catch (err: any) {
-            console.warn("[PRM-Face] failed to fetch faces from external API:", err.message);
+            console.warn("[PRM Compute] failed to fetch faces from external API:", err.message);
           }
         }
   
@@ -1410,220 +1351,8 @@ export function registerRoutes(app: Express) {
     });
 
   
-    // ── Ollama AI Description ─────────────────────────────────────────────────
+    // ── AI Chat ────────────────────────────────────────────
   
-    async function getOllamaSetting(key: string): Promise<string | null> {
-      return storage.getAppSetting(key);
-    }
-  
-    async function setOllamaSetting(key: string, value: string): Promise<void> {
-      await storage.setAppSetting(key, value);
-    }
-  
-    app.get("/api/ollama/settings", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const enabled = (await getOllamaSetting("ollama_enabled")) ?? "false";
-        const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
-        const authRequired = (await getOllamaSetting("ollama_auth_required")) ?? "false";
-        const username = (await getOllamaSetting("ollama_username")) ?? "";
-        const hasPassword = !!((await getOllamaSetting("ollama_password")));
-        const model = (await getOllamaSetting("ollama_model")) ?? "";
-        const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
-        const prompt = (await getOllamaSetting("ollama_prompt")) ?? "";
-        const eventsModel = (await getOllamaSetting("ollama_events_model")) ?? "";
-        const eventsPrompt = (await getOllamaSetting("ollama_events_prompt")) ?? "";
-        const familyTreeModel = (await getOllamaSetting("ollama_family_tree_model")) ?? "";
-        const autoDescribeImages = (await getOllamaSetting("ollama_auto_describe_images")) ?? "false";
-        const sexGuessModel = (await getOllamaSetting("ollama_sex_guess_model")) ?? "";
-        const whisperApiUrl = (await getOllamaSetting("whisper_api_url")) || process.env.WHISPER_API_URL || "";
-        const whisperModel = (await getOllamaSetting("whisper_model")) || process.env.WHISPER_MODEL || "";
-        // Dictation goes to PRM-Compute's built-in Whisper when it is connected,
-        // else to the external OpenAI-compatible server above.
-        const computeConnected = !!(await getPrmFaceSetting("prm_face_api_url")) && !!(await getPrmFaceSetting("prm_face_api_key"));
-        const whisperSource = computeConnected ? "prm-compute" : whisperApiUrl.trim() ? "external" : null;
-        res.json({ enabled: enabled === "true", apiUrl, authRequired: authRequired === "true", username, hasPassword, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages: autoDescribeImages === "true", sexGuessModel, whisperApiUrl, whisperModel, whisperSource });
-      } catch (error) {
-        res.status(500).json({ error: "Failed to fetch Ollama settings" });
-      }
-    });
-  
-    app.post("/api/ollama/settings", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { enabled, apiUrl, authRequired, username, password, model, textModel, prompt, eventsModel, eventsPrompt, familyTreeModel, autoDescribeImages, sexGuessModel, whisperApiUrl, whisperModel } = req.body;
-      try {
-        if (typeof enabled === "boolean") await setOllamaSetting("ollama_enabled", String(enabled));
-        if (typeof apiUrl === "string") await setOllamaSetting("ollama_api_url", apiUrl.trim());
-        if (typeof authRequired === "boolean") await setOllamaSetting("ollama_auth_required", String(authRequired));
-        if (typeof username === "string") await setOllamaSetting("ollama_username", username);
-        if (typeof password === "string" && password.length > 0) await setOllamaSetting("ollama_password", password);
-        if (typeof model === "string") await setOllamaSetting("ollama_model", model);
-        if (typeof textModel === "string") await setOllamaSetting("ollama_text_model", textModel);
-        if (typeof prompt === "string") await setOllamaSetting("ollama_prompt", prompt);
-        if (typeof eventsModel === "string") await setOllamaSetting("ollama_events_model", eventsModel);
-        if (typeof eventsPrompt === "string") await setOllamaSetting("ollama_events_prompt", eventsPrompt);
-        if (typeof familyTreeModel === "string") await setOllamaSetting("ollama_family_tree_model", familyTreeModel);
-        if (typeof autoDescribeImages === "boolean") await setOllamaSetting("ollama_auto_describe_images", String(autoDescribeImages));
-        if (typeof sexGuessModel === "string") await setOllamaSetting("ollama_sex_guess_model", sexGuessModel);
-        if (typeof whisperApiUrl === "string") await setOllamaSetting("whisper_api_url", whisperApiUrl.trim());
-        if (typeof whisperModel === "string") await setOllamaSetting("whisper_model", whisperModel.trim());
-        res.json({ success: true });
-      } catch (error) {
-        res.status(500).json({ error: "Failed to save Ollama settings" });
-      }
-    });
-  
-    app.get("/api/ollama/models", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
-        if (!apiUrl.trim()) return res.json({ models: [] });
-        const base = apiUrl.replace(/\/+$/, "");
-        const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
-        const headers: Record<string, string> = {};
-        if (authRequired) {
-          const username = (await getOllamaSetting("ollama_username")) ?? "";
-          const password = (await getOllamaSetting("ollama_password")) ?? "";
-          headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-        }
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
-        try {
-          const resp = await fetch(`${base}/api/tags`, { headers, signal: controller.signal });
-          clearTimeout(timeout);
-          if (!resp.ok) return res.json({ models: [] });
-          const data = await resp.json() as { models?: { name: string; size: number; details?: { parameter_size?: string } }[] };
-          const models = (data.models ?? []).map((m) => ({
-            name: m.name,
-            parameterSize: m.details?.parameter_size ?? null,
-          }));
-          res.json({ models });
-        } catch {
-          clearTimeout(timeout);
-          res.json({ models: [] });
-        }
-      } catch (error: any) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-  
-    app.post("/api/ollama/test", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const apiUrl = (typeof req.body.apiUrl === "string" && req.body.apiUrl.trim())
-          ? req.body.apiUrl.trim()
-          : ((await getOllamaSetting("ollama_api_url")) ?? "");
-        if (!apiUrl.trim()) return res.json({ ok: false, message: "No API URL configured." });
-        const base = apiUrl.replace(/\/+$/, "");
-        const authRequired = (typeof req.body.authRequired === "boolean")
-          ? req.body.authRequired
-          : ((await getOllamaSetting("ollama_auth_required")) === "true");
-        const headers: Record<string, string> = {};
-        if (authRequired) {
-          const username = (typeof req.body.username === "string" ? req.body.username : null)
-            ?? (await getOllamaSetting("ollama_username")) ?? "";
-          const password = (typeof req.body.password === "string" && req.body.password.length > 0 ? req.body.password : null)
-            ?? (await getOllamaSetting("ollama_password")) ?? "";
-          headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-        }
-        const testUrl = `${base}/api/tags`;
-        console.log(`[Ollama test] url=${testUrl} auth=${authRequired} hasAuthHeader=${!!headers["Authorization"]}`);
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
-        try {
-          const resp = await fetch(testUrl, { headers, signal: controller.signal });
-          clearTimeout(timeout);
-          if (resp.ok) {
-            const data = await resp.json() as { models?: { name: string }[] };
-            const count = data.models?.length ?? 0;
-            res.json({ ok: true, message: `Connected. ${count} model${count !== 1 ? "s" : ""} available.` });
-          } else {
-            let detail = "";
-            try {
-              const body = await resp.text();
-              if (body.trim()) detail = ` — ${body.trim().slice(0, 200)}`;
-            } catch {}
-            console.log(`[Ollama test] status=${resp.status}${detail}`);
-            if (resp.status === 401) {
-              res.json({ ok: false, message: `Authentication required (401). Check your username and password.` });
-            } else if (resp.status === 403) {
-              res.json({ ok: false, message: `Access denied (403). Credentials were sent but rejected by the server.${detail}` });
-            } else {
-              res.json({ ok: false, message: `Server responded with ${resp.status}${detail}` });
-            }
-          }
-        } catch (err: any) {
-          clearTimeout(timeout);
-          if (err.name === "AbortError") {
-            res.json({ ok: false, message: "Connection timed out after 8 seconds." });
-          } else {
-            res.json({ ok: false, message: `Connection failed: ${err.message}` });
-          }
-        }
-      } catch (error: any) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-  
-    app.post("/api/ollama/describe", upload.single("image"), async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
-        if (!apiUrl.trim()) return res.status(400).json({ error: "No Ollama API URL configured." });
-        const base = apiUrl.replace(/\/+$/, "");
-        const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        if (authRequired) {
-          const username = (await getOllamaSetting("ollama_username")) ?? "";
-          const password = (await getOllamaSetting("ollama_password")) ?? "";
-          headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-        }
-        if (!req.file) return res.status(400).json({ error: "No image provided." });
-        const imageBase64 = req.file.buffer.toString("base64");
-        const savedModel = (await getOllamaSetting("ollama_model")) ?? "";
-        const model = (req.body.model as string | undefined) || savedModel || "llava";
-        const savedPrompt = (await getOllamaSetting("ollama_prompt")) ?? "";
-        const prompt = (req.body.prompt as string | undefined) || savedPrompt || "Return 2 sentences explaining what is happening in this image.";
-        const system = (req.body.system as string | undefined) || undefined;
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 120000);
-        try {
-          const resp = await fetch(`${base}/api/generate`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              model,
-              prompt,
-              ...(system ? { system } : {}),
-              images: [imageBase64],
-              stream: false,
-            }),
-            signal: controller.signal,
-          });
-          clearTimeout(timeout);
-          if (!resp.ok) {
-            const text = await resp.text();
-            return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
-          }
-          const data = await resp.json() as { response?: string; error?: string };
-          if (data.error) return res.status(502).json({ error: data.error });
-          res.json({ description: data.response ?? "" });
-        } catch (err: any) {
-          clearTimeout(timeout);
-          if (err.name === "AbortError") {
-            res.status(504).json({ error: "Request timed out after 120 seconds." });
-          } else {
-            res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
-          }
-        }
-      } catch (error: any) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-  
-    // ── AI Chat (Ollama text chat) ────────────────────────────────────────────
-  
-    const DEFAULT_CHAT_MODEL = "llama3";
     const AGENTIC_SYSTEM_INSTRUCTIONS =
       "\n\n[AGENTIC MODE ACTIVE: HIGH AUTONOMY & MULTI-STEP REASONING REQUIRED]\n" +
       "You are running in AGENTIC mode. Your primary objective is to solve the user's request thoroughly, even if it requires a complex, multi-step process. " +
@@ -1666,21 +1395,32 @@ export function registerRoutes(app: Express) {
       "Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.",
     ].join(" ");
   
-    // Helper: build Ollama request headers (with optional basic auth)
-    async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
-      const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
-      if (!apiUrl.trim()) return null;
-      const base = apiUrl.replace(/\/+$/, "");
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
-      if (authRequired) {
-        const username = (await getOllamaSetting("ollama_username")) ?? "";
-        const password = (await getOllamaSetting("ollama_password")) ?? "";
-        headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-      }
-      return { base, headers };
+    /** The chat's own (provider, model) when set, else the text model. */
+    function resolveChatModel(chat: AiChat): Promise<ResolvedModel> {
+      return resolveModel("text", { providerId: chat.providerId, model: chat.model });
     }
-  
+
+    /** System prompt + replayable history + the new user turn. */
+    function buildChatMessages(chat: AiChat, history: any[], userMessage: AiChatMessage): AiMessage[] {
+      const baseSysMsg = chat.systemMessage?.trim() || DEFAULT_PRM_SYSTEM_MESSAGE;
+      const out: AiMessage[] = [{ role: "system", content: chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg }];
+      for (const m of history) {
+        if (m.role === "tool") {
+          out.push({ role: "tool", name: m.tool_name || m.name, tool_call_id: m.tool_call_id, content: m.content });
+        } else if (m.role === "assistant") {
+          out.push({ role: "assistant", content: m.content || "", ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}) });
+        } else {
+          out.push({ role: m.role, content: renderMessageWithAttachments(m) });
+        }
+      }
+      out.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
+      return out;
+    }
+
+    function sendAiError(res: import("express").Response, err: any) {
+      res.status(err instanceof AiConfigError ? 400 : 502).json({ error: err?.message ?? String(err) });
+    }
+
     function sanitizeChatMessages(input: unknown): any[] {
       if (!Array.isArray(input)) return [];
       return input
@@ -1705,10 +1445,23 @@ export function registerRoutes(app: Express) {
           if (calls.length) out.toolCalls = calls;
           if (m.tool_calls) out.tool_calls = m.tool_calls;
           if (m.links) out.links = m.links;
+          if (m.stopped) out.stopped = true;
           return out;
         });
     }
   
+    /**
+     * Messages the chat UI renders: user turns and final assistant answers. Intermediate
+     * assistant turns that only carry `tool_calls` (usually empty content) stay in the DB
+     * for model replay but would show up as empty bubbles.
+     */
+    function toClientMessages(messages: unknown): any[] {
+      if (!Array.isArray(messages)) return [];
+      return messages.filter(
+        (m) => m?.role === "user" || (m?.role === "assistant" && !m.tool_calls?.length)
+      );
+    }
+
     function sanitizeToolCalls(input: unknown): AiToolCallTrace[] {
       if (!Array.isArray(input)) return [];
       return input
@@ -1744,7 +1497,7 @@ export function registerRoutes(app: Express) {
         });
     }
   
-    /** Build the text payload sent to Ollama for a message that has file attachments. */
+    /** Build the text payload sent to the model for a message that has file attachments. */
     function renderMessageWithAttachments(message: AiChatMessage): string {
       if (!message.attachments || message.attachments.length === 0) return message.content;
       const parts: string[] = [];
@@ -1776,9 +1529,9 @@ export function registerRoutes(app: Express) {
       perTool: Record<string, boolean>;
       executionMode: AiToolExecutionMode;
     }> {
-      const enabledRaw = await getOllamaSetting("ai_tools_enabled");
+      const enabledRaw = await storage.getAppSetting("ai_tools_enabled");
       const enabled = enabledRaw === null || enabledRaw === undefined ? true : enabledRaw === "true";
-      const perToolRaw = await getOllamaSetting("ai_tools_per_tool");
+      const perToolRaw = await storage.getAppSetting("ai_tools_per_tool");
       let perTool: Record<string, boolean> = {};
       if (perToolRaw) {
         try {
@@ -1794,7 +1547,7 @@ export function registerRoutes(app: Express) {
       for (const t of AI_TOOLS) {
         if (!(t.name in perTool)) perTool[t.name] = true;
       }
-      const modeRaw = await getOllamaSetting("ai_tools_execution_mode");
+      const modeRaw = await storage.getAppSetting("ai_tools_execution_mode");
       // Default to the most restrictive mode (off) so writes are opt-in.
       const executionMode = parseExecutionMode(modeRaw ?? "off");
       return { enabled, perTool, executionMode };
@@ -1833,11 +1586,11 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         if (typeof req.body.enabled === "boolean") {
-          await setOllamaSetting("ai_tools_enabled", String(req.body.enabled));
+          await storage.setAppSetting("ai_tools_enabled", String(req.body.enabled));
         }
         if (typeof req.body.executionMode === "string") {
           const mode = parseExecutionMode(req.body.executionMode);
-          await setOllamaSetting("ai_tools_execution_mode", mode);
+          await storage.setAppSetting("ai_tools_execution_mode", mode);
         }
         if (req.body.perTool && typeof req.body.perTool === "object") {
           const current = (await readAiToolSettings()).perTool;
@@ -1846,7 +1599,7 @@ export function registerRoutes(app: Express) {
           for (const k of Object.keys(patch)) {
             if (typeof patch[k] === "boolean") next[k] = patch[k] as boolean;
           }
-          await setOllamaSetting("ai_tools_per_tool", JSON.stringify(next));
+          await storage.setAppSetting("ai_tools_per_tool", JSON.stringify(next));
         }
         const settings = await readAiToolSettings();
         res.json(settings);
@@ -1863,21 +1616,53 @@ export function registerRoutes(app: Express) {
     // which resolves the promise so the loop resumes.
     type ApprovalDecision = "accept" | "reject";
     const pendingClientReplies = new Map<string, {
-      userId: number;
       resolve: (value: unknown) => void;
     }>();
   
-    function awaitClientReply<T>(id: string, userId: number): Promise<T> {
+    /** Wait for the client's reply to `id`; resolves with `onAbort` if the run is stopped first. */
+    function awaitClientReply<T>(id: string, signal: AbortSignal, onAbort: T): Promise<T> {
       return new Promise((resolve) => {
-        pendingClientReplies.set(id, { userId, resolve: resolve as (value: unknown) => void });
+        if (signal.aborted) return resolve(onAbort);
+        const abort = () => {
+          pendingClientReplies.delete(id);
+          resolve(onAbort);
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        pendingClientReplies.set(id, {
+          resolve: (value) => {
+            signal.removeEventListener("abort", abort);
+            resolve(value as T);
+          },
+        });
       });
     }
+
+    // Chats with a tool loop in flight, keyed by chat id. POST /stop aborts the controller.
+    const activeChatRuns = new Map<string, AbortController>();
+
+    /** Register a run for `chatId`, or send 409 and return null if one is already in flight. */
+    function claimChatRun(chatId: string, res: import("express").Response): AbortController | null {
+      if (activeChatRuns.has(chatId)) {
+        res.status(409).json({ error: "This chat is already responding." });
+        return null;
+      }
+      const controller = new AbortController();
+      activeChatRuns.set(chatId, controller);
+      return controller;
+    }
+
+    app.post("/api/ai-chats/:id/stop", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const controller = activeChatRuns.get(req.params.id);
+      if (!controller) return res.status(404).json({ error: "Chat is not running" });
+      controller.abort();
+      res.json({ stopped: true });
+    });
   
     /** Look up + remove the pending reply for `id`, enforcing ownership. Sends the error response itself. */
     function takePendingReply(req: import("express").Request, res: import("express").Response) {
       const pending = pendingClientReplies.get(req.params.id);
       if (!pending) { res.status(404).json({ error: "request_not_found" }); return null; }
-      if (pending.userId !== req.user!.id) { res.status(403).json({ error: "forbidden" }); return null; }
       pendingClientReplies.delete(req.params.id);
       return pending;
     }
@@ -1925,28 +1710,29 @@ export function registerRoutes(app: Express) {
   
     type StreamingToolLoopParams = {
       res: import("express").Response;
-      ctx: { base: string; headers: Record<string, string> };
-      model: string;
+      resolved: ResolvedModel;
       /** Initial messages array (system + history + new user). */
-      initialMessages: { role: string; content: string; tool_call_id?: string; name?: string }[];
-      userId: number;
+      initialMessages: AiMessage[];
+      /** Aborted by POST /api/ai-chats/:id/stop. */
+      stopSignal: AbortSignal;
     };
-  
+
     /**
-     * Drives the multi-step tool-calling chat with Ollama, streaming each chunk
+     * Drives the multi-step tool-calling chat, streaming each chunk
      * back to the client over the open SSE connection. Returns the final
      * assistant content + tool-call trace once the model produces a normal
-     * answer (or the iteration cap is hit).
+     * answer (or the iteration cap is hit, or the user stops the run).
      */
     async function runStreamingChatWithTools(p: StreamingToolLoopParams): Promise<{
       assistantContent: string;
       toolCalls: AiToolCallTrace[];
       newMessages: any[];
+      stopped: boolean;
     }> {
-      const { res, ctx, model, userId } = p;
-      const messages: any[] = [...p.initialMessages];
+      const { res, resolved, stopSignal } = p;
+      const messages: AiMessage[] = [...p.initialMessages];
       const { names: toolNames, executionMode } = await activeToolNames();
-      const tools = toolNames.size > 0 ? buildOllamaToolsArray(toolNames) : undefined;
+      const tools = toolNames.size > 0 ? buildToolsArray(toolNames) : undefined;
       const toolTrace: AiToolCallTrace[] = [];
   
       // Teach the model when/how to use ask_user, but only when it's offered.
@@ -1959,7 +1745,7 @@ export function registerRoutes(app: Express) {
         (res as any).flush?.();
       };
   
-      const MAX_ITERATIONS = 5;
+      const MAX_ITERATIONS = 30;
       // Per-iteration timeout (5 minutes total budget for the whole loop).
       // Time spent waiting on the user (approvals / questions) is excluded.
       const OVERALL_BUDGET_MS = 300000;
@@ -1975,14 +1761,33 @@ export function registerRoutes(app: Express) {
         budgetStartedAt = Date.now();
         overallTimeout = setTimeout(() => overallController.abort(), budgetRemainingMs);
       };
-  
+      // Stopping cancels any in-flight model stream the same way the budget timeout does.
+      const onStop = () => overallController.abort();
+      stopSignal.addEventListener("abort", onStop, { once: true });
+
+      /** Push the final assistant turn and return. Every exit except a model error goes through here. */
+      const finish = (content: string, stopped = false) => {
+        messages.push({ role: "assistant", content });
+        return {
+          assistantContent: content,
+          toolCalls: toolTrace,
+          newMessages: messages.slice(p.initialMessages.length),
+          stopped,
+        };
+      };
+
+      // Identical (name + args) calls seen this run; the third repeat is refused
+      // so a model stuck on the wrong tool can't burn the whole iteration cap.
+      const MAX_IDENTICAL_CALLS = 2;
+      const callCounts = new Map<string, number>();
+
       /** Wait for the client to answer (or skip) an ask_user form. Passed to tool handlers via ctx. */
       const askUser = async (questions: AiUserQuestion[]): Promise<AiUserAnswer[] | null> => {
         const id = `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         writeLine({ event: "user_question_request", id, questions });
         pauseBudget();
         try {
-          return await awaitClientReply<AiUserAnswer[] | null>(id, userId);
+          return await awaitClientReply<AiUserAnswer[] | null>(id, stopSignal, null);
         } finally {
           resumeBudget();
           writeLine({ event: "user_question_answered", id });
@@ -1996,81 +1801,39 @@ export function registerRoutes(app: Express) {
           const onAbort = () => iterController.abort();
           overallController.signal.addEventListener("abort", onAbort);
   
-          let ollamaResp: Response;
+          let assistantContentThisIter = "";
+          const pendingToolCalls: AiToolCall[] = [];
           try {
-            ollamaResp = await fetch(`${ctx.base}/api/chat`, {
-              method: "POST",
-              headers: { ...ctx.headers, "Content-Type": "application/json" },
-              body: JSON.stringify({ model, messages, stream: true, options: { num_predict: -1 }, ...(tools ? { tools } : {}) }),
+            const stream = adapterFor(resolved.provider).chatStream(resolved.provider, {
+              model: resolved.model,
+              messages,
+              tools,
               signal: iterController.signal,
             });
-          } catch (err: any) {
-            overallController.signal.removeEventListener("abort", onAbort);
-            writeLine({ error: `Failed to reach Ollama: ${err.message}` });
-            return { assistantContent: "", toolCalls: toolTrace, newMessages: messages.slice(p.initialMessages.length) };
-          }
-          if (!ollamaResp.ok) {
-            overallController.signal.removeEventListener("abort", onAbort);
-            const text = await ollamaResp.text();
-            writeLine({ error: `Ollama returned ${ollamaResp.status}: ${text.slice(0, 200)}` });
-            return { assistantContent: "", toolCalls: toolTrace, newMessages: messages.slice(p.initialMessages.length) };
-          }
-  
-          const decoder = new TextDecoder();
-          const reader = ollamaResp.body!.getReader();
-          let lineBuffer = "";
-          let assistantContentThisIter = "";
-          let pendingToolCalls: any[] = [];
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              lineBuffer += decoder.decode(value, { stream: true });
-              const lines = lineBuffer.split("\n");
-              lineBuffer = lines.pop() ?? "";
-              for (const line of lines) {
-                if (!line.trim()) continue;
-                let parsed: any;
-                try { parsed = JSON.parse(line); } catch { continue; }
-                if (parsed?.error) {
-                  writeLine({ error: parsed.error });
-                  continue;
-                }
-                const msgPart = parsed?.message ?? {};
-                if (Array.isArray(msgPart.tool_calls) && msgPart.tool_calls.length > 0) {
-                  // Buffer tool calls — do NOT forward content chunks to the client
-                  // for this iteration; they're internal model reasoning.
-                  pendingToolCalls.push(...msgPart.tool_calls);
-                } else if (typeof msgPart.content === "string" && msgPart.content.length > 0) {
-                  // Forward only when there are no pending tool calls in this
-                  // iteration. If the model later produces tool_calls in this
-                  // same iteration, the partial text is dropped (Ollama doesn't
-                  // mix them in practice).
-                  assistantContentThisIter += msgPart.content;
-                  writeLine(parsed);
-                }
+            for await (const chunk of stream) {
+              if (chunk.toolCalls) {
+                // Buffer tool calls; they're executed once the model's turn ends.
+                pendingToolCalls.push(...chunk.toolCalls);
+              } else if (chunk.content) {
+                assistantContentThisIter += chunk.content;
+                writeLine({ message: { role: "assistant", content: chunk.content } });
               }
             }
+          } catch (err: any) {
+            if (stopSignal.aborted) return finish(assistantContentThisIter, true);
+            writeLine({ error: err?.message ?? String(err) });
+            return { assistantContent: "", toolCalls: toolTrace, newMessages: messages.slice(p.initialMessages.length), stopped: false };
           } finally {
-            reader.releaseLock();
             overallController.signal.removeEventListener("abort", onAbort);
           }
-  
-          if (pendingToolCalls.length === 0) {
-            // Model produced its final answer — return.
-            messages.push({
-              role: "assistant",
-              content: assistantContentThisIter,
-            });
-            return {
-              assistantContent: assistantContentThisIter,
-              toolCalls: toolTrace,
-              newMessages: messages.slice(p.initialMessages.length),
-            };
-          }
+
+          // Stopped mid-stream: keep the partial text, drop the half-formed tool calls.
+          if (stopSignal.aborted) return finish(assistantContentThisIter, true);
+          // Model produced its final answer — return.
+          if (pendingToolCalls.length === 0) return finish(assistantContentThisIter);
   
           // Persist the assistant tool-call turn into the message list so
-          // subsequent Ollama calls include it.
+          // subsequent model calls include it.
           messages.push({
             role: "assistant",
             content: assistantContentThisIter,
@@ -2080,13 +1843,13 @@ export function registerRoutes(app: Express) {
           // Execute each tool call, emit visualization events, and append the
           // resulting tool messages.
           for (const tc of pendingToolCalls) {
-            const fn = tc?.function ?? {};
-            const name = typeof fn.name === "string" ? fn.name : "";
-            let rawArgs = fn.arguments;
-            if (typeof rawArgs === "string") {
-              try { rawArgs = JSON.parse(rawArgs); } catch { rawArgs = {}; }
+            const name = tc.function?.name ?? "";
+            const args = tc.function?.arguments ?? {};
+            if (stopSignal.aborted) {
+              // Every tool_call needs a matching tool message for the history to replay cleanly.
+              messages.push({ role: "tool", name, tool_call_id: tc?.id, content: JSON.stringify({ error: "stopped_by_user" }) });
+              continue;
             }
-            const args = (rawArgs && typeof rawArgs === "object") ? rawArgs as Record<string, unknown> : {};
             const id = `tc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
             const def = getAiToolByName(name);
             if (!def || !toolNames.has(name)) {
@@ -2097,13 +1860,27 @@ export function registerRoutes(app: Express) {
               messages.push({
                 role: "tool",
                 name,
-                tool_name: name,
                 tool_call_id: tc?.id,
                 content: JSON.stringify({ error: summary })
               });
               continue;
             }
             writeLine({ event: "tool_call", id, name: def.name, label: def.label, icon: def.icon, args });
+            const callKey = `${def.name}:${JSON.stringify(args)}`;
+            const priorCalls = callCounts.get(callKey) ?? 0;
+            callCounts.set(callKey, priorCalls + 1);
+            if (priorCalls >= MAX_IDENTICAL_CALLS) {
+              const summary = `Skipped: already called ${priorCalls} times with the same arguments`;
+              writeLine({ event: "tool_result", id, ok: false, summary });
+              toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary, ok: false });
+              messages.push({
+                role: "tool",
+                name: def.name,
+                tool_call_id: tc?.id,
+                content: JSON.stringify({ error: "Repeated identical call. Use the earlier result, try a different tool or arguments, or answer the user." })
+              });
+              continue;
+            }
             // Write tools are gated by the execution mode setting.
             if (def.write) {
               if (executionMode === "off") {
@@ -2113,7 +1890,6 @@ export function registerRoutes(app: Express) {
                 messages.push({
                   role: "tool",
                   name: def.name,
-                  tool_name: def.name,
                   tool_call_id: tc?.id,
                   content: JSON.stringify({ error: summary })
                 });
@@ -2129,7 +1905,7 @@ export function registerRoutes(app: Express) {
                   args,
                 });
                 pauseBudget();
-                const decision = await awaitClientReply<ApprovalDecision>(id, userId);
+                const decision = await awaitClientReply<ApprovalDecision>(id, stopSignal, "reject");
                 resumeBudget();
                 writeLine({ event: "tool_approval_decision", id, decision });
                 if (decision === "reject") {
@@ -2139,7 +1915,6 @@ export function registerRoutes(app: Express) {
                   messages.push({
                     role: "tool",
                     name: def.name,
-                    tool_name: def.name,
                     tool_call_id: tc?.id,
                     content: JSON.stringify({ error: "user_rejected" })
                   });
@@ -2148,13 +1923,12 @@ export function registerRoutes(app: Express) {
               }
             }
             try {
-              const result = await def.handler(args, { userId, askUser });
+              const result = await def.handler(args, { askUser, signal: stopSignal });
               writeLine({ event: "tool_result", id, ok: true, summary: result.summary });
               toolTrace.push({ name: def.name, icon: def.icon, label: def.label, args, summary: result.summary, ok: true });
               messages.push({
                 role: "tool",
                 name: def.name,
-                tool_name: def.name,
                 tool_call_id: tc?.id,
                 content: JSON.stringify(result.data)
               });
@@ -2165,29 +1939,22 @@ export function registerRoutes(app: Express) {
               messages.push({
                 role: "tool",
                 name: def.name,
-                tool_name: def.name,
                 tool_call_id: tc?.id,
                 content: JSON.stringify({ error: summary })
               });
             }
           }
-          // Loop continues; next /api/chat call will see the tool messages.
+          if (stopSignal.aborted) return finish("", true);
+          // Loop continues; the next model call will see the tool messages.
         }
-  
+
         // Iteration cap hit — emit a synthetic final answer.
         const fallback = "I reached the tool-call limit before producing a final answer. Please refine your question.";
         writeLine({ message: { role: "assistant", content: fallback } });
-        messages.push({
-          role: "assistant",
-          content: fallback,
-        });
-        return {
-          assistantContent: fallback,
-          toolCalls: toolTrace,
-          newMessages: messages.slice(p.initialMessages.length),
-        };
+        return finish(fallback);
       } finally {
         clearTimeout(overallTimeout);
+        stopSignal.removeEventListener("abort", onStop);
       }
     }
   
@@ -2196,7 +1963,6 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         const rows = await db.query.aiChats.findMany({
-          where: (t, { eq }) => eq(t.userId, req.user!.id),
           orderBy: (t, { desc }) => [desc(t.updatedAt)],
         });
         res.json(rows.map((r) => ({
@@ -2204,12 +1970,9 @@ export function registerRoutes(app: Express) {
           title: r.title,
           systemMessage: r.systemMessage,
           model: r.model,
+          providerId: r.providerId,
           agentMode: r.agentMode,
-          messageCount: Array.isArray(r.messages)
-            ? (r.messages as any[]).filter(
-                (m) => m.role === "user" || m.role === "assistant"
-              ).length
-            : 0,
+          messageCount: toClientMessages(r.messages).length,
           createdAt: r.createdAt,
           updatedAt: r.updatedAt,
         })));
@@ -2223,13 +1986,10 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         const row = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!row) return res.status(404).json({ error: "Chat not found" });
-        const clientMessages = (row.messages as any[]).filter(
-          (m) => m.role === "user" || m.role === "assistant"
-        );
-        res.json({ ...row, messages: clientMessages });
+        res.json({ ...row, messages: toClientMessages(row.messages) });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -2242,12 +2002,13 @@ export function registerRoutes(app: Express) {
         const title = typeof req.body.title === "string" && req.body.title.trim() ? req.body.title.trim() : "New chat";
         const systemMessage = typeof req.body.systemMessage === "string" ? req.body.systemMessage : "";
         const model = typeof req.body.model === "string" ? req.body.model : "";
+        const providerId = typeof req.body.providerId === "string" ? req.body.providerId : "";
         const agentMode = req.body.agentMode === true;
         const [row] = await db.insert(aiChats).values({
-          userId: req.user!.id,
           title,
           systemMessage,
           model,
+          providerId,
           messages: [],
           agentMode,
         }).returning();
@@ -2263,13 +2024,14 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         const existing = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!existing) return res.status(404).json({ error: "Chat not found" });
         const patch: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof req.body.title === "string") patch.title = req.body.title.trim() || "New chat";
         if (typeof req.body.systemMessage === "string") patch.systemMessage = req.body.systemMessage;
         if (typeof req.body.model === "string") patch.model = req.body.model;
+        if (typeof req.body.providerId === "string") patch.providerId = req.body.providerId;
         if (req.body.agentMode !== undefined) patch.agentMode = req.body.agentMode === true;
         if (req.body.messages !== undefined) patch.messages = sanitizeChatMessages(req.body.messages);
         const [row] = await db.update(aiChats).set(patch).where(eq(aiChats.id, req.params.id)).returning();
@@ -2285,7 +2047,7 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         const existing = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!existing) return res.status(404).json({ error: "Chat not found" });
         const vectorIdToDelete = existing.vectorId ?? null;
@@ -2302,10 +2064,9 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         const existing = await db.query.aiChats.findMany({
-          where: (t, { eq }) => eq(t.userId, req.user!.id),
           columns: { id: true, vectorId: true },
         });
-        await db.delete(aiChats).where(eq(aiChats.userId, req.user!.id));
+        await db.delete(aiChats);
         for (const row of existing) {
           if (row.vectorId) void deleteEntityVector("ai_chat", row.vectorId);
         }
@@ -2326,76 +2087,26 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "Message is required." });
         }
         const chat = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!chat) return res.status(404).json({ error: "Chat not found" });
-  
-        const ctx = await buildOllamaChatContext();
-        if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
-  
-        // Prefer the chat's per-conversation model when set, otherwise fall back to global settings.
-        const chatModel = (chat.model ?? "").trim();
-        const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
-        const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
   
         const history = sanitizeChatMessages(chat.messages);
         const userMessage: AiChatMessage = hasAttachments
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        // Build the messages payload for Ollama, including the system message if present.
-        const ollamaMessages: any[] = [];
-        const systemMessage = chat.systemMessage?.trim();
-        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
-        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
-        ollamaMessages.push({ role: "system", content: fullSysMsg });
-        for (const m of history) {
-          if (m.role === "tool") {
-            ollamaMessages.push({
-              role: "tool",
-              name: m.name,
-              tool_name: m.tool_name || m.name,
-              tool_call_id: m.tool_call_id,
-              content: m.content
-            });
-          } else if (m.role === "assistant") {
-            ollamaMessages.push({
-              role: "assistant",
-              content: m.content || "",
-              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
-            });
-          } else {
-            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
-          }
-        }
-        ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
-  
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 120000);
+        const aiMessages = buildChatMessages(chat, history, userMessage);
         let assistantContent = "";
         try {
-          const resp = await fetch(`${ctx.base}/api/chat`, {
-            method: "POST",
-            headers: ctx.headers,
-            body: JSON.stringify({ model, messages: ollamaMessages, stream: false, options: { num_predict: -1 } }),
-            signal: controller.signal,
-          });
-          clearTimeout(timeout);
-          if (!resp.ok) {
-            const text = await resp.text();
-            return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
-          }
-          const data = await resp.json() as { message?: { content?: string }; error?: string };
-          if (data.error) return res.status(502).json({ error: data.error });
-          assistantContent = data.message?.content ?? "";
+          const resolved = await resolveChatModel(chat);
+          const result = await aiChat(resolved, { messages: aiMessages, signal: AbortSignal.timeout(120000) });
+          assistantContent = result.content;
         } catch (err: any) {
-          clearTimeout(timeout);
-          if (err.name === "AbortError") {
-            return res.status(504).json({ error: "Request timed out after 120 seconds." });
-          }
-          return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
+          if (err?.name === "TimeoutError") return res.status(504).json({ error: "Request timed out after 120 seconds." });
+          return sendAiError(res, err);
         }
-  
+
         const resolvedLinks = await resolveLinksInText(assistantContent);
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
@@ -2412,10 +2123,7 @@ export function registerRoutes(app: Express) {
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
         syncEntityInBackground("ai_chat", chat.id);
-        const clientMessages = (updated.messages as any[]).filter(
-          (m) => m.role === "user" || m.role === "assistant"
-        );
-        res.json({ chat: { ...updated, messages: clientMessages }, assistant: assistantMessage });
+        res.json({ chat: { ...updated, messages: toClientMessages(updated.messages) }, assistant: assistantMessage });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -2433,7 +2141,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "Message is required." });
         }
         const chat = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!chat) return res.status(404).json({ error: "Chat not found" });
   
@@ -2450,51 +2158,21 @@ export function registerRoutes(app: Express) {
         }
         trimmed = trimmed.slice(0, lastUserIdx);
   
-        const ctx = await buildOllamaChatContext();
-        if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
-  
-        const chatModel = (chat.model ?? "").trim();
-        const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
-        const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
-  
         const userMessage: AiChatMessage = hasAttachments
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const ollamaMessages: { role: string; content: string }[] = [];
-        const systemMessage = chat.systemMessage?.trim();
-        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
-        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
-        ollamaMessages.push({ role: "system", content: fullSysMsg });
-        for (const m of trimmed) ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
-        ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
-  
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 120000);
+        const aiMessages = buildChatMessages(chat, trimmed, userMessage);
         let assistantContent = "";
         try {
-          const resp = await fetch(`${ctx.base}/api/chat`, {
-            method: "POST",
-            headers: ctx.headers,
-            body: JSON.stringify({ model, messages: ollamaMessages, stream: false }),
-            signal: controller.signal,
-          });
-          clearTimeout(timeout);
-          if (!resp.ok) {
-            const text = await resp.text();
-            return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
-          }
-          const data = await resp.json() as { message?: { content?: string }; error?: string };
-          if (data.error) return res.status(502).json({ error: data.error });
-          assistantContent = data.message?.content ?? "";
+          const resolved = await resolveChatModel(chat);
+          const result = await aiChat(resolved, { messages: aiMessages, signal: AbortSignal.timeout(120000) });
+          assistantContent = result.content;
         } catch (err: any) {
-          clearTimeout(timeout);
-          if (err.name === "AbortError") {
-            return res.status(504).json({ error: "Request timed out after 120 seconds." });
-          }
-          return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
+          if (err?.name === "TimeoutError") return res.status(504).json({ error: "Request timed out after 120 seconds." });
+          return sendAiError(res, err);
         }
-  
+
         const resolvedLinks = await resolveLinksInText(assistantContent);
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: AiChatMessage = { role: "assistant", content: cleanedContent };
@@ -2513,7 +2191,7 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // Streaming version of the message endpoint — forwards Ollama NDJSON tokens to the client
+    // Streaming version of the message endpoint — forwards model tokens as NDJSON to the client
     // in real time, then persists the fully assembled reply to the DB at the end.
     app.post("/api/ai-chats/:id/message/stream", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -2525,68 +2203,47 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "Message is required." });
         }
         const chat = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!chat) return res.status(404).json({ error: "Chat not found" });
   
-        const ctx = await buildOllamaChatContext();
-        if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
-  
-        const chatModel = (chat.model ?? "").trim();
-        const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
-        const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
-  
+        let resolved: ResolvedModel;
+        try {
+          resolved = await resolveChatModel(chat);
+        } catch (err) {
+          return sendAiError(res, err);
+        }
+
         const history = sanitizeChatMessages(chat.messages);
         const userMessage: AiChatMessage = hasAttachments
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const ollamaMessages: any[] = [];
-        const systemMessage = chat.systemMessage?.trim();
-        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
-        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
-        ollamaMessages.push({ role: "system", content: fullSysMsg });
-        for (const m of history) {
-          if (m.role === "tool") {
-            ollamaMessages.push({
-              role: "tool",
-              name: m.name,
-              tool_name: m.tool_name || m.name,
-              tool_call_id: m.tool_call_id,
-              content: m.content
-            });
-          } else if (m.role === "assistant") {
-            ollamaMessages.push({
-              role: "assistant",
-              content: m.content || "",
-              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
-            });
-          } else {
-            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
-          }
-        }
-        ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
-  
+        const aiMessages = buildChatMessages(chat, history, userMessage);
+
+        const run = claimChatRun(chat.id, res);
+        if (!run) return;
+
         // text/event-stream is understood by every reverse-proxy as "do not buffer";
-        // flush headers immediately so the browser opens the stream before Ollama replies.
+        // flush headers immediately so the browser opens the stream before the model replies.
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
-  
-        const { assistantContent, toolCalls, newMessages } = await runStreamingChatWithTools({
+
+        const { assistantContent, toolCalls, newMessages, stopped } = await runStreamingChatWithTools({
           res,
-          ctx,
-          model,
-          initialMessages: ollamaMessages,
-          userId: req.user!.id,
-        });
-  
+          resolved,
+          initialMessages: aiMessages,
+          stopSignal: run.signal,
+        }).finally(() => activeChatRuns.delete(chat.id));
+
         const resolvedLinks = await resolveLinksInText(assistantContent);
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
+        if (stopped) assistantMessage.stopped = true;
         // links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         
@@ -2599,10 +2256,7 @@ export function registerRoutes(app: Express) {
         }
         const [updated] = await db.update(aiChats).set(patch).where(eq(aiChats.id, chat.id)).returning();
         syncEntityInBackground("ai_chat", chat.id);
-        const clientMessages = (updated.messages as any[]).filter(
-          (m) => m.role === "user" || m.role === "assistant"
-        );
-        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
+        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: toClientMessages(updated.messages) } }) + "\n");
         res.end();
       } catch (error: any) {
         if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -2621,7 +2275,7 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "Message is required." });
         }
         const chat = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!chat) return res.status(404).json({ error: "Chat not found" });
   
@@ -2635,61 +2289,40 @@ export function registerRoutes(app: Express) {
         if (lastUserIdx === -1) return res.status(400).json({ error: "No previous user message to edit." });
         trimmed = trimmed.slice(0, lastUserIdx);
   
-        const ctx = await buildOllamaChatContext();
-        if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
-  
-        const chatModel = (chat.model ?? "").trim();
-        const textModel = (await getOllamaSetting("ollama_text_model")) ?? "";
-        const model = chatModel || textModel || ((await getOllamaSetting("ollama_model")) ?? "") || DEFAULT_CHAT_MODEL;
-  
+        let resolved: ResolvedModel;
+        try {
+          resolved = await resolveChatModel(chat);
+        } catch (err) {
+          return sendAiError(res, err);
+        }
+
         const userMessage: AiChatMessage = hasAttachments
           ? { role: "user", content: message, attachments }
           : { role: "user", content: message };
   
-        const ollamaMessages: any[] = [];
-        const systemMessage = chat.systemMessage?.trim();
-        const baseSysMsg = systemMessage || DEFAULT_PRM_SYSTEM_MESSAGE;
-        const fullSysMsg = chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg;
-        ollamaMessages.push({ role: "system", content: fullSysMsg });
-        for (const m of trimmed) {
-          if (m.role === "tool") {
-            ollamaMessages.push({
-              role: "tool",
-              name: m.name,
-              tool_name: m.tool_name || m.name,
-              tool_call_id: m.tool_call_id,
-              content: m.content
-            });
-          } else if (m.role === "assistant") {
-            ollamaMessages.push({
-              role: "assistant",
-              content: m.content || "",
-              ...(m.tool_calls ? { tool_calls: m.tool_calls } : {})
-            });
-          } else {
-            ollamaMessages.push({ role: m.role, content: renderMessageWithAttachments(m) });
-          }
-        }
-        ollamaMessages.push({ role: "user", content: renderMessageWithAttachments(userMessage) });
-  
+        const aiMessages = buildChatMessages(chat, trimmed, userMessage);
+
+        const run = claimChatRun(chat.id, res);
+        if (!run) return;
+
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         res.flushHeaders();
-  
-        const { assistantContent, toolCalls, newMessages } = await runStreamingChatWithTools({
+
+        const { assistantContent, toolCalls, newMessages, stopped } = await runStreamingChatWithTools({
           res,
-          ctx,
-          model,
-          initialMessages: ollamaMessages,
-          userId: req.user!.id,
-        });
-  
+          resolved,
+          initialMessages: aiMessages,
+          stopSignal: run.signal,
+        }).finally(() => activeChatRuns.delete(chat.id));
+
         const resolvedLinks = await resolveLinksInText(assistantContent);
         const cleanedContent = cleanRawLinks(assistantContent, resolvedLinks);
         const assistantMessage: any = { role: "assistant", content: cleanedContent };
         if (toolCalls.length) assistantMessage.toolCalls = toolCalls;
+        if (stopped) assistantMessage.stopped = true;
         // links is compatible with JSONB message object
         if (resolvedLinks.length) assistantMessage.links = resolvedLinks.map(l => ({ url: l.url, title: l.title }));
         
@@ -2700,10 +2333,7 @@ export function registerRoutes(app: Express) {
           .where(eq(aiChats.id, chat.id))
           .returning();
         syncEntityInBackground("ai_chat", chat.id);
-        const clientMessages = (updated.messages as any[]).filter(
-          (m) => m.role === "user" || m.role === "assistant"
-        );
-        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: clientMessages } }) + "\n");
+        res.write(JSON.stringify({ done: true, chat: { ...updated, messages: toClientMessages(updated.messages) } }) + "\n");
         res.end();
       } catch (error: any) {
         if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -2717,17 +2347,18 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         const source = await db.query.aiChats.findFirst({
-          where: (t, { eq, and }) => and(eq(t.id, req.params.id), eq(t.userId, req.user!.id)),
+          where: (t, { eq }) => eq(t.id, req.params.id),
         });
         if (!source) return res.status(404).json({ error: "Chat not found" });
         const newModel = typeof req.body.model === "string" ? req.body.model : (source.model ?? "");
+        const newProviderId = typeof req.body.providerId === "string" ? req.body.providerId : source.providerId;
         const baseTitle = source.title || "New chat";
         const branchedTitle = `${baseTitle} (branch)`.slice(0, MAX_CHAT_TITLE_LENGTH);
         const [row] = await db.insert(aiChats).values({
-          userId: req.user!.id,
           title: branchedTitle,
           systemMessage: source.systemMessage,
           model: newModel,
+          providerId: newProviderId,
           messages: sanitizeChatMessages(source.messages),
           agentMode: source.agentMode,
         }).returning();
@@ -2748,9 +2379,9 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // Use the configured Ollama text model + events prompt to extract a structured
-    // list of events from a daily-note markdown body. Uses Ollama's `format` JSON
-    // schema parameter to constrain the model to a deterministic shape.
+    // Use the configured events model + prompt to extract a structured list of
+    // events from a daily-note markdown body. A JSON schema constrains the model
+    // to a deterministic shape.
     app.post("/api/daily-notes/generate-events", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
@@ -2758,16 +2389,14 @@ export function registerRoutes(app: Express) {
         const { body } = schema.parse(req.body);
         if (!body.trim()) return res.status(400).json({ error: "Body is empty." });
   
-        const ctx = await buildOllamaChatContext();
-        if (!ctx) return res.status(400).json({ error: "No Ollama API URL configured." });
-  
-        const eventsModel = ((await getOllamaSetting("ollama_events_model")) ?? "").trim();
-        const fallbackTextModel = ((await getOllamaSetting("ollama_text_model")) ?? "").trim();
-        const fallbackModel = ((await getOllamaSetting("ollama_model")) ?? "").trim();
-        const model = eventsModel || fallbackTextModel || fallbackModel;
-        if (!model) return res.status(400).json({ error: "No Ollama model configured for event extraction." });
-  
-        const customPrompt = ((await getOllamaSetting("ollama_events_prompt")) ?? "").trim();
+        let resolved: ResolvedModel;
+        try {
+          resolved = await resolveModel("events");
+        } catch (err) {
+          return sendAiError(res, err);
+        }
+
+        const customPrompt = ((await storage.getAppSetting("ai_events_prompt")) ?? "").trim();
         const systemPrompt = customPrompt || DEFAULT_EVENTS_SYSTEM_PROMPT;
   
         // JSON schema constrains the model to return { events: [{ text: string }, ...] }
@@ -2786,29 +2415,16 @@ export function registerRoutes(app: Express) {
           required: ["events"],
         };
   
-        const ollamaMessages = [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: body },
-        ];
-  
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 120000);
         try {
-          const resp = await fetch(`${ctx.base}/api/chat`, {
-            method: "POST",
-            headers: ctx.headers,
-            body: JSON.stringify({ model, messages: ollamaMessages, stream: false, format: responseFormat }),
-            signal: controller.signal,
+          const { content } = await aiChat(resolved, {
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: body },
+            ],
+            format: responseFormat,
+            signal: AbortSignal.timeout(120000),
           });
-          clearTimeout(timeout);
-          if (!resp.ok) {
-            const text = await resp.text();
-            return res.status(502).json({ error: `Ollama returned ${resp.status}: ${text.slice(0, 200)}` });
-          }
-          const data = await resp.json() as { message?: { content?: string }; error?: string };
-          if (data.error) return res.status(502).json({ error: data.error });
-          const content = data.message?.content ?? "";
-  
+
           let parsed: { events?: { text?: unknown }[] } = {};
           try {
             parsed = JSON.parse(content);
@@ -2822,11 +2438,8 @@ export function registerRoutes(app: Express) {
             : [];
           res.json({ events });
         } catch (err: any) {
-          clearTimeout(timeout);
-          if (err.name === "AbortError") {
-            return res.status(504).json({ error: "Request timed out after 120 seconds." });
-          }
-          return res.status(502).json({ error: `Failed to reach Ollama: ${err.message}` });
+          if (err?.name === "TimeoutError") return res.status(504).json({ error: "Request timed out after 120 seconds." });
+          return sendAiError(res, err);
         }
       } catch (error: any) {
         res.status(400).json({ error: error.message });
@@ -2886,19 +2499,19 @@ export function registerRoutes(app: Express) {
           return res.status(err.status ?? 502).json({ error: err.error ?? err.message });
         }
 
-        const apiUrl = (await getOllamaSetting("whisper_api_url")) || process.env.WHISPER_API_URL || "";
+        const apiUrl = (await storage.getAppSetting("whisper_api_url")) || process.env.WHISPER_API_URL || "";
         if (!apiUrl.trim()) {
           return res.status(400).json({ error: "No speech-to-text available. Connect PRM-Compute in Recognition settings, or set a Whisper server URL in Intelligence settings." });
         }
 
         const base = apiUrl.replace(/\/+$/, "");
-        const model = ((await getOllamaSetting("whisper_model")) || process.env.WHISPER_MODEL || "").trim() || "whisper-1";
+        const model = ((await storage.getAppSetting("whisper_model")) || process.env.WHISPER_MODEL || "").trim() || "whisper-1";
 
         const headers: Record<string, string> = {};
-        const authRequired = (await getOllamaSetting("whisper_auth_required")) === "true";
+        const authRequired = (await storage.getAppSetting("whisper_auth_required")) === "true";
         if (authRequired) {
-          const username = (await getOllamaSetting("whisper_username")) ?? "";
-          const password = (await getOllamaSetting("whisper_password")) ?? "";
+          const username = (await storage.getAppSetting("whisper_username")) ?? "";
+          const password = (await storage.getAppSetting("whisper_password")) ?? "";
           headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
         }
 
@@ -3131,6 +2744,7 @@ export function registerRoutes(app: Express) {
           hasApiKey: !!cfg.qdrantApiKey,
           collectionName: cfg.collectionName,
           embeddingModel: cfg.embeddingModel,
+          embeddingProviderId: (await getVectorSetting("vector_embedding_provider")) ?? "",
         });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -3139,7 +2753,7 @@ export function registerRoutes(app: Express) {
   
     app.post("/api/vector/settings", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { enabled, qdrantUrl, qdrantApiKey, collectionName, embeddingModel } = req.body ?? {};
+      const { enabled, qdrantUrl, qdrantApiKey, collectionName, embeddingModel, embeddingProviderId } = req.body ?? {};
       try {
         if (typeof enabled === "boolean") await setVectorSetting("vector_enabled", String(enabled));
         if (typeof qdrantUrl === "string") await setVectorSetting("vector_qdrant_url", qdrantUrl.trim());
@@ -3149,16 +2763,20 @@ export function registerRoutes(app: Express) {
         if (typeof collectionName === "string" && collectionName.trim().length > 0) {
           await setVectorSetting("vector_collection", collectionName.trim());
         }
-        if (typeof embeddingModel === "string") {
-          const previous = (await getVectorSetting("vector_embedding_model")) ?? "";
-          await setVectorSetting("vector_embedding_model", embeddingModel);
-          // If the embedding model changed, existing vectors are no longer valid.
-          // Clear vector_synced_at so vectorize-all picks them up; the per-note
-          // vector_id is preserved so re-embeds upsert in place.
-          if (previous && previous !== embeddingModel) {
-            await db.update(dailyNotes).set({ vectorSyncedAt: null });
-          }
+        // Vectors from a different (provider, model) pair aren't comparable.
+        // Clear vector_synced_at so vectorize-all picks them up; the per-note
+        // vector_id is preserved so re-embeds upsert in place.
+        let embeddingChanged = false;
+        for (const [key, value] of [
+          ["vector_embedding_model", embeddingModel],
+          ["vector_embedding_provider", embeddingProviderId],
+        ] as const) {
+          if (typeof value !== "string") continue;
+          const previous = (await getVectorSetting(key)) ?? "";
+          await setVectorSetting(key, value.trim());
+          if (previous && previous !== value.trim()) embeddingChanged = true;
         }
+        if (embeddingChanged) await db.update(dailyNotes).set({ vectorSyncedAt: null });
         res.json({ success: true });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -3172,41 +2790,6 @@ export function registerRoutes(app: Express) {
         res.json(result);
       } catch (error: any) {
         res.status(500).json({ ok: false, message: error.message });
-      }
-    });
-  
-    // List candidate embedding models from the configured Ollama instance.
-    app.get("/api/vector/embedding-models", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
-        if (!apiUrl.trim()) return res.json({ models: [] });
-        const base = apiUrl.replace(/\/+$/, "");
-        const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
-        const headers: Record<string, string> = {};
-        if (authRequired) {
-          const username = (await getOllamaSetting("ollama_username")) ?? "";
-          const password = (await getOllamaSetting("ollama_password")) ?? "";
-          headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-        }
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
-        try {
-          const resp = await fetch(`${base}/api/tags`, { headers, signal: controller.signal });
-          clearTimeout(timeout);
-          if (!resp.ok) return res.json({ models: [] });
-          const data = (await resp.json()) as { models?: { name: string; details?: { parameter_size?: string } }[] };
-          const models = (data.models ?? []).map(m => ({
-            name: m.name,
-            parameterSize: m.details?.parameter_size ?? null,
-          }));
-          res.json({ models });
-        } catch {
-          clearTimeout(timeout);
-          res.json({ models: [] });
-        }
-      } catch (error: any) {
-        res.status(500).json({ error: error.message });
       }
     });
   
@@ -3253,6 +2836,7 @@ export function registerRoutes(app: Express) {
       try {
         const cfg = await loadVectorConfig();
         if (!cfg.enabled) return res.status(400).json({ error: "Vector storage is disabled." });
+        const run = await prepareVectorRun();
         const rows = await db
           .select({ id: dailyNotes.id })
           .from(dailyNotes)
@@ -3264,7 +2848,7 @@ export function registerRoutes(app: Express) {
           try {
             const full = await storage.getDailyNoteById(r.id);
             if (!full) continue;
-            await upsertDailyNoteVector(full);
+            await upsertDailyNoteVector(full, run);
             processed++;
           } catch (e: any) {
             failed++;
@@ -3585,16 +3169,11 @@ export function registerRoutes(app: Express) {
         personContexts.push(`[ID: ${person.id}] ${context}`);
       }
 
-      // Get LLM settings
-      const sexGuessModel = (await getOllamaSetting("ollama_sex_guess_model")) ?? "";
-      const textModel = sexGuessModel || ((await getOllamaSetting("ollama_text_model")) ?? "");
-      if (!textModel) {
-        return { generated: 0, error: "No text model configured. Set a Sex Guess model or Text model in Intelligence settings." };
-      }
-
-      const ctx = await buildOllamaChatContext();
-      if (!ctx) {
-        return { generated: 0, error: "Ollama API URL not configured." };
+      let resolved: ResolvedModel;
+      try {
+        resolved = await resolveModel("sexGuess");
+      } catch (err: any) {
+        return { generated: 0, error: err.message };
       }
 
       const prompt = `You are helping classify the sex of people in a personal relationship manager database. Based on their name and account information, guess whether each person is male or female.
@@ -3604,33 +3183,18 @@ For each person, provide your best guess. Respond with valid JSON only - an arra
 - "sex": either "male" or "female"  
 - "reasoning": a brief one-sentence explanation
 
+${DATA_TAGS_NOTE}
+
 People to classify:
-${personContexts.join("\n")}
+${asData("people", personContexts.join("\n"))}
 
 Respond with ONLY a JSON array, no other text.`;
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
       try {
-        const resp = await fetch(`${ctx.base}/api/chat`, {
-          method: "POST",
-          headers: ctx.headers,
-          body: JSON.stringify({
-            model: textModel,
-            messages: [{ role: "user", content: prompt }],
-            stream: false,
-          }),
-          signal: controller.signal,
+        const { content } = await aiChat(resolved, {
+          messages: [{ role: "user", content: prompt }],
+          signal: AbortSignal.timeout(60000),
         });
-        clearTimeout(timeout);
-
-        if (!resp.ok) {
-          const errText = await resp.text();
-          return { generated: 0, error: `Ollama returned ${resp.status}: ${errText.slice(0, 200)}` };
-        }
-
-        const data = await resp.json() as { message?: { content?: string } };
-        const content = data?.message?.content ?? "";
 
         // Parse JSON response - try to extract array from response
         let guesses: Array<{ id: string; sex: string; reasoning: string }> = [];
@@ -3667,8 +3231,7 @@ Respond with ONLY a JSON array, no other text.`;
 
         return { generated: inserted };
       } catch (err: any) {
-        clearTimeout(timeout);
-        return { generated: 0, error: `Failed to reach Ollama: ${err.message}` };
+        return { generated: 0, error: `AI request failed: ${err.message}` };
       }
     }
 
@@ -3894,9 +3457,9 @@ Respond with ONLY a JSON array, no other text.`;
     app.post("/api/prm-face/face/assign", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
 
       const { face_uuid, person_uuid, name } = req.body;
       if (!face_uuid || !person_uuid) {
@@ -3914,11 +3477,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -3971,20 +3534,20 @@ Respond with ONLY a JSON array, no other text.`;
 
       if (personId && typeof personId === "string") {
         const [targetPerson] = await db
-          .select({ visibility: people.visibility, createdByUserId: people.createdByUserId })
+          .select({ id: people.id })
           .from(people)
           .where(eq(people.id, personId));
-        if (!targetPerson || !canReadShared(targetPerson)) {
+        if (!targetPerson) {
           return res.status(404).json({ error: "Person not found or inaccessible." });
         }
       }
 
       if (socialAccountId && typeof socialAccountId === "string") {
         const [targetAccount] = await db
-          .select({ visibility: socialAccounts.visibility, createdByUserId: socialAccounts.createdByUserId })
+          .select({ id: socialAccounts.id })
           .from(socialAccounts)
           .where(eq(socialAccounts.id, socialAccountId));
-        if (!targetAccount || !canReadShared(targetAccount)) {
+        if (!targetAccount) {
           return res.status(404).json({ error: "Social account not found or inaccessible." });
         }
       }
@@ -4006,10 +3569,10 @@ Respond with ONLY a JSON array, no other text.`;
       if (!req.file) return res.status(400).json({ error: "No image provided" });
   
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
   
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
   
       try {
         const formData = new FormData();
@@ -4027,13 +3590,13 @@ Respond with ONLY a JSON array, no other text.`;
   
         if (!response.ok) {
           const errBody = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${errBody}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${errBody}` });
         }
   
         res.json(await response.json());
       } catch (error: any) {
-        console.error("Error calling PRM-Face temp-lookup:", error);
-        res.status(500).json({ error: `Failed to contact PRM-Face server: ${error.message}` });
+        console.error("Error calling PRM Compute temp-lookup:", error);
+        res.status(500).json({ error: `Failed to contact PRM Compute server: ${error.message}` });
       }
     });
 
@@ -4043,9 +3606,9 @@ Respond with ONLY a JSON array, no other text.`;
       if (!req.file) return res.status(400).json({ error: "No image provided." });
 
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
 
       try {
         const formData = new FormData();
@@ -4061,11 +3624,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4073,9 +3636,9 @@ Respond with ONLY a JSON array, no other text.`;
     app.post("/api/prm-face/person/add", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const formData = new FormData();
         if (req.body.name) formData.append("name", String(req.body.name));
@@ -4089,11 +3652,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4101,9 +3664,9 @@ Respond with ONLY a JSON array, no other text.`;
     app.post("/api/prm-face/person/merge", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const formData = new FormData();
         formData.append("primary_person_uuid", String(req.body.primary_person_uuid));
@@ -4116,11 +3679,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4128,9 +3691,9 @@ Respond with ONLY a JSON array, no other text.`;
     app.delete("/api/prm-face/person/remove", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const formData = new FormData();
         formData.append("person_uuid", String(req.body.person_uuid || req.query.person_uuid || req.body.personUuid));
@@ -4142,11 +3705,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4156,9 +3719,9 @@ Respond with ONLY a JSON array, no other text.`;
       const uuid = req.query.uuid as string;
       if (!uuid) return res.status(400).json({ error: "uuid is required." });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/img/get?uuid=${uuid}`, {
           headers: { "x-api-key": apiKey },
@@ -4166,11 +3729,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4180,9 +3743,9 @@ Respond with ONLY a JSON array, no other text.`;
       const uuid = req.query.uuid as string;
       if (!uuid) return res.status(400).json({ error: "uuid is required." });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/face/get?uuid=${uuid}`, {
           headers: { "x-api-key": apiKey },
@@ -4190,11 +3753,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4204,9 +3767,9 @@ Respond with ONLY a JSON array, no other text.`;
       const uuid = req.query.uuid as string;
       if (!uuid) return res.status(400).json({ error: "uuid is required." });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/person/get?uuid=${uuid}`, {
           headers: { "x-api-key": apiKey },
@@ -4214,11 +3777,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4228,9 +3791,9 @@ Respond with ONLY a JSON array, no other text.`;
       const page = req.query.page || "1";
       const pageSize = req.query.page_size || req.query.pageSize || "25";
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/face/with-name?page=${page}&page_size=${pageSize}`, {
           headers: { "x-api-key": apiKey },
@@ -4238,11 +3801,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 
@@ -4254,9 +3817,9 @@ Respond with ONLY a JSON array, no other text.`;
       const pageSize = req.query.page_size || req.query.pageSize || "25";
       const order = req.query.order || "newest";
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM-Face API URL is not configured." });
+      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
       const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM-Face API key is not configured." });
+      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
       try {
         const response = await fetch(`${prmBase(apiUrl)}/api/person/${personUuid}/faces?page=${page}&page_size=${pageSize}&order=${order}`, {
           headers: { "x-api-key": apiKey },
@@ -4264,11 +3827,11 @@ Respond with ONLY a JSON array, no other text.`;
         });
         if (!response.ok) {
           const body = await response.text();
-          return res.status(response.status).json({ error: `PRM-Face error: ${body}` });
+          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
         }
         res.json(await response.json());
       } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM-Face: ${error.message}` });
+        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
 

@@ -67,7 +67,7 @@ export default function PrmFaceDemoPage() {
           setFaces(data.faces || []);
 
           if ((data.faces || []).length === 0) {
-            toast({ title: "No faces detected", description: "PRM-Face did not find any faces in this image." });
+            toast({ title: "No faces detected", description: "PRM Compute did not find any faces in this image." });
           }
         } catch (err: any) {
           toast({ title: "Detection failed", description: err.message, variant: "destructive" });
@@ -111,11 +111,11 @@ export default function PrmFaceDemoPage() {
       <div className="space-y-2 mb-6">
         <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-prm-face-demo-title">
           <Scan className="h-6 w-6" />
-          PRM-Face Demo
+          PRM Compute Demo
         </h1>
         <p className="text-muted-foreground">
-          Upload a photo and PRM-Face will detect every face in it. Detected faces are highlighted with coloured boxes.
-          Images are processed in memory — nothing is stored on the PRM-Face server.
+          Upload a photo and PRM Compute will detect every face in it. Detected faces are highlighted with coloured boxes.
+          Images are processed in memory — nothing is stored on the PRM Compute server.
         </p>
       </div>
 
@@ -123,7 +123,7 @@ export default function PrmFaceDemoPage() {
         <div className="flex items-start gap-3 rounded-md bg-muted p-4 mb-6 text-sm" data-testid="text-not-configured">
           <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
           <span className="text-muted-foreground">
-            PRM-Face is not configured yet. Go to{" "}
+            PRM Compute is not configured yet. Go to{" "}
             <a href="/settings/recognition" className="underline underline-offset-2">
               Settings → Recognition
             </a>{" "}
@@ -259,7 +259,7 @@ export default function PrmFaceDemoPage() {
           <Card data-testid="card-raw-response">
             <CardHeader>
               <CardTitle className="text-lg">Raw API Response</CardTitle>
-              <CardDescription>Full JSON response from the PRM-Face server</CardDescription>
+              <CardDescription>Full JSON response from the PRM Compute server</CardDescription>
             </CardHeader>
             <CardContent>
               <pre

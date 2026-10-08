@@ -3,7 +3,7 @@
  * -----------------
  * Single source of truth for the "skills" that the chat LLM can call. Each
  * entry drives:
- *   - the JSON schema sent to Ollama in the `tools: [...]` array
+ *   - the JSON schema sent to the model in the `tools: [...]` array
  *   - the icon + label rendered in the chat UI (icon-box above "Thinking")
  *   - the row shown in the Intelligence → Tools settings page
  *
@@ -21,6 +21,7 @@ import { eq, and, sql } from "drizzle-orm";
 import { searchUniversal } from "./vector-universal";
 import { searchAppKnowledge } from "./vector-app-knowledge";
 import { computeFamilyLabels } from "./family-relations-helper";
+import { chat as aiChat, resolveModel, type AiMessage, type ResolvedModel } from "./ai/provider";
 import type { AiUserAnswer, AiUserQuestion } from "@shared/schema";
 
 
@@ -91,13 +92,14 @@ export interface AiToolDefinition {
 }
 
 export interface AiToolContext {
-  userId: number;
   /**
    * Pauses the turn and shows the user a question form. Only injected by the
    * streaming chat loop (it needs the open response stream); absent elsewhere.
    * Resolves to `null` when the user skips the questions.
    */
   askUser?: (questions: AiUserQuestion[]) => Promise<AiUserAnswer[] | null>;
+  /** Aborted when the user stops the chat; long-running handlers may check it to quit early. */
+  signal?: AbortSignal;
 }
 
 export interface AiToolResult {
@@ -787,25 +789,15 @@ export const AI_TOOLS: AiToolDefinition[] = [
         results.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
 
         if (summarizeFindings && results.length > 0) {
-          const apiUrl = (await storage.getAppSetting("ollama_api_url")) ?? "";
-          if (!apiUrl.trim()) {
+          let resolved: ResolvedModel;
+          try {
+            resolved = await resolveModel("text");
+          } catch (err: any) {
             return {
-              summary: `Found ${results.length} messages, but Ollama is not configured for summarization.`,
+              summary: `Found ${results.length} messages, but no AI model is configured for summarization.`,
               data: { results },
             };
           }
-
-          const base = apiUrl.replace(/\/+$/, "");
-          const headers: Record<string, string> = { "Content-Type": "application/json" };
-          const authRequired = (await storage.getAppSetting("ollama_auth_required")) === "true";
-          if (authRequired) {
-            const username = (await storage.getAppSetting("ollama_username")) ?? "";
-            const password = (await storage.getAppSetting("ollama_password")) ?? "";
-            headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-          }
-
-          const textModel = (await storage.getAppSetting("ollama_text_model")) ?? "";
-          const model = textModel || ((await storage.getAppSetting("ollama_model")) ?? "") || "llava";
 
           const chatLog = results
             .map((r) => `[${r.sentAt ? new Date(r.sentAt).toLocaleString() : "Unknown"}] ${r.senderName}: ${r.content || ""}`)
@@ -818,7 +810,7 @@ export const AI_TOOLS: AiToolDefinition[] = [
             promptContent += `Please summarize the key takeaways of this message chain in a clean, concise manner.`;
           }
 
-          const messagesPayload = [
+          const messagesPayload: AiMessage[] = [
             {
               role: "system",
               content: `You are an expert AI summarizer. Your task is to condense large conversation logs and chat history into short, high-density, accurate summaries. Focus on extracting key dates, facts, plans, and answers to any special highlight instructions, removing all filler and small talk.`,
@@ -829,19 +821,8 @@ export const AI_TOOLS: AiToolDefinition[] = [
             },
           ];
 
-          const response = await fetch(`${base}/api/chat`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ model, messages: messagesPayload, stream: false }),
-          });
-
-          if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`Ollama summarization request failed (${response.status}): ${errText}`);
-          }
-
-          const responseData = (await response.json()) as { message?: { content?: string } };
-          const summaryText = responseData.message?.content || "No summary was generated.";
+          const { content } = await aiChat(resolved, { messages: messagesPayload });
+          const summaryText = content || "No summary was generated.";
 
           return {
             summary: `Summarized ${results.length} messages focusing on highlight instructions.`,
@@ -1611,8 +1592,8 @@ export function listAiToolMetadata(): AiToolMetadata[] {
   }));
 }
 
-/** Build the `tools` array Ollama expects for an /api/chat request. */
-export function buildOllamaToolsArray(enabledNames: Set<string>): unknown[] {
+/** Build the function-tool definitions for a chat request (same shape for Ollama and OpenAI). */
+export function buildToolsArray(enabledNames: Set<string>): unknown[] {
   return AI_TOOLS.filter((t) => enabledNames.has(t.name)).map((t) => ({
     type: "function",
     function: {

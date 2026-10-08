@@ -30,10 +30,10 @@ export async function resolveIssues(accountId: string, kinds: IssueKind[], resol
 }
 
 /** A person closed it. Returns nothing when the issue isn't open. */
-export async function closeIssue(id: string, resolution: Resolution, userId: number, previousUsername?: string): Promise<SocialAccountIssue | undefined> {
+export async function closeIssue(id: string, resolution: Resolution, previousUsername?: string): Promise<SocialAccountIssue | undefined> {
   const [row] = await db
     .update(socialAccountIssues)
-    .set({ status: resolution === "dismissed" ? "dismissed" : "resolved", resolution, resolvedBy: userId, resolvedAt: new Date(), previousUsername })
+    .set({ status: resolution === "dismissed" ? "dismissed" : "resolved", resolution, resolvedAt: new Date(), previousUsername })
     .where(and(eq(socialAccountIssues.id, id), eq(socialAccountIssues.status, "open")))
     .returning();
   return row;

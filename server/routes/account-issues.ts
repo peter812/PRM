@@ -8,7 +8,6 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import { requireAuth } from "../auth";
-import { visibleShared } from "../access";
 import { sseManager } from "../middleware/sse";
 import { syncEntityInBackground } from "../vector-universal";
 import { people, socialAccountIssues, socialAccounts, trackingJobs } from "@shared/schema";
@@ -31,7 +30,7 @@ async function issueFor(id: string) {
     .select({ issue: socialAccountIssues, account: socialAccounts })
     .from(socialAccountIssues)
     .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountIssues.socialAccountId))
-    .where(and(eq(socialAccountIssues.id, id), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
+    .where(eq(socialAccountIssues.id, id));
   return row;
 }
 
@@ -50,12 +49,12 @@ async function instagramAccountNamed(username: string) {
 // The fix for a renamed account: the row keeps its followers, posts and
 // history under the new name, the issue closes, and a profile check goes
 // out to confirm. If that 404s too, the result handler opens a fresh issue.
-async function renameAndRecheck(issue: SocialAccountIssue, account: SocialAccount, username: string, userId: number) {
+async function renameAndRecheck(issue: SocialAccountIssue, account: SocialAccount, username: string) {
   const changes = { username, accountUrl: `https://instagram.com/${username}` };
   await storage.updateSocialAccount(account.id, changes);
   await recordAccountProfileChanges(account.id, changes, account);
-  await closeIssue(issue.id, "renamed", userId, account.username);
-  const job = await queueManualJob(account.id, "info", userId);
+  await closeIssue(issue.id, "renamed", account.username);
+  const job = await queueManualJob(account.id, "info");
   kickManualTrackingJobs();
   sseManager.broadcast("social_account.updated", { id: account.id });
   syncEntityInBackground("social_account", account.id);
@@ -92,7 +91,6 @@ export function registerAccountIssues(app: Express) {
           and(
             closed ? inArray(socialAccountIssues.status, ["resolved", "dismissed"]) : eq(socialAccountIssues.status, "open"),
             accountId ? eq(socialAccountIssues.socialAccountId, accountId) : undefined,
-            visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId),
           ),
         )
         .orderBy(desc(closed ? socialAccountIssues.resolvedAt : socialAccountIssues.lastSeenAt))
@@ -109,7 +107,7 @@ export function registerAccountIssues(app: Express) {
         .select({ open: sql<number>`count(*)::int` })
         .from(socialAccountIssues)
         .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountIssues.socialAccountId))
-        .where(and(eq(socialAccountIssues.status, "open"), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
+        .where(eq(socialAccountIssues.status, "open"));
       res.json({ open: row?.open ?? 0 });
     } catch (error) {
       fail(res, "count issues", error);
@@ -128,7 +126,7 @@ export function registerAccountIssues(app: Express) {
       if (!username || username === account.username) return res.status(400).json({ error: "Enter a different username" });
       const duplicate = await instagramAccountNamed(username);
       if (duplicate) return res.status(409).json({ error: `@${username} is already another account in PRM`, duplicate: { id: duplicate.id, username } });
-      const job = await renameAndRecheck(issue, account, username, req.user!.id);
+      const job = await renameAndRecheck(issue, account, username);
       res.json({ username, job });
     } catch (error) {
       fail(res, "rename account", error);
@@ -150,7 +148,7 @@ export function registerAccountIssues(app: Express) {
 
       const merged = await mergeSocialAccounts(account.id, duplicate.id);
       if (duplicate.vectorId) void deleteEntityVector("social_account", duplicate.vectorId);
-      const job = await renameAndRecheck(issue, account, username, req.user!.id);
+      const job = await renameAndRecheck(issue, account, username);
       res.json({ username, job, merged });
     } catch (error) {
       fail(res, "merge accounts", error);
@@ -162,7 +160,7 @@ export function registerAccountIssues(app: Express) {
     try {
       const row = await issueFor(req.params.id);
       if (!row) return res.status(404).json({ error: "Issue not found" });
-      const issue = await closeIssue(row.issue.id, "dismissed", req.user!.id);
+      const issue = await closeIssue(row.issue.id, "dismissed");
       if (!issue) return res.status(409).json({ error: "Issue is already closed" });
       sseManager.broadcast("social_account.updated", { id: row.account.id });
       res.json(issue);

@@ -1,3 +1,6 @@
+import { inArray } from "drizzle-orm";
+import { socialAccounts } from "@shared/schema";
+import { db } from "./db";
 import { storage } from "./storage";
 import { syncEntityInBackground } from "./vector-universal";
 
@@ -16,6 +19,33 @@ export async function runAutomaticImagePassIn(): Promise<ImagePassInResult> {
   const allPeople = await storage.getAllPeople();
   const peopleWithoutImages = allPeople.filter(p => !p.imageUrl);
 
+  if (peopleWithoutImages.length === 0) {
+    return {
+      totalPeopleWithoutImages: 0,
+      updated: 0,
+      skipped: 0,
+      noSocialAccount: 0,
+      updates: [],
+    };
+  }
+
+  const accountRows = await db
+    .select({
+      id: socialAccounts.id,
+      ownerUuid: socialAccounts.ownerUuid,
+      imageUrl: socialAccounts.imageUrl,
+      externalImageUrl: socialAccounts.externalImageUrl,
+    })
+    .from(socialAccounts);
+
+  const accountById = new Map(accountRows.map(row => [row.id, row]));
+  const imageByOwnerUuid = new Map<string, string>();
+  for (const row of accountRows) {
+    if (row.ownerUuid && row.imageUrl && !imageByOwnerUuid.has(row.ownerUuid)) {
+      imageByOwnerUuid.set(row.ownerUuid, row.imageUrl);
+    }
+  }
+
   let updated = 0;
   let skipped = 0;
   let noSocialAccount = 0;
@@ -23,18 +53,21 @@ export async function runAutomaticImagePassIn(): Promise<ImagePassInResult> {
 
   for (const person of peopleWithoutImages) {
     const socialUuids = person.socialAccountUuids || [];
-    if (socialUuids.length === 0) {
+    if (socialUuids.length === 0 && !imageByOwnerUuid.has(person.id)) {
       noSocialAccount++;
       continue;
     }
 
     let foundImage: string | null = null;
     for (const uuid of socialUuids) {
-      const account = await storage.getSocialAccountById(uuid);
-      if (account?.currentProfile?.imageUrl) {
-        foundImage = account.currentProfile.imageUrl;
+      const account = accountById.get(uuid);
+      if (account?.imageUrl) {
+        foundImage = account.imageUrl;
         break;
       }
+    }
+    if (!foundImage) {
+      foundImage = imageByOwnerUuid.get(person.id) ?? null;
     }
 
     if (foundImage) {
@@ -68,10 +101,18 @@ export async function autoPassInImageForPerson(personId: string): Promise<boolea
   if (!person || person.imageUrl) return false;
 
   const socialUuids = person.socialAccountUuids || [];
+  if (socialUuids.length === 0) return false;
+
+  const rows = await db
+    .select({ id: socialAccounts.id, imageUrl: socialAccounts.imageUrl })
+    .from(socialAccounts)
+    .where(inArray(socialAccounts.id, socialUuids));
+  const imageById = new Map(rows.map(r => [r.id, r.imageUrl]));
+
   for (const uuid of socialUuids) {
-    const account = await storage.getSocialAccountById(uuid);
-    if (account?.currentProfile?.imageUrl) {
-      await storage.updatePerson(personId, { imageUrl: account.currentProfile.imageUrl });
+    const imageUrl = imageById.get(uuid);
+    if (imageUrl) {
+      await storage.updatePerson(personId, { imageUrl });
       syncEntityInBackground("person", personId);
       return true;
     }

@@ -63,9 +63,9 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
   const [filterTextMap, setFilterTextMap] = useState<Record<number, string>>({});
   const [newPersonNameMap, setNewPersonNameMap] = useState<Record<number, string>>({});
   
-  // Ollama states
-  const [waitOllama, setWaitOllama] = useState(true);
-  const [ollamaDescription, setOllamaDescription] = useState("");
+  // AI description states
+  const [waitDescribe, setWaitDescribe] = useState(true);
+  const [aiDescription, setAiDescription] = useState("");
 
   // Fetch CRM contacts
   const { data: people = [] } = useQuery<Person[]>({
@@ -86,7 +86,7 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
       setAssignments({});
       setFilterTextMap({});
       setNewPersonNameMap({});
-      setOllamaDescription("");
+      setAiDescription("");
 
       if (existingPhoto) {
         setImageDataUrl(existingPhoto.imageUrl);
@@ -239,7 +239,7 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
     },
   });
 
-  // Save assignments & run optional Ollama description
+  // Save assignments & run optional AI description
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!photoId) throw new Error("No photo identifier found");
@@ -254,7 +254,7 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
       const res = await apiRequest("POST", "/api/prm-face/photo/save-assignments", {
         photoId,
         assignments: list,
-        waitOllama,
+        waitDescribe,
       });
 
       return res.json() as Promise<{ success: boolean; description?: string }>;
@@ -266,8 +266,8 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
       queryClient.invalidateQueries({ queryKey: ["/api/image-questions/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
 
-      if (waitOllama && data.description) {
-        setOllamaDescription(data.description);
+      if (waitDescribe && data.description) {
+        setAiDescription(data.description);
         setStep("description");
       } else {
         toast({ title: "Photo saved", description: "Image saved and faces mapped successfully." });
@@ -558,13 +558,13 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
 
               <div className="flex items-center justify-between border-t pt-3 mt-4">
                 <div className="space-y-0.5">
-                  <Label htmlFor="ollama-toggle" className="text-xs font-semibold">Ollama Scene Description</Label>
-                  <p className="text-[10px] text-muted-foreground">Describe photo using Ollama vision</p>
+                  <Label htmlFor="ai-describe-toggle" className="text-xs font-semibold">AI Scene Description</Label>
+                  <p className="text-[10px] text-muted-foreground">Describe photo using the AI vision model</p>
                 </div>
                 <Switch
-                  id="ollama-toggle"
-                  checked={waitOllama}
-                  onCheckedChange={setWaitOllama}
+                  id="ai-describe-toggle"
+                  checked={waitDescribe}
+                  onCheckedChange={setWaitDescribe}
                 />
               </div>
             </div>
@@ -578,8 +578,8 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
             <div>
               <h3 className="font-semibold text-lg">Saving &amp; Analyzing Photo...</h3>
               <p className="text-sm text-muted-foreground mt-1">
-                {waitOllama
-                  ? "Ollama LLM is currently describing the scene. Please hold..."
+                {waitDescribe
+                  ? "The AI is currently describing the scene. Please hold..."
                   : "Updating databases and registers..."}
               </p>
             </div>
@@ -591,11 +591,11 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
           <div className="flex-1 p-6 flex flex-col space-y-4 overflow-y-auto">
             <div className="flex items-center gap-2 border-b pb-3">
               <Sparkles className="h-5 w-5 text-amber-500" />
-              <h3 className="font-semibold text-lg">Ollama Vision Analysis Result</h3>
+              <h3 className="font-semibold text-lg">AI Vision Analysis Result</h3>
             </div>
             
             <div className="bg-muted p-4 rounded-md font-mono text-sm leading-relaxed whitespace-pre-wrap flex-1 min-h-[200px]">
-              {ollamaDescription || "No description could be generated."}
+              {aiDescription || "No description could be generated."}
             </div>
           </div>
         )}

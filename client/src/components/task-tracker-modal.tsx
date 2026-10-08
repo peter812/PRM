@@ -1,31 +1,31 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useSyncExternalStore } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Loader2,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  X,
-  ChevronDown,
-  Layers,
-  Trash2
-} from "lucide-react";
-import type { Task, ImageTask } from "@shared/schema";
+import { Switch } from "@/components/ui/switch";
+import { ChevronDown, Layers, Trash2 } from "lucide-react";
+import type { Task } from "@shared/schema";
+
+interface SocialJob {
+  id: string;
+  socialAccountId: string;
+  username: string;
+  kind: string;
+  origin: string;
+  status: string;
+}
 
 interface TrackedTask {
+  key: string;
   id: string;
-  type: string;
-  isImageTask: boolean;
+  source: "general" | "social";
+  accountId?: string;
   status: string;
-  title: string | null;
-  progress: number;
-  progressMessage: string | null;
+  name: string;
+  sub: string | null;
 }
 
 function getTaskLabel(type: string): string {
@@ -52,247 +52,328 @@ function getTaskLabel(type: string): string {
       return "XML Export";
     case "import_xml":
       return "XML Import";
-    case "download_img_instagram":
-      return "Instagram Image DL";
-    case "analyze_img_full":
-      return "Analyze Image (Full)";
-    case "analyze_img_face":
-      return "Analyze Image (Face)";
-    case "analyze_img_ocr":
-      return "Analyze Image (OCR)";
-    case "transcribe_video":
-      return "Transcribe Video";
-    case "analyze_img_metadata":
-      return "Analyze Image (Metadata)";
-    case "analyze_img_llm":
-      return "Analyze Image (LLM)";
-    case "convert_img":
-      return "Convert Image";
     default:
       return type;
   }
 }
 
+const SOCIAL_KIND_LABEL: Record<string, string> = {
+  info: "acct info",
+  follows: "follows",
+  posts: "posts",
+};
+
+const STATUS_STYLE: Record<string, { label: string; className: string }> = {
+  pending: { label: "waiting", className: "bg-muted text-muted-foreground" },
+  queued: { label: "waiting", className: "bg-muted text-muted-foreground" },
+  in_progress: { label: "in progress", className: "bg-blue-500/15 text-blue-600 dark:text-blue-400" },
+  running: { label: "in progress", className: "bg-blue-500/15 text-blue-600 dark:text-blue-400" },
+  completed: { label: "finished", className: "bg-green-500/15 text-green-600 dark:text-green-400" },
+  failed: { label: "error", className: "bg-red-500/15 text-red-600 dark:text-red-400" },
+  cancelled: { label: "cancelled", className: "bg-muted text-muted-foreground" },
+  skipped: { label: "skipped", className: "bg-muted text-muted-foreground" },
+};
+
+const isActive = (status: string) =>
+  status === "pending" || status === "in_progress" || status === "queued" || status === "running";
+
+// "Show scheduled social checks" is shared with Settings Home, since the panel
+// (and its switch) disappears when it has nothing to show.
+const SHOW_SCHEDULED_KEY = "task-tracker-show-scheduled";
+let showScheduledValue = (() => {
+  try {
+    return localStorage.getItem(SHOW_SCHEDULED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+})();
+const showScheduledListeners = new Set<() => void>();
+
+export function setShowScheduledTasks(on: boolean) {
+  showScheduledValue = on;
+  try {
+    localStorage.setItem(SHOW_SCHEDULED_KEY, on ? "1" : "0");
+  } catch {}
+  showScheduledListeners.forEach((l) => l());
+}
+
+export function useShowScheduledTasks() {
+  return useSyncExternalStore(
+    (cb) => {
+      showScheduledListeners.add(cb);
+      return () => showScheduledListeners.delete(cb);
+    },
+    () => showScheduledValue
+  );
+}
+
 const EMPTY_TASKS: Task[] = [];
-const EMPTY_IMAGE_TASKS: ImageTask[] = [];
+const EMPTY_JOBS: SocialJob[] = [];
+
+function useTaskSSE() {
+  useEffect(() => {
+    const es = new EventSource("/api/v1/events/stream", { withCredentials: true });
+    let hasConnectedOnce = false;
+    let trackingDebounce: ReturnType<typeof setTimeout> | null = null;
+    let imageTaskDebounce: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleTrackingInvalidate = () => {
+      if (trackingDebounce) clearTimeout(trackingDebounce);
+      trackingDebounce = setTimeout(() => {
+        trackingDebounce = null;
+        void queryClient.invalidateQueries({ queryKey: ["/api/tracking-jobs/current"] });
+      }, 150);
+    };
+
+    const scheduleImageTaskInvalidate = () => {
+      if (imageTaskDebounce) clearTimeout(imageTaskDebounce);
+      imageTaskDebounce = setTimeout(() => {
+        imageTaskDebounce = null;
+        void queryClient.invalidateQueries({ queryKey: ["/api/image-tasks"] });
+      }, 150);
+    };
+
+    es.addEventListener("connected", () => {
+      if (hasConnectedOnce) {
+        void queryClient.invalidateQueries({ queryKey: ["/api/tasks/current"] });
+        void queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+        void queryClient.invalidateQueries({ queryKey: ["/api/tracking-jobs/current"] });
+        void queryClient.invalidateQueries({ queryKey: ["/api/image-tasks"] });
+      }
+      hasConnectedOnce = true;
+    });
+
+    es.addEventListener("task.updated", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.action === "progress" && data.id) {
+          const patchTask = (t: Task) =>
+            t.id === data.id
+              ? {
+                  ...t,
+                  progress: typeof data.progress === "number" ? data.progress : t.progress,
+                  progressMessage: data.progressMessage !== undefined ? data.progressMessage : t.progressMessage,
+                }
+              : t;
+          queryClient.setQueryData<Task[]>(["/api/tasks/current"], (old) => old?.map(patchTask));
+          queryClient.setQueryData<Task[]>(["/api/tasks"], (old) => old?.map(patchTask));
+          queryClient.setQueryData<Task>([`/api/tasks/${data.id}`], (old) => (old ? patchTask(old) : old));
+        } else {
+          void queryClient.invalidateQueries({ queryKey: ["/api/tasks/current"] });
+          void queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+          if (data.id) {
+            void queryClient.invalidateQueries({ queryKey: [`/api/tasks/${data.id}`] });
+          }
+        }
+      } catch {}
+    });
+
+    es.addEventListener("image_task.updated", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.action === "progress" && data.id && data.parentTaskId) {
+          queryClient.setQueryData<{ items: any[]; total: number; page: number; limit: number; totalPages: number }>(
+            ["/api/image-tasks", "parent", data.parentTaskId],
+            (old) =>
+              old
+                ? {
+                    ...old,
+                    items: old.items.map((item) =>
+                      item.id === data.id
+                        ? {
+                            ...item,
+                            progress: typeof data.progress === "number" ? data.progress : item.progress,
+                            progressMessage:
+                              data.progressMessage !== undefined ? data.progressMessage : item.progressMessage,
+                          }
+                        : item
+                    ),
+                  }
+                : old
+          );
+        } else {
+          scheduleImageTaskInvalidate();
+        }
+      } catch {}
+    });
+
+    es.addEventListener("tracking_job.updated", () => {
+      scheduleTrackingInvalidate();
+    });
+
+    es.addEventListener("worker.status", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (typeof data.paused === "boolean") {
+          queryClient.setQueryData(["/api/tasks/worker-status"], { paused: data.paused });
+        }
+      } catch {}
+    });
+
+    return () => {
+      if (trackingDebounce) clearTimeout(trackingDebounce);
+      if (imageTaskDebounce) clearTimeout(imageTaskDebounce);
+      es.close();
+    };
+  }, []);
+}
 
 export function TaskTrackerModal() {
+  useTaskSSE();
   const { toast } = useToast();
   const [minimized, setMinimized] = useState(false);
+  const showScheduled = useShowScheduledTasks();
   const [trackedTasks, setTrackedTasks] = useState<Record<string, TrackedTask>>({});
-  const [dismissedTaskIds, setDismissedTaskIds] = useState<Set<string>>(new Set());
-  const dismissedTaskIdsRef = useRef(dismissedTaskIds);
+  const [dismissedKeys, setDismissedKeys] = useState<Set<string>>(new Set());
+  const trackedRef = useRef(trackedTasks);
+  trackedRef.current = trackedTasks;
+  const dismissedKeysRef = useRef(dismissedKeys);
   useEffect(() => {
-    dismissedTaskIdsRef.current = dismissedTaskIds;
-  }, [dismissedTaskIds]);
+    dismissedKeysRef.current = dismissedKeys;
+  }, [dismissedKeys]);
 
-  // Determine if there are active tasks in our tracked tasks list
-  const activeTasksCount = Object.values(trackedTasks).filter(
-    (t) => t.status === "pending" || t.status === "in_progress"
-  ).length;
+  const activeTasksCount = Object.values(trackedTasks).filter((t) => isActive(t.status)).length;
 
-  const totalTasksCount = Object.keys(trackedTasks).length;
-  const hasTasks = totalTasksCount > 0;
-
-  // Query general background tasks
+  // General background tasks (updated in real time via SSE)
   const { data: tasks = EMPTY_TASKS } = useQuery<Task[]>({
     queryKey: ["/api/tasks/current"],
-    refetchInterval: (query) => {
-      const data = query.state.data as Task[] | undefined;
-      const hasActive = data?.some((t) => t.status === "pending" || t.status === "in_progress");
-      return hasActive || activeTasksCount > 0 ? 2500 : 10000;
-    },
   });
 
-  // Query image background tasks
-  const { data: imageTasksData } = useQuery<{ items: ImageTask[] }>({
-    queryKey: ["/api/image-tasks/current"],
-    queryFn: async () => {
-      const res = await fetch("/api/image-tasks/current");
-      if (!res.ok) throw new Error("Failed to fetch image tasks");
-      return res.json();
-    },
-    refetchInterval: (query) => {
-      const data = query.state.data as { items: ImageTask[] } | undefined;
-      const hasActive = data?.items?.some((t) => t.status === "pending" || t.status === "in_progress");
-      return hasActive || activeTasksCount > 0 ? 2500 : 10000;
-    },
+  // Social tracking jobs (server caps the waiting list and reports the full count; updated via SSE)
+  const { data: socialData } = useQuery<{ jobs: SocialJob[]; waitingTotal: number }>({
+    queryKey: ["/api/tracking-jobs/current", { scheduled: showScheduled }],
+    queryFn: async () =>
+      (await apiRequest("GET", `/api/tracking-jobs/current?scheduled=${showScheduled ? 1 : 0}`)).json(),
   });
 
-  const imageTasks = imageTasksData?.items ?? EMPTY_IMAGE_TASKS;
+  const socialJobs = socialData?.jobs ?? EMPTY_JOBS;
+  const shownWaiting = socialJobs.filter((j) => j.status === "queued").length;
+  const moreWaiting = Math.max(0, (socialData?.waitingTotal ?? 0) - shownWaiting);
 
   // Merge backend queries into local display state
   useEffect(() => {
     let hasNewActiveTask = false;
     const timeoutsToSchedule: string[] = [];
 
-    setTrackedTasks((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      const dismissed = dismissedTaskIdsRef.current;
+    // Computed synchronously from the last render (not in a setState updater, which React may defer)
+    // so the new-task and just-finished flags below are filled in before they're read
+    const prev = trackedRef.current;
+    let changed = false;
+    const next = { ...prev };
+    const dismissed = dismissedKeysRef.current;
 
-      const processTask = (t: any, isImageTask: boolean) => {
-        if (dismissed.has(t.id)) return;
+    const processTask = (t: Omit<TrackedTask, "key">) => {
+      const key = `${t.source}:${t.id}`;
+      if (dismissed.has(key)) return;
+      const prevTask = prev[key];
 
-        const isTerminal =
-          t.status === "completed" || t.status === "failed" || t.status === "cancelled";
-        const prevTask = prev[t.id];
+      // Track if active, or if it was tracked before and just finished
+      if (!isActive(t.status) && !prevTask) return;
+      if (!prevTask && isActive(t.status)) hasNewActiveTask = true;
 
-        // Track if active, or if it was tracked before and just finished
-        if (!isTerminal || prevTask) {
-          if (!prevTask && (t.status === "pending" || t.status === "in_progress")) {
-            hasNewActiveTask = true;
-          }
+      if (!prevTask || prevTask.status !== t.status || prevTask.name !== t.name || prevTask.sub !== t.sub) {
+        changed = true;
+        next[key] = { ...t, key };
 
-          const title =
-            t.title ||
-            (isImageTask
-              ? t.type === "download_img_instagram"
-                ? "Instagram Image"
-                : "Image Task"
-              : null);
-          const progressMessage = t.progressMessage || null;
-
-          if (
-            !prevTask ||
-            prevTask.status !== t.status ||
-            prevTask.progress !== t.progress ||
-            prevTask.progressMessage !== progressMessage ||
-            prevTask.title !== title
-          ) {
-            changed = true;
-            next[t.id] = {
-              id: t.id,
-              type: t.type,
-              isImageTask,
-              status: t.status,
-              title,
-              progress: t.progress,
-              progressMessage,
-            };
-
-            // If a task transitioned to a terminal success/cancelled state, auto-dismiss after 8s
-            if (
-              prevTask &&
-              prevTask.status !== t.status &&
-              (t.status === "completed" || t.status === "cancelled")
-            ) {
-              timeoutsToSchedule.push(t.id);
-            }
-          }
+        // A task that just reached a non-error terminal state auto-dismisses after 8s
+        if (prevTask && prevTask.status !== t.status && !isActive(t.status) && t.status !== "failed") {
+          timeoutsToSchedule.push(key);
         }
-      };
-
-      // Process general tasks
-      for (const t of tasks) {
-        processTask(t, false);
       }
+    };
 
-      // Process image tasks
-      for (const t of imageTasks) {
-        processTask(t, true);
+    for (const t of tasks) {
+      processTask({ id: t.id, source: "general", status: t.status, name: getTaskLabel(t.type), sub: t.title });
+    }
+
+    for (const j of socialJobs) {
+      processTask({
+        id: j.id,
+        source: "social",
+        accountId: j.socialAccountId,
+        status: j.status,
+        name: j.username,
+        sub: SOCIAL_KIND_LABEL[j.kind] ?? j.kind,
+      });
+    }
+
+    // Active social jobs the server no longer returns (cancelled elsewhere, or hidden by the toggle) drop out
+    const socialKeys = new Set(socialJobs.map((j) => `social:${j.id}`));
+    for (const t of Object.values(next)) {
+      if (t.source === "social" && isActive(t.status) && !socialKeys.has(t.key)) {
+        delete next[t.key];
+        changed = true;
       }
+    }
 
-      return changed ? next : prev;
-    });
+    if (changed) setTrackedTasks(next);
 
     if (hasNewActiveTask) {
       setMinimized(false);
     }
 
+    // Not cleared on re-run: the next poll would otherwise cancel the hide before it fires
     if (timeoutsToSchedule.length > 0) {
-      const timer = setTimeout(() => {
-        setTrackedTasks((curr) => {
-          let modified = false;
-          const copy = { ...curr };
-          for (const id of timeoutsToSchedule) {
-            if (copy[id]) {
-              delete copy[id];
-              modified = true;
-            }
-          }
-          return modified ? copy : curr;
-        });
-        setDismissedTaskIds((curr) => {
-          const copy = new Set(curr);
-          for (const id of timeoutsToSchedule) {
-            copy.add(id);
-          }
-          return copy;
-        });
-      }, 8000);
-
-      return () => clearTimeout(timer);
+      setTimeout(() => dismiss(timeoutsToSchedule), 8000);
     }
-  }, [tasks, imageTasks]);
+  }, [tasks, socialJobs]);
 
-  // Mutation to cancel a running task
-  const cancelTaskMutation = useMutation({
-    mutationFn: async (task: { id: string; isImageTask: boolean }) => {
-      const url = task.isImageTask ? `/api/image-tasks/${task.id}` : `/api/tasks/${task.id}`;
-      const res = await apiRequest("DELETE", url);
-      return res.json();
-    },
-    onSuccess: (_, variables) => {
+  const dismiss = (keys: string[]) => {
+    if (keys.length === 0) return;
+    setTrackedTasks((curr) => {
+      const copy = { ...curr };
+      keys.forEach((k) => delete copy[k]);
+      return copy;
+    });
+    setDismissedKeys((curr) => {
+      const copy = new Set(curr);
+      keys.forEach((k) => copy.add(k));
+      return copy;
+    });
+  };
+
+  const cancelGeneralMutation = useMutation({
+    mutationFn: async (task: TrackedTask) => (await apiRequest("DELETE", `/api/tasks/${task.id}`)).json(),
+    onSuccess: (_, task) => {
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/image-tasks"] });
       toast({ title: "Task cancelled" });
-
-      // Instantly show cancelled state locally
-      setTrackedTasks((curr) => {
-        if (!curr[variables.id]) return curr;
-        return {
-          ...curr,
-          [variables.id]: {
-            ...curr[variables.id],
-            status: "cancelled",
-          },
-        };
-      });
+      setTrackedTasks((curr) =>
+        curr[task.key] ? { ...curr, [task.key]: { ...curr[task.key], status: "cancelled" } } : curr
+      );
     },
     onError: (err: Error) => {
       toast({ title: "Failed to cancel task", description: err.message, variant: "destructive" });
     },
   });
 
-  const handleDismiss = (id: string) => {
-    setTrackedTasks((curr) => {
-      if (!curr[id]) return curr;
-      const copy = { ...curr };
-      delete copy[id];
-      return copy;
-    });
-    setDismissedTaskIds((curr) => {
-      if (curr.has(id)) return curr;
-      const copy = new Set(curr);
-      copy.add(id);
-      return copy;
-    });
+  const cancelSocialMutation = useMutation({
+    mutationFn: async (task: TrackedTask) =>
+      (await apiRequest("DELETE", `/api/social-accounts/${task.accountId}/tracking-jobs/${task.id}`)).json(),
+    onSuccess: (_, task) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tracking-jobs/current"] });
+      dismiss([task.key]);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to cancel job", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // Trash: cancel what can be cancelled; a running social job just leaves the panel and finishes in the background
+  const handleTrash = (task: TrackedTask) => {
+    if (task.source === "general" && isActive(task.status)) cancelGeneralMutation.mutate(task);
+    else if (task.source === "social" && task.status === "queued") cancelSocialMutation.mutate(task);
+    else dismiss([task.key]);
   };
 
-  const handleDismissAllCompleted = () => {
-    const terminalIds = Object.values(trackedTasks)
-      .filter((t) => t.status === "completed" || t.status === "cancelled" || t.status === "failed")
-      .map((t) => t.id);
+  const terminalKeys = Object.values(trackedTasks)
+    .filter((t) => !isActive(t.status))
+    .map((t) => t.key);
 
-    if (terminalIds.length === 0) return;
+  // Running first, then waiting, then finished
+  const rank = (s: string) => (s === "in_progress" || s === "running" ? 0 : isActive(s) ? 1 : 2);
+  const rows = Object.values(trackedTasks).sort((a, b) => rank(a.status) - rank(b.status));
 
-    setTrackedTasks((curr) => {
-      const copy = { ...curr };
-      terminalIds.forEach((id) => delete copy[id]);
-      return copy;
-    });
-
-    setDismissedTaskIds((curr) => {
-      const copy = new Set(curr);
-      terminalIds.forEach((id) => copy.add(id));
-      return copy;
-    });
-  };
-
-  const hasTerminalTasks = Object.values(trackedTasks).some(
-    (t) => t.status === "completed" || t.status === "cancelled" || t.status === "failed"
-  );
+  const hasTasks = rows.length > 0;
 
   return (
     <AnimatePresence>
@@ -312,8 +393,8 @@ export function TaskTrackerModal() {
               >
                 <Layers className="h-5 w-5 animate-pulse" />
                 {activeTasksCount > 0 && (
-                  <Badge className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center p-0 bg-destructive border-2 border-background text-[10px] font-bold">
-                    {activeTasksCount}
+                  <Badge className="absolute -top-1 -right-1 h-5 min-w-5 flex items-center justify-center px-1 bg-destructive border-2 border-background text-[10px] font-bold">
+                    {activeTasksCount + moreWaiting}
                   </Badge>
                 )}
                 {activeTasksCount === 0 && (
@@ -329,19 +410,28 @@ export function TaskTrackerModal() {
                 className="pointer-events-auto w-[calc(100vw-2rem)] md:w-96 rounded-xl border border-border/80 bg-background/95 backdrop-blur-md shadow-xl overflow-hidden"
               >
                 {/* Header */}
-                <div className="flex items-center justify-between px-4 py-3 border-b bg-muted/30">
+                <div className="flex items-center justify-between px-3 py-2 border-b bg-muted/30">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-semibold">Background Tasks</span>
                     <Badge variant="secondary" className="px-1.5 py-0 text-xs font-normal">
-                      {activeTasksCount} active
+                      {activeTasksCount + moreWaiting} active
                     </Badge>
                   </div>
                   <div className="flex items-center gap-1">
-                    {hasTerminalTasks && (
+                    <label className="flex items-center gap-1.5 text-xs text-muted-foreground mr-1 cursor-pointer">
+                      Scheduled
+                      <Switch
+                        checked={showScheduled}
+                        onCheckedChange={setShowScheduledTasks}
+                        className="scale-75"
+                        aria-label="Show scheduled social checks"
+                      />
+                    </label>
+                    {terminalKeys.length > 0 && (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={handleDismissAllCompleted}
+                        onClick={() => dismiss(terminalKeys)}
                         className="text-xs h-7 px-2 text-muted-foreground hover:text-foreground"
                       >
                         Clear Finished
@@ -359,87 +449,33 @@ export function TaskTrackerModal() {
                   </div>
                 </div>
 
-                {/* Task List */}
-                <div className="p-4 max-h-[300px] overflow-y-auto space-y-3.5 custom-scrollbar">
-                  {Object.values(trackedTasks).map((task) => {
-                    const isPending = task.status === "pending";
-                    const isRunning = task.status === "in_progress";
-                    const isCompleted = task.status === "completed";
-                    const isFailed = task.status === "failed";
-                    const isCancelled = task.status === "cancelled";
-
+                {/* Task rows */}
+                <div className="py-1 max-h-[300px] overflow-y-auto custom-scrollbar">
+                  {rows.map((task) => {
+                    const style = STATUS_STYLE[task.status] ?? STATUS_STYLE.pending;
                     return (
-                      <div key={task.id} className="space-y-1.5 group">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex items-start gap-2.5 min-w-0">
-                            {/* Icon */}
-                            <div className="mt-0.5 shrink-0">
-                              {isPending && <Clock className="h-4 w-4 text-muted-foreground" />}
-                              {isRunning && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
-                              {isCompleted && <CheckCircle2 className="h-4 w-4 text-green-500" />}
-                              {isFailed && <XCircle className="h-4 w-4 text-destructive" />}
-                              {isCancelled && <XCircle className="h-4 w-4 text-muted-foreground" />}
-                            </div>
-
-                            {/* Text info */}
-                            <div className="min-w-0">
-                              <p className="text-xs font-semibold text-foreground truncate">
-                                {task.title
-                                  ? `${task.title} - ${getTaskLabel(task.type)}`
-                                  : getTaskLabel(task.type)}
-                              </p>
-                              {task.progressMessage && (
-                                <p className="text-[11px] text-muted-foreground line-clamp-1">
-                                  {task.progressMessage}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Action Button */}
-                          <div className="shrink-0 ml-1">
-                            {isPending || isRunning ? (
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-6 w-6 rounded-full hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
-                                onClick={() =>
-                                  cancelTaskMutation.mutate({
-                                    id: task.id,
-                                    isImageTask: task.isImageTask,
-                                  })
-                                }
-                                disabled={cancelTaskMutation.isPending}
-                                title="Cancel Task"
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </Button>
-                            ) : (
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-6 w-6 rounded-full text-muted-foreground hover:text-foreground"
-                                onClick={() => handleDismiss(task.id)}
-                                title="Dismiss"
-                              >
-                                <X className="h-3 w-3" />
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Progress bar */}
-                        {(isRunning || task.progress > 0) && (
-                          <div className="flex items-center gap-2 pl-6">
-                            <Progress value={task.progress} className="h-1.5" />
-                            <span className="text-[10px] font-mono text-muted-foreground shrink-0 min-w-8 text-right">
-                              {task.progress}%
-                            </span>
-                          </div>
-                        )}
+                      <div key={task.key} className="flex items-center gap-2 px-3 py-1 text-xs hover:bg-muted/40">
+                        <span className="font-semibold truncate min-w-0">{task.name}</span>
+                        {task.sub && <span className="text-muted-foreground truncate min-w-0">{task.sub}</span>}
+                        <span className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${style.className}`}>
+                          {style.label}
+                        </span>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-6 w-6 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => handleTrash(task)}
+                          disabled={cancelGeneralMutation.isPending || cancelSocialMutation.isPending}
+                          title={isActive(task.status) ? "Cancel" : "Dismiss"}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
                       </div>
                     );
                   })}
+                  {moreWaiting > 0 && (
+                    <div className="px-3 py-1 text-[11px] text-muted-foreground">+{moreWaiting} more waiting</div>
+                  )}
                 </div>
               </motion.div>
             )}

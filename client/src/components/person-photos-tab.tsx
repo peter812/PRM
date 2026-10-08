@@ -326,7 +326,7 @@ function PhotoModal({
             <AlertDialogTitle>Delete this photo?</AlertDialogTitle>
             <AlertDialogDescription>
               This will permanently remove the image and all associated face records from the
-              PRM-Face server. This action cannot be undone.
+              PRM Compute server. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -406,7 +406,7 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
           <div className="space-y-1">
             <p className="text-destructive font-medium">Invalid or missing API key</p>
             <p className="text-muted-foreground">
-              PRM-Face rejected the request. Please{" "}
+              PRM Compute rejected the request. Please{" "}
               <Link href="/settings/recognition" className="underline text-foreground hover:text-foreground/80">
                 regenerate your API key
               </Link>{" "}
@@ -420,7 +420,7 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
 
   if (isError) {
     const errMessage = (error as Error).message || "";
-    if (errMessage.includes("Failed to contact PRM-Face") || errMessage.includes("fetch failed")) {
+    if (errMessage.includes("Failed to contact PRM Compute") || errMessage.includes("fetch failed")) {
       return (
         <div className="flex flex-col items-center justify-center py-24 gap-3 text-muted-foreground" data-testid="empty-person-photos">
           <ImageIcon className="h-10 w-10 text-muted-foreground/60" />

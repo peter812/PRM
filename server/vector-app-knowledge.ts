@@ -63,7 +63,7 @@ export async function reindexAppKnowledge(): Promise<{ processed: number; failed
     let failedCount = 0;
     for (const row of inserted) {
       try {
-        const vector = await embedText(row.content, cfg.embeddingModel);
+        const vector = await embedText(row.content);
         await ensureCollection(client, APP_KNOWLEDGE_COLLECTION, vector.length);
         const pointId = randomUUID();
 
@@ -125,7 +125,7 @@ export async function searchAppKnowledge(query: string, limit = 5): Promise<{ co
   const appEnabled = (await getVectorSetting("app_knowledge_enabled")) === "true";
   if (!appEnabled) return [];
 
-  const vector = await embedText(query, cfg.embeddingModel);
+  const vector = await embedText(query);
   const client = buildClient(cfg);
 
   try {

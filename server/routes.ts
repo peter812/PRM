@@ -4,6 +4,7 @@ import { registerRoutes as registerAuthSetup } from "./routes/auth-setup";
 import { registerRoutes as registerPeopleGroups } from "./routes/people-groups";
 import { registerRoutes as registerSocialMedia } from "./routes/social-media";
 import { registerRoutes as registerAiVector } from "./routes/ai-vector";
+import { registerRoutes as registerAiProviders } from "./routes/ai-providers";
 import { registerRoutes as registerFamily } from "./routes/family";
 import { registerRoutes as registerMessages } from "./routes/messages";
 import { registerRoutes as registerOsint } from "./routes/osint";
@@ -21,6 +22,7 @@ import { registerRoutes as registerDescribeMe } from "./routes/describe-me";
 import { registerRoutes as registerDemosMap } from "./routes/demos-map";
 import { registerRoutes as registerDemosWordCloud } from "./routes/demos-word-cloud";
 import { registerSetupServicesRoutes } from "./routes/setup-services";
+import { registerSummaryRoutes } from "./routes/summaries";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Register sub-route modules.
@@ -28,8 +30,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // app.use("/api", ...) authentication gate that protects every /api route in
   // all modules registered after it (including family, which has no gate).
   registerAuthSetup(app);
-  // Family before people-groups: its static /api/family-tree/potential-families
-  // would otherwise be captured by people-groups' /api/family-tree/:personId.
   registerFamily(app);
   registerPeopleGroups(app);
   registerSocialMedia(app);
@@ -46,6 +46,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerFaces(app);
   registerConnections(app);
   registerAiVector(app);
+  registerAiProviders(app);
+  registerSummaryRoutes(app);
   registerMessages(app);
   registerOsint(app);
   registerInsights(app);

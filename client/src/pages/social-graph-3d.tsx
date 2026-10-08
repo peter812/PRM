@@ -463,15 +463,10 @@ function SocialGraphContent({
     queryKey: ['/api/groups'],
   });
 
-  const { data: peopleList } = useQuery<Person[]>({
-    queryKey: ['/api/people'],
+  const { data: mePerson } = useQuery<Person>({
+    queryKey: ['/api/me'],
   });
-
-  // A person carrying a `userId` is a "me" person — see the people schema.
-  const mePersonIds = useMemo(
-    () => new Set((peopleList || []).filter(p => p.userId != null).map(p => p.id)),
-    [peopleList],
-  );
+  const mePersonId = mePerson?.id;
 
   const extrasSteps = EXTRAS_STEPS;
   const mergeMultiplierSteps = MERGE_MULTIPLIER_STEPS;
@@ -803,7 +798,7 @@ function SocialGraphContent({
     // says nothing about where that crowd actually sits. Excluding it only
     // changes crowd membership; the account stays in the graph.
     const isExcludedFromCrowds = (ownerPersonId?: string | null): boolean =>
-      !includeMeAccounts && !!ownerPersonId && mePersonIds.has(ownerPersonId);
+      !includeMeAccounts && !!ownerPersonId && ownerPersonId === mePersonId;
 
     // `find` returned the earliest matching group; preserve that across the
     // two lookup maps by comparing their positions in activeGroups.
@@ -1382,7 +1377,7 @@ function SocialGraphContent({
     showCrowds,
     hideNonCrowd,
     includeMeAccounts,
-    mePersonIds,
+    mePersonId,
     applyChargeForce,
     // Renderer rebuilds clear the object maps, so re-push the data afterwards.
     hasGraphData,

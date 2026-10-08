@@ -3,9 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
-import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
-import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
@@ -36,7 +34,6 @@ import {
   deriveLineageRole,
 } from "@shared/schema";
 import multer from "multer";
-import { visibleShared, ownedByCurrentUser } from "../access";
 import { hashPassword, requireAuth } from "../auth";
 import { deleteImageFromPrmS3, isPrmS3ImageUrl } from "../prm-s3";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused } from "../task-worker";
@@ -76,26 +73,6 @@ let isUserCreationAllowed = false;
 
 
 
-export async function buildOllamaChatContext(): Promise<{ base: string; headers: Record<string, string> } | null> {
-  const apiUrl = (await storage.getAppSetting("ollama_api_url")) ?? "";
-  if (!apiUrl.trim()) return null;
-  const base = apiUrl.replace(/\/+$/, "");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const authRequired = (await storage.getAppSetting("ollama_auth_required")) === "true";
-  if (authRequired) {
-    const username = (await storage.getAppSetting("ollama_username")) ?? "";
-    const password = (await storage.getAppSetting("ollama_password")) ?? "";
-    headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-  }
-  return { base, headers };
-}
-
-/** Ollama model for plain-text tasks: the dedicated text model, falling back to the general one. */
-export async function getOllamaTextModel(): Promise<string> {
-  return ((await storage.getAppSetting("ollama_text_model")) ?? "").trim()
-    || ((await storage.getAppSetting("ollama_model")) ?? "").trim();
-}
-
 export function registerRoutes(app: Express) {
     // Graph endpoint - optimized for minimal data transfer
     app.get("/api/graph", async (req, res) => {
@@ -129,7 +106,7 @@ export function registerRoutes(app: Express) {
     app.get("/api/people/me-person", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const mePerson = await storage.getMePerson(req.user!.id);
+        const mePerson = await storage.getMePerson();
         if (!mePerson) return res.status(404).json({ error: "ME person not found" });
         res.json({ uuid: mePerson.id, name: (mePerson as any).name });
       } catch (err: any) {
@@ -143,13 +120,8 @@ export function registerRoutes(app: Express) {
         const limit = parseInt(req.query.limit as string) || 30;
         const sortBy = (req.query.sortBy as string) || 'relationship';
         
-        // Get ME user's person ID to filter relationships
-        const userId = req.user?.id;
-        let mePersonId: string | undefined;
-        if (userId) {
-          const mePerson = await storage.getMePerson(userId);
-          mePersonId = mePerson?.id;
-        }
+        // Get ME person ID to filter relationships
+        const mePersonId = (await storage.getMePersonId()) ?? undefined;
         
         const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortBy);
         res.json(people);
@@ -244,23 +216,20 @@ export function registerRoutes(app: Express) {
         
         // Filter by connection to ME user
         if (connectedToMe === 'true') {
-          const userId = req.user?.id;
-          if (userId) {
-            const mePerson = await storage.getMePerson(userId);
-            if (mePerson) {
-              // Get all relationships involving the ME user
-              const allRelationships = await storage.getAllRelationships();
-              const meRelationships = allRelationships.filter(
-                rel => rel.fromPersonId === mePerson.id || rel.toPersonId === mePerson.id
-              );
-              const connectedPersonIds = new Set(
-                meRelationships.map(rel => 
-                  rel.fromPersonId === mePerson.id ? rel.toPersonId : rel.fromPersonId
-                )
-              );
-              
-              people = people.filter(p => connectedPersonIds.has(p.id));
-            }
+          const meId = await storage.getMePersonId();
+          if (meId) {
+            // Get all relationships involving the ME user
+            const allRelationships = await storage.getAllRelationships();
+            const meRelationships = allRelationships.filter(
+              rel => rel.fromPersonId === meId || rel.toPersonId === meId
+            );
+            const connectedPersonIds = new Set(
+              meRelationships.map(rel => 
+                rel.fromPersonId === meId ? rel.toPersonId : rel.fromPersonId
+              )
+            );
+            
+            people = people.filter(p => connectedPersonIds.has(p.id));
           }
         }
   
@@ -336,12 +305,11 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    const publicInsertPersonSchema = insertPersonSchema.omit({ userId: true });
 
     app.post("/api/people", async (req, res) => {
       try {
         const { schooling: schoolingData, ...personBody } = req.body;
-        const validatedData = publicInsertPersonSchema.parse(personBody);
+        const validatedData = insertPersonSchema.parse(personBody);
         
         // Check for duplicate names
         const allPeople = await storage.getAllPeople();
@@ -356,10 +324,14 @@ export function registerRoutes(app: Express) {
           });
         }
         
-        let person = await storage.createPerson({
-          ...validatedData,
-          createdByUserId: req.user!.id,
-        });
+        let person = await storage.createPerson(validatedData);
+        // The create dialog uploads before the person exists; claim that upload
+        // so the person page's "Choose image" dialog lists it as theirs.
+        if (person.imageUrl) {
+          await db.update(photos)
+            .set({ prmLocation: `person_image:${person.id}` })
+            .where(and(eq(photos.location, person.imageUrl), eq(photos.prmLocation, "unknown")));
+        }
         
         if (schoolingData) {
           const validatedSchooling = insertSchoolingSchema.omit({ personId: true }).partial().parse(schoolingData);
@@ -388,7 +360,7 @@ export function registerRoutes(app: Express) {
       try {
         const id = req.params.id;
         const { schooling: schoolingData, ...personBody } = req.body;
-        const validatedData = publicInsertPersonSchema.partial().parse(personBody);
+        const validatedData = insertPersonSchema.partial().parse(personBody);
 
         // Auto-manage politicalUpdatedAt if political coordinates are touched
         if (personBody.politicalLeftRight !== undefined || personBody.politicalLibAuth !== undefined) {
@@ -431,6 +403,44 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    // What the person page's "Choose image" dialog offers: the user's own uploads
+    // (deletable), then each linked account's current and past profile pictures.
+    app.get("/api/people/:id/image-options", async (req, res) => {
+      try {
+        const person = await storage.getPersonById(req.params.id);
+        if (!person) return res.status(404).json({ error: "Person not found" });
+        const accountIds = person.socialAccountUuids ?? [];
+        const [uploads, accounts, history] = await Promise.all([
+          db.select({ id: photos.id, location: photos.location }).from(photos)
+            .where(eq(photos.prmLocation, `person_image:${person.id}`))
+            .orderBy(desc(photos.uploadedAt)),
+          accountIds.length
+            ? db.select({ id: socialAccounts.id, username: socialAccounts.username, imageUrl: socialAccounts.imageUrl })
+                .from(socialAccounts).where(inArray(socialAccounts.id, accountIds))
+            : [],
+          accountIds.length
+            ? db.select({ accountId: socialAccountHistory.socialAccountId, url: socialAccountHistory.previousImageUrl, date: socialAccountHistory.detectedAt })
+                .from(socialAccountHistory)
+                .where(and(inArray(socialAccountHistory.socialAccountId, accountIds), isNotNull(socialAccountHistory.previousImageUrl)))
+                .orderBy(desc(socialAccountHistory.detectedAt))
+            : [],
+        ]);
+        const usernames = new Map(accounts.map(a => [a.id, a.username]));
+        const options: { url: string; source: "upload" | "current" | "previous"; photoId?: string; username?: string; date?: Date }[] = [];
+        const seen = new Set<string>();
+        const add = (o: (typeof options)[number]) => {
+          if (!seen.has(o.url)) { seen.add(o.url); options.push(o); }
+        };
+        for (const p of uploads) add({ url: p.location, source: "upload", photoId: p.id });
+        for (const a of accounts) if (a.imageUrl) add({ url: a.imageUrl, source: "current", username: a.username });
+        for (const h of history) add({ url: h.url!, source: "previous", username: usernames.get(h.accountId), date: h.date });
+        res.json(options);
+      } catch (error) {
+        console.error("Error fetching image options:", error);
+        res.status(500).json({ error: "Failed to fetch image options" });
+      }
+    });
+
     app.delete("/api/people/created-past-24-hours", requireAuth, async (req, res) => {
       try {
         const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -477,10 +487,6 @@ export function registerRoutes(app: Express) {
         }
         
         // Otherwise, get all notes across all people with a single SQL query
-        const noteConditions = [ownedByCurrentUser(notes.userId)];
-        const personVisible = visibleShared(people.visibility, people.createdByUserId);
-        if (personVisible) noteConditions.push(personVisible);
-
         const noteRows = await db
           .select({
             note: notes,
@@ -489,7 +495,6 @@ export function registerRoutes(app: Express) {
           })
           .from(notes)
           .innerJoin(people, eq(notes.personId, people.id))
-          .where(and(...noteConditions))
           .orderBy(desc(notes.createdAt));
 
         const allNotes = noteRows.map(({ note, firstName, lastName }) => ({
@@ -524,10 +529,7 @@ export function registerRoutes(app: Express) {
     app.post("/api/notes", async (req, res) => {
       try {
         const validatedData = insertNoteSchema.parse(req.body);
-        const note = await storage.createNote({
-          ...validatedData,
-          userId: req.user!.id,
-        });
+        const note = await storage.createNote(validatedData);
         syncEntityInBackground("note", note.id);
         res.status(201).json(note);
       } catch (error) {
@@ -558,8 +560,7 @@ export function registerRoutes(app: Express) {
         const allInteractions = await db
           .select()
           .from(interactions)
-          .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id))
-          .where(visibleShared(interactions.visibility, interactions.createdByUserId));
+          .leftJoin(interactionTypes, eq(interactions.typeId, interactionTypes.id));
         
         let filteredInteractions = allInteractions;
         
@@ -639,7 +640,6 @@ export function registerRoutes(app: Express) {
         const validatedData = insertInteractionSchema.parse(req.body);
         const interaction = await storage.createInteraction({
           ...validatedData,
-          createdByUserId: req.user!.id,
         });
         syncEntityInBackground("interaction", interaction.id);
         res.status(201).json(interaction);
@@ -892,7 +892,6 @@ export function registerRoutes(app: Express) {
   
         const relationship = await storage.createRelationship({
           ...validatedData,
-          createdByUserId: req.user!.id,
         });
         res.status(201).json(relationship);
       } catch (error) {
@@ -1008,59 +1007,6 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // ── Family Tree AI ─────────────────────────────────────────────────────
-    // Generate proposed relationship changes from a natural-language prompt.
-    app.post("/api/family-tree/ai/generate", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const bodySchema = z.object({
-          personId: z.string().min(1),
-          prompt: z.string().min(1).max(8000),
-          allowDeletions: z.boolean().optional(),
-          askForChanges: z.boolean().optional(),
-        });
-        const body = bodySchema.parse(req.body);
-  
-        const ollamaEnabled = (await storage.getAppSetting("ollama_enabled")) === "true";
-        if (!ollamaEnabled) return res.status(400).json({ error: "AI is disabled in settings" });
-  
-        const ctx = await buildOllamaChatContext();
-        if (!ctx) return res.status(400).json({ error: "Ollama API URL is not configured" });
-  
-        const familyTreeModel = ((await storage.getAppSetting("ollama_family_tree_model")) ?? "").trim();
-        const model = familyTreeModel || (await getOllamaTextModel());
-        if (!model) return res.status(400).json({ error: "No AI model configured. Set one at Settings → Intelligence → Family Tree." });
-  
-        const result = await generateFamilyTreeChanges({
-          personId: body.personId,
-          prompt: body.prompt,
-          allowDeletions: !!body.allowDeletions,
-          askForChanges: !!body.askForChanges,
-          ollama: ctx,
-          model,
-        });
-        res.json(result);
-      } catch (error: any) {
-        console.error("Error generating family tree changes:", error);
-        res.status(500).json({ error: error?.message ?? "Failed to generate changes" });
-      }
-    });
-  
-    // Apply a user-curated subset of changes from the previous step.
-    app.post("/api/family-tree/ai/apply", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const changes = Array.isArray(req.body?.changes) ? req.body.changes : null;
-        if (!changes) return res.status(400).json({ error: "changes must be an array" });
-        // Trust the client object shape; applyFamilyTreeChanges re-validates each item.
-        const result = await applyFamilyTreeChanges(changes as ProposedFamilyChange[]);
-        res.json(result);
-      } catch (error: any) {
-        console.error("Error applying family tree changes:", error);
-        res.status(500).json({ error: error?.message ?? "Failed to apply changes" });
-      }
-    });
-  
     // Find people by last name (for family connection suggestions)
     app.get("/api/people/by-last-name/:lastName", async (req, res) => {
       try {
@@ -1128,7 +1074,6 @@ export function registerRoutes(app: Express) {
         const validatedData = insertGroupSchema.parse(req.body);
         const group = await storage.createGroup({
           ...validatedData,
-          createdByUserId: req.user!.id,
         });
         syncEntityInBackground("group", group.id);
         res.status(201).json(group);
@@ -1383,7 +1328,6 @@ export function registerRoutes(app: Express) {
           return res.status(400).json({ error: "No center account associated with this group." });
         }
         const task = await storage.createTask({
-          userId: req.user!.id,
           type: "calculate_crowd",
           status: "pending",
           title: `Crowd for ${group.name}`,
@@ -1557,7 +1501,6 @@ export function registerRoutes(app: Express) {
         settings.strategy = settings.strategy || "hybrid";
 
         const task = await storage.createTask({
-          userId: req.user!.id,
           type: "find_potential_groups",
           status: "pending",
           title: `Community detection: ${settings.entityType} (${settings.strategy})`,
@@ -1646,7 +1589,6 @@ export function registerRoutes(app: Express) {
           color,
           members: personIds,
           crowdMembers: accountIds,
-          createdByUserId: req.user!.id,
         });
 
         await linkAccountsToGroup(group.id, accountIds);

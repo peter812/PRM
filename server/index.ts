@@ -7,13 +7,13 @@ if (!fs.existsSync('/.dockerenv')) {
 import express, { type Request, Response, NextFunction } from "express";
 import compression from "compression";
 import { setupAuth } from "./auth";
-import { accessMiddleware } from "./access";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { initializeDatabase } from "./db-init";
 import { startTaskWorker } from "./task-worker";
 import { syncFaceCropStorage } from "./prm-s3";
 import { startOsintScanRunner } from "./osint-scan-queue";
+import { startSummaryRunner } from "./summary-queue";
 import { startStoriesScheduler } from "./stories-scheduler";
 import { startFaceAutoAssignScheduler } from "./recognition";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
@@ -66,7 +66,7 @@ app.use((req, res, next) => {
   if (process.env.DISABLE_AUTH === 'true' && process.env.NODE_ENV !== 'production') {
     // Mock authenticated user for development
     if (!(req as any).user) {
-      (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev', role: 'super_admin' };
+      (req as any).user = { id: 1, username: 'dev', name: 'Developer', nickname: 'Dev' };
     }
   }
   next();
@@ -74,10 +74,6 @@ app.use((req, res, next) => {
 
 // Setup auth after body parsers
 setupAuth(app);
-
-// Ambient request-level access context for all multi-user query predicates.
-// Must run after passport (and the dev bypass above) so req.user is set.
-app.use(accessMiddleware);
 
 function getJsonPreview(obj: any): string {
   if (obj === null || obj === undefined) return "null";
@@ -188,6 +184,7 @@ app.use(prmS3DirectMiddleware);
     void syncFaceCropStorage();
     startTaskWorker();
     startOsintScanRunner();
+    startSummaryRunner();
     startStoriesScheduler();
     startFaceAutoAssignScheduler();
   });

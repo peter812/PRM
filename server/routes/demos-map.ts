@@ -8,7 +8,6 @@ import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { geocodes, people } from "@shared/schema";
 import { db } from "../db";
-import { visibleShared } from "../access";
 import { geocoderProgress, pinAddresses, startGeocodePass } from "../map-geocoder";
 
 const TILE_URL = process.env.MAP_TILE_URL || "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -42,8 +41,7 @@ async function visiblePins(query?: string): Promise<PinRow[]> {
     FROM (${pinAddresses}) pa
     JOIN people ON people.id = pa.person_id
     LEFT JOIN ${geocodes} g ON g.query = pa.query
-    WHERE ${visibleShared(people.visibility, people.createdByUserId) ?? sql`true`}
-      ${query === undefined ? sql`` : sql`AND pa.query = ${query}`}
+    ${query === undefined ? sql`` : sql`WHERE pa.query = ${query}`}
   `);
   return result.rows;
 }
@@ -59,6 +57,7 @@ export function registerRoutes(app: Express) {
         pending: rows.filter((r) => r.status == null).length,
         geocoder: geocoderProgress(),
         tileUrl: TILE_URL,
+        cartoKey: process.env.CARTO_API_KEY || null,
         attribution: TILE_ATTRIBUTION,
       });
     } catch (error) {

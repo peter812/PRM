@@ -9,7 +9,6 @@
 import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
-import { visibleShared } from "./access";
 import {
   INSTAGRAM_TYPE_ID,
   faces,
@@ -161,7 +160,7 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
   const [me] = await db
     .select()
     .from(socialAccounts)
-    .where(and(eq(socialAccounts.id, accountId), visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId)));
+    .where(eq(socialAccounts.id, accountId));
   if (!me) return undefined;
   const myHandle = me.username.toLowerCase();
   const weights = await connectionWeights();
@@ -281,7 +280,6 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
   // ── Resolve handles, drop what the caller can't see, dedupe, score ──
   const handles = [...new Set(raw.filter((r) => r.other.startsWith("h:")).map((r) => r.other.slice(2)))];
   const ids = [...new Set(raw.filter((r) => r.other.startsWith("id:")).map((r) => r.other.slice(3)))];
-  const visible = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId);
   const accountCols = { id: socialAccounts.id, username: socialAccounts.username, nickname: socialAccounts.nickname, imageUrl: socialAccounts.imageUrl, typeId: socialAccounts.typeId };
   const byHandle = new Map<string, string>();
   const accounts = new Map<string, Connection["account"]>();
@@ -289,7 +287,7 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
     const rows = await db
       .select(accountCols)
       .from(socialAccounts)
-      .where(and(inArray(sql`lower(${socialAccounts.username})`, handles), or(eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID), isNull(socialAccounts.typeId)), visible));
+      .where(and(inArray(sql`lower(${socialAccounts.username})`, handles), or(eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID), isNull(socialAccounts.typeId))));
     // An Instagram-typed row wins over an untyped one under the same name.
     rows.sort((a, b) => Number(b.typeId === INSTAGRAM_TYPE_ID) - Number(a.typeId === INSTAGRAM_TYPE_ID));
     for (const { typeId, ...a } of rows) {
@@ -300,7 +298,7 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
   }
   const unseen = ids.filter((id) => !accounts.has(id));
   if (unseen.length) {
-    for (const { typeId, ...a } of await db.select(accountCols).from(socialAccounts).where(and(inArray(socialAccounts.id, unseen), visible))) {
+    for (const { typeId, ...a } of await db.select(accountCols).from(socialAccounts).where(inArray(socialAccounts.id, unseen))) {
       accounts.set(a.id, a);
     }
   }

@@ -1,4 +1,4 @@
-# PRM-Face Image Pipeline Upgrade Plan (PRM-face Application)
+# PRM Compute Image Pipeline Upgrade Plan (PRM-face Application)
 
 This plan details the upgrade path for the **PRM-face** Python application. Currently, PRM-face is a python-based face recognition service with no connection to external databases or S3 servers. 
 

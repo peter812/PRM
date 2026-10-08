@@ -227,14 +227,13 @@ export async function findLikelySameCandidatePairs(opts?: { minScore?: number; l
 /**
  * Records that groupA and groupB are NOT the same identity, so they are not recommended again.
  */
-export async function dismissLikelySamePair(groupA: string, groupB: string, userId?: number): Promise<void> {
+export async function dismissLikelySamePair(groupA: string, groupB: string): Promise<void> {
   const [minG, maxG] = groupA < groupB ? [groupA, groupB] : [groupB, groupA];
   await db
     .insert(facePairDismissals)
     .values({
       groupAUuid: minG,
       groupBUuid: maxG,
-      userId: userId ?? null,
     })
     .onConflictDoNothing();
 }

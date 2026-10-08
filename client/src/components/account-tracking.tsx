@@ -48,6 +48,8 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: [`/api/social-accounts/${account.id}`] });
+    // The account page caches the same account under this key.
+    queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", account.id], exact: true });
     queryClient.invalidateQueries({ queryKey: [`/api/social-accounts/${account.id}/tracking-jobs`] });
   };
   const patch = useMutation({

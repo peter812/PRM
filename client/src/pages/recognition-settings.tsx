@@ -45,6 +45,12 @@ export default function RecognitionSettingsPage() {
   const [maxFaces, setMaxFaces] = useState<number>(10);
   const [minFaceSize, setMinFaceSize] = useState<number>(20);
   const [sureness, setSureness] = useState<number>(65);
+  const [detThreshold, setDetThreshold] = useState<number>(60);
+  const [excludeProfileFaces, setExcludeProfileFaces] = useState(false);
+  const [maxYaw, setMaxYaw] = useState<number>(60);
+  const [backfill, setBackfill] = useState<{ running: boolean; measured: number; skipped: number; remaining: number | null }>(
+    { running: false, measured: 0, skipped: 0, remaining: null },
+  );
 
   const { data: settings, isLoading } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
@@ -171,6 +177,9 @@ export default function RecognitionSettingsPage() {
     max_faces: number;
     min_face_size: number;
     sureness: number;
+    det_threshold?: number;
+    exclude_profile_faces?: boolean;
+    max_yaw?: number;
   };
 
   const { data: config } = useQuery<FaceConfig>({
@@ -183,6 +192,9 @@ export default function RecognitionSettingsPage() {
       setMaxFaces(config.max_faces);
       setMinFaceSize(config.min_face_size);
       setSureness(config.sureness);
+      setDetThreshold(config.det_threshold ?? 60);
+      setExcludeProfileFaces(config.exclude_profile_faces ?? false);
+      setMaxYaw(config.max_yaw ?? 60);
     }
   }, [config]);
 
@@ -192,6 +204,9 @@ export default function RecognitionSettingsPage() {
         maxFaces,
         minFaceSize,
         sureness,
+        detThreshold,
+        excludeProfileFaces,
+        maxYaw,
       });
       return res.json();
     },
@@ -203,6 +218,30 @@ export default function RecognitionSettingsPage() {
       toast({ title: "Failed to update configuration", description: error.message, variant: "destructive" });
     },
   });
+
+  // Walks every stored face that has no yaw yet, one server batch at a time.
+  const runBackfill = async () => {
+    let cursor = "";
+    let measured = 0;
+    let skipped = 0;
+    setBackfill({ running: true, measured, skipped, remaining: null });
+    try {
+      for (;;) {
+        const res = await apiRequest("POST", "/api/prm-face/backfill-pose", { after: cursor });
+        const batch: { measured: number; skipped: number; cursor: string; remaining: number } = await res.json();
+        measured += batch.measured;
+        skipped += batch.skipped;
+        cursor = batch.cursor;
+        setBackfill({ running: true, measured, skipped, remaining: batch.remaining });
+        if (batch.remaining === 0) break;
+      }
+      toast({ title: "Pose backfill finished", description: `${measured} measured, ${skipped} had no detectable face.` });
+    } catch (error: any) {
+      toast({ title: "Pose backfill failed", description: error.message, variant: "destructive" });
+    } finally {
+      setBackfill((b) => ({ ...b, running: false }));
+    }
+  };
 
   if (isLoading) {
     return (
@@ -430,6 +469,25 @@ export default function RecognitionSettingsPage() {
                 />
               </div>
               <div className="space-y-2">
+                <Label htmlFor="det-threshold">Min Face Detection Confidence ({detThreshold}%)</Label>
+                <div className="flex items-center gap-4">
+                  <input
+                    id="det-threshold"
+                    type="range"
+                    min={10}
+                    max={99}
+                    value={detThreshold}
+                    onChange={(e) => setDetThreshold(Number(e.target.value))}
+                    className="flex-1 accent-primary"
+                    data-testid="slider-det-threshold"
+                  />
+                  <span className="w-12 text-right font-mono text-sm">{detThreshold}%</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  How sure the detector must be that something is a face. Higher drops blurry or partial detections.
+                </p>
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="sureness">Face Sureness Requirement ({sureness}%)</Label>
                 <div className="flex items-center gap-4">
                   <input
@@ -444,6 +502,52 @@ export default function RecognitionSettingsPage() {
                   />
                   <span className="w-12 text-right font-mono text-sm">{sureness}%</span>
                 </div>
+              </div>
+              <div className="space-y-3 rounded-md border p-4" data-testid="section-pose-filter">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="exclude-profile-faces">Exclude side-profile faces</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Faces turned {maxYaw}° or more are not stored or matched, and already-stored ones are skipped when
+                      matching. Side views look alike and tend to match the same few accounts.
+                    </p>
+                  </div>
+                  <Switch
+                    id="exclude-profile-faces"
+                    checked={excludeProfileFaces}
+                    onCheckedChange={setExcludeProfileFaces}
+                    data-testid="switch-exclude-profile-faces"
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <Label htmlFor="max-yaw">Cutoff angle (yaw)</Label>
+                  <Input
+                    id="max-yaw"
+                    type="number"
+                    min={10}
+                    max={90}
+                    value={maxYaw}
+                    onChange={(e) => setMaxYaw(Math.min(90, Math.max(10, Number(e.target.value) || 60)))}
+                    className="w-24"
+                    disabled={!excludeProfileFaces}
+                    data-testid="input-max-yaw"
+                  />
+                  <span className="text-sm text-muted-foreground">degrees</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button variant="outline" onClick={runBackfill} disabled={backfill.running} data-testid="button-backfill-yaw">
+                    {backfill.running ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                    Measure angle of stored faces
+                  </Button>
+                  {backfill.remaining !== null && (
+                    <span className="text-sm text-muted-foreground" data-testid="text-backfill-progress">
+                      {backfill.measured} measured, {backfill.skipped} skipped, {backfill.remaining} remaining
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Faces stored before pose estimation have no angle and are never excluded until measured.
+                </p>
               </div>
               <Button
                 onClick={() => saveConfigMutation.mutate()}

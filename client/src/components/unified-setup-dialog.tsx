@@ -58,7 +58,7 @@ const STAGES = [
   {
     id: "services",
     title: "Sub-Services",
-    description: "S3, Face, Ollama & Qdrant",
+    description: "S3, Face, AI providers & Qdrant",
     icon: HardDrive,
   },
   {

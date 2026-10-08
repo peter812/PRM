@@ -106,8 +106,11 @@ export function GlobalSearch() {
     enabled: isUuidQuery,
   });
 
+  // Only check vector status once the user engages with search, not on page load.
+  const [hasEngaged, setHasEngaged] = useState(false);
   const { data: vectorStatus } = useQuery<{ enabled: boolean; collectionReady: boolean }>({
     queryKey: ["/api/vector/universal/status"],
+    enabled: hasEngaged,
   });
 
   const isSuperSearchReady = !!(vectorStatus?.enabled && vectorStatus?.collectionReady);
@@ -632,6 +635,7 @@ export function GlobalSearch() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => {
+            setHasEngaged(true);
             if (searchQuery.length > 0 || history.length > 0) {
               setIsOpen(true);
             }

@@ -4,13 +4,20 @@ import path from "path";
 import multer from "multer";
 import { storage } from "../storage";
 import { triggerTaskWorker } from "../task-worker";
-import { requireAdmin } from "../auth";
+import { requireAuth } from "../auth";
 
 const BACKUPS_DIR = path.join(process.cwd(), "backups");
 
-function ensureBackupsDir() {
-  if (!fs.existsSync(BACKUPS_DIR)) {
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+async function ensureBackupsDir() {
+  await fs.promises.mkdir(BACKUPS_DIR, { recursive: true });
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -26,8 +33,25 @@ function isSafeFilename(name: string): boolean {
 }
 
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 },
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      ensureBackupsDir()
+        .then(() => cb(null, BACKUPS_DIR))
+        .catch((err) => cb(err, BACKUPS_DIR));
+    },
+    filename: (_req, file, cb) => {
+      (async () => {
+        let targetName = sanitizeFilename(file.originalname);
+        const targetPath = path.join(BACKUPS_DIR, targetName);
+        if (await fileExists(targetPath)) {
+          const baseWithoutExt = targetName.replace(/\.xml$/, "");
+          targetName = `${baseWithoutExt}-${Date.now()}.xml`;
+        }
+        cb(null, targetName);
+      })().catch((err) => cb(err, ""));
+    },
+  }),
+  limits: { fileSize: 1024 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.originalname.endsWith(".xml") || file.mimetype === "application/xml" || file.mimetype === "text/xml") {
       cb(null, true);
@@ -38,27 +62,28 @@ const upload = multer({
 });
 
 export function registerRoutes(app: Express) {
-  // All backup operations require admin privileges
-  app.use("/api/backups", requireAdmin);
+  app.use("/api/backups", requireAuth);
 
   // GET /api/backups - List all past backups
-  app.get("/api/backups", async (req: Request, res: Response) => {
+  app.get("/api/backups", async (_req: Request, res: Response) => {
     try {
-      ensureBackupsDir();
-      const files = fs.readdirSync(BACKUPS_DIR);
-      const backupList = files
-        .filter((file) => file.endsWith(".xml") && file !== ".gitkeep")
-        .map((filename) => {
-          const filePath = path.join(BACKUPS_DIR, filename);
-          const stat = fs.statSync(filePath);
-          return {
-            filename,
-            size: stat.size,
-            createdAt: stat.birthtime.toISOString(),
-            modifiedAt: stat.mtime.toISOString(),
-          };
-        })
-        .sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+      await ensureBackupsDir();
+      const files = await fs.promises.readdir(BACKUPS_DIR);
+      const xmlFiles = files.filter((file) => file.endsWith(".xml") && file !== ".gitkeep");
+      const backupList = (
+        await Promise.all(
+          xmlFiles.map(async (filename) => {
+            const filePath = path.join(BACKUPS_DIR, filename);
+            const stat = await fs.promises.stat(filePath);
+            return {
+              filename,
+              size: stat.size,
+              createdAt: stat.birthtime.toISOString(),
+              modifiedAt: stat.mtime.toISOString(),
+            };
+          }),
+        )
+      ).sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
 
       res.json(backupList);
     } catch (error) {
@@ -78,7 +103,6 @@ export function registerRoutes(app: Express) {
       const customName = req.body.filename ? sanitizeFilename(req.body.filename) : undefined;
 
       const task = await storage.createTask({
-        userId: req.user.id,
         type: "export_xml",
         status: "pending",
         payload: JSON.stringify({
@@ -100,6 +124,7 @@ export function registerRoutes(app: Express) {
   app.post("/api/backups/upload", upload.single("file"), async (req: Request, res: Response) => {
     try {
       if (!req.isAuthenticated() || !req.user) {
+        if (req.file?.path) await fs.promises.unlink(req.file.path).catch(() => {});
         return res.status(401).json({ error: "Not authenticated" });
       }
 
@@ -107,19 +132,25 @@ export function registerRoutes(app: Express) {
         return res.status(400).json({ error: "No XML file uploaded" });
       }
 
-      ensureBackupsDir();
-      let targetName = sanitizeFilename(req.file.originalname);
-      let targetPath = path.join(BACKUPS_DIR, targetName);
+      const targetName = req.file.filename;
+      const targetPath = req.file.path;
 
-      if (fs.existsSync(targetPath)) {
-        const baseWithoutExt = targetName.replace(/\.xml$/, "");
-        targetName = `${baseWithoutExt}-${Date.now()}.xml`;
-        targetPath = path.join(BACKUPS_DIR, targetName);
+      const handle = await fs.promises.open(targetPath, "r");
+      let header = "";
+      try {
+        const buf = Buffer.alloc(4096);
+        const { bytesRead } = await handle.read(buf, 0, 4096, 0);
+        header = buf.subarray(0, bytesRead).toString("utf-8").trimStart();
+      } finally {
+        await handle.close();
       }
 
-      fs.writeFileSync(targetPath, req.file.buffer);
+      if (!header.startsWith("<?xml") && !header.startsWith("<export")) {
+        await fs.promises.unlink(targetPath).catch(() => {});
+        return res.status(400).json({ error: "Invalid XML backup file: must start with <?xml or <export>" });
+      }
 
-      const stat = fs.statSync(targetPath);
+      const stat = await fs.promises.stat(targetPath);
       res.json({
         success: true,
         filename: targetName,
@@ -128,6 +159,7 @@ export function registerRoutes(app: Express) {
         modifiedAt: stat.mtime.toISOString(),
       });
     } catch (error) {
+      if (req.file?.path) await fs.promises.unlink(req.file.path).catch(() => {});
       console.error("Error uploading backup:", error);
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to upload backup" });
     }
@@ -146,11 +178,11 @@ export function registerRoutes(app: Express) {
       }
 
       const filePath = path.join(BACKUPS_DIR, filename);
-      if (!fs.existsSync(filePath)) {
+      if (!(await fileExists(filePath))) {
         return res.status(404).json({ error: "Backup file not found" });
       }
 
-      fs.unlinkSync(filePath);
+      await fs.promises.unlink(filePath);
       res.json({ success: true, filename });
     } catch (error) {
       console.error("Error deleting backup:", error);
@@ -180,23 +212,23 @@ export function registerRoutes(app: Express) {
         return res.status(400).json({ error: "Invalid new backup filename" });
       }
 
-      ensureBackupsDir();
+      await ensureBackupsDir();
       const oldPath = path.join(BACKUPS_DIR, filename);
       const newPath = path.join(BACKUPS_DIR, sanitizedNewName);
 
-      if (!fs.existsSync(oldPath)) {
+      if (!(await fileExists(oldPath))) {
         return res.status(404).json({ error: "Backup file not found" });
       }
 
-      if (oldPath !== newPath && fs.existsSync(newPath)) {
+      if (oldPath !== newPath && (await fileExists(newPath))) {
         return res.status(400).json({ error: `A backup named "${sanitizedNewName}" already exists` });
       }
 
       if (oldPath !== newPath) {
-        fs.renameSync(oldPath, newPath);
+        await fs.promises.rename(oldPath, newPath);
       }
 
-      const stat = fs.statSync(newPath);
+      const stat = await fs.promises.stat(newPath);
       res.json({
         success: true,
         oldFilename: filename,
@@ -223,7 +255,7 @@ export function registerRoutes(app: Express) {
       }
 
       const filePath = path.join(BACKUPS_DIR, filename);
-      if (!fs.existsSync(filePath)) {
+      if (!(await fileExists(filePath))) {
         return res.status(404).json({ error: "Backup file not found" });
       }
 
@@ -237,7 +269,7 @@ export function registerRoutes(app: Express) {
   });
 
   // POST /api/backups/:filename/restore - Restore from a backup XML file
-  app.post("/api/backups/:filename/restore", requireAdmin, async (req: Request, res: Response) => {
+  app.post("/api/backups/:filename/restore", requireAuth, async (req: Request, res: Response) => {
     try {
       if (!req.isAuthenticated() || !req.user) {
         return res.status(401).json({ error: "Not authenticated" });
@@ -249,12 +281,11 @@ export function registerRoutes(app: Express) {
       }
 
       const filePath = path.join(BACKUPS_DIR, filename);
-      if (!fs.existsSync(filePath)) {
+      if (!(await fileExists(filePath))) {
         return res.status(404).json({ error: "Backup file not found" });
       }
 
       const task = await storage.createTask({
-        userId: req.user.id,
         type: "import_xml",
         status: "pending",
         payload: JSON.stringify({

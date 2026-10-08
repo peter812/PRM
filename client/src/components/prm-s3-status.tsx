@@ -1,13 +1,9 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Loader2, RefreshCw, ServerOff } from "lucide-react";
-
-type PrmS3Health = { ok: boolean; message: string };
-
-const POLL_INTERVAL_MS = 30_000;
+import { useServiceStatuses } from "@/components/status-dot";
 
 /**
  * PRM-S3 is the only media store, so an outage breaks every upload and image
@@ -17,12 +13,8 @@ const POLL_INTERVAL_MS = 30_000;
  */
 export function PrmS3StatusGuard({ enabled }: { enabled: boolean }) {
   const [dismissed, setDismissed] = useState(false);
-  const { data, refetch, isFetching, isError, error } = useQuery<PrmS3Health>({
-    queryKey: ["/api/prm-s3/health"],
-    enabled,
-    refetchInterval: POLL_INTERVAL_MS,
-    refetchIntervalInBackground: false,
-  });
+  const { data: statuses, refetch, isFetching, isError, error } = useServiceStatuses(enabled);
+  const data = statuses?.s3;
   const down = isError || data?.ok === false;
   // The health route always answers 200, so a failed request means the PRM
   // backend itself is unreachable rather than PRM-S3.

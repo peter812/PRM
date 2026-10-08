@@ -320,12 +320,13 @@ export interface PersonContextMenuProps {
   asChild?: boolean;
 }
 
-export function PersonContextMenu({
+function PersonContextMenuContentBody({
   person,
   groupId,
-  children,
-  asChild = false,
-}: PersonContextMenuProps) {
+}: {
+  person: PersonLike;
+  groupId?: string;
+}) {
   const [, navigate] = useLocation();
   const { handleHover, isLoading, relationshipTypes, activeTypeId, updateRelationship } =
     usePersonMeRelationship(person.id, person);
@@ -335,44 +336,57 @@ export function PersonContextMenu({
     : `/person/${person.id}`;
 
   return (
+    <>
+      <ContextMenuItem
+        className="flex items-center gap-2 cursor-pointer text-xs"
+        onClick={() => navigate(profileUrl)}
+      >
+        <Eye className="h-4 w-4" />
+        <span>View Profile</span>
+      </ContextMenuItem>
+
+      <ContextMenuSub>
+        <ContextMenuSubTrigger
+          className="flex items-center gap-2 cursor-pointer text-xs"
+          onMouseEnter={handleHover}
+          onFocus={handleHover}
+        >
+          <GitBranch className="h-4 w-4" />
+          <span>Relationship</span>
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent className="w-48">
+          <RelationshipMenuItems
+            isContextMenu={true}
+            relationshipTypes={relationshipTypes}
+            activeTypeId={activeTypeId}
+            isLoading={isLoading}
+            onSelect={updateRelationship}
+          />
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+
+      <ContextMenuItem
+        className="flex items-center gap-2 cursor-pointer text-xs"
+        onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
+      >
+        <GraphTriangleIcon className="h-4 w-4" />
+        <span>Open in Graph</span>
+      </ContextMenuItem>
+    </>
+  );
+}
+
+export function PersonContextMenu({
+  person,
+  groupId,
+  children,
+  asChild = false,
+}: PersonContextMenuProps) {
+  return (
     <ContextMenu>
       <ContextMenuTrigger asChild={asChild}>{children}</ContextMenuTrigger>
       <ContextMenuContent className="w-52">
-        <ContextMenuItem
-          className="flex items-center gap-2 cursor-pointer text-xs"
-          onClick={() => navigate(profileUrl)}
-        >
-          <Eye className="h-4 w-4" />
-          <span>View Profile</span>
-        </ContextMenuItem>
-
-        <ContextMenuSub>
-          <ContextMenuSubTrigger
-            className="flex items-center gap-2 cursor-pointer text-xs"
-            onMouseEnter={handleHover}
-            onFocus={handleHover}
-          >
-            <GitBranch className="h-4 w-4" />
-            <span>Relationship</span>
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent className="w-48">
-            <RelationshipMenuItems
-              isContextMenu={true}
-              relationshipTypes={relationshipTypes}
-              activeTypeId={activeTypeId}
-              isLoading={isLoading}
-              onSelect={updateRelationship}
-            />
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-
-        <ContextMenuItem
-          className="flex items-center gap-2 cursor-pointer text-xs"
-          onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
-        >
-          <GraphTriangleIcon className="h-4 w-4" />
-          <span>Open in Graph</span>
-        </ContextMenuItem>
+        <PersonContextMenuContentBody person={person} groupId={groupId} />
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -384,11 +398,13 @@ export interface PersonActionButtonProps {
   className?: string;
 }
 
-export function PersonActionButton({
+function PersonActionDropdownBody({
   person,
   groupId,
-  className,
-}: PersonActionButtonProps) {
+}: {
+  person: PersonLike;
+  groupId?: string;
+}) {
   const [, navigate] = useLocation();
   const { handleHover, isLoading, relationshipTypes, activeTypeId, updateRelationship } =
     usePersonMeRelationship(person.id, person);
@@ -397,6 +413,52 @@ export function PersonActionButton({
     ? `/person/${person.id}?from=group&groupId=${groupId}`
     : `/person/${person.id}`;
 
+  return (
+    <>
+      <DropdownMenuItem
+        className="flex items-center gap-2 cursor-pointer text-xs"
+        onClick={() => navigate(profileUrl)}
+      >
+        <Eye className="h-4 w-4" />
+        <span>View Profile</span>
+      </DropdownMenuItem>
+
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger
+          className="flex items-center gap-2 cursor-pointer text-xs"
+          onMouseEnter={handleHover}
+          onFocus={handleHover}
+        >
+          <GitBranch className="h-4 w-4" />
+          <span>Relationship</span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="w-48">
+          <RelationshipMenuItems
+            isContextMenu={false}
+            relationshipTypes={relationshipTypes}
+            activeTypeId={activeTypeId}
+            isLoading={isLoading}
+            onSelect={updateRelationship}
+          />
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
+      <DropdownMenuItem
+        className="flex items-center gap-2 cursor-pointer text-xs"
+        onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
+      >
+        <GraphTriangleIcon className="h-4 w-4" />
+        <span>Open in Graph</span>
+      </DropdownMenuItem>
+    </>
+  );
+}
+
+export function PersonActionButton({
+  person,
+  groupId,
+  className,
+}: PersonActionButtonProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -418,41 +480,7 @@ export function PersonActionButton({
         className="w-52"
         onClick={(e) => e.stopPropagation()}
       >
-        <DropdownMenuItem
-          className="flex items-center gap-2 cursor-pointer text-xs"
-          onClick={() => navigate(profileUrl)}
-        >
-          <Eye className="h-4 w-4" />
-          <span>View Profile</span>
-        </DropdownMenuItem>
-
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger
-            className="flex items-center gap-2 cursor-pointer text-xs"
-            onMouseEnter={handleHover}
-            onFocus={handleHover}
-          >
-            <GitBranch className="h-4 w-4" />
-            <span>Relationship</span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-48">
-            <RelationshipMenuItems
-              isContextMenu={false}
-              relationshipTypes={relationshipTypes}
-              activeTypeId={activeTypeId}
-              isLoading={isLoading}
-              onSelect={updateRelationship}
-            />
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-
-        <DropdownMenuItem
-          className="flex items-center gap-2 cursor-pointer text-xs"
-          onClick={() => navigate(`/social-graph-3d?view=person&selected=${person.id}`)}
-        >
-          <GraphTriangleIcon className="h-4 w-4" />
-          <span>Open in Graph</span>
-        </DropdownMenuItem>
+        <PersonActionDropdownBody person={person} groupId={groupId} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

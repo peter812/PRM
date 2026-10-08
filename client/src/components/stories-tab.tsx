@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, ChevronRight, ExternalLink, ImageIcon, Info, Layers, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +7,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { safeJsonParse } from "@/lib/utils";
 import type { SocialAccountPost } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
+import { PostSummarySection } from "@/components/account-summary";
+import { VideoTranscript } from "@/components/video-transcript";
 
 /** What prm-stories puts in social_account_posts.metadata for a story. */
 interface StoryMetadata {
@@ -48,10 +50,10 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 /** One story, or a day's worth of them with arrows to step through. */
 function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClose: () => void }) {
   const [index, setIndex] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const story = stories[index];
   if (!story) return null;
   const meta = (story.metadata ?? {}) as StoryMetadata;
-  const transcript = (story.videoTranscript as { text?: string } | null)?.text;
   const image = firstImage(story);
   const mentions = mentionsOf(story);
   const igLink = (username: string) => (
@@ -77,6 +79,7 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
           <div className="relative bg-black flex items-center justify-center md:w-[45%] shrink-0">
             {meta.videoUrl ? (
               <video
+                ref={videoRef}
                 key={story.id}
                 src={meta.videoUrl}
                 poster={withImageSize(image, 1080)}
@@ -142,11 +145,16 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
               </Badge>
             )}
             {story.description && <Row label="Description">{story.description}</Row>}
-            {transcript && (
-              <Row label="Transcript">
-                <p className="whitespace-pre-wrap text-muted-foreground" data-testid="text-story-transcript">{transcript}</p>
-              </Row>
-            )}
+            <VideoTranscript
+              key={story.id}
+              transcript={story.videoTranscript}
+              onSeek={(t) => {
+                if (!videoRef.current) return;
+                videoRef.current.currentTime = t;
+                videoRef.current.play();
+              }}
+            />
+            <PostSummarySection postId={story.id} initialSummary={story.aiSummary} currentImageIndex={0} />
             {mentions.length > 0 && (
               <Row label="Mentions">
                 <div className="flex flex-wrap gap-x-3 gap-y-1">{mentions.map(igLink)}</div>

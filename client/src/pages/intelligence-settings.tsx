@@ -1,138 +1,78 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useLoadOnce } from "@/hooks/use-load-once";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Wifi, WifiOff, CheckCircle2, Loader2, Sparkles, RefreshCw, MessagesSquare, ListChecks, MessageSquare, HelpCircle, Network, Cpu } from "lucide-react";
+import { Loader2, Sparkles, MessagesSquare, ListChecks, MessageSquare, HelpCircle, Cpu } from "lucide-react";
+import { AiProvidersCard } from "@/components/ai-providers-card";
+import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/components/provider-model-picker";
 
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const DEFAULT_EVENTS_PROMPT = "You extract a list of distinct events from a daily journal entry. An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations. Each event must be a short, standalone past-tense statement (one sentence, ideally under 120 characters). Do not include opinions, plans for the future, or generic reflections. Do not invent events that aren't supported by the text. Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.";
 
-type OllamaSettings = {
+type AiSettings = {
   enabled: boolean;
-  apiUrl: string;
-  authRequired: boolean;
-  username: string;
-  hasPassword: boolean;
-  model: string;
-  textModel: string;
-  prompt: string;
-  eventsModel: string;
   eventsPrompt: string;
-  sexGuessModel?: string;
-  familyTreeModel?: string;
+  text: ModelSelection;
+  events: ModelSelection;
+  sexGuess: ModelSelection;
 };
 
-type TestResult = {
-  ok: boolean;
-  message: string;
-};
+type TaskKey = "text" | "events" | "sexGuess";
 
-type OllamaModel = {
-  name: string;
-  parameterSize: string | null;
-};
+const MODEL_TASKS: { key: TaskKey; label: string; description: string; icon: typeof MessagesSquare; fallbackLabel?: string }[] = [
+  { key: "text", label: "Text Model", description: "Powers AI chat and general text tasks. Falls back to the image model.", icon: MessagesSquare, fallbackLabel: "Use image model" },
+  { key: "events", label: "Daily Note Events", description: "Extracts structured events from daily notes.", icon: ListChecks, fallbackLabel: "Use text model" },
+  { key: "sexGuess", label: "Sex Guess Model", description: "Infers sex when unknown.", icon: HelpCircle, fallbackLabel: "Use text model" },
+];
+
+const EMPTY_SELECTION: ModelSelection = { providerId: "", model: "" };
 
 export default function IntelligenceSettingsPage() {
   const { toast } = useToast();
 
   const [enabled, setEnabled] = useState(false);
-  const [apiUrl, setApiUrl] = useState("");
-  const [authRequired, setAuthRequired] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [selectedTextModel, setSelectedTextModel] = useState("");
-  const [selectedEventsModel, setSelectedEventsModel] = useState("");
+  const [selections, setSelections] = useState<Record<TaskKey, ModelSelection>>({
+    text: EMPTY_SELECTION, events: EMPTY_SELECTION, sexGuess: EMPTY_SELECTION,
+  });
   const [eventsPrompt, setEventsPrompt] = useState(DEFAULT_EVENTS_PROMPT);
-  const [selectedSexGuessModel, setSelectedSexGuessModel] = useState("");
-  const [selectedFamilyTreeModel, setSelectedFamilyTreeModel] = useState("");
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
 
-  const { data: settings, isLoading } = useQuery<OllamaSettings>({
-    queryKey: ["/api/ollama/settings"],
+  const { data: settings, isLoading } = useQuery<AiSettings>({
+    queryKey: ["/api/ai/settings"],
   });
 
-  const { data: modelsData, isLoading: isLoadingModels, refetch: refetchModels } = useQuery<{ models: OllamaModel[] }>({
-    queryKey: ["/api/ollama/models"],
-    enabled: !!settings?.apiUrl,
-    retry: false,
+  useLoadOnce(settings, (s) => {
+    setEnabled(s.enabled);
+    setSelections({ text: s.text, events: s.events, sexGuess: s.sexGuess });
+    setEventsPrompt(s.eventsPrompt || DEFAULT_EVENTS_PROMPT);
   });
-
-  useEffect(() => {
-    if (!settings) return;
-    setEnabled(settings.enabled);
-    setApiUrl(settings.apiUrl);
-    setAuthRequired(settings.authRequired);
-    setUsername(settings.username);
-    setSelectedTextModel(settings.textModel ?? "");
-    setSelectedEventsModel(settings.eventsModel ?? "");
-    setEventsPrompt(settings.eventsPrompt || DEFAULT_EVENTS_PROMPT);
-    setSelectedSexGuessModel(settings.sexGuessModel ?? "");
-    setSelectedFamilyTreeModel(settings.familyTreeModel ?? "");
-  }, [settings]);
 
   const saveMutation = useMutation({
     mutationFn: async (patch: Record<string, unknown>) => {
-      const res = await apiRequest("POST", "/api/ollama/settings", patch);
+      const res = await apiRequest("POST", "/api/ai/settings", patch);
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/ollama/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/ai/settings"] });
       toast({ title: "Saved" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to save", description: apiErrorMessage(error), variant: "destructive" });
     },
   });
 
-  const testMutation = useMutation({
-    mutationFn: async () => {
-      const body: Record<string, unknown> = { apiUrl, authRequired, username };
-      if (password.length > 0) body.password = password;
-      const res = await apiRequest("POST", "/api/ollama/test", body);
-      return res.json() as Promise<TestResult>;
-    },
-    onSuccess: (data) => {
-      setTestResult(data);
-    },
-    onError: (error: Error) => {
-      setTestResult({ ok: false, message: error.message });
-    },
-  });
-
-  const handleSaveUrl = () => {
-    const patch: Record<string, unknown> = { apiUrl, authRequired, username };
-    if (password.length > 0) patch.password = password;
-    saveMutation.mutate(patch);
-  };
-
-  const handleSaveModels = () => {
-    saveMutation.mutate({
-      textModel: selectedTextModel,
-      eventsModel: selectedEventsModel,
-      sexGuessModel: selectedSexGuessModel,
-      familyTreeModel: selectedFamilyTreeModel,
-    });
-  };
-
-  const hasModelChanges =
-    selectedTextModel !== (settings?.textModel ?? "") ||
-    selectedEventsModel !== (settings?.eventsModel ?? "") ||
-    selectedSexGuessModel !== (settings?.sexGuessModel ?? "") ||
-    selectedFamilyTreeModel !== (settings?.familyTreeModel ?? "");
+  const sameSelection = (a: ModelSelection, b: ModelSelection | undefined) =>
+    a.model === (b?.model ?? "") && (!a.model || a.providerId === (b?.providerId ?? ""));
+  const hasModelChanges = MODEL_TASKS.some(({ key }) => !sameSelection(selections[key], settings?.[key]));
 
   const handleSaveEventsPrompt = () => {
     saveMutation.mutate({ eventsPrompt });
   };
-
-  const models = modelsData?.models ?? [];
-  const urlConfigured = !!settings?.apiUrl;
 
   if (isLoading) {
     return (
@@ -150,7 +90,7 @@ export default function IntelligenceSettingsPage() {
           Intelligence
         </h1>
         <p className="text-muted-foreground">
-          Local Ollama instance configuration for chat and multimodal intelligence.
+          AI providers and the models used for chat and text intelligence.
         </p>
       </div>
 
@@ -165,7 +105,7 @@ export default function IntelligenceSettingsPage() {
           <CardContent>
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-0.5">
-                <Label htmlFor="ollama-enabled-switch" className="text-sm font-medium">
+                <Label htmlFor="ai-enabled-switch" className="text-sm font-medium">
                   Enable AI
                 </Label>
                 <p className="text-xs text-muted-foreground">
@@ -173,368 +113,56 @@ export default function IntelligenceSettingsPage() {
                 </p>
               </div>
               <Switch
-                id="ollama-enabled-switch"
+                id="ai-enabled-switch"
                 checked={enabled}
                 onCheckedChange={(v) => { setEnabled(v); saveMutation.mutate({ enabled: v }); }}
                 disabled={saveMutation.isPending}
-                data-testid="switch-ollama-enabled"
+                data-testid="switch-ai-enabled"
               />
             </div>
           </CardContent>
         </Card>
 
-        <Card data-testid="card-ollama-api-url">
-          <CardHeader>
-            <CardTitle className="text-lg">Ollama API URL</CardTitle>
-            <CardDescription>
-              The base URL of your Ollama server (e.g. <code className="text-xs bg-muted px-1 rounded">http://localhost:11434</code>).
+        <AiProvidersCard />
+
+        <Card data-testid="card-ai-models">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Cpu className="h-4 w-4" />
+              Model Selection
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Pick a provider and model for each feature. Image description is set under Images.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="ollama-api-url">Server URL</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="ollama-api-url"
-                  placeholder="http://localhost:11434"
-                  value={apiUrl}
-                  onChange={(e) => { setApiUrl(e.target.value); setTestResult(null); }}
-                  data-testid="input-ollama-api-url"
-                />
-                <Button
-                  onClick={handleSaveUrl}
-                  disabled={saveMutation.isPending}
-                  data-testid="button-save-ollama-url"
-                >
-                  {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
-                </Button>
-              </div>
-            </div>
-
-            <div className="space-y-4 pt-1">
-              <div className="flex items-center justify-between gap-4">
-                <div className="space-y-0.5">
-                  <Label htmlFor="ollama-auth-switch" className="text-sm font-medium">
-                    Auth required
-                  </Label>
-                  <p className="text-xs text-muted-foreground">Uses HTTP Basic Auth</p>
-                </div>
-                <Switch
-                  id="ollama-auth-switch"
-                  checked={authRequired}
-                  onCheckedChange={setAuthRequired}
-                  data-testid="switch-ollama-auth-required"
-                />
-              </div>
-
-              {authRequired && (
-                <div className="space-y-3" data-testid="section-ollama-credentials">
-                  <div className="space-y-2">
-                    <Label htmlFor="ollama-username">Username</Label>
-                    <Input
-                      id="ollama-username"
-                      placeholder="username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      data-testid="input-ollama-username"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="ollama-password">
-                      Password
-                      {settings?.hasPassword && (
-                        <span className="ml-2 text-xs text-muted-foreground font-normal">(saved — enter new value to change)</span>
-                      )}
-                    </Label>
-                    <Input
-                      id="ollama-password"
-                      type="password"
-                      placeholder={settings?.hasPassword ? "••••••••" : "password"}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      data-testid="input-ollama-password"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="flex flex-wrap gap-2 pt-1">
-              <Button
-                variant="outline"
-                onClick={() => testMutation.mutate()}
-                disabled={testMutation.isPending || !apiUrl.trim()}
-                data-testid="button-verify-ollama-connection"
-              >
-                {testMutation.isPending ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Verifying…</>
-                ) : (
-                  <><Wifi className="h-4 w-4 mr-2" />Verify Connection</>
-                )}
-              </Button>
-            </div>
-
-            {testResult !== null && (
-              <div
-                className={`flex items-start gap-2 rounded-md p-3 text-sm ${testResult.ok ? "bg-primary/10 border border-primary/20" : "bg-destructive/10 border border-destructive/20"}`}
-                data-testid="text-ollama-test-result"
-              >
-                {testResult.ok ? (
-                  <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-                ) : (
-                  <WifiOff className="h-4 w-4 shrink-0 mt-0.5 text-destructive" />
-                )}
-                <span>{testResult.message}</span>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-ollama-models">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="space-y-0.5">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Cpu className="h-4 w-4" />
-                  Model Selection
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  {urlConfigured
-                    ? "Assign active models for chat and vision features."
-                    : "Configure API URL to load models."}
-                </CardDescription>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 px-2.5 text-xs shrink-0"
-                onClick={() => refetchModels()}
-                disabled={!urlConfigured || isLoadingModels}
-                title="Refresh model list"
-                data-testid="button-refresh-models"
-              >
-                {isLoadingModels ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                )}
-                Refresh
-              </Button>
-            </div>
-          </CardHeader>
           <CardContent className="space-y-3 pt-0">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Text Model */}
-              <div className="rounded-lg border bg-card p-3 space-y-1.5 shadow-sm" data-testid="section-ollama-text-model">
-                <div className="flex items-center justify-between gap-1">
-                  <Label htmlFor="ollama-text-model-select" className="text-xs font-medium flex items-center gap-1.5 cursor-pointer">
-                    <MessagesSquare className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span>Text Model</span>
-                  </Label>
-                  {settings?.textModel ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-[130px]" title={`Saved: ${settings.textModel}`}>
-                      Saved: <span className="font-mono font-medium">{settings.textModel}</span>
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-muted-foreground italic">Not set</span>
-                  )}
-                </div>
-                <p className="text-[11px] text-muted-foreground leading-tight">
-                  Powers AI chat and general text tasks.
-                </p>
-                <Select
-                  value={selectedTextModel}
-                  onValueChange={setSelectedTextModel}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-text-model-select" className="h-8 text-xs font-mono" data-testid="select-ollama-text-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} className="text-xs" data-testid={`option-text-model-${m.name}`}>
-                        <span className="font-mono text-xs">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-[10px] text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            {MODEL_TASKS.map(({ key, label, description, icon: Icon, fallbackLabel }) => (
+              <div key={key} className="rounded-lg border bg-card p-3 space-y-1.5 shadow-sm" data-testid={`section-${key}-model`}>
+                <Label className="text-xs font-medium flex items-center gap-1.5">
+                  <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  {label}
+                </Label>
+                <p className="text-[11px] text-muted-foreground leading-tight">{description}</p>
+                <ProviderModelPicker
+                  value={selections[key]}
+                  onChange={(v) => setSelections((s) => ({ ...s, [key]: v }))}
+                  fallbackLabel={fallbackLabel}
+                  testId={`picker-${key}`}
+                />
               </div>
-
-              {/* Daily Note Event Extraction Model */}
-              <div className="rounded-lg border bg-card p-3 space-y-1.5 shadow-sm" data-testid="section-ollama-events-model">
-                <div className="flex items-center justify-between gap-1">
-                  <Label htmlFor="ollama-events-model-select" className="text-xs font-medium flex items-center gap-1.5 cursor-pointer">
-                    <ListChecks className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span>Daily Note Events</span>
-                  </Label>
-                  {settings?.eventsModel ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-[130px]" title={`Saved: ${settings.eventsModel}`}>
-                      Saved: <span className="font-mono font-medium">{settings.eventsModel}</span>
-                    </span>
-                  ) : settings?.textModel ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-[130px]" title={`Fallback: ${settings.textModel}`}>
-                      Fallback: <span className="font-mono">{settings.textModel}</span>
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-muted-foreground italic">Fallback to text model</span>
-                  )}
-                </div>
-                <p className="text-[11px] text-muted-foreground leading-tight">
-                  Extracts structured events from daily notes.
-                </p>
-                <Select
-                  value={selectedEventsModel || "__fallback__"}
-                  onValueChange={(val) => setSelectedEventsModel(val === "__fallback__" ? "" : val)}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-events-model-select" className="h-8 text-xs font-mono" data-testid="select-ollama-events-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__fallback__" className="text-xs italic text-muted-foreground">
-                      Default (Use text model)
-                    </SelectItem>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} className="text-xs" data-testid={`option-events-model-${m.name}`}>
-                        <span className="font-mono text-xs">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-[10px] text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Sex Guess Model */}
-              <div className="rounded-lg border bg-card p-3 space-y-1.5 shadow-sm" data-testid="section-ollama-sex-guess-model">
-                <div className="flex items-center justify-between gap-1">
-                  <Label htmlFor="ollama-sex-guess-model-select" className="text-xs font-medium flex items-center gap-1.5 cursor-pointer">
-                    <HelpCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span>Sex Guess Model</span>
-                  </Label>
-                  {settings?.sexGuessModel ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-[130px]" title={`Saved: ${settings.sexGuessModel}`}>
-                      Saved: <span className="font-mono font-medium">{settings.sexGuessModel}</span>
-                    </span>
-                  ) : settings?.textModel ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-[130px]" title={`Fallback: ${settings.textModel}`}>
-                      Fallback: <span className="font-mono">{settings.textModel}</span>
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-muted-foreground italic">Fallback to text model</span>
-                  )}
-                </div>
-                <p className="text-[11px] text-muted-foreground leading-tight">
-                  Infers sex when unknown.
-                </p>
-                <Select
-                  value={selectedSexGuessModel || "__fallback__"}
-                  onValueChange={(val) => setSelectedSexGuessModel(val === "__fallback__" ? "" : val)}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-sex-guess-model-select" className="h-8 text-xs font-mono" data-testid="select-ollama-sex-guess-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__fallback__" className="text-xs italic text-muted-foreground">
-                      Default (Use text model)
-                    </SelectItem>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} className="text-xs" data-testid={`option-sex-guess-model-${m.name}`}>
-                        <span className="font-mono text-xs">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-[10px] text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Family Tree Model */}
-              <div className="rounded-lg border bg-card p-3 space-y-1.5 shadow-sm" data-testid="section-family-tree-model">
-                <div className="flex items-center justify-between gap-1">
-                  <Label htmlFor="family-tree-model-select" className="text-xs font-medium flex items-center gap-1.5 cursor-pointer">
-                    <Network className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span>Family Tree Model</span>
-                  </Label>
-                  {settings?.familyTreeModel ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-[130px]" title={`Saved: ${settings.familyTreeModel}`}>
-                      Saved: <span className="font-mono font-medium">{settings.familyTreeModel}</span>
-                    </span>
-                  ) : settings?.textModel ? (
-                    <span className="text-[10px] text-muted-foreground truncate max-w-[130px]" title={`Fallback: ${settings.textModel}`}>
-                      Fallback: <span className="font-mono">{settings.textModel}</span>
-                    </span>
-                  ) : (
-                    <span className="text-[10px] text-muted-foreground italic">Fallback to text model</span>
-                  )}
-                </div>
-                <p className="text-[11px] text-muted-foreground leading-tight">
-                  Powers connection discovery (tool calling recommended).
-                </p>
-                <Select
-                  value={selectedFamilyTreeModel || "__fallback__"}
-                  onValueChange={(val) => setSelectedFamilyTreeModel(val === "__fallback__" ? "" : val)}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="family-tree-model-select" className="h-8 text-xs font-mono" data-testid="select-family-tree-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__fallback__" className="text-xs italic text-muted-foreground">
-                      Default (Use text model)
-                    </SelectItem>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} className="text-xs" data-testid={`option-family-tree-model-${m.name}`}>
-                        <span className="font-mono text-xs">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-[10px] text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+            ))}
 
             <div className="flex items-center justify-between pt-2 border-t">
               <p className="text-xs text-muted-foreground">
-                {!urlConfigured
-                  ? "Configure API URL above to select models."
-                  : hasModelChanges
+                {hasModelChanges
                   ? <span className="text-amber-600 dark:text-amber-400 font-medium">Unsaved model changes</span>
                   : "All model selections saved."}
               </p>
               <Button
                 size="sm"
                 className="h-8 px-4 text-xs"
-                onClick={handleSaveModels}
-                disabled={saveMutation.isPending || !urlConfigured}
+                onClick={() => saveMutation.mutate(selections)}
+                disabled={saveMutation.isPending || !hasModelChanges}
                 data-testid="button-save-models"
               >
                 {saveMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : null}
@@ -544,7 +172,7 @@ export default function IntelligenceSettingsPage() {
           </CardContent>
         </Card>
 
-        <Card data-testid="card-ollama-events-prompt">
+        <Card data-testid="card-ai-events-prompt">
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <MessageSquare className="h-4 w-4" />
@@ -560,7 +188,7 @@ export default function IntelligenceSettingsPage() {
               onChange={(e) => setEventsPrompt(e.target.value)}
               rows={5}
               className="resize-y font-mono text-xs"
-              data-testid="textarea-ollama-events-prompt"
+              data-testid="textarea-ai-events-prompt"
             />
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-3">

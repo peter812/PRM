@@ -21,7 +21,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Trash2, X } from "lucide-react";
-export type FamilyTreeViewMode = "name" | "avatar-name" | "avatar-circle";
+export type FamilyTreeViewMode = "name" | "avatar-name";
 
 export interface FamilyTreePerson {
   id: string;
@@ -189,8 +189,6 @@ function PersonNode({ data }: { data: PersonNodeData; id: string }) {
   }
 
   const showAvatar = data.viewMode !== "name" && data.avatarUrl;
-  const showName = data.viewMode !== "avatar-circle";
-  const isCircle = data.viewMode === "avatar-circle";
 
   // Each side gets both a source and a target handle so edges can be drawn
   // and connected in either direction. Same id space across sides keeps
@@ -213,24 +211,15 @@ function PersonNode({ data }: { data: PersonNodeData; id: string }) {
         <img
           src={data.avatarUrl ?? ""}
           alt={data.label}
-          className={`object-cover ${isCircle ? "w-12 h-12 rounded-full" : "w-8 h-8 rounded-full mb-1"}`}
+          className="object-cover w-8 h-8 rounded-full mb-1"
         />
       )}
-      {showName && (
-        <>
-          <span className={`font-medium text-sm leading-tight ${data.isMissing ? "" : "text-gray-900 dark:text-gray-100"}`}>
-            {data.label}
-          </span>
-          {data.sublabel && (
-            <span className={`text-xs leading-tight mt-0.5 ${data.isMissing ? "opacity-70" : "text-muted-foreground"}`}>
-              {data.sublabel}
-            </span>
-          )}
-        </>
-      )}
-      {isCircle && !showAvatar && (
-        <span className="font-medium text-sm leading-tight text-gray-900 dark:text-gray-100">
-          {data.label}
+      <span className={`font-medium text-sm leading-tight ${data.isMissing ? "" : "text-gray-900 dark:text-gray-100"}`}>
+        {data.label}
+      </span>
+      {data.sublabel && (
+        <span className={`text-xs leading-tight mt-0.5 ${data.isMissing ? "opacity-70" : "text-muted-foreground"}`}>
+          {data.sublabel}
         </span>
       )}
       <Handle id="bottom" type="source" position={Position.Bottom} className={handleClass} />

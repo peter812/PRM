@@ -15,7 +15,6 @@ import { db, pool } from "../server/db";
 import { socialAccounts, socialAccountHistory, socialFollows, tasks } from "@shared/schema";
 import { processImportSocial } from "../server/task-worker";
 import { storage } from "../server/storage";
-import { runAsUser } from "../server/access";
 import { and, desc, eq, like } from "drizzle-orm";
 import crypto from "crypto";
 
@@ -218,7 +217,7 @@ async function run() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-runAsUser(1, run).catch(async (err) => {
+run().catch(async (err) => {
   console.error("\nTest run threw:", err);
   try {
     await db.delete(socialAccounts).where(like(socialAccounts.username, `${PREFIX}%`));

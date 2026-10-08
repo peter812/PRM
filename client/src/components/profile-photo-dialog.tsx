@@ -31,7 +31,7 @@ const REASON_LABEL: Record<string, string> = {
   multiple_faces: "more than one face, so none was linked",
   no_box: "the face had no usable bounds",
   face_too_small: "the face is smaller than the minimum in Recognition settings",
-  face_missing: "PRM-Face did not keep the face",
+  face_missing: "PRM Compute did not keep the face",
   group_conflict: "the face already belongs to a different identity",
   not_profile: "not a profile picture",
   no_face_account: "this account is marked as having no face",

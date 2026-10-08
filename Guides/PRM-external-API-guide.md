@@ -1952,7 +1952,7 @@ No request body needed.
 
 ## Vector Storage & Semantic Search (Qdrant)
 
-PRM integrates an external [Qdrant](https://qdrant.tech) vector database paired with local [Ollama](https://ollama.com) embeddings to power semantic Super Search, daily journal retrieval, and AI App Knowledge Base RAG.
+PRM integrates an external [Qdrant](https://qdrant.tech) vector database paired with embeddings from any configured AI provider (e.g. local [Ollama](https://ollama.com) or an OpenAI-compatible endpoint) to power semantic Super Search, daily journal retrieval, and AI App Knowledge Base RAG.
 
 ### Get Vector Storage Settings
 
@@ -2047,12 +2047,12 @@ POST /api/daily-notes/vectorize-all
 
 ---
 
-### Get Available Embedding Models
+### List a Provider's Models
 
-Queries the local Ollama instance for models equipped for text embedding generation.
+Lists the models an AI provider offers (used for the embedding model picker and every other model picker). Any model name can also be typed in, since some OpenAI-compatible servers don't list models.
 
 ```http
-GET /api/vector/embedding-models
+GET /api/ai/providers/{providerId}/models
 ```
 
 **Response:**
@@ -2192,26 +2192,28 @@ POST /api/vector/app-knowledge/reindex
 
 ## AI Assistant & Agentic Tools
 
-PRM incorporates an Ollama-powered conversational chat engine with multi-step agentic function-calling tools and human-in-the-loop authorization.
+PRM incorporates a conversational chat engine (running on any configured Ollama or OpenAI-compatible provider) with multi-step agentic function-calling tools and human-in-the-loop authorization.
 
-### Verify Ollama Backend
+### AI Providers
+
+Providers are Ollama servers or OpenAI-compatible endpoints. Secrets are write-only and never returned (`hasSecret` shows whether one is saved). `isExternal` flags providers outside your network: data sent to them leaves your machine.
 
 ```http
-POST /api/ai/verify
-Content-Type: application/json
-
-{
-  "ollamaUrl": "http://localhost:11434"
-}
+GET    /api/ai/providers
+POST   /api/ai/providers          { "name", "kind": "ollama" | "openai", "baseUrl", "authType": "none" | "bearer" | "basic", "username"?, "secret"?, "isDefault"?, "isExternal"? }
+PATCH  /api/ai/providers/{id}
+DELETE /api/ai/providers/{id}     (409 while a setting or chat still uses it, for the default, or for the last provider)
+POST   /api/ai/providers/test     { "id" } or unsaved { "kind", "baseUrl", ... }
 ```
 
-**Response:**
+With `id` and a blank `secret`, the test reuses the stored secret only when `baseUrl` matches the saved one; a different URL needs the secret re-entered (400). Cloud metadata addresses (`169.254.x.x`, `metadata.google.internal`) are rejected as base URLs, and provider requests never follow redirects.
+
+**Test response:**
 ```json
-{
-  "ok": true,
-  "models": ["llama3.2:latest", "mistral:latest", "nomic-embed-text:latest"]
-}
+{ "ok": true, "modelCount": 3, "message": "Connected. 3 models available." }
 ```
+
+Per-feature model choices live in `GET/POST /api/ai/settings`; each of `vision`, `text`, `events`, and `sexGuess` is `{ "providerId", "model" }` (empty `providerId` = default provider).
 
 ---
 
@@ -2224,7 +2226,7 @@ GET /api/ai/chat/stream?message=When+did+I+last+meet+with+John+Doe?
 ```
 
 **SSE Events Emitted:**
-- `chunk`: Text token streaming from Ollama.
+- `chunk`: Text token streaming from the model.
 - `thought`: Internal chain-of-thought reasoning from the model.
 - `tool_call`: Function tool invocation with JSON arguments (e.g. `get_person_interactions`).
 - `tool_approval_request`: Emitted when a mutating (`write: true`) tool requires user confirmation in `auth` mode.
@@ -2360,9 +2362,9 @@ Content-Type: application/json
 
 ---
 
-## Facial Recognition & PRM-Face
+## Facial Recognition & PRM Compute
 
-Integrates with the external **PRM-Face** computer vision microservice for facial detection, S3 cutout storage, and identity clustering.
+Integrates with the external **PRM Compute** computer vision microservice for facial detection, S3 cutout storage, and identity clustering.
 
 ### Detect Faces in Image
 
@@ -2738,6 +2740,6 @@ For questions or issues with the API:
 ## Version
 
 API Version: 2.5
-Last Updated: September 2026 (Expanded with Qdrant Vector Storage & Super Search, AI Agent Tools, Whisper STT, Stories & Tracking, PRM-Face, and Family Tree APIs)
+Last Updated: September 2026 (Expanded with Qdrant Vector Storage & Super Search, AI Agent Tools, Whisper STT, Stories & Tracking, PRM Compute, and Family Tree APIs)
 
 **Note**: This API is in active development. Breaking changes may occur. Test thoroughly before production deployment.

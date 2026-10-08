@@ -2,7 +2,6 @@ import type { Express, Request, Response } from "express";
 import { storage, countPendingImportEntries } from "../storage";
 import { db } from "../db";
 import { authenticateExtensionToken } from "../auth";
-import { runAsUser } from "../access";
 import { triggerTaskWorker } from "../task-worker";
 import { socialAccounts, socialAccountHistory } from "@shared/schema";
 import { desc, eq } from "drizzle-orm";
@@ -102,85 +101,83 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const body = req.body || {};
+      const body = req.body || {};
 
-        // Case 1: Bulk scraped contacts
-        if (body.type === "bulk_scrape" && Array.isArray(body.contacts)) {
-          const targetAccount = (body.targetAccount || "").trim();
-          const contacts = body.contacts;
-          const csvLines = contacts.map((c: any) => c.username || c.handle).filter(Boolean).join("\n");
-
-          const importPayload = {
-            accountUsername: targetAccount || `bulk_import_${Date.now()}`,
-            accountDisplayName: targetAccount ? `@${targetAccount} Audience` : "Bulk Scraped Contacts",
-            accountFollowers: csvLines || null,
-            accountFollowing: null,
-            importType: "full",
-          };
-
-          const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
-          if (duplicate) {
-            return res.status(200).json({ success: true, id: duplicate.id, count: contacts.length, duplicate: true });
-          }
-
-          const id = crypto.randomUUID();
-          const newImport = await storage.createPendingSocialAccountImport({
-            id,
-            timestampAdded: body.timestamp ? new Date(body.timestamp) : new Date(),
-            alreadyAdded: false,
-            ...importPayload,
-          });
-
-          return res.status(201).json({ success: true, id: newImport.id, count: contacts.length });
-        }
-
-        // Case 2: Standard tab extraction payload
-        const data = body.data || body;
-        const rawUsername = data.username || data.handle || (typeof body.url === "string" ? body.url.split("/").filter(Boolean).pop() : "") || "";
-        const username = rawUsername.replace(/^@/, "").trim().toLowerCase();
-
-        if (!username) {
-          return res.status(400).json({ error: "Username could not be determined from scrape payload" });
-        }
+      // Case 1: Bulk scraped contacts
+      if (body.type === "bulk_scrape" && Array.isArray(body.contacts)) {
+        const targetAccount = (body.targetAccount || "").trim();
+        const contacts = body.contacts;
+        const csvLines = contacts.map((c: any) => c.username || c.handle).filter(Boolean).join("\n");
 
         const importPayload = {
-          accountUsername: username,
-          accountDisplayName: data.displayName || data.name || username,
-          accountBio: data.bio || data.headline || null,
-          accountWebsite: data.bioLink || data.website || null,
-          accountLocationArea: data.location || null,
-          accountEmail: data.email || null,
-          accountPhone: data.phone || null,
-          // A tab extraction reports totals off the profile's meta tags — those
-          // are counts, not the follower CSV the "full" import produces.
-          accountFollowers: null,
+          accountUsername: targetAccount || `bulk_import_${Date.now()}`,
+          accountDisplayName: targetAccount ? `@${targetAccount} Audience` : "Bulk Scraped Contacts",
+          accountFollowers: csvLines || null,
           accountFollowing: null,
-          accountImageUrl: data.imageUrl || data.profilePicUrl || null,
-          accountFollowersCount: parseCount(data.followers),
-          accountFollowingCount: parseCount(data.following),
-          importType: "account",
-          // A tab extraction reads the profile header only; it never opens either list.
-          captureScope: "profile",
+          importType: "full",
         };
 
         const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
         if (duplicate) {
-          return res.status(200).json({ success: true, id: duplicate.id, duplicate: true });
+          return res.status(200).json({ success: true, id: duplicate.id, count: contacts.length, duplicate: true });
         }
 
-        const id = body.uuid || body.id || crypto.randomUUID();
-        const timestampAdded = body.timestamp ? new Date(body.timestamp) : new Date();
-
+        const id = crypto.randomUUID();
         const newImport = await storage.createPendingSocialAccountImport({
           id,
-          timestampAdded,
+          timestampAdded: body.timestamp ? new Date(body.timestamp) : new Date(),
           alreadyAdded: false,
           ...importPayload,
         });
 
-        res.status(201).json({ success: true, id: newImport.id });
+        return res.status(201).json({ success: true, id: newImport.id, count: contacts.length });
+      }
+
+      // Case 2: Standard tab extraction payload
+      const data = body.data || body;
+      const rawUsername = data.username || data.handle || (typeof body.url === "string" ? body.url.split("/").filter(Boolean).pop() : "") || "";
+      const username = rawUsername.replace(/^@/, "").trim().toLowerCase();
+
+      if (!username) {
+        return res.status(400).json({ error: "Username could not be determined from scrape payload" });
+      }
+
+      const importPayload = {
+        accountUsername: username,
+        accountDisplayName: data.displayName || data.name || username,
+        accountBio: data.bio || data.headline || null,
+        accountWebsite: data.bioLink || data.website || null,
+        accountLocationArea: data.location || null,
+        accountEmail: data.email || null,
+        accountPhone: data.phone || null,
+        // A tab extraction reports totals off the profile's meta tags — those
+        // are counts, not the follower CSV the "full" import produces.
+        accountFollowers: null,
+        accountFollowing: null,
+        accountImageUrl: data.imageUrl || data.profilePicUrl || null,
+        accountFollowersCount: parseCount(data.followers),
+        accountFollowingCount: parseCount(data.following),
+        importType: "account",
+        // A tab extraction reads the profile header only; it never opens either list.
+        captureScope: "profile",
+      };
+
+      const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
+      if (duplicate) {
+        return res.status(200).json({ success: true, id: duplicate.id, duplicate: true });
+      }
+
+      const id = body.uuid || body.id || crypto.randomUUID();
+      const timestampAdded = body.timestamp ? new Date(body.timestamp) : new Date();
+
+      const newImport = await storage.createPendingSocialAccountImport({
+        id,
+        timestampAdded,
+        alreadyAdded: false,
+        ...importPayload,
       });
+
+      res.status(201).json({ success: true, id: newImport.id });
     } catch (error) {
       console.error("Error handling scrape-results:", error);
       res.status(500).json(writeFailureBody("Failed to process scrape results", error));
@@ -196,49 +193,47 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const body = req.body || {};
-        const accountUsername = body.account_username || body.accountUsername;
+      const body = req.body || {};
+      const accountUsername = body.account_username || body.accountUsername;
 
-        if (!accountUsername) {
-          return res.status(400).json({ error: "account_username is required" });
-        }
+      if (!accountUsername) {
+        return res.status(400).json({ error: "account_username is required" });
+      }
 
-        const importPayload = {
-          accountUsername: accountUsername.trim(),
-          accountDisplayName: body.account_display_name || body.accountDisplayName || null,
-          accountBio: body.account_bio || body.accountBio || null,
-          accountWebsite: body.account_website || body.accountWebsite || null,
-          accountEmail: body.account_email || body.accountEmail || null,
-          accountPhone: body.account_phone || body.accountPhone || null,
-          accountLocationArea: body.account_location_area || body.accountLocationArea || null,
-          accountFollowers: body.account_followers || body.accountFollowers || null,
-          accountFollowing: body.account_following || body.accountFollowing || null,
-          accountImageUrl: body.account_image_url || body.accountImageUrl || null,
-          accountFollowersCount: parseCount(body.account_followers_count ?? body.accountFollowersCount),
-          accountFollowingCount: parseCount(body.account_following_count ?? body.accountFollowingCount),
-          importType: body.import_type || body.importType || 'full',
-          captureScope: parseCaptureScope(body.capture_scope ?? body.captureScope),
-        };
+      const importPayload = {
+        accountUsername: accountUsername.trim(),
+        accountDisplayName: body.account_display_name || body.accountDisplayName || null,
+        accountBio: body.account_bio || body.accountBio || null,
+        accountWebsite: body.account_website || body.accountWebsite || null,
+        accountEmail: body.account_email || body.accountEmail || null,
+        accountPhone: body.account_phone || body.accountPhone || null,
+        accountLocationArea: body.account_location_area || body.accountLocationArea || null,
+        accountFollowers: body.account_followers || body.accountFollowers || null,
+        accountFollowing: body.account_following || body.accountFollowing || null,
+        accountImageUrl: body.account_image_url || body.accountImageUrl || null,
+        accountFollowersCount: parseCount(body.account_followers_count ?? body.accountFollowersCount),
+        accountFollowingCount: parseCount(body.account_following_count ?? body.accountFollowingCount),
+        importType: body.import_type || body.importType || 'full',
+        captureScope: parseCaptureScope(body.capture_scope ?? body.captureScope),
+      };
 
-        const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
-        if (duplicate) {
-          return res.status(200).json({ success: true, id: duplicate.id, duplicate: true });
-        }
+      const duplicate = await storage.findDuplicatePendingSocialAccountImport(importPayload);
+      if (duplicate) {
+        return res.status(200).json({ success: true, id: duplicate.id, duplicate: true });
+      }
 
-        const id = body.uuid || body.id || crypto.randomUUID();
-        const timestampAddedInput = body.timestamp_added || body.timestampAdded;
-        const timestampAdded = timestampAddedInput ? new Date(timestampAddedInput) : new Date();
+      const id = body.uuid || body.id || crypto.randomUUID();
+      const timestampAddedInput = body.timestamp_added || body.timestampAdded;
+      const timestampAdded = timestampAddedInput ? new Date(timestampAddedInput) : new Date();
 
-        const newImport = await storage.createPendingSocialAccountImport({
-          id,
-          timestampAdded,
-          alreadyAdded: body.already_added || body.alreadyAdded || false,
-          ...importPayload,
-        });
-
-        res.status(201).json({ success: true, id: newImport.id });
+      const newImport = await storage.createPendingSocialAccountImport({
+        id,
+        timestampAdded,
+        alreadyAdded: body.already_added || body.alreadyAdded || false,
+        ...importPayload,
       });
+
+      res.status(201).json({ success: true, id: newImport.id });
     } catch (error) {
       console.error("Error saving pending social account import:", error);
       res.status(500).json(writeFailureBody("Failed to save pending social account import", error));
@@ -258,39 +253,37 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const username = String(req.query.username || "").trim().replace(/^@/, "").toLowerCase();
-        if (!username) {
-          return res.status(400).json({ error: "username is required" });
-        }
+      const username = String(req.query.username || "").trim().replace(/^@/, "").toLowerCase();
+      if (!username) {
+        return res.status(400).json({ error: "username is required" });
+      }
 
-        const [account] = await db
-          .select()
-          .from(socialAccounts)
-          .where(eq(socialAccounts.username, username))
-          .limit(1);
+      const [account] = await db
+        .select()
+        .from(socialAccounts)
+        .where(eq(socialAccounts.username, username))
+        .limit(1);
 
-        // When PRM last actually recorded a change, as opposed to when it last
-        // looked. The popup uses the gap between the two to show whether a rescrape
-        // is likely to find anything.
-        const [lastChange] = account
-          ? await db
-              .select({ detectedAt: socialAccountHistory.detectedAt })
-              .from(socialAccountHistory)
-              .where(eq(socialAccountHistory.socialAccountId, account.id))
-              .orderBy(desc(socialAccountHistory.detectedAt))
-              .limit(1)
-          : [];
+      // When PRM last actually recorded a change, as opposed to when it last
+      // looked. The popup uses the gap between the two to show whether a rescrape
+      // is likely to find anything.
+      const [lastChange] = account
+        ? await db
+            .select({ detectedAt: socialAccountHistory.detectedAt })
+            .from(socialAccountHistory)
+            .where(eq(socialAccountHistory.socialAccountId, account.id))
+            .orderBy(desc(socialAccountHistory.detectedAt))
+            .limit(1)
+        : [];
 
-        res.json({
-          exists: Boolean(account),
-          isSimple: account?.isSimple ?? true,
-          lastScrapedAt: account?.lastScrapedAt ?? null,
-          lastChangeAt: lastChange?.detectedAt ?? null,
-          // Counts are denormalized onto the account, so this costs nothing.
-          followersCount: account?.followersCount ?? null,
-          followingCount: account?.followingCount ?? null,
-        });
+      res.json({
+        exists: Boolean(account),
+        isSimple: account?.isSimple ?? true,
+        lastScrapedAt: account?.lastScrapedAt ?? null,
+        lastChangeAt: lastChange?.detectedAt ?? null,
+        // Counts are denormalized onto the account, so this costs nothing.
+        followersCount: account?.followersCount ?? null,
+        followingCount: account?.followingCount ?? null,
       });
     } catch (error) {
       console.error("Error fetching account status:", error);
@@ -307,51 +300,49 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const page = parseInt(req.query.page as string || "1", 10);
-        const limit = parseInt(req.query.limit as string || "20", 10);
-        const status = (req.query.status as string || "all") as "pending" | "imported" | "all";
-        const search = (req.query.search as string || "").trim();
+      const page = parseInt(req.query.page as string || "1", 10);
+      const limit = parseInt(req.query.limit as string || "20", 10);
+      const status = (req.query.status as string || "all") as "pending" | "imported" | "all";
+      const search = (req.query.search as string || "").trim();
 
-        const result = await storage.getPendingSocialAccountImports({ page, limit, status, search });
+      const result = await storage.getPendingSocialAccountImports({ page, limit, status, search });
 
-        // Compute aggregate metrics
-        const allPending = await storage.getPendingSocialAccountImports({ page: 1, limit: 10000, status: "all" });
-        const totalPendingCount = allPending.items.filter(i => !i.alreadyAdded).length;
-        const totalImportedCount = allPending.items.filter(i => i.alreadyAdded).length;
-        // The same account gets pulled more than once — a profile-only grab, then
-        // a full CSV pull, then a refresh weeks later — and every pull lands as
-        // its own row. Summing all rows counts that account's network once per
-        // pull. Items come back newest-first, so the first row seen for a
-        // username is its latest pull; count that one and skip its older twins.
-        // Only a pull that came back with a CSV captured anything. A profile-only
-        // grab reports the totals Instagram prints on the profile, which are a
-        // claim about the account rather than accounts we hold — counting those
-        // would inflate this by every follower we never actually saw. Such rows
-        // are skipped before the de-duplication above, so a later profile-only
-        // refresh cannot displace an earlier pull that did capture the graph.
-        const seenUsernames = new Set<string>();
-        let totalFollowersCaptured = 0;
-        for (const item of allPending.items) {
-          if (!item.hasFollowersCsv && !item.hasFollowingCsv) continue;
+      // Compute aggregate metrics
+      const allPending = await storage.getPendingSocialAccountImports({ page: 1, limit: 10000, status: "all" });
+      const totalPendingCount = allPending.items.filter(i => !i.alreadyAdded).length;
+      const totalImportedCount = allPending.items.filter(i => i.alreadyAdded).length;
+      // The same account gets pulled more than once — a profile-only grab, then
+      // a full CSV pull, then a refresh weeks later — and every pull lands as
+      // its own row. Summing all rows counts that account's network once per
+      // pull. Items come back newest-first, so the first row seen for a
+      // username is its latest pull; count that one and skip its older twins.
+      // Only a pull that came back with a CSV captured anything. A profile-only
+      // grab reports the totals Instagram prints on the profile, which are a
+      // claim about the account rather than accounts we hold — counting those
+      // would inflate this by every follower we never actually saw. Such rows
+      // are skipped before the de-duplication above, so a later profile-only
+      // refresh cannot displace an earlier pull that did capture the graph.
+      const seenUsernames = new Set<string>();
+      let totalFollowersCaptured = 0;
+      for (const item of allPending.items) {
+        if (!item.hasFollowersCsv && !item.hasFollowingCsv) continue;
 
-          const username = (item.accountUsername || "").trim().toLowerCase();
-          if (username) {
-            if (seenUsernames.has(username)) continue;
-            seenUsernames.add(username);
-          }
-          if (item.hasFollowersCsv) totalFollowersCaptured += item.followersCount;
-          if (item.hasFollowingCsv) totalFollowersCaptured += item.followingCount;
+        const username = (item.accountUsername || "").trim().toLowerCase();
+        if (username) {
+          if (seenUsernames.has(username)) continue;
+          seenUsernames.add(username);
         }
+        if (item.hasFollowersCsv) totalFollowersCaptured += item.followersCount;
+        if (item.hasFollowingCsv) totalFollowersCaptured += item.followingCount;
+      }
 
-        res.json({
-          ...result,
-          metrics: {
-            totalPending: totalPendingCount,
-            totalImported: totalImportedCount,
-            totalFollowersCaptured,
-          },
-        });
+      res.json({
+        ...result,
+        metrics: {
+          totalPending: totalPendingCount,
+          totalImported: totalImportedCount,
+          totalFollowersCaptured,
+        },
       });
     } catch (error) {
       console.error("Error fetching pending social account imports:", error);
@@ -368,22 +359,20 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const record = await storage.getPendingSocialAccountImportById(req.params.id);
-        if (!record) {
-          return res.status(404).json({ error: "Pending import record not found" });
-        }
+      const record = await storage.getPendingSocialAccountImportById(req.params.id);
+      if (!record) {
+        return res.status(404).json({ error: "Pending import record not found" });
+      }
 
-        const followersCount = countPendingImportEntries(record.accountFollowers, record.accountFollowersCount);
-        const followingCount = countPendingImportEntries(record.accountFollowing, record.accountFollowingCount);
+      const followersCount = countPendingImportEntries(record.accountFollowers, record.accountFollowersCount);
+      const followingCount = countPendingImportEntries(record.accountFollowing, record.accountFollowingCount);
 
-        res.json({
-          ...record,
-          followersCount,
-          followingCount,
-          hasFollowersCsv: Boolean(record.accountFollowers && record.accountFollowers.trim()),
-          hasFollowingCsv: Boolean(record.accountFollowing && record.accountFollowing.trim()),
-        });
+      res.json({
+        ...record,
+        followersCount,
+        followingCount,
+        hasFollowersCsv: Boolean(record.accountFollowers && record.accountFollowers.trim()),
+        hasFollowingCsv: Boolean(record.accountFollowing && record.accountFollowing.trim()),
       });
     } catch (error) {
       console.error("Error fetching pending import detail:", error);
@@ -400,27 +389,24 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const record = await storage.getPendingSocialAccountImportById(req.params.id);
-        if (!record) {
-          return res.status(404).json({ error: "Pending import record not found" });
-        }
+      const record = await storage.getPendingSocialAccountImportById(req.params.id);
+      if (!record) {
+        return res.status(404).json({ error: "Pending import record not found" });
+      }
 
-        const task = await storage.createTask({
-          userId: auth.userId,
-          type: "import_social",
-          status: "pending",
-          title: record.accountUsername,
-          payload: JSON.stringify({
-            pendingImportId: record.id,
-            includeGraphImages: Boolean(req.body?.includeGraphImages),
-          }),
-        });
-
-        triggerTaskWorker();
-
-        res.json({ success: true, taskId: task.id });
+      const task = await storage.createTask({
+        type: "import_social",
+        status: "pending",
+        title: record.accountUsername,
+        payload: JSON.stringify({
+          pendingImportId: record.id,
+          includeGraphImages: Boolean(req.body?.includeGraphImages),
+        }),
       });
+
+      triggerTaskWorker();
+
+      res.json({ success: true, taskId: task.id });
     } catch (error) {
       console.error("Error queueing pending import task:", error);
       res.status(500).json({ error: "Failed to queue pending import task" });
@@ -438,14 +424,12 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const deletedCount = await storage.deleteAllPendingSocialAccountImports({
-          status: (req.query.status as "pending" | "imported" | "all") || "all",
-          search: (req.query.search as string) || "",
-        });
-
-        res.json({ success: true, deletedCount });
+      const deletedCount = await storage.deleteAllPendingSocialAccountImports({
+        status: (req.query.status as "pending" | "imported" | "all") || "all",
+        search: (req.query.search as string) || "",
       });
+
+      res.json({ success: true, deletedCount });
     } catch (error) {
       console.error("Error deleting all pending imports:", error);
       res.status(500).json({ error: "Failed to delete pending imports" });
@@ -461,14 +445,12 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const success = await storage.deletePendingSocialAccountImport(req.params.id);
-        if (!success) {
-          return res.status(404).json({ error: "Pending import record not found" });
-        }
+      const success = await storage.deletePendingSocialAccountImport(req.params.id);
+      if (!success) {
+        return res.status(404).json({ error: "Pending import record not found" });
+      }
 
-        res.json({ success: true });
-      });
+      res.json({ success: true });
     } catch (error) {
       console.error("Error deleting pending import:", error);
       res.status(500).json({ error: "Failed to delete pending import" });
@@ -484,36 +466,33 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const { ids, includeGraphImages } = req.body as { ids?: string[]; includeGraphImages?: boolean };
-        if (!ids || !Array.isArray(ids) || ids.length === 0) {
-          return res.status(400).json({ error: "Array of ids is required" });
-        }
+      const { ids, includeGraphImages } = req.body as { ids?: string[]; includeGraphImages?: boolean };
+      if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: "Array of ids is required" });
+      }
 
-        const taskIds: string[] = [];
-        for (const id of ids) {
-          const record = await storage.getPendingSocialAccountImportById(id);
-          if (record) {
-            const task = await storage.createTask({
-              userId: auth.userId,
-              type: "import_social",
-              status: "pending",
-              title: record.accountUsername,
-              payload: JSON.stringify({
-                pendingImportId: record.id,
-                includeGraphImages: Boolean(includeGraphImages),
-              }),
-            });
-            taskIds.push(task.id);
-          }
+      const taskIds: string[] = [];
+      for (const id of ids) {
+        const record = await storage.getPendingSocialAccountImportById(id);
+        if (record) {
+          const task = await storage.createTask({
+            type: "import_social",
+            status: "pending",
+            title: record.accountUsername,
+            payload: JSON.stringify({
+              pendingImportId: record.id,
+              includeGraphImages: Boolean(includeGraphImages),
+            }),
+          });
+          taskIds.push(task.id);
         }
+      }
 
-        if (taskIds.length > 0) {
-          triggerTaskWorker();
-        }
+      if (taskIds.length > 0) {
+        triggerTaskWorker();
+      }
 
-        res.json({ success: true, count: taskIds.length, taskIds });
-      });
+      res.json({ success: true, count: taskIds.length, taskIds });
     } catch (error) {
       console.error("Error bulk queueing pending imports:", error);
       res.status(500).json({ error: "Failed to bulk queue pending imports" });
@@ -529,20 +508,18 @@ export function registerPendingImportsRoutes(app: Express) {
       const auth = await authenticateSessionOrExtensionToken(req, res);
       if (!auth) return;
 
-      await runAsUser(auth.userId, async () => {
-        const { ids } = req.body as { ids?: string[] };
-        if (!ids || !Array.isArray(ids) || ids.length === 0) {
-          return res.status(400).json({ error: "Array of ids is required" });
-        }
+      const { ids } = req.body as { ids?: string[] };
+      if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: "Array of ids is required" });
+      }
 
-        let deletedCount = 0;
-        for (const id of ids) {
-          const ok = await storage.deletePendingSocialAccountImport(id);
-          if (ok) deletedCount++;
-        }
+      let deletedCount = 0;
+      for (const id of ids) {
+        const ok = await storage.deletePendingSocialAccountImport(id);
+        if (ok) deletedCount++;
+      }
 
-        res.json({ success: true, deletedCount });
-      });
+      res.json({ success: true, deletedCount });
     } catch (error) {
       console.error("Error bulk deleting pending imports:", error);
       res.status(500).json({ error: "Failed to bulk delete pending imports" });

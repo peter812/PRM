@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import type { ImageTaskGroup } from "@shared/schema";
 import { ImageTaskGroupModal } from "@/components/image-task-group-modal";
@@ -62,7 +61,6 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 export default function ImageTasksSettingsPage() {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
   const [page, setPage] = useState(1);
   const [kindFilter, setKindFilter] = useState("all");
@@ -197,18 +195,16 @@ export default function ImageTasksSettingsPage() {
               {bulkCancelMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
               Cancel selected
             </Button>
-            {isAdmin && (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setShowBulkDeleteDialog(true)}
-                disabled={bulkDeleteMutation.isPending}
-                data-testid="button-bulk-delete-groups"
-              >
-                {bulkDeleteMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-                Delete selected
-              </Button>
-            )}
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowBulkDeleteDialog(true)}
+              disabled={bulkDeleteMutation.isPending}
+              data-testid="button-bulk-delete-groups"
+            >
+              {bulkDeleteMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+              Delete selected
+            </Button>
           </div>
         </div>
       )}
@@ -282,22 +278,20 @@ export default function ImageTasksSettingsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-8"></TableHead>
-                {isAdmin && (
-                  <TableHead className="w-8">
-                    <Checkbox
-                      checked={selectedIds.size === items.length && items.length > 0}
-                      onCheckedChange={handleSelectAll}
-                      aria-label="Select all task groups"
-                    />
-                  </TableHead>
-                )}
+                <TableHead className="w-8">
+                  <Checkbox
+                    checked={selectedIds.size === items.length && items.length > 0}
+                    onCheckedChange={handleSelectAll}
+                    aria-label="Select all task groups"
+                  />
+                </TableHead>
                 <TableHead className="w-44">Started / Created</TableHead>
                 <TableHead>Task Group</TableHead>
                 <TableHead className="w-32">Kind</TableHead>
                 <TableHead className="w-28">Status</TableHead>
                 <TableHead className="text-right w-36">Completed / Total</TableHead>
                 <TableHead className="text-right w-24">Failed</TableHead>
-                {isAdmin && <TableHead className="w-12 text-right"></TableHead>}
+                <TableHead className="w-12 text-right"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -323,15 +317,13 @@ export default function ImageTasksSettingsPage() {
                         <Maximize2 className="h-3.5 w-3.5" />
                       </Button>
                     </TableCell>
-                    {isAdmin && (
-                      <TableCell className="w-8" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={isSelected}
-                          onCheckedChange={() => handleToggleSelect(group.id)}
-                          aria-label={`Select task group ${group.id}`}
-                        />
-                      </TableCell>
-                    )}
+                    <TableCell className="w-8" onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => handleToggleSelect(group.id)}
+                        aria-label={`Select task group ${group.id}`}
+                      />
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                       {new Date(group.createdAt).toLocaleString()}
                     </TableCell>
@@ -381,32 +373,30 @@ export default function ImageTasksSettingsPage() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    {isAdmin && (
-                      <TableCell className="text-right w-12" onClick={(e) => e.stopPropagation()}>
-                        {hasActive ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                            onClick={() => cancelGroupMutation.mutate(group.id)}
-                            disabled={cancelGroupMutation.isPending}
-                            title="Cancel task group"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        ) : (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                            onClick={() => setGroupToDelete(group)}
-                            title="Delete task group"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </TableCell>
-                    )}
+                    <TableCell className="text-right w-12" onClick={(e) => e.stopPropagation()}>
+                      {hasActive ? (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                          onClick={() => cancelGroupMutation.mutate(group.id)}
+                          disabled={cancelGroupMutation.isPending}
+                          title="Cancel task group"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                          onClick={() => setGroupToDelete(group)}
+                          title="Delete task group"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 );
               })}

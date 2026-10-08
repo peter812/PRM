@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { db } from "./db";
 import { dailyNotes, type DailyNoteWithDetails } from "@shared/schema";
 import { storage } from "./storage";
+import { embed, resolveModel, type ResolvedModel } from "./ai/provider";
 
 // ── Settings helpers (delegates to storage) ─────────────────────────────────
 
@@ -35,59 +36,11 @@ export async function loadVectorConfig(): Promise<VectorConfig> {
   };
 }
 
-// ── Ollama settings (read-only — owned by routes.ts) ─────────────────────────
-// Reuse the same app_settings keys the Intelligence settings page writes.
+// ── Embeddings ───────────────────────────────────────────────────────────────
 
-async function getOllamaSetting(key: string): Promise<string | null> {
-  return storage.getAppSetting(key);
-}
-
-async function getOllamaAuthHeaders(): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {};
-  const authRequired = (await getOllamaSetting("ollama_auth_required")) === "true";
-  if (authRequired) {
-    const username = (await getOllamaSetting("ollama_username")) ?? "";
-    const password = (await getOllamaSetting("ollama_password")) ?? "";
-    headers["Authorization"] = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
-  }
-  return headers;
-}
-
-async function getOllamaBase(): Promise<string> {
-  const apiUrl = (await getOllamaSetting("ollama_api_url")) ?? "";
-  return apiUrl.replace(/\/+$/, "");
-}
-
-// ── Embeddings (Ollama /api/embeddings) ──────────────────────────────────────
-
-export async function embedText(text: string, model?: string): Promise<number[]> {
-  const base = await getOllamaBase();
-  if (!base) throw new Error("Ollama API URL is not configured. Configure it on the Intelligence settings page.");
-  const cfg = await loadVectorConfig();
-  const useModel = model || cfg.embeddingModel;
-  if (!useModel) throw new Error("No embedding model selected. Choose one on the Vector Storage settings page.");
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...(await getOllamaAuthHeaders()) };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  try {
-    const resp = await fetch(`${base}/api/embeddings`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ model: useModel, prompt: text }),
-      signal: controller.signal,
-    });
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`Ollama embeddings failed (${resp.status}): ${body.slice(0, 200)}`);
-    }
-    const data = (await resp.json()) as { embedding?: number[] };
-    if (!Array.isArray(data.embedding) || data.embedding.length === 0) {
-      throw new Error("Ollama returned an empty embedding. The selected model may not support embeddings.");
-    }
-    return data.embedding;
-  } finally {
-    clearTimeout(timeout);
-  }
+/** Embed text with the configured embedding (provider, model). */
+export async function embedText(text: string, model?: ResolvedModel): Promise<number[]> {
+  return embed(model ?? await resolveModel("embedding"), text);
 }
 
 // ── Qdrant client ────────────────────────────────────────────────────────────
@@ -118,13 +71,28 @@ export function buildClient(cfg: VectorConfig): QdrantClient {
   });
 }
 
-export async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
+/** Vector size of an existing collection, or null when it doesn't exist. */
+async function collectionSize(client: QdrantClient, name: string): Promise<number | null> {
   try {
-    await client.getCollection(name);
+    const info = await client.getCollection(name);
+    return (info.config?.params?.vectors as { size?: number } | undefined)?.size ?? null;
   } catch {
-    await client.createCollection(name, {
-      vectors: { size: vectorSize, distance: "Cosine" },
-    });
+    return null;
+  }
+}
+
+function dimensionMismatch(name: string, existing: number, model: number): string {
+  return `Qdrant collection "${name}" holds ${existing}-dimension vectors, but the embedding model returns ${model}. ` +
+    `Switch back to the previous embedding model, or delete the collection in Qdrant and run Vectorize all.`;
+}
+
+/** Create the collection if missing; refuse to write vectors of a different size into an existing one. */
+export async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
+  const existing = await collectionSize(client, name);
+  if (existing === null) {
+    await client.createCollection(name, { vectors: { size: vectorSize, distance: "Cosine" } });
+  } else if (existing !== vectorSize) {
+    throw new Error(dimensionMismatch(name, existing, vectorSize));
   }
 }
 
@@ -146,20 +114,31 @@ function composeDailyNoteText(note: DailyNoteWithDetails): string {
   return parts.join("\n\n").trim();
 }
 
+/** Settings, embedding model and client loaded once for a batch of upserts. */
+export type VectorRun = { cfg: VectorConfig; model: ResolvedModel; client: QdrantClient; collectionReady?: boolean };
+
+export async function prepareVectorRun(): Promise<VectorRun> {
+  const cfg = await loadVectorConfig();
+  if (!cfg.enabled) throw new Error("Vector storage is disabled.");
+  return { cfg, model: await resolveModel("embedding"), client: buildClient(cfg) };
+}
+
 /**
  * Embeds a daily note and upserts it into Qdrant. On success, persists
  * `vector_id` and `vector_synced_at` on the daily_notes row so subsequent
  * edits update the same point instead of creating duplicates.
  */
-export async function upsertDailyNoteVector(note: DailyNoteWithDetails): Promise<string> {
-  const cfg = await loadVectorConfig();
-  if (!cfg.enabled) throw new Error("Vector storage is disabled.");
+export async function upsertDailyNoteVector(note: DailyNoteWithDetails, run?: VectorRun): Promise<string> {
   const text = composeDailyNoteText(note);
   if (!text) throw new Error("Daily note has no text to embed.");
+  run ??= await prepareVectorRun();
+  const { cfg, client } = run;
 
-  const vector = await embedText(text, cfg.embeddingModel);
-  const client = buildClient(cfg);
-  await ensureCollection(client, cfg.collectionName, vector.length);
+  const vector = await embedText(text, run.model);
+  if (!run.collectionReady) {
+    await ensureCollection(client, cfg.collectionName, vector.length);
+    run.collectionReady = true;
+  }
 
   // Reuse existing vector id if we have one; otherwise mint a fresh UUID.
   // Qdrant point IDs must be either an unsigned integer or a UUID.
@@ -209,7 +188,7 @@ export async function deleteDailyNoteVector(noteId: string, vectorId: string | n
 export async function searchDailyNotes(query: string, limit = 10): Promise<VectorSearchHit[]> {
   const cfg = await loadVectorConfig();
   if (!cfg.enabled) throw new Error("Vector storage is disabled.");
-  const vector = await embedText(query, cfg.embeddingModel);
+  const vector = await embedText(query);
   const client = buildClient(cfg);
   await ensureCollection(client, cfg.collectionName, vector.length);
   const result = await client.search(cfg.collectionName, { vector, limit, with_payload: true });
@@ -229,7 +208,11 @@ export async function testVectorConnection(): Promise<{ ok: boolean; message: st
     let embedMessage = "";
     if (cfg.embeddingModel) {
       try {
-        const v = await embedText("PRM vector connectivity probe", cfg.embeddingModel);
+        const v = await embedText("PRM vector connectivity probe");
+        const existing = await collectionSize(client, cfg.collectionName);
+        if (existing !== null && existing !== v.length) {
+          return { ok: false, message: dimensionMismatch(cfg.collectionName, existing, v.length) };
+        }
         embedMessage = ` Embedding model OK (dim=${v.length}).`;
       } catch (e: any) {
         return { ok: false, message: `Qdrant reachable but embedding failed: ${e?.message ?? e}` };

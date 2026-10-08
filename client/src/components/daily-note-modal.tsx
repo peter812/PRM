@@ -101,9 +101,21 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
 
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
-  const { data: people = [] } = useQuery<any[]>({ queryKey: ["/api/people"] });
-  const { data: groups = [] } = useQuery<any[]>({ queryKey: ["/api/groups"] });
-  const { data: socialAccounts = [] } = useQuery<any[]>({ queryKey: ["/api/social-accounts"] });
+  const hasSocialAccountParties = Boolean(
+    note?.involvedParties?.some(p => p.partyType === "social_account")
+  );
+  const { data: people = [] } = useQuery<any[]>({
+    queryKey: ["/api/people"],
+    enabled: open,
+  });
+  const { data: groups = [] } = useQuery<any[]>({
+    queryKey: ["/api/groups"],
+    enabled: open,
+  });
+  const { data: socialAccounts = [] } = useQuery<any[]>({
+    queryKey: ["/api/social-accounts"],
+    enabled: open && (partyPopoverOpen || hasSocialAccountParties),
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -143,6 +155,31 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
       setParties([]);
     }
   }, [open, note, defaultDate]);
+
+  useEffect(() => {
+    if (!open) return;
+    setParties(prev => {
+      if (prev.length === 0) return prev;
+      let changed = false;
+      const next = prev.map(p => {
+        if (p.label !== p.refId) return p;
+        let label = p.label;
+        if (p.partyType === "person") {
+          const person = (people as any[]).find(x => x.id === p.refId);
+          if (person) label = `${person.firstName} ${person.lastName}`.trim();
+        } else if (p.partyType === "group") {
+          const grp = (groups as any[]).find(x => x.id === p.refId);
+          if (grp) label = grp.name;
+        } else if (p.partyType === "social_account") {
+          const acc = (socialAccounts as any[]).find(x => x.id === p.refId);
+          if (acc) label = acc.username || p.refId;
+        }
+        if (label !== p.label) changed = true;
+        return label !== p.label ? { ...p, label } : p;
+      });
+      return changed ? next : prev;
+    });
+  }, [open, people, groups, socialAccounts]);
 
   // Build the request payload from the latest field values, tagged with the
   // given status ("unfinished" for autosaves, "finished" for explicit saves).

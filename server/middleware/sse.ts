@@ -1,6 +1,13 @@
 import type { Response } from "express";
 
-type SSEEventType = "social_account.updated" | "social_account.created" | "scrape.completed";
+export type SSEEventType =
+  | "social_account.updated"
+  | "social_account.created"
+  | "scrape.completed"
+  | "task.updated"
+  | "image_task.updated"
+  | "tracking_job.updated"
+  | "worker.status";
 
 interface SSEClient {
   id: string;

@@ -295,7 +295,7 @@ function IdentificationModal({
       const named = assignments.filter((a) => a.person_uuid || a.social_account_id).length;
       toast({
         title: "Image saved",
-        description: `Saved to PRM-Face with ${named} identified face${named !== 1 ? "s" : ""}.`,
+        description: `Saved to PRM Compute with ${named} identified face${named !== 1 ? "s" : ""}.`,
       });
       onClose();
     } catch (err: any) {
@@ -436,7 +436,7 @@ function IdentificationModal({
                 Saving…
               </>
             ) : (
-              "Save to PRM-Face"
+              "Save to PRM Compute"
             )}
           </Button>
         </DialogFooter>
@@ -496,7 +496,7 @@ export default function PrmFaceSaveDemoPage() {
           setFaces(detectedFaces);
 
           if (detectedFaces.length === 0) {
-            toast({ title: "No faces detected", description: "PRM-Face did not find any faces in this image." });
+            toast({ title: "No faces detected", description: "PRM Compute did not find any faces in this image." });
           } else {
             setModalOpen(true);
           }
@@ -529,10 +529,10 @@ export default function PrmFaceSaveDemoPage() {
         <div className="space-y-2 mb-6">
           <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-prm-face-save-demo-title">
             <Scan className="h-6 w-6" />
-            PRM-Face Save Demo
+            PRM Compute Save Demo
           </h1>
           <p className="text-muted-foreground">
-            Upload a photo, identify each detected face by linking it to a person or social account, then save the image permanently to PRM-Face.
+            Upload a photo, identify each detected face by linking it to a person or social account, then save the image permanently to PRM Compute.
           </p>
         </div>
 
@@ -540,7 +540,7 @@ export default function PrmFaceSaveDemoPage() {
           <div className="flex items-start gap-3 rounded-md bg-muted p-4 mb-6 text-sm" data-testid="text-not-configured">
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-muted-foreground" />
             <span className="text-muted-foreground">
-              PRM-Face is not configured yet. Go to{" "}
+              PRM Compute is not configured yet. Go to{" "}
               <a href="/settings/recognition" className="underline underline-offset-2">
                 Settings → Recognition
               </a>{" "}

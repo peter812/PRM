@@ -1,9 +1,10 @@
 import { Link } from "wouter";
-import { Scan, Sparkles, ScanText, TrendingUp, Mic, Map as MapIcon, Cloud } from "lucide-react";
+import { Scan, Sparkles, ScanText, Mic, Map as MapIcon, Cloud, SlidersHorizontal } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function DemosPage() {
   return (
+    <div className="h-full overflow-auto">
     <div className="container mx-auto p-6 max-w-4xl">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Demos</h1>
@@ -37,7 +38,7 @@ export default function DemosPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Scan className="h-5 w-5" />
-                PRM Face Demo
+                PRM Compute Demo
               </CardTitle>
               <CardDescription>
                 Test facial recognition capabilities with real-time detection.
@@ -51,10 +52,24 @@ export default function DemosPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Scan className="h-5 w-5" />
-                PRM Face Save Demo
+                PRM Compute Save Demo
               </CardTitle>
               <CardDescription>
                 Save and manage recognized faces for future identification.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/face-pose">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Scan className="h-5 w-5" />
+                Face Pose Demo
+              </CardTitle>
+              <CardDescription>
+                Face recognition with head-pose (yaw) estimation; side-on faces are flagged.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -102,20 +117,6 @@ export default function DemosPage() {
           </Card>
         </Link>
 
-        <Link href="/demos/account-timeline">
-          <Card className="hover:bg-accent cursor-pointer transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5" />
-                Account Creation Timeline
-              </CardTitle>
-              <CardDescription>
-                Graph of when tracked accounts were created, oldest to youngest, by monthly volume.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
-
         <Link href="/demos/map">
           <Card className="hover:bg-accent cursor-pointer transition-colors">
             <CardHeader>
@@ -157,8 +158,23 @@ export default function DemosPage() {
             </CardHeader>
           </Card>
         </Link>
+
+        <Link href="/demos/ollama-params">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <SlidersHorizontal className="h-5 w-5" />
+                Ollama Model Params
+              </CardTitle>
+              <CardDescription>
+                Inspect a model's capabilities, thinking support, and default parameters.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
       </div>
 
+    </div>
     </div>
   );
 }

@@ -157,10 +157,6 @@ export default function TasksSettingsPage() {
 
   const { data: currentTasks = [] } = useQuery<Task[]>({
     queryKey: ["/api/tasks/current"],
-    refetchInterval: (query) => {
-      const data = query.state.data as Task[] | undefined;
-      return data?.some(t => t.status === "pending" || t.status === "in_progress") ? 2500 : false;
-    },
   });
 
   const { data: allTasks = [], isLoading: tasksLoading } = useQuery<Task[]>({
@@ -179,7 +175,6 @@ export default function TasksSettingsPage() {
 
   const { data: workerStatus, refetch: refetchWorkerStatus } = useQuery<{ paused: boolean }>({
     queryKey: ["/api/tasks/worker-status"],
-    refetchInterval: 5000,
   });
 
   const isPaused = workerStatus?.paused ?? false;

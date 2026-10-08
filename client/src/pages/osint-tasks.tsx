@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import type { OsintScan } from "@shared/schema";
 
@@ -28,7 +27,6 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "
 const formatTime = (t: string | Date | null) => (t ? new Date(t).toLocaleString() : "—");
 
 export default function OsintTasksPage() {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
   const [status, setStatus] = useState("all");
 
@@ -83,31 +81,29 @@ export default function OsintTasksPage() {
             ))}
           </SelectContent>
         </Select>
-        {isAdmin && (
-          <div className="flex flex-wrap gap-2 sm:ml-auto">
+        <div className="flex flex-wrap gap-2 sm:ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={queueMutation.isPending}
+            onClick={() => queueMutation.mutate({ method: "POST", path: "/api/osint/scan-queue/backfill" })}
+            data-testid="button-osint-backfill"
+          >
+            Queue my network now
+          </Button>
+          {CLEARABLE.map((s) => (
             <Button
+              key={s}
               variant="outline"
               size="sm"
-              disabled={queueMutation.isPending}
-              onClick={() => queueMutation.mutate({ method: "POST", path: "/api/osint/scan-queue/backfill" })}
-              data-testid="button-osint-backfill"
+              disabled={!counts[s] || queueMutation.isPending}
+              onClick={() => queueMutation.mutate({ method: "DELETE", path: `/api/osint/scan-queue?status=${s}` })}
+              data-testid={`button-osint-clear-${s}`}
             >
-              Queue my network now
+              Clear {s}
             </Button>
-            {CLEARABLE.map((s) => (
-              <Button
-                key={s}
-                variant="outline"
-                size="sm"
-                disabled={!counts[s] || queueMutation.isPending}
-                onClick={() => queueMutation.mutate({ method: "DELETE", path: `/api/osint/scan-queue?status=${s}` })}
-                data-testid={`button-osint-clear-${s}`}
-              >
-                Clear {s}
-              </Button>
-            ))}
-          </div>
-        )}
+          ))}
+        </div>
       </div>
 
       <Table>

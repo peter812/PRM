@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import type { TrackingKind } from "@shared/interest-level";
 
 export interface RunItem {
   username: string;
@@ -9,17 +8,6 @@ export interface RunItem {
   mediaType: number | null;
   outcome: string;
   prmOutcome?: string;
-  accountId?: string | null;
-}
-
-/** A tracking run's items: one per job. */
-export interface TrackItem {
-  jobId: string;
-  kind: TrackingKind;
-  username: string;
-  outcome: string;
-  reason?: string;
-  error?: string;
   accountId?: string | null;
 }
 

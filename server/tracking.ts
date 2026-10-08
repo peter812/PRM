@@ -7,7 +7,7 @@
 import crypto from "crypto";
 import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { db } from "./db";
-import { visibleShared } from "./access";
+import { sseManager } from "./middleware/sse";
 import { appSettings, socialAccounts, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
 import {
   INTEREST_LEVELS,
@@ -20,6 +20,9 @@ import {
   TRACKING_KINDS,
   TRACKING_LEVEL_DEFAULTS_KEY,
   TRACKING_SKIP_RECENT_KEY,
+  TRACKING_BIG_ACCOUNTS_NONE_KEY,
+  BIG_ACCOUNT_FOLLOWERS,
+  bigAccountsNoneEnabled,
   parseLevelCadences,
   parsePostSettings,
   resolveCadence,
@@ -50,6 +53,35 @@ export async function postSettings(): Promise<PostSettings> {
 export async function skipRecentlyChecked(): Promise<boolean> {
   const [row] = await db.select().from(appSettings).where(eq(appSettings.key, TRACKING_SKIP_RECENT_KEY));
   return skipRecentEnabled(row?.value);
+}
+
+/** Whether accounts above BIG_ACCOUNT_FOLLOWERS are held at level none (Settings → Tracking). */
+async function bigAccountsNone(): Promise<boolean> {
+  const [row] = await db.select().from(appSettings).where(eq(appSettings.key, TRACKING_BIG_ACCOUNTS_NONE_KEY));
+  return bigAccountsNoneEnabled(row?.value);
+}
+
+const isBigAccount = sql`COALESCE(${socialAccounts.reportedFollowersCount}, 0) > ${BIG_ACCOUNT_FOLLOWERS}`;
+
+/**
+ * With the setting on, drop accounts reporting more than BIG_ACCOUNT_FOLLOWERS
+ * followers to level none, clearing their due dates. Never touches a level a
+ * person chose. With `ids` it looks at those accounts only (applySnapshot);
+ * without, at every account (boot, and turning the setting on).
+ */
+export async function applyBigAccountRule(ids?: string[]): Promise<void> {
+  if (ids && ids.length === 0) return;
+  if (!(await bigAccountsNone())) return;
+  const conditions: SQL[] = [
+    sql`${socialAccounts.interestLevel} <> 'none'`,
+    eq(socialAccounts.interestLevelManual, false),
+    isBigAccount,
+  ];
+  if (ids) conditions.push(inArray(socialAccounts.id, ids));
+  await db
+    .update(socialAccounts)
+    .set({ interestLevel: "none", infoEveryDays: null, followsEveryDays: null, postsEveryDays: null, infoDueAt: null, followsDueAt: null, postsDueAt: null })
+    .where(and(...conditions));
 }
 
 /** SQL: `checkedAt` (a timestamp expression) is within the last RECENT_CHECK_HOURS; false, not null, when never checked, so `NOT` works. */
@@ -147,18 +179,20 @@ export async function rollForwardDueDates(): Promise<void> {
 }
 
 /** Accounts with a me person as owner — the ones whose network the "me" rule grades. */
-const ME_ACCOUNTS = sql`SELECT sa.id FROM social_accounts sa JOIN people p ON p.id = sa.owner_uuid WHERE p.user_id IS NOT NULL`;
+const ME_ACCOUNTS = sql`SELECT sa.id FROM social_accounts sa JOIN app_settings s ON s.key = 'me_person_id' AND s.value = sa.owner_uuid`;
 
 /**
  * The "me" rule: any Instagram account on either side of a follow edge with a me
  * account starts at medium. Only ever raises from none, and never touches a level
- * a person chose. With `candidateIds` it looks at those accounts only (the hook in
- * applySnapshot); without, at every edge (boot).
+ * a person chose, nor raises an account the big-account rule holds at none. With
+ * `candidateIds` it looks at those accounts only (the hook in applySnapshot);
+ * without, at every edge (boot).
  */
 export async function applyMeRule(candidateIds?: string[]): Promise<void> {
   if (candidateIds && candidateIds.length === 0) return;
   const medium = (await levelCadences()).medium;
   const conditions: SQL[] = [
+    ...((await bigAccountsNone()) ? [sql`NOT (${isBigAccount})`] : []),
     eq(socialAccounts.interestLevel, "none"),
     eq(socialAccounts.interestLevelManual, false),
     eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID),
@@ -229,23 +263,25 @@ function dueAt(at: SQL, skipRecent: boolean): SQL {
 }
 
 /**
- * Claim up to `limit` jobs for `importerId`, marked running on the spot so two
- * importers (or the morning tick and a manual kick) can never take the same
- * one: queued manual jobs first (oldest first), then one schedule job per due
- * account and kind, most overdue first. The caller stamps the run id once it
- * has one, or hands the jobs back with `releaseTrackingJobs`.
+ * Claim up to `limit` jobs for `importerId`, reserved on the spot (importer
+ * set) so two importers (or the morning tick and a manual kick) can never take
+ * the same one: queued manual jobs first (oldest first), then one schedule job
+ * per due account and kind, most overdue first. They stay queued, and so
+ * removable, until the service starts each one (POST .../jobs/:id/start). The
+ * caller stamps the run id once it has one, or hands the jobs back with
+ * `releaseTrackingJobs`.
  */
 export async function claimTrackingJobs(importerId: string, limit: number, opts: { manualOnly?: boolean } = {}): Promise<ClaimedJob[]> {
   const skipRecent = opts.manualOnly ? false : await skipRecentlyChecked();
-  return db.transaction(async (tx) => {
+  const claimed = await db.transaction(async (tx) => {
     const manual = await tx.execute<ClaimedRow>(sql`
       UPDATE tracking_jobs j
-      SET status = 'running', importer_id = ${importerId}, started_at = now(), attempts = j.attempts + 1
+      SET importer_id = ${importerId}, attempts = j.attempts + 1
       FROM social_accounts sa
       WHERE sa.id = j.social_account_id
         AND j.id IN (
           SELECT id FROM tracking_jobs
-          WHERE status = 'queued' AND origin = 'manual'
+          WHERE status = 'queued' AND origin = 'manual' AND importer_id IS NULL
           ORDER BY created_at
           LIMIT ${limit}
           FOR UPDATE SKIP LOCKED
@@ -256,8 +292,8 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
     if (opts.manualOnly || remaining <= 0) return manual.rows.map(toClaimed);
 
     const due = await tx.execute<ClaimedRow>(sql`
-      INSERT INTO tracking_jobs (social_account_id, kind, origin, status, importer_id, started_at, attempts)
-      SELECT d.id, d.kind, 'schedule', 'running', ${importerId}, now(), 1
+      INSERT INTO tracking_jobs (social_account_id, kind, origin, status, importer_id, attempts)
+      SELECT d.id, d.kind, 'schedule', 'queued', ${importerId}, 1
       FROM (
         SELECT sa.id, k.kind
         ${dueAt(sql`now()`, skipRecent)}
@@ -270,6 +306,10 @@ export async function claimTrackingJobs(importerId: string, limit: number, opts:
     `);
     return [...manual.rows, ...due.rows].map(toClaimed);
   });
+  if (claimed.length > 0) {
+    sseManager.broadcast("tracking_job.updated", { action: "claimed", count: claimed.length });
+  }
+  return claimed;
 }
 
 export type UpcomingCheck = {
@@ -290,12 +330,11 @@ export type UpcomingCheck = {
  */
 export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingCheck[]> {
   const skipRecent = await skipRecentlyChecked();
-  const visible = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId) ?? sql`true`;
   const rows = await db.execute<{ id: string; username: string; nickname: string | null; interest_level: string; kind: TrackingKind; origin: "manual" | "schedule"; at: Date }>(sql`
     WITH manual AS (
       SELECT j.social_account_id AS id, j.kind, 'manual' AS origin, j.created_at AS at, 0 AS rank
       FROM tracking_jobs j
-      WHERE j.status = 'queued' AND j.origin = 'manual'
+      WHERE j.status = 'queued' AND j.origin = 'manual' AND j.importer_id IS NULL
       ORDER BY j.created_at
       LIMIT ${limit}
     ), scheduled AS (
@@ -307,7 +346,6 @@ export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingC
     SELECT u.id, social_accounts.username, social_accounts.nickname, social_accounts.interest_level, u.kind, u.origin, u.at
     FROM (SELECT * FROM manual UNION ALL SELECT * FROM scheduled) u
     JOIN social_accounts ON social_accounts.id = u.id
-    WHERE ${visible}
     ORDER BY u.rank, u.at
   `);
   return rows.rows.map((r) => ({
@@ -321,6 +359,9 @@ export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingC
   }));
 }
 
+/** A job a run has not reported on yet: waiting its turn or being worked. */
+const OPEN = ["queued", "running"];
+
 /**
  * The service declined the run: schedule jobs are re-derived tomorrow, manual
  * ones wait for the next chance. The service never saw them, so the hand
@@ -329,11 +370,30 @@ export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingC
 export async function releaseTrackingJobs(jobs: ClaimedJob[]): Promise<void> {
   if (jobs.length === 0) return;
   const ids = jobs.map((j) => j.id);
-  await db.delete(trackingJobs).where(and(inArray(trackingJobs.id, ids), eq(trackingJobs.origin, "schedule"), eq(trackingJobs.status, "running")));
+  await db.delete(trackingJobs).where(and(inArray(trackingJobs.id, ids), eq(trackingJobs.origin, "schedule"), inArray(trackingJobs.status, OPEN)));
   await db
     .update(trackingJobs)
     .set({ status: "queued", importerId: null, runId: null, startedAt: null, attempts: sql`greatest(${trackingJobs.attempts} - 1, 0)` })
-    .where(and(inArray(trackingJobs.id, ids), eq(trackingJobs.status, "running")));
+    .where(and(inArray(trackingJobs.id, ids), inArray(trackingJobs.status, OPEN)));
+  sseManager.broadcast("tracking_job.updated", { action: "released", count: jobs.length });
+}
+
+/**
+ * The service is about to work this job (or the next few, so a hand-off is
+ * never mid-air): queued → running. Null when it isn't queued in that run any
+ * more — removed from the Social Tasks list, say — so the service skips it.
+ * A null `runId` (a signed-in admin poking the API) matches any run.
+ */
+export async function startTrackingJob(jobId: string, runId: string | null): Promise<TrackingJob | null> {
+  const [job] = await db
+    .update(trackingJobs)
+    .set({ status: "running", startedAt: new Date() })
+    .where(and(eq(trackingJobs.id, jobId), runId ? eq(trackingJobs.runId, runId) : undefined, eq(trackingJobs.status, "queued")))
+    .returning();
+  if (job) {
+    sseManager.broadcast("tracking_job.updated", { id: job.id, status: "running", action: "started" });
+  }
+  return job ?? null;
 }
 
 /**
@@ -356,15 +416,16 @@ const REQUEUE = { status: "queued", importerId: null, runId: null, startedAt: nu
 /** Hand a job that its run never finished back to the queue. */
 export async function requeueJob(jobId: string): Promise<void> {
   await db.update(trackingJobs).set(REQUEUE).where(eq(trackingJobs.id, jobId));
+  sseManager.broadcast("tracking_job.updated", { id: jobId, status: "queued", action: "requeued" });
 }
 
 /**
- * Safety net when a run ends: whatever the service never reported is not left
- * running forever — manual jobs with attempts to spare are queued again, the
- * rest are failed.
+ * Safety net when a run ends: whatever the service never reported (started or
+ * still waiting its turn) is not left open forever — manual jobs with attempts
+ * to spare are queued again, the rest are failed.
  */
 export async function failUnfinishedJobs(runId: string, runStatus: string): Promise<void> {
-  const unfinished = and(eq(trackingJobs.runId, runId), eq(trackingJobs.status, "running"));
+  const unfinished = and(eq(trackingJobs.runId, runId), inArray(trackingJobs.status, OPEN));
   await db
     .update(trackingJobs)
     .set(REQUEUE)
@@ -373,26 +434,27 @@ export async function failUnfinishedJobs(runId: string, runStatus: string): Prom
     .update(trackingJobs)
     .set({ status: "failed", error: `run ended: ${runStatus}`, finishedAt: new Date() })
     .where(unfinished);
+  sseManager.broadcast("tracking_job.updated", { runId, action: "run_ended" });
 }
 
-export async function queueManualJob(accountId: string, kind: TrackingKind, userId: number): Promise<TrackingJob> {
+export async function queueManualJob(accountId: string, kind: TrackingKind): Promise<TrackingJob> {
   const [job] = await db
     .insert(trackingJobs)
-    .values({ socialAccountId: accountId, kind, origin: "manual", requestedBy: userId })
+    .values({ socialAccountId: accountId, kind, origin: "manual" })
     .returning();
+  sseManager.broadcast("tracking_job.updated", { id: job.id, status: job.status, action: "queued" });
   return job;
 }
 
 // ── Batches: the Tracking page (account-tracking-plan.md §2.4) ──
 
-/** The Instagram accounts a user's own accounts follow — ones with a username, the only ones a job can open. */
-const followedBy = (userId: number) => sql`
+/** The Instagram accounts Me's accounts follow — ones with a username, the only ones a job can open. */
+const FOLLOWED_BY_ME = sql`
   SELECT DISTINCT f.followed_id AS id, sa.info_checked_at, sa.follows_checked_at, sa.posts_checked_at
   FROM social_follows f
-  JOIN social_accounts me ON me.id = f.follower_id
-  JOIN people p ON p.id = me.owner_uuid AND p.user_id = ${userId}
   JOIN social_accounts sa ON sa.id = f.followed_id
-  WHERE sa.type_id = ${INSTAGRAM_TYPE_ID} AND sa.username IS NOT NULL AND sa.username <> ''`;
+  WHERE f.follower_id IN (${ME_ACCOUNTS})
+    AND sa.type_id = ${INSTAGRAM_TYPE_ID} AND sa.username IS NOT NULL AND sa.username <> ''`;
 
 export type BatchSummary = {
   id: string;
@@ -424,13 +486,13 @@ export type QueuedBatch = { batch: BatchSummary | null; skippedRecent: number };
  * `kind` check ran in the last RECENT_CHECK_HOURS — those are counted back as
  * `skippedRecent`. `batch` is null when nothing was queued.
  */
-async function queueBatch(userId: number, kind: TrackingKind, source: SQL): Promise<QueuedBatch> {
+async function queueBatch(kind: TrackingKind, source: SQL): Promise<QueuedBatch> {
   const batchId = crypto.randomUUID();
   const recent = recentlyChecked(CHECKED_SQL_COLUMN[kind]);
   const skipRecent = await skipRecentlyChecked();
   const inserted = await db.execute<{ id: string }>(sql`
-    INSERT INTO tracking_jobs (social_account_id, kind, origin, requested_by, batch_id)
-    SELECT d.id, ${kind}, 'manual', ${userId}, ${batchId}
+    INSERT INTO tracking_jobs (social_account_id, kind, origin, batch_id)
+    SELECT d.id, ${kind}, 'manual', ${batchId}
     FROM (${source}) d
     WHERE NOT ${hasOpenJob(kind)} ${skipRecent ? sql`AND NOT (${recent})` : sql``}
     RETURNING id
@@ -440,29 +502,30 @@ async function queueBatch(userId: number, kind: TrackingKind, source: SQL): Prom
     const { rows } = await db.execute<{ n: string }>(sql`SELECT count(*) AS n FROM (${source}) d WHERE NOT ${hasOpenJob(kind)} AND ${recent}`);
     skippedRecent = Number(rows[0]?.n ?? 0);
   }
+  if (inserted.rows.length > 0) {
+    sseManager.broadcast("tracking_job.updated", { batchId, count: inserted.rows.length, action: "batch_queued" });
+  }
   return { batch: inserted.rows.length ? await batchSummary(batchId) : null, skippedRecent };
 }
 
 /** The Tracking page's button: `kind` for everyone the user follows. */
-export function queueFollowingRefresh(userId: number, kind: TrackingKind): Promise<QueuedBatch> {
-  return queueBatch(userId, kind, followedBy(userId));
+export function queueFollowingRefresh(kind: TrackingKind): Promise<QueuedBatch> {
+  return queueBatch(kind, FOLLOWED_BY_ME);
 }
 
 /**
- * The accounts list's selection: `kind` for the chosen accounts — those the
- * caller can see that are Instagram with a username, since only those can be
+ * The accounts list's selection: `kind` for the chosen accounts — those that
+ * are Instagram with a username, since only those can be
  * opened by a job; the rest of the selection is silently left out.
  */
-export function queueAccountsRefresh(userId: number, kind: TrackingKind, accountIds: string[]): Promise<QueuedBatch> {
+export function queueAccountsRefresh(kind: TrackingKind, accountIds: string[]): Promise<QueuedBatch> {
   if (!accountIds.length) return Promise.resolve({ batch: null, skippedRecent: 0 });
-  const visible = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId) ?? sql`true`;
   const source = sql`
     SELECT ${socialAccounts.id} AS id, info_checked_at, follows_checked_at, posts_checked_at FROM social_accounts
     WHERE ${inArray(socialAccounts.id, accountIds)}
       AND ${socialAccounts.typeId} = ${INSTAGRAM_TYPE_ID}
-      AND ${socialAccounts.username} IS NOT NULL AND ${socialAccounts.username} <> ''
-      AND ${visible}`;
-  return queueBatch(userId, kind, source);
+      AND ${socialAccounts.username} IS NOT NULL AND ${socialAccounts.username} <> ''`;
+  return queueBatch(kind, source);
 }
 
 /**
@@ -470,24 +533,24 @@ export function queueAccountsRefresh(userId: number, kind: TrackingKind, account
  * `kind` check open right now, and how many of the rest a refresh would skip
  * as checked in the last RECENT_CHECK_HOURS (0 when that setting is off).
  */
-export async function followingCounts(userId: number, kind: TrackingKind): Promise<{ following: number; open: number; recent: number }> {
+export async function followingCounts(kind: TrackingKind): Promise<{ following: number; open: number; recent: number }> {
   const open = hasOpenJob(kind);
   const { rows } = await db.execute<{ following: string; open: string; recent: string }>(sql`
     SELECT count(*) AS following,
            count(*) FILTER (WHERE ${open}) AS open,
            count(*) FILTER (WHERE NOT ${open} AND ${recentlyChecked(CHECKED_SQL_COLUMN[kind])}) AS recent
-    FROM (${followedBy(userId)}) d
+    FROM (${FOLLOWED_BY_ME}) d
   `);
   const skip = await skipRecentlyChecked();
   return { following: Number(rows[0]?.following ?? 0), open: Number(rows[0]?.open ?? 0), recent: skip ? Number(rows[0]?.recent ?? 0) : 0 };
 }
 
-/** The most recent batch the user queued, with its jobs counted by status; null when they never queued one. */
-export async function latestBatch(userId: number): Promise<BatchSummary | null> {
+/** The most recent batch, with its jobs counted by status; null when none was ever queued. */
+export async function latestBatch(): Promise<BatchSummary | null> {
   const [row] = await db
     .select({ id: trackingJobs.batchId })
     .from(trackingJobs)
-    .where(and(eq(trackingJobs.requestedBy, userId), sql`${trackingJobs.batchId} IS NOT NULL`))
+    .where(sql`${trackingJobs.batchId} IS NOT NULL`)
     .orderBy(desc(trackingJobs.createdAt))
     .limit(1);
   return row?.id ? batchSummary(row.id) : null;
@@ -518,10 +581,13 @@ async function batchSummary(batchId: string): Promise<BatchSummary> {
 }
 
 /** Drop a batch's jobs that haven't started; running ones finish on their own. Returns how many were dropped. */
-export async function cancelBatch(batchId: string, userId: number): Promise<number> {
+export async function cancelBatch(batchId: string): Promise<number> {
   const rows = await db
     .delete(trackingJobs)
-    .where(and(eq(trackingJobs.batchId, batchId), eq(trackingJobs.requestedBy, userId), eq(trackingJobs.status, "queued")))
+    .where(and(eq(trackingJobs.batchId, batchId), eq(trackingJobs.status, "queued")))
     .returning({ id: trackingJobs.id });
+  if (rows.length > 0) {
+    sseManager.broadcast("tracking_job.updated", { batchId, count: rows.length, action: "batch_cancelled" });
+  }
   return rows.length;
 }

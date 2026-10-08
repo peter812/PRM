@@ -9,11 +9,11 @@ import crypto from "crypto";
 import { z } from "zod";
 import { storage } from "../storage";
 import { syncEntityInBackground } from "../vector-universal";
-import { extractJsonObject } from "../family-tree-ai";
-import { buildOllamaChatContext, getOllamaTextModel } from "./people-groups";
+import { extractJsonObject } from "../json-extract";
+import { AiConfigError, asData, chat, DATA_TAGS_NOTE, isAiEnabled, resolveModel } from "../ai/provider";
 import {
   applyDescribeMeSchema,
-  isAdminRole,
+
   type PotentialInteraction,
   type PotentialNote,
   type PotentialTag,
@@ -100,6 +100,7 @@ function buildSystemPrompt(): string {
   const today = new Date().toISOString().split("T")[0];
   return `You analyze a spoken, informal description of a person and extract structured information for their contact profile.
 Today's date is ${today}.
+${DATA_TAGS_NOTE}
 
 You have 3 tools to propose updates for this person:
 1. create_potential_interaction: Call for any interactions, meetings, conversations, or events mentioned (resolve relative dates like "yesterday", "last weekend" using today's date: ${today}).
@@ -309,39 +310,28 @@ export function registerRoutes(app: Express) {
       const person = await storage.getPersonById(personId);
       if (!person) return res.status(404).json({ error: "Person not found" });
 
-      if ((await storage.getAppSetting("ollama_enabled")) !== "true") {
+      if (!(await isAiEnabled())) {
         return res.status(400).json({ error: "AI is disabled in settings" });
       }
-      const ollama = await buildOllamaChatContext();
-      if (!ollama) return res.status(400).json({ error: "Ollama API URL is not configured" });
-      const model = await getOllamaTextModel();
-      if (!model) return res.status(400).json({ error: "No AI model configured. Set one at Settings → Intelligence." });
+      const resolved = await resolveModel("text");
 
-      const resp = await fetch(`${ollama.base}/api/chat`, {
-        method: "POST",
-        headers: { ...ollama.headers, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          stream: false,
-          tools: DESCRIBE_ME_TOOLS,
-          messages: [
-            { role: "system", content: buildSystemPrompt() },
-            { role: "user", content: `The person being described is ${person.firstName} ${person.lastName}.\n\nDescription:\n${transcript}` },
-          ],
-        }),
+      const { content, toolCalls } = await chat(resolved, {
+        tools: DESCRIBE_ME_TOOLS,
+        messages: [
+          { role: "system", content: buildSystemPrompt() },
+          { role: "user", content: `The person being described is ${person.firstName} ${person.lastName}.
+
+Description:
+${asData("transcript", transcript)}` },
+        ],
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
-
-      if (!resp.ok) {
-        throw new Error(`Ollama returned ${resp.status}: ${(await resp.text().catch(() => "")).slice(0, 200)}`);
-      }
-
-      const rawJson = await resp.json();
-      const result = parseExtractionResponse(rawJson, transcript);
+      const result = parseExtractionResponse({ message: { content, tool_calls: toolCalls } }, transcript);
       res.json(result);
     } catch (error: any) {
       console.error("Error extracting description details:", error);
       if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+      if (error instanceof AiConfigError) return res.status(400).json({ error: error.message });
       res.status(500).json({ error: error?.message || "Failed to extract details from description" });
     }
   });
@@ -353,12 +343,7 @@ export function registerRoutes(app: Express) {
       const person = await storage.getPersonById(data.personId);
       if (!person) return res.status(404).json({ error: "Person not found" });
 
-      if (person.createdByUserId && person.createdByUserId !== req.user?.id && !isAdminRole((req.user as any)?.role)) {
-        return res.status(403).json({ error: "Not authorized to update this person" });
-      }
-
-      const userId = req.user?.id;
-      const mePerson = userId ? await storage.getMePerson(userId) : undefined;
+      const mePerson = await storage.getMePerson();
       const allIntTypes = await storage.getAllInteractionTypes();
 
       let notesCount = 0;
@@ -373,7 +358,6 @@ export function registerRoutes(app: Express) {
           : `${note.content.trim()}\n\n(describe me)`;
         const created = await storage.createNote({
           personId: data.personId,
-          userId,
           content: noteContent,
         });
         syncEntityInBackground("note", created.id);
@@ -384,7 +368,6 @@ export function registerRoutes(app: Express) {
       if (data.bullets && data.bullets.length > 0) {
         const created = await storage.createNote({
           personId: data.personId,
-          userId,
           content: `${data.bullets.map((b) => `- ${b}`).join("\n")}\n\n(describe me)`,
         });
         syncEntityInBackground("note", created.id);
@@ -413,7 +396,6 @@ export function registerRoutes(app: Express) {
           title: interaction.title?.trim() || undefined,
           description: interaction.description?.trim() || undefined,
           typeId: typeId || undefined,
-          createdByUserId: userId,
         });
         syncEntityInBackground("interaction", created.id);
         interactionsCount++;

@@ -1079,7 +1079,7 @@ export default function DeleteOptionsPage() {
               <ul className="list-disc list-inside space-y-1 text-muted-foreground">
                 <li>All tables will be dropped and recreated fresh</li>
                 <li>All contacts, groups, interactions, and images will be lost</li>
-                <li>A new "Me" user record will be initialized</li>
+                <li>A new "Me" person record will be initialized</li>
               </ul>
             </div>
 

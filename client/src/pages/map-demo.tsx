@@ -11,13 +11,16 @@ import L from "leaflet";
 import { MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
 import "leaflet/dist/leaflet.css";
+import "maplibre-gl/dist/maplibre-gl.css";
 import "./map-demo.css";
+import { applyVectorTheme, VECTOR_THEMES } from "./map-vector-themes";
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, MapPin, RotateCcw, Star, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { withImageSize } from "@shared/image-size";
@@ -47,6 +50,7 @@ interface MapData {
   pending: number;
   geocoder: { running: boolean; done: number; total: number; error: string | null };
   tileUrl: string;
+  cartoKey: string | null;
   attribution: string;
 }
 
@@ -97,6 +101,97 @@ function MapEvents({ onClick }: { onClick: (latlng: L.LatLng) => void }) {
   return null;
 }
 
+const WORLD_BOUNDS = L.latLngBounds([-85, -180], [85, 180]);
+
+/**
+ * Zoom-out stops at the level where one copy of the world fills the viewport, so no country repeats.
+ * Reports the level so the cluster group can be rebuilt: markercluster sizes its zoom grids from
+ * minZoom once, on add, and throws (`_zoom` / `_leaflet_pos` of undefined) if minZoom changes later.
+ */
+function WorldMinZoom({ onChange }: { onChange: (zoom: number) => void }) {
+  const map = useMap();
+  useEffect(() => {
+    const apply = () => {
+      const zoom = Math.ceil(map.getBoundsZoom(WORLD_BOUNDS, true));
+      map.setMinZoom(zoom);
+      onChange(zoom);
+    };
+    apply();
+    map.on("resize", apply);
+    return () => {
+      map.off("resize", apply);
+    };
+  }, [map, onChange]);
+  return null;
+}
+
+const CARTO_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+const cartoUrl = (style: string, key: string | null) =>
+  `https://basemaps.cartocdn.com/${style}/{z}/{x}/{y}.png${key ? `?key=${key}` : ""}`;
+
+/** Color schemes. "standard" uses the server-configured tiles (data.tileUrl). */
+const MAP_STYLES = {
+  standard: { label: "Standard" },
+  light: { label: "Light", style: "rastertiles/light_all" },
+  voyager: { label: "Voyager", style: "rastertiles/voyager" },
+  dark: { label: "Dark", style: "rastertiles/dark_all" },
+} as const;
+type MapStyleKey = keyof typeof MAP_STYLES;
+
+/** How many zoom levels coarser the raster backdrop is (each level doubles the area it covers). */
+const BACKDROP_LEVELS = 3;
+
+const POSITRON_STYLE_URL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const withCartoKey = (url: string, key: string | null) =>
+  key && !url.includes("key=") ? `${url}${url.includes("?") ? "&" : "?"}key=${key}` : url;
+
+/** Vector basemap: CARTO Positron's style.json recolored with a Terraink theme, drawn by MapLibre GL inside Leaflet. */
+function VectorLayer({ themeKey, cartoKey }: { themeKey: string; cartoKey: string | null }) {
+  const map = useMap();
+  useEffect(() => {
+    let cancelled = false;
+    let layer: L.Layer | null = null;
+    (async () => {
+      const [{ maplibreGL }, { setWorkerUrl }, { default: workerUrl }, style] = await Promise.all([
+        import("@maplibre/maplibre-gl-leaflet"),
+        import("maplibre-gl"),
+        import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
+        fetch(withCartoKey(POSITRON_STYLE_URL, cartoKey)).then((r) => r.json()),
+      ]);
+      if (cancelled) return;
+      setWorkerUrl(workerUrl); // Vite can't resolve maplibre's own worker path
+      layer = maplibreGL({
+        style: applyVectorTheme(style, VECTOR_THEMES[themeKey]),
+        transformRequest: (url) => ({ url: /cartocdn\.com/.test(url) ? withCartoKey(url, cartoKey) : url }),
+      }).addTo(map);
+    })();
+    return () => {
+      cancelled = true;
+      if (layer) map.removeLayer(layer);
+    };
+  }, [map, themeKey, cartoKey]);
+  return null;
+}
+
+interface MapPrefs {
+  mode: "raster" | "vector";
+  raster: MapStyleKey;
+  vector: string;
+}
+const DEFAULT_PREFS: MapPrefs = { mode: "raster", raster: "standard", vector: "midnight_blue" };
+const STYLE_STORAGE_KEY = "map-demo-prefs";
+
+function loadPrefs(): MapPrefs {
+  try {
+    const v = JSON.parse(localStorage.getItem(STYLE_STORAGE_KEY) ?? "null");
+    if (v && (v.mode === "raster" || v.mode === "vector") && v.raster in MAP_STYLES && v.vector in VECTOR_THEMES) return v;
+  } catch {
+    /* storage unavailable or corrupt */
+  }
+  return DEFAULT_PREFS;
+}
+
 /** fitBounds options that keep pins clear of the side panel when it's open. */
 const fitOptions = (panelOpen: boolean): L.FitBoundsOptions => ({
   paddingTopLeft: [panelOpen ? 400 : 40, 40],
@@ -142,6 +237,7 @@ export default function MapDemo() {
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [placingKey, setPlacingKey] = useState<string | null>(null); // not-found pin awaiting a map click
   const [movingKey, setMovingKey] = useState<string | null>(null); // located pin that is draggable
+  const [minZoom, setMinZoom] = useState<number | null>(null);
   const [map, setMap] = useState<L.Map | null>(null);
   const markers = useRef(new Map<string, L.Marker>());
   const cluster = useRef<L.MarkerClusterGroup>(null);
@@ -151,6 +247,18 @@ export default function MapDemo() {
     refetchInterval: (query) => (query.state.data?.geocoder.running ? 5000 : false),
   });
   const refresh = () => queryClient.invalidateQueries({ queryKey: [PEOPLE_URL] });
+  const [prefs, setPrefs] = useState<MapPrefs>(loadPrefs);
+  const updatePrefs = (patch: Partial<MapPrefs>) => {
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    try {
+      localStorage.setItem(STYLE_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  const rasterStyle = MAP_STYLES[prefs.raster];
+  const tileStyle = "style" in rasterStyle ? { url: cartoUrl(rasterStyle.style, data?.cartoKey ?? null) } : null;
 
   const locate = useMutation({
     mutationFn: () => apiRequest("POST", "/api/demos/map/geocode"),
@@ -237,13 +345,40 @@ export default function MapDemo() {
         zoom={initialView?.zoom ?? 2}
         maxZoom={19}
         className="h-full w-full z-0 !bg-background"
-        worldCopyJump
+        maxBounds={WORLD_BOUNDS}
+        maxBoundsViscosity={1}
         ref={setMap}
       >
-        {data && <TileLayer url={data.tileUrl} attribution={data.attribution} className="map-demo-tiles" />}
+        {data && prefs.mode === "vector" && <VectorLayer themeKey={prefs.vector} cartoKey={data.cartoKey} />}
+        {data && prefs.mode === "raster" && (
+          <>
+            {/* Low-res backdrop: tiles BACKDROP_LEVELS zooms coarser, stretched to fit. Each covers a big
+                area around the view, so zooming out shows blurry map (sharpened as tiles load) instead of gaps. */}
+            <TileLayer
+              key={`${prefs.raster}-backdrop`}
+              url={tileStyle ? tileStyle.url : data.tileUrl}
+              className={tileStyle ? "" : "map-demo-tiles"}
+              tileSize={256 << BACKDROP_LEVELS}
+              zoomOffset={-BACKDROP_LEVELS}
+              minNativeZoom={BACKDROP_LEVELS}
+              zIndex={0}
+              noWrap
+            />
+            <TileLayer
+              key={prefs.raster}
+              url={tileStyle ? tileStyle.url : data.tileUrl}
+              attribution={tileStyle ? CARTO_ATTRIBUTION : data.attribution}
+              className={tileStyle ? "" : "map-demo-tiles"}
+              zIndex={1}
+              noWrap
+            />
+          </>
+        )}
+        <WorldMinZoom onChange={setMinZoom} />
         <MapEvents onClick={handleMapClick} />
         <FitOnce points={points} skip={!!initialView} growing={!!data?.geocoder.running} panelOpen={panelOpen} />
-        <MarkerClusterGroup ref={cluster} chunkedLoading>
+        {minZoom !== null && (
+        <MarkerClusterGroup key={minZoom} ref={cluster} chunkedLoading>
           {visible.map((p) => {
             const key = pinKey(p);
             const others = (pinsByPerson.get(p.id)?.length ?? 1) - 1;
@@ -298,7 +433,47 @@ export default function MapDemo() {
             );
           })}
         </MarkerClusterGroup>
+        )}
       </MapContainer>
+
+      <div className="absolute bottom-6 left-4 z-[1000] shadow flex gap-1">
+        <div className="flex rounded-md border bg-background p-0.5">
+          {(["raster", "vector"] as const).map((mode) => (
+            <Button
+              key={mode}
+              size="sm"
+              variant={prefs.mode === mode ? "secondary" : "ghost"}
+              className="h-7 px-2 capitalize"
+              onClick={() => updatePrefs({ mode })}
+            >
+              {mode}
+            </Button>
+          ))}
+        </div>
+        {prefs.mode === "raster" ? (
+          <Select value={prefs.raster} onValueChange={(v) => updatePrefs({ raster: v as MapStyleKey })}>
+            <SelectTrigger className="h-8 w-36 bg-background" aria-label="Map color scheme">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(MAP_STYLES).map(([key, st]) => (
+                <SelectItem key={key} value={key}>{st.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Select value={prefs.vector} onValueChange={(v) => updatePrefs({ vector: v })}>
+            <SelectTrigger className="h-8 w-40 bg-background" aria-label="Map color scheme">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(VECTOR_THEMES).map(([key, t]) => (
+                <SelectItem key={key} value={key}>{t.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
 
       {!panelOpen && (
         <Button size="sm" variant="secondary" className="absolute top-4 left-14 z-[1000] shadow" onClick={() => setPanelOpen(true)}>

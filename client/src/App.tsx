@@ -11,23 +11,35 @@ import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { toast } from "@/hooks/use-toast";
 import { GlobalSearch } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
-import { PersonDialog } from "@/components/person-dialog";
-import { SocialAccountDialog } from "@/components/social-account-dialog";
-import { RelationshipDialog } from "@/components/relationship-dialog";
-import { DailyNoteModal } from "@/components/daily-note-modal";
-import { InteractionDialog } from "@/components/interaction-dialog";
-import { AddNoteDialog } from "@/components/add-note-dialog";
 import { UniversalAddButton } from "@/components/universal-add-button";
-import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { StatusDot } from "@/components/status-dot";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { PrmS3StatusGuard } from "@/components/prm-s3-status";
 import { Button } from "@/components/ui/button";
-import { Settings, LogOut, Home, Loader2, Sparkles } from "lucide-react";
+import { Settings, LogOut, Home, Loader2 } from "lucide-react";
 import { SettingsSidebar } from "@/pages/settings-layout";
 
-const UnifiedSetupDialog = lazy(() =>
-  import("@/components/unified-setup-dialog").then((m) => ({ default: m.UnifiedSetupDialog }))
+const PersonDialog = lazy(() =>
+  import("@/components/person-dialog").then((m) => ({ default: m.PersonDialog }))
+);
+const SocialAccountDialog = lazy(() =>
+  import("@/components/social-account-dialog").then((m) => ({ default: m.SocialAccountDialog }))
+);
+const RelationshipDialog = lazy(() =>
+  import("@/components/relationship-dialog").then((m) => ({ default: m.RelationshipDialog }))
+);
+const DailyNoteModal = lazy(() =>
+  import("@/components/daily-note-modal").then((m) => ({ default: m.DailyNoteModal }))
+);
+const InteractionDialog = lazy(() =>
+  import("@/components/interaction-dialog").then((m) => ({ default: m.InteractionDialog }))
+);
+const AddNoteDialog = lazy(() =>
+  import("@/components/add-note-dialog").then((m) => ({ default: m.AddNoteDialog }))
+);
+const PhotoUploadDialog = lazy(() =>
+  import("@/components/photo-upload-dialog").then((m) => ({ default: m.PhotoUploadDialog }))
 );
 
 const PeopleList = lazy(() => import("@/pages/people-list"));
@@ -51,6 +63,7 @@ const GuessTheSex = lazy(() => import("@/pages/guess-the-sex"));
 const AccountMatching = lazy(() => import("@/pages/account-matching"));
 const PrmFaceDemo = lazy(() => import("@/pages/prm-face-demo"));
 const PrmFaceSaveDemo = lazy(() => import("@/pages/prm-face-save-demo"));
+const FacePoseDemo = lazy(() => import("@/pages/face-pose-demo"));
 const FaceReview = lazy(() => import("@/pages/face-review"));
 const Faces = lazy(() => import("@/pages/faces"));
 const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
@@ -59,9 +72,9 @@ const WhisperDemo = lazy(() => import("@/pages/whisper-demo"));
 const MapDemo = lazy(() => import("@/pages/map-demo"));
 const WordCloudDemo = lazy(() => import("@/pages/word-cloud-demo"));
 const BioWordCloudDemo = lazy(() => import("@/pages/bio-word-cloud-demo"));
+const OllamaParamsDemo = lazy(() => import("@/pages/ollama-params-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
-const AccountCreationTimelinePage = lazy(() => import("@/pages/account-creation-timeline"));
 const GamesPage = lazy(() => import("@/pages/games"));
 const DescribeMePage = lazy(() => import("@/pages/describe-me"));
 const PoliticalLeaningGamePage = lazy(() => import("@/pages/political-leaning-game"));
@@ -70,8 +83,6 @@ const ImagesListPage = lazy(() => import("@/pages/images-list"));
 const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
 const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
 const SuperSearchPage = lazy(() => import("@/pages/super-search"));
-const FamilyTreePage = lazy(() => import("@/pages/family-tree"));
-const PotentialFamiliesPage = lazy(() => import("@/pages/potential-families"));
 const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-imports"));
 const SocialTrackingPage = lazy(() => import("@/pages/social-tracking"));
 const SocialAccountsIssuesPage = lazy(() => import("@/pages/social-accounts-issues"));
@@ -216,20 +227,17 @@ function Router() {
         <ProtectedRoute path="/graph" component={Graph} />
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
         <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
-        <ProtectedRoute path="/family-tree" component={FamilyTreePage} />
-        <ProtectedRoute path="/family-tree/potential" component={PotentialFamiliesPage} />
-        <ProtectedRoute path="/family-tree/potential-families" component={PotentialFamiliesPage} />
         <ProtectedRoute path="/elo-ranking" component={EloRanking} />
         <ProtectedRoute path="/guess-the-sex" component={GuessTheSex} />
         <ProtectedRoute path="/account-matching" component={AccountMatching} />
         <ProtectedRoute path="/demos" component={DemosPage} />
-        <ProtectedRoute path="/demos/account-timeline" component={AccountCreationTimelinePage} />
         <ProtectedRoute path="/games" component={GamesPage} />
         <ProtectedRoute path="/describe-me" component={DescribeMePage} />
         <ProtectedRoute path="/games/political-leaning" component={PoliticalLeaningGamePage} />
         <ProtectedRoute path="/political-leaning-game" component={PoliticalLeaningGamePage} />
         <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
         <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
+        <ProtectedRoute path="/demos/face-pose" component={FacePoseDemo} />
         <ProtectedRoute path="/face-review" component={FaceReview} />
         <ProtectedRoute path="/unknown-faces" component={FaceReview} />
         <ProtectedRoute path="/faces" component={Faces} />
@@ -240,6 +248,7 @@ function Router() {
         <ProtectedRoute path="/demos/map" component={MapDemo} />
         <ProtectedRoute path="/demos/word-cloud" component={WordCloudDemo} />
         <ProtectedRoute path="/demos/bio-word-cloud" component={BioWordCloudDemo} />
+        <ProtectedRoute path="/demos/ollama-params" component={OllamaParamsDemo} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />
@@ -268,6 +277,58 @@ function Router() {
   );
 }
 
+function useInitialRoutePrefetch(location: string) {
+  useEffect(() => {
+    if (location === "/" || location === "/people") {
+      void import("@/pages/people-list");
+      void queryClient.prefetchInfiniteQuery({
+        queryKey: ["/api/people/paginated", { sortBy: "relationship" }],
+        queryFn: async ({ pageParam = 0 }) => {
+          const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=relationship`, {
+            credentials: "include",
+          });
+          if (!response.ok) throw new Error("Failed to fetch people");
+          return response.json();
+        },
+        initialPageParam: 0,
+      });
+    } else if (location === "/social-accounts") {
+      void import("@/pages/social-accounts-list");
+      const searchStr = typeof window !== "undefined" ? window.location.search : "";
+      const typeIdFromUrl = new URLSearchParams(searchStr).get("type") || "";
+      void queryClient.prefetchInfiniteQuery({
+        queryKey: [
+          "/api/social-accounts/paginated",
+          { search: "", typeId: typeIdFromUrl, followsYou: true, interestLevel: "all" },
+        ],
+        queryFn: async ({ pageParam = 0 }) => {
+          const params = new URLSearchParams();
+          params.set("offset", String(pageParam));
+          params.set("limit", "30");
+          params.set("full", "true");
+          if (typeIdFromUrl && typeIdFromUrl !== "all") params.set("typeId", typeIdFromUrl);
+          params.set("followsYou", "true");
+          const response = await fetch(`/api/social-accounts/paginated?${params.toString()}`, {
+            credentials: "include",
+          });
+          if (!response.ok) throw new Error("Failed to fetch social accounts");
+          return response.json();
+        },
+        initialPageParam: 0,
+      });
+      void queryClient.prefetchQuery({ queryKey: ["/api/social-account-types"] });
+      void queryClient.prefetchQuery({
+        queryKey: ["/api/me/following-ids"],
+        queryFn: async () => {
+          const res = await fetch("/api/me/following-ids", { credentials: "include" });
+          if (!res.ok) return [];
+          return res.json();
+        },
+      });
+    }
+  }, [location]);
+}
+
 function AppLayout() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
@@ -278,7 +339,7 @@ function AppLayout() {
   const [isAddInteractionDialogOpen, setIsAddInteractionDialogOpen] = useState(false);
   const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
   const [isAddPhotoDialogOpen, setIsAddPhotoDialogOpen] = useState(false);
-  const [isSetupAssistantOpen, setIsSetupAssistantOpen] = useState(false);
+  useInitialRoutePrefetch(location);
   useExportNotifier();
   useSignedMediaRefresh();
   const isAuthPage = location === "/auth" || location === "/auth-direct";
@@ -346,6 +407,10 @@ function AppLayout() {
                     onAddNote={() => setIsAddNoteDialogOpen(true)}
                     onAddPhoto={() => setIsAddPhotoDialogOpen(true)}
                   />
+                  <div className="hidden md:flex items-center">
+                    <ThemeToggle />
+                  </div>
+                  <StatusDot />
                   <div className="hidden md:flex items-center gap-1">
                     {isSettingsPage ? (
                       <Button
@@ -368,17 +433,6 @@ function AppLayout() {
                         <Settings className="h-4 w-4" />
                       </Button>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-primary"
-                      onClick={() => setIsSetupAssistantOpen(true)}
-                      title="Unified Setup Assistant"
-                      data-testid="header-button-setup-assistant"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                    </Button>
-                    <ThemeToggle />
                     <Button
                       variant="ghost"
                       size="icon"
@@ -407,22 +461,30 @@ function AppLayout() {
       {user && (
         <>
           <MobileBottomNav onAddPersonClick={() => setIsAddPersonDialogOpen(true)} />
-          <PersonDialog open={isAddPersonDialogOpen} onOpenChange={setIsAddPersonDialogOpen} />
-          <SocialAccountDialog open={isAddSocialAccountDialogOpen} onOpenChange={setIsAddSocialAccountDialogOpen} />
-          <RelationshipDialog open={isAddRelationshipDialogOpen} onOpenChange={setIsAddRelationshipDialogOpen} personId="" />
-          <DailyNoteModal open={isAddDailyNoteDialogOpen} onOpenChange={setIsAddDailyNoteDialogOpen} />
-          <InteractionDialog open={isAddInteractionDialogOpen} onOpenChange={setIsAddInteractionDialogOpen} />
-          <AddNoteDialog open={isAddNoteDialogOpen} onOpenChange={setIsAddNoteDialogOpen} personId="" />
-          <PhotoUploadDialog open={isAddPhotoDialogOpen} onClose={() => setIsAddPhotoDialogOpen(false)} />
+          <Suspense fallback={null}>
+            {isAddPersonDialogOpen && (
+              <PersonDialog open={isAddPersonDialogOpen} onOpenChange={setIsAddPersonDialogOpen} />
+            )}
+            {isAddSocialAccountDialogOpen && (
+              <SocialAccountDialog open={isAddSocialAccountDialogOpen} onOpenChange={setIsAddSocialAccountDialogOpen} />
+            )}
+            {isAddRelationshipDialogOpen && (
+              <RelationshipDialog open={isAddRelationshipDialogOpen} onOpenChange={setIsAddRelationshipDialogOpen} personId="" />
+            )}
+            {isAddDailyNoteDialogOpen && (
+              <DailyNoteModal open={isAddDailyNoteDialogOpen} onOpenChange={setIsAddDailyNoteDialogOpen} />
+            )}
+            {isAddInteractionDialogOpen && (
+              <InteractionDialog open={isAddInteractionDialogOpen} onOpenChange={setIsAddInteractionDialogOpen} />
+            )}
+            {isAddNoteDialogOpen && (
+              <AddNoteDialog open={isAddNoteDialogOpen} onOpenChange={setIsAddNoteDialogOpen} personId="" />
+            )}
+            {isAddPhotoDialogOpen && (
+              <PhotoUploadDialog open={isAddPhotoDialogOpen} onClose={() => setIsAddPhotoDialogOpen(false)} />
+            )}
+          </Suspense>
           <TaskTrackerModal />
-          {isSetupAssistantOpen && (
-            <Suspense fallback={null}>
-              <UnifiedSetupDialog
-                open={isSetupAssistantOpen}
-                onOpenChange={setIsSetupAssistantOpen}
-              />
-            </Suspense>
-          )}
         </>
       )}
     </SidebarProvider>

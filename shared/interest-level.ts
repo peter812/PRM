@@ -53,6 +53,16 @@ export const TRACKING_SKIP_RECENT_KEY = "tracking_skip_recent";
 export const RECENT_CHECK_HOURS = 24;
 export const skipRecentEnabled = (raw: string | null | undefined): boolean => raw !== "false";
 
+/**
+ * app_settings key: accounts whose profile reports more than BIG_ACCOUNT_FOLLOWERS
+ * followers are kept at level none (unless a person chose their level), so
+ * tracking never scrapes celebrity-sized accounts. "false" turns that off;
+ * absent means on.
+ */
+export const TRACKING_BIG_ACCOUNTS_NONE_KEY = "tracking_big_accounts_none";
+export const BIG_ACCOUNT_FOLLOWERS = 3_000;
+export const bigAccountsNoneEnabled = (raw: string | null | undefined): boolean => raw !== "false";
+
 export const TRACKING_KIND_LABEL: Record<TrackingKind, string> = {
   info: "Profile info",
   follows: "Followers & following",

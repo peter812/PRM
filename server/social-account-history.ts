@@ -7,7 +7,7 @@ import {
 } from "@shared/schema";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import crypto from "crypto";
-import { applyMeRule } from "./tracking";
+import { applyBigAccountRule, applyMeRule } from "./tracking";
 import type { ProfileImageOutcome } from "./profile-image";
 
 /**
@@ -449,6 +449,7 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
   });
 
   await applyMeRule(touched);
+  if (snap.profile?.reportedFollowersCount != null) await applyBigAccountRule([snap.socialAccountId]);
   return written;
 }
 

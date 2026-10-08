@@ -18,7 +18,6 @@ import {
 import { profileLinkReason, type ProfileLinkReason, type FacialId } from "./recognition";
 import { HQ_MIN_WIDTH } from "./profile-image";
 import { lookAlikesFor, type LookAlike } from "./face-lookalikes";
-import { visibleShared, canReadShared } from "./access";
 
 export type FaceReviewKind = "story" | "profile" | "post" | "message";
 export const FACE_REVIEW_KINDS: FaceReviewKind[] = ["story", "profile", "post", "message"];
@@ -56,7 +55,7 @@ export type FaceReviewFace = {
   box: FaceBox | null;
   cropUrl: string;
   color: string;
-  identified: { socialAccountId?: string; personId?: string; label: string } | null;
+  identified: { socialAccountId?: string; personId?: string; username?: string; label: string } | null;
   dismissed: boolean;
   /** Set when PRM auto-assigned this face (face-review-plan.md §8) and nobody has confirmed it. */
   autoMatchScore: number | null;
@@ -106,13 +105,10 @@ function faceQualifies(dismissed: boolean): SQL {
   )`;
 }
 
-const accountVisible = () => visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId) ?? sql`true`;
-const conversationVisible = () => visibleShared(conversations.visibility, conversations.createdByUserId) ?? sql`true`;
-
-/** Full WHERE for one tab's queue/count query, including §3 visibility. */
+/** Full WHERE for one tab's queue/count query. */
 function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
   if (kind === "profile") {
-    // §1/§2: current picture, HQ, visible to the caller, and either (dismissed filter) a
+    // §1/§2: current picture, HQ, and either (dismissed filter) a
     // dismissed face, or (default) an unidentified face while the account's own face isn't
     // in this photo yet — once it is, the photo leaves the tab (Q4).
     const base = [
@@ -126,7 +122,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
         WHERE ${socialAccounts.id} = substring(${photos.prmLocation} from 15)
           AND ${socialAccounts.imageUrl} = ${photos.location}
           AND NOT ${socialAccounts.noFace}
-          AND (${accountVisible()})
+         
           AND (
             ${socialAccounts.personfaceUuid} IS NULL
             OR NOT EXISTS (
@@ -143,7 +139,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
           WHERE ${socialAccounts.id} = substring(${photos.prmLocation} from 15)
             AND ${socialAccounts.imageUrl} = ${photos.location}
             AND NOT ${socialAccounts.noFace}
-            AND (${accountVisible()})
+           
         )`,
         faceQualifies(true),
       );
@@ -157,7 +153,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
         SELECT 1 FROM ${messages}
         JOIN ${conversations} ON ${conversations.id} = ${messages.conversationId}
         WHERE ${messages.id} = substring(${photos.prmLocation} from 9)
-          AND (${conversationVisible()})
+         
       )`,
       sql`${photos.faceIdAt} IS NOT NULL`,
       faceQualifies(dismissed),
@@ -172,7 +168,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
       JOIN ${socialAccounts} ON ${socialAccounts.id} = ${socialAccountPosts.socialAccountId}
       WHERE ${socialAccountPosts.id} = substring(${photos.prmLocation} from 6)
         AND ${socialAccountPosts.postType} ${sql.raw(isStory ? "=" : "<>")} 'story'
-        AND (${accountVisible()})
+       
     )`,
     sql`${photos.faceIdAt} IS NOT NULL`,
     faceQualifies(dismissed),
@@ -241,28 +237,28 @@ async function photoReadable(photo: Photo): Promise<boolean> {
   if (loc.startsWith("profile_image:")) {
     const accountId = loc.slice("profile_image:".length).trim();
     const [row] = await db
-      .select({ visibility: socialAccounts.visibility, createdByUserId: socialAccounts.createdByUserId })
+      .select({ id: socialAccounts.id })
       .from(socialAccounts)
       .where(eq(socialAccounts.id, accountId));
-    return row ? canReadShared(row) : false;
+    return Boolean(row);
   }
   if (loc.startsWith("post:")) {
     const postId = loc.slice("post:".length).trim();
     const [row] = await db
-      .select({ visibility: socialAccounts.visibility, createdByUserId: socialAccounts.createdByUserId })
+      .select({ id: socialAccounts.id })
       .from(socialAccountPosts)
       .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountPosts.socialAccountId))
       .where(eq(socialAccountPosts.id, postId));
-    return row ? canReadShared(row) : false;
+    return Boolean(row);
   }
   if (loc.startsWith("message:")) {
     const messageId = loc.slice("message:".length).trim();
     const [row] = await db
-      .select({ visibility: conversations.visibility, createdByUserId: conversations.createdByUserId })
+      .select({ id: conversations.id })
       .from(messages)
       .innerJoin(conversations, eq(conversations.id, messages.conversationId))
       .where(eq(messages.id, messageId));
-    return row ? canReadShared(row) : false;
+    return Boolean(row);
   }
   return false;
 }
@@ -282,7 +278,7 @@ const displayName = (p: { firstName: string; lastName: string } | null | undefin
 
 type AccountInfo = { id: string; username: string; imageUrl: string | null; ownerId: string | null; ownerName: string | null; noFace: boolean };
 type PersonInfo = { id: string; name: string | null };
-type IdentityInfo = { personId?: string; socialAccountId?: string; label: string };
+type IdentityInfo = { personId?: string; socialAccountId?: string; username?: string; label: string };
 
 type PageCaches = {
   faceRowById: Map<string, typeof faces.$inferSelect>;
@@ -302,17 +298,15 @@ type PageCaches = {
 async function buildIdentityCache(personfaceUuids: string[]): Promise<Map<string, IdentityInfo>> {
   const map = new Map<string, IdentityInfo>();
   if (!personfaceUuids.length) return map;
-  const personVis = visibleShared(people.visibility, people.createdByUserId) ?? sql`true`;
-  const acctVis = accountVisible();
 
   const personRows = await db
     .select({ personfaceUuid: people.personfaceUuid, id: people.id, firstName: people.firstName, lastName: people.lastName })
     .from(people)
-    .where(and(inArray(people.personfaceUuid, personfaceUuids), personVis));
+    .where(inArray(people.personfaceUuid, personfaceUuids));
   const accountRows = await db
     .select({ personfaceUuid: socialAccounts.personfaceUuid, id: socialAccounts.id, username: socialAccounts.username })
     .from(socialAccounts)
-    .where(and(inArray(socialAccounts.personfaceUuid, personfaceUuids), acctVis));
+    .where(inArray(socialAccounts.personfaceUuid, personfaceUuids));
 
   const personByGroup = new Map(personRows.filter((r) => r.personfaceUuid).map((r) => [r.personfaceUuid as string, r]));
   const accountByGroup = new Map<string, (typeof accountRows)[number]>();
@@ -323,7 +317,7 @@ async function buildIdentityCache(personfaceUuids: string[]): Promise<Map<string
     const account = accountByGroup.get(uuid);
     if (!person && !account) continue;
     const label = person ? displayName(person) ?? `@${account?.username ?? ""}` : `@${account!.username}`;
-    map.set(uuid, { personId: person?.id, socialAccountId: account?.id, label });
+    map.set(uuid, { personId: person?.id, socialAccountId: account?.id, username: account?.username, label });
   }
   return map;
 }
@@ -356,7 +350,7 @@ async function buildAccountCache(ids: string[]): Promise<Map<string, AccountInfo
     })
     .from(socialAccounts)
     .leftJoin(people, eq(people.id, socialAccounts.ownerUuid))
-    .where(and(inArray(socialAccounts.id, ids), accountVisible()));
+    .where(inArray(socialAccounts.id, ids));
   for (const r of rows) {
     map.set(r.id, {
       id: r.id,
@@ -373,8 +367,7 @@ async function buildAccountCache(ids: string[]): Promise<Map<string, AccountInfo
 async function buildPersonCache(ids: string[]): Promise<Map<string, PersonInfo>> {
   const map = new Map<string, PersonInfo>();
   if (!ids.length) return map;
-  const personVis = visibleShared(people.visibility, people.createdByUserId) ?? sql`true`;
-  const rows = await db.select({ id: people.id, firstName: people.firstName, lastName: people.lastName }).from(people).where(and(inArray(people.id, ids), personVis));
+  const rows = await db.select({ id: people.id, firstName: people.firstName, lastName: people.lastName }).from(people).where(inArray(people.id, ids));
   for (const r of rows) map.set(r.id, { id: r.id, name: displayName(r) });
   return map;
 }
@@ -447,7 +440,7 @@ async function buildPageCaches(pagePhotos: Photo[], kind: FaceReviewKind): Promi
       const rows2 = await db
         .select({ id: socialAccounts.id, username: socialAccounts.username })
         .from(socialAccounts)
-        .where(and(inArray(sql`lower(${socialAccounts.username})`, Array.from(handleSet)), accountVisible()));
+        .where(inArray(sql`lower(${socialAccounts.username})`, Array.from(handleSet)));
       for (const r of rows2) {
         accountIds.add(r.id);
         mentionAccountIdByHandle.set(r.username.toLowerCase(), r.id);
@@ -661,4 +654,33 @@ async function buildItems(pagePhotos: Photo[], kind: FaceReviewKind): Promise<Fa
     items.push(item);
   }
   return items;
+}
+
+// ── Post detail: faces + OCR per slide ───────────────────────────────────────
+
+export type PostSlideFace = Omit<FaceReviewFace, "lookAlikes">;
+export type PostSlideAnalysis = {
+  slide: number;
+  photoId: string;
+  width: number | null;
+  height: number | null;
+  faces: PostSlideFace[];
+  ocrData: unknown;
+};
+
+/** Every analyzed slide of a post: its numbered face boxes (as Face review numbers them) and OCR result. */
+export async function getPostSlideAnalysis(post: { id: string; postType: string }): Promise<PostSlideAnalysis[]> {
+  const postPhotos = await db.select().from(photos).where(eq(photos.prmLocation, `post:${post.id}`));
+  const items = await buildItems(postPhotos, post.postType === "story" ? "story" : "post");
+  const ocrById = new Map(postPhotos.map((p) => [p.id, p.ocrData]));
+  return items
+    .filter((item) => item.slide !== undefined)
+    .map((item) => ({
+      slide: item.slide!,
+      photoId: item.photoId,
+      width: item.width,
+      height: item.height,
+      faces: item.faces.map(({ lookAlikes: _lookAlikes, ...f }) => f),
+      ocrData: ocrById.get(item.photoId) ?? null,
+    }));
 }

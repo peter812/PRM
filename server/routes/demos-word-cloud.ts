@@ -6,7 +6,6 @@ import type { Express } from "express";
 import { sql } from "drizzle-orm";
 import { socialAccounts } from "@shared/schema";
 import { db } from "../db";
-import { visibleShared } from "../access";
 
 import { requireAuth } from "../auth";
 
@@ -19,9 +18,7 @@ export function registerRoutes(app: Express) {
         .select({ bio: socialAccounts.bio })
         .from(socialAccounts)
         .where(
-          sql`${socialAccounts.bio} IS NOT NULL AND ${socialAccounts.bio} != '' AND (${
-            visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId) ?? sql`true`
-          })`,
+          sql`${socialAccounts.bio} IS NOT NULL AND ${socialAccounts.bio} != ''`,
         )
         .limit(limit);
 

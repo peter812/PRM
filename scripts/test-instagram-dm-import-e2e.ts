@@ -6,8 +6,6 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { db } from "../server/db";
-import { users } from "@shared/schema";
 import { storage } from "../server/storage";
 import { processImportInstagramBackup } from "../server/task-worker";
 
@@ -27,7 +25,6 @@ async function resolveRootAccount(username: string): Promise<string> {
 
 async function runOnce(
   zipSource: string,
-  userId: number,
   rootSocialAccountId: string,
   rootUsername: string,
   label: string
@@ -39,11 +36,10 @@ async function runOnce(
   const task = await storage.createTask({
     type: "import_instagram_backup",
     status: "in_progress",
-    payload: JSON.stringify({ userId, zipPath: zipCopy, rootSocialAccountId, rootUsername }),
+    payload: JSON.stringify({ zipPath: zipCopy, rootSocialAccountId, rootUsername }),
   });
 
   const result = await processImportInstagramBackup(task.id, {
-    userId,
     zipPath: zipCopy,
     rootSocialAccountId,
     rootUsername,
@@ -63,16 +59,11 @@ async function main() {
     process.exit(1);
   }
 
-  const [user] = await db.select().from(users).limit(1);
-  if (!user) {
-    console.error("No user found in database");
-    process.exit(1);
-  }
   const rootSocialAccountId = await resolveRootAccount(rootUsername);
-  console.log(`Importing as user #${user.id} (${user.username}), root account @${rootUsername} (${rootSocialAccountId})`);
+  console.log(`Importing to root account @${rootUsername} (${rootSocialAccountId})`);
 
-  const first = await runOnce(zipSource, user.id, rootSocialAccountId, rootUsername, "first run");
-  const second = await runOnce(zipSource, user.id, rootSocialAccountId, rootUsername, "second run (idempotency)");
+  const first = await runOnce(zipSource, rootSocialAccountId, rootUsername, "first run");
+  const second = await runOnce(zipSource, rootSocialAccountId, rootUsername, "second run (idempotency)");
 
   let failed = false;
   if (second.inserted !== 0) {

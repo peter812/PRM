@@ -39,7 +39,7 @@ export default function AiDescDemoPage() {
     try {
       const formData = new FormData();
       formData.append("image", imageFile);
-      const res = await fetch("/api/ollama/describe", {
+      const res = await fetch("/api/ai/describe", {
         method: "POST",
         body: formData,
         credentials: "include",

@@ -18,7 +18,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { IMPORTERS_KEY, RUNS_KEY, sessionFromRuns, useImporters, useStoryRuns, type Importer, type StoryRun } from "@/lib/instagram";
 
@@ -84,7 +83,6 @@ function HowToCard({ defaultOpen }: { defaultOpen: boolean }) {
 
 /** One prm-stories install: its URL, secret and login. Schedules live on Social Accounts → Tracking. */
 function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: StoryRun[]; onDelete: (i: Importer) => void }) {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
   const session = sessionFromRuns(runs);
   const hasUrl = Boolean(importer.serviceUrl);
@@ -93,7 +91,7 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
   const { data: whoami } = useQuery({
     queryKey: [...IMPORTERS_KEY, importer.id, "whoami"],
     queryFn: async () => (await apiRequest("POST", `/api/stories/importers/${importer.id}/whoami`)).json() as Promise<{ username: string | null }>,
-    enabled: isAdmin && hasUrl,
+    enabled: hasUrl,
     refetchOnWindowFocus: true,
   });
   const username = whoami?.username ?? importer.lastUsername;
@@ -133,7 +131,7 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
           <div className="flex-1 min-w-0 space-y-1">
             <Input
               value={label}
-              disabled={!isAdmin}
+             
               onChange={(e) => setLabel(e.target.value)}
               onBlur={() => (label.trim() && label.trim() !== importer.label ? save.mutate({ label: label.trim() }) : setLabel(importer.label))}
               className="h-9 text-base font-semibold px-2 -ml-2 w-full max-w-sm border-transparent hover:border-input focus:border-input"
@@ -144,18 +142,16 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               <p className="text-sm text-muted-foreground" data-testid={`text-importer-username-${importer.id}`}>@{username}</p>
             )}
           </div>
-          {isAdmin && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-              onClick={() => onDelete(importer)}
-              title="Remove importer"
-              data-testid={`button-delete-importer-${importer.id}`}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+            onClick={() => onDelete(importer)}
+            title="Remove importer"
+            data-testid={`button-delete-importer-${importer.id}`}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
         </div>
         <div className="flex items-start gap-2 text-sm pt-1">
           {session.ok === true && <CheckCircle2 className="h-4 w-4 mt-0.5 text-green-600" />}
@@ -175,7 +171,7 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               id={`url-${importer.id}`}
               placeholder="http://localhost:5055"
               value={apiUrl}
-              disabled={!isAdmin}
+             
               onChange={(e) => setApiUrl(e.target.value)}
               onBlur={() => apiUrl.trim() !== importer.serviceUrl && save.mutate({ serviceUrl: apiUrl.trim() })}
               data-testid={`input-importer-url-${importer.id}`}
@@ -189,7 +185,7 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
               autoComplete="off"
               placeholder={importer.serviceSecretSet ? "(set — type to replace)" : "STORIES_SERVICE_SECRET on the service, if it has one"}
               value={secret}
-              disabled={!isAdmin}
+             
               onChange={(e) => setSecret(e.target.value)}
               onBlur={() => {
                 if (!secret.trim()) return;
@@ -201,18 +197,16 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
           </div>
         </div>
 
-        {isAdmin && (
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button variant="outline" onClick={() => openLogin.mutate()} disabled={openLogin.isPending || !hasUrl} data-testid={`button-importer-login-${importer.id}`}>
-              {openLogin.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LogIn className="mr-2 h-4 w-4" />}
-              {openLogin.isPending ? "Opening Chrome…" : "Open Instagram login"}
-            </Button>
-            {!hasUrl && <span className="text-sm text-muted-foreground">Set the service URL first.</span>}
-            <Link href="~/social-accounts/tracking" className="text-sm text-primary hover:underline ml-auto" data-testid={`link-importer-schedule-${importer.id}`}>
-              Schedules and run buttons →
-            </Link>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <Button variant="outline" onClick={() => openLogin.mutate()} disabled={openLogin.isPending || !hasUrl} data-testid={`button-importer-login-${importer.id}`}>
+            {openLogin.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LogIn className="mr-2 h-4 w-4" />}
+            {openLogin.isPending ? "Opening Chrome…" : "Open Instagram login"}
+          </Button>
+          {!hasUrl && <span className="text-sm text-muted-foreground">Set the service URL first.</span>}
+          <Link href="~/social-accounts/tracking" className="text-sm text-primary hover:underline ml-auto" data-testid={`link-importer-schedule-${importer.id}`}>
+            Schedules and run buttons →
+          </Link>
+        </div>
       </CardContent>
     </Card>
   );
@@ -220,7 +214,6 @@ function ImporterCard({ importer, runs, onDelete }: { importer: Importer; runs: 
 
 
 export default function InstagramImportersPage() {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
   const { data: runs = [] } = useStoryRuns();
   const { data: importers = [] } = useImporters();
@@ -260,11 +253,9 @@ export default function InstagramImportersPage() {
           <h2 className="text-lg font-semibold">Importers</h2>
           <p className="text-sm text-muted-foreground">One card per Instagram account, each with its own prm-stories service.</p>
         </div>
-        {isAdmin && (
-          <Button size="icon" variant="outline" onClick={() => addImporter.mutate()} disabled={addImporter.isPending} title="Add importer" data-testid="button-add-importer">
-            {addImporter.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-          </Button>
-        )}
+        <Button size="icon" variant="outline" onClick={() => addImporter.mutate()} disabled={addImporter.isPending} title="Add importer" data-testid="button-add-importer">
+          {addImporter.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+        </Button>
       </div>
       {importers.length === 0 ? (
         <Card className="mb-6">

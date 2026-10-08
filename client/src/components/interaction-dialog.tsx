@@ -73,14 +73,17 @@ export function InteractionDialog({
 
   const { data: people = [] } = useQuery<Person[]>({
     queryKey: ["/api/people"],
+    enabled: open,
   });
 
   const { data: groups = [] } = useQuery<Group[]>({
     queryKey: ["/api/groups"],
+    enabled: open,
   });
 
   const { data: interactionTypes = [] } = useQuery<InteractionType[]>({
     queryKey: ["/api/interaction-types"],
+    enabled: open,
   });
 
   const form = useForm<InteractionForm>({

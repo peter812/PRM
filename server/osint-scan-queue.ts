@@ -11,7 +11,6 @@
 // Accounts can also be queued in bulk by tracking level, and an optional
 // yearly sweep rescans every account a tool hasn't checked in a year.
 import { storage } from "./storage";
-import { runAsSystem } from "./access";
 import { log } from "./vite";
 import { isOsintConfigured, loadOsintConfig, osintFetch, type OsintConfig } from "./osint-client";
 import { OSINT_TOOLS, osintHits, type OsintTargetType } from "@shared/osint-tools";
@@ -63,12 +62,11 @@ export async function queueOsintScansForTarget(
   owner: { socialAccountId: string } | { personId: string },
   target: string,
   targetType: OsintTargetType,
-  requestedByUserId: number,
 ): Promise<number> {
   const supported = new Set(OSINT_TOOLS.filter(t => t.supportedTargetTypes.includes(targetType)).map(t => t.name));
   let added = 0;
   for (const tool of (await scanTools()).filter(t => supported.has(t))) {
-    if (await storage.createOsintScan({ ...owner, tool, target, targetType, options: {}, requestedByUserId })) added++;
+    if (await storage.createOsintScan({ ...owner, tool, target, targetType, options: {} })) added++;
   }
   if (added) wakeOsintRunner();
   return added;
@@ -85,10 +83,9 @@ export async function queueOsintScansForMeAccount(socialAccountId: string, onlyT
   try {
     const tools = await autoScanTools();
     if (!tools) return;
-    const userId = await storage.getMeUserIdForSocialAccount(socialAccountId);
-    if (userId === null) return;
+    if (!(await storage.getMeOwnedSocialAccountIds()).includes(socialAccountId)) return;
     const targets = onlyTargetIds ?? await storage.getFollowingIds(socialAccountId);
-    const added = await storage.enqueueOsintScans(targets, tools, userId, RESCAN_AFTER_DAYS);
+    const added = await storage.enqueueOsintScans(targets, tools, RESCAN_AFTER_DAYS);
     if (added) {
       log(`[OsintScan] Queued ${added} scan(s) for the network of account ${socialAccountId}`);
       wakeOsintRunner();
@@ -98,11 +95,11 @@ export async function queueOsintScansForMeAccount(socialAccountId: string, onlyT
   }
 }
 
-/** Queue every account the caller can see at `level` or above. Returns how many scans were queued. */
-export async function queueOsintScansForLevel(level: InterestLevel, requestedByUserId: number): Promise<number> {
+/** Queue every account at `level` or above. Returns how many scans were queued. */
+export async function queueOsintScansForLevel(level: InterestLevel): Promise<number> {
   const levels = INTEREST_LEVELS.slice(INTEREST_LEVELS.indexOf(level));
   const ids = await storage.getSocialAccountIdsAtLevels(levels);
-  const added = await storage.enqueueOsintScans(ids, await scanTools(), requestedByUserId, LEVEL_RESCAN_AFTER_DAYS);
+  const added = await storage.enqueueOsintScans(ids, await scanTools(), LEVEL_RESCAN_AFTER_DAYS);
   if (added) wakeOsintRunner();
   return added;
 }
@@ -116,7 +113,7 @@ async function queueYearlyOsintScans(): Promise<void> {
     const [enabled, cfg] = await Promise.all([storage.getAppSetting(YEARLY_SCAN_ENABLED_KEY), loadOsintConfig()]);
     if (enabled !== "true" || !isOsintConfigured(cfg)) return;
     const ids = await storage.getSocialAccountIdsAtLevels();
-    const added = await storage.enqueueOsintScans(ids, await scanTools(), null, YEARLY_RESCAN_AFTER_DAYS);
+    const added = await storage.enqueueOsintScans(ids, await scanTools(), YEARLY_RESCAN_AFTER_DAYS);
     if (added) {
       log(`[OsintScan] Yearly sweep queued ${added} scan(s)`);
       wakeOsintRunner();
@@ -172,11 +169,9 @@ async function recordResult(row: OsintScan, result: any): Promise<void> {
   if (!saved || !(row.socialAccountId || row.personId)) return;
   try {
     const account = row.socialAccountId ? await storage.getSocialAccountById(row.socialAccountId) : undefined;
-    const person = row.personId ? await storage.getPersonById(row.personId) : undefined;
     const personId = row.personId ?? account?.ownerUuid;
     const hits = osintHits(result);
-    // Attribute to entity owner if requestedByUserId is null (e.g. yearly sweep) to avoid leaking private insights
-    const ownerUserId = row.requestedByUserId ?? account?.createdByUserId ?? person?.createdByUserId ?? null;
+
     await storage.createInsight({
       type: "osint",
       source: row.tool,
@@ -186,8 +181,7 @@ async function recordResult(row: OsintScan, result: any): Promise<void> {
       data: result ?? [],
       applicableSocialAccountIds: row.socialAccountId ? [row.socialAccountId] : [],
       applicablePeopleIds: personId ? [personId] : [],
-      createdByUserId: ownerUserId,
-      visibility: account?.visibility ?? person?.visibility ?? "public",
+
     });
   } catch (err) {
     log(`[OsintScan] Failed to create insight for scan ${row.id}: ${errorMessage(err)}`);
@@ -263,10 +257,10 @@ async function tick(cfg: OsintConfig): Promise<void> {
 // Runs one pass at a time, so a wake-up never overlaps the timed tick.
 let lastRun: Promise<void> = Promise.resolve();
 function runSerialized(pass: (cfg: OsintConfig) => Promise<void>): Promise<void> {
-  lastRun = lastRun.then(() => runAsSystem(async () => {
+  lastRun = lastRun.then(async () => {
     const cfg = await loadOsintConfig();
     if (isOsintConfigured(cfg)) await pass(cfg);
-  })).catch(err => log(`[OsintScan] Runner error: ${errorMessage(err)}`));
+  }).catch(err => log(`[OsintScan] Runner error: ${errorMessage(err)}`));
   return lastRun;
 }
 
@@ -283,8 +277,8 @@ export function startOsintScanRunner(): void {
     await runSerialized(tick);
     setTimeout(loop, TICK_MS);
   };
-  const yearly = () => runAsSystem(queueYearlyOsintScans).finally(() => setTimeout(yearly, YEARLY_CHECK_MS));
-  runAsSystem(() => storage.resetRunningOsintScans())
+  const yearly = () => queueYearlyOsintScans().finally(() => setTimeout(yearly, YEARLY_CHECK_MS));
+  storage.resetRunningOsintScans()
     .catch(err => log(`[OsintScan] Could not reset running rows: ${err}`))
     .finally(() => {
       setTimeout(loop, 10_000);

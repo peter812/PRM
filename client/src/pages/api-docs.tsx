@@ -961,25 +961,27 @@ fetch('${baseUrl}/api/upload-image', {
       id: "ai-tools",
       name: "AI & Intelligence",
       icon: Sparkles,
-      description: "Ollama LLM chat engine, function-calling tools with execution mode gates, Whisper speech-to-text, and image descriptions.",
+      description: "Multi-provider LLM chat engine (Ollama and OpenAI-compatible), function-calling tools with execution mode gates, Whisper speech-to-text, and image descriptions.",
       endpoints: [
         {
-          id: "ai-verify",
+          id: "ai-provider-test",
           method: "POST",
-          path: "/api/ai/verify",
-          summary: "Verify Ollama connection",
-          description: "Tests connectivity to Ollama server and lists installed models.",
+          path: "/api/ai/providers/test",
+          summary: "Test an AI provider",
+          description: "Checks connectivity to an Ollama or OpenAI-compatible provider and counts its models. Pass a saved provider's id, or kind + baseUrl to test unsaved values.",
           body: `{
-  "ollamaUrl": "http://localhost:11434"
+  "kind": "ollama",
+  "baseUrl": "http://localhost:11434"
 }`,
           response: `{
   "ok": true,
-  "models": ["llama3.2:latest", "nomic-embed-text:latest"]
+  "modelCount": 4,
+  "message": "Connected. 4 models available."
 }`,
-          example: `fetch('${baseUrl}/api/ai/verify', {
+          example: `fetch('${baseUrl}/api/ai/providers/test', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ ollamaUrl: 'http://localhost:11434' })
+  body: JSON.stringify({ kind: 'ollama', baseUrl: 'http://localhost:11434' })
 }).then(res => res.json());`
         },
         {

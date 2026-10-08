@@ -71,11 +71,6 @@ export default function TaskDetailPage() {
   const { data: task, isLoading: taskLoading, error: taskError } = useQuery<Task>({
     queryKey: [`/api/tasks/${id}`],
     enabled: !!id,
-    refetchInterval: (query) => {
-      const t = query.state.data;
-      if (!t) return false;
-      return t.status === "pending" || t.status === "in_progress" ? 3000 : false;
-    },
   });
 
   const { data: subTasksData, isLoading: subLoading } = useQuery<ImageTasksResponse>({
@@ -87,11 +82,6 @@ export default function TaskDetailPage() {
       return res.json();
     },
     enabled: !!id,
-    refetchInterval: (query) => {
-      const items = query.state.data?.items ?? [];
-      const hasActive = items.some(t => t.status === "pending" || t.status === "in_progress");
-      return hasActive ? 3000 : false;
-    },
   });
 
   const subTasks = subTasksData?.items ?? [];

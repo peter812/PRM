@@ -3,7 +3,7 @@ import { storage } from "../storage";
 import { z } from "zod";
 import { syncEntityInBackground } from "../vector-universal";
 import { cleanPhoneNumberForStorage, formatPhoneNumberForDisplay } from "@shared/schema";
-import { buildOllamaChatContext, getOllamaTextModel } from "./people-groups";
+import { AiConfigError, isAiEnabled, resolveModel } from "../ai/provider";
 import { guessNameFromMessages } from "../find-name-ai";
 
 export function registerRoutes(app: any) {
@@ -96,11 +96,9 @@ export function registerRoutes(app: any) {
       });
 
       const parsed = createSchema.parse(req.body);
-      const userId = req.user!.id;
 
       // 1. Create conversation
       const conversation = await storage.createConversation({
-        createdByUserId: userId,
         title: parsed.title || null,
         channelType: parsed.channelType,
         socialAccountId: parsed.socialAccountId || null,
@@ -278,13 +276,10 @@ export function registerRoutes(app: any) {
       const conversation = await getPhoneThread(req.params.id, address);
       if (!conversation) return res.status(404).json({ error: "Number not found in this conversation" });
 
-      if ((await storage.getAppSetting("ollama_enabled")) !== "true") {
+      if (!(await isAiEnabled())) {
         return res.status(400).json({ error: "AI is disabled in settings" });
       }
-      const ollama = await buildOllamaChatContext();
-      if (!ollama) return res.status(400).json({ error: "Ollama API URL is not configured" });
-      const model = await getOllamaTextModel();
-      if (!model) return res.status(400).json({ error: "No AI model configured. Set one at Settings → Intelligence." });
+      const resolved = await resolveModel("text");
 
       const { addresses, contactName } = conversation.metadata as { addresses: string[]; contactName: string | null };
       const { messages } = await storage.getMessagesByConversation(conversation.id, 0, 30, "asc");
@@ -301,11 +296,12 @@ export function registerRoutes(app: any) {
           return `[${label}]: ${m.content}`;
         });
 
-      const guess = await guessNameFromMessages({ ollama, model, lines, contactName: contactName ?? null });
+      const guess = await guessNameFromMessages({ resolved, lines, contactName: contactName ?? null });
       res.json(guess);
     } catch (error: any) {
       console.error("Error guessing name:", error);
       if (error instanceof z.ZodError) return res.status(400).json({ error: error.errors });
+      if (error instanceof AiConfigError) return res.status(400).json({ error: error.message });
       res.status(500).json({ error: error?.message || "Failed to guess name" });
     }
   });

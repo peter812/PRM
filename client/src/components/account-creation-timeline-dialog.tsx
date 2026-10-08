@@ -1,8 +1,7 @@
 import { useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Loader2, TrendingUp } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader2, TrendingUp } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // `period` is "YYYY-MM" for all time, "YYYY" for year, or "MM" for calendar month (Jan…Dec across every year).
@@ -187,9 +186,10 @@ function TimelineChart({ data, unit }: { data: Bucket[]; unit: Granularity }) {
   );
 }
 
-export default function AccountCreationTimelinePage() {
+export function AccountCreationTimelineDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { data, isLoading, error } = useQuery<{ month: string; count: number }[]>({
     queryKey: ["/api/social-accounts/joined-histogram"],
+    enabled: open,
   });
   const [granularity, setGranularity] = useState<Granularity>("all");
 
@@ -201,62 +201,43 @@ export default function AccountCreationTimelinePage() {
   const total = useMemo(() => (data ?? []).reduce((sum, b) => sum + b.count, 0), [data]);
 
   return (
-    <div className="container mx-auto p-6 max-w-5xl">
-      <Link href="/demos" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4">
-        <ArrowLeft className="h-4 w-4" /> Demos
-      </Link>
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold mb-2 flex items-center gap-2">
-          <TrendingUp className="h-7 w-7" />
-          Account Creation Timeline
-        </h1>
-        <p className="text-muted-foreground text-lg">
-          When the social accounts you track were created, oldest on the left to youngest on the right.{" "}
-          {granularity === "month"
-            ? "Each point is a calendar month summed across every year, to show seasonality."
-            : `Higher means more accounts were created in that ${granularity === "year" ? "year" : "month"}.`}{" "}
-          Hover a point for exact numbers.
-        </p>
-      </div>
-
-      <Card>
-        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
-          <div className="space-y-1.5">
-            <CardTitle>
-              {granularity === "all" ? "Accounts created per month, all time" : granularity === "year" ? "Accounts created per year" : "Accounts created by calendar month"}
-            </CardTitle>
-            <CardDescription>
-              {isLoading
-                ? "Loading…"
-                : `${total} account${total === 1 ? "" : "s"} with a known creation date` +
-                  (months.length ? `, ${periodLabel(months[0].period, "all")} – ${periodLabel(months[months.length - 1].period, "all")}` : "")}
-            </CardDescription>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-4xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <TrendingUp className="h-5 w-5" />
+            {granularity === "all" ? "Accounts created per month, all time" : granularity === "year" ? "Accounts created per year" : "Accounts created by calendar month"}
+          </DialogTitle>
+          <DialogDescription>
+            {isLoading
+              ? "Loading…"
+              : `${total} account${total === 1 ? "" : "s"} with a known creation date` +
+                (months.length ? `, ${periodLabel(months[0].period, "all")} – ${periodLabel(months[months.length - 1].period, "all")}` : "")}
+            {granularity === "month" && ". Each point is a calendar month summed across every year, to show seasonality."}
+          </DialogDescription>
+        </DialogHeader>
+        <Tabs value={granularity} onValueChange={(v) => setGranularity(v as Granularity)}>
+          <TabsList>
+            <TabsTrigger value="all" data-testid="granularity-all">All time</TabsTrigger>
+            <TabsTrigger value="year" data-testid="granularity-year">Year</TabsTrigger>
+            <TabsTrigger value="month" data-testid="granularity-month">Month</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        {isLoading ? (
+          <div className="flex items-center justify-center py-16 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-          <Tabs value={granularity} onValueChange={(v) => setGranularity(v as Granularity)}>
-            <TabsList>
-              <TabsTrigger value="all" data-testid="granularity-all">All time</TabsTrigger>
-              <TabsTrigger value="year" data-testid="granularity-year">Year</TabsTrigger>
-              <TabsTrigger value="month" data-testid="granularity-month">Month</TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="flex items-center justify-center py-16 text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin" />
-            </div>
-          ) : error ? (
-            <p className="text-sm text-destructive">Failed to load account creation dates.</p>
-          ) : series.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-8 text-center">
-              No accounts have a known creation date yet. Dates are filled in when Instagram tracking
-              reads an account's About info.
-            </p>
-          ) : (
-            <TimelineChart data={series} unit={granularity} />
-          )}
-        </CardContent>
-      </Card>
-    </div>
+        ) : error ? (
+          <p className="text-sm text-destructive">Failed to load account creation dates.</p>
+        ) : series.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-8 text-center">
+            No accounts have a known creation date yet. Dates are filled in when Instagram tracking
+            reads an account's About info.
+          </p>
+        ) : (
+          <TimelineChart data={series} unit={granularity} />
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

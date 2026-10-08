@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
 import { Plus, X, Star, Trophy, ArrowUpDown, ArrowUp, ArrowDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink } from "lucide-react";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -26,13 +26,16 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { Person } from "@shared/schema";
 import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
-import { PersonDialog } from "@/components/person-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
 import { useToast } from "@/hooks/use-toast";
 import { PersonContextMenu, PersonActionButton } from "@/components/person-context-menu";
 import { PersonTagsCell } from "@/components/person-tags-cell";
+
+const PersonDialog = lazy(() =>
+  import("@/components/person-dialog").then((m) => ({ default: m.PersonDialog }))
+);
 
 type SortOption = "relationship" | "added" | "starred" | "elo_high" | "elo_low";
 type ViewMode = "details" | "snug" | "expanded";
@@ -657,7 +660,12 @@ export default function PeopleList() {
                           <div className="flex items-center gap-2">
                             <Avatar className="w-12 h-12">
                               {person.imageUrl && (
-                                <AvatarImage src={withImageSize(person.imageUrl, 64)} alt={`${person.firstName} ${person.lastName}`} />
+                                <AvatarImage
+                                  src={withImageSize(person.imageUrl, 64)}
+                                  alt={`${person.firstName} ${person.lastName}`}
+                                  loading="lazy"
+                                  decoding="async"
+                                />
                               )}
                               <AvatarFallback>
                                 {getInitials(person.firstName, person.lastName)}
@@ -778,7 +786,12 @@ export default function PeopleList() {
                           <div className="flex items-center gap-4">
                             <Avatar className="w-20 h-20">
                               {person.imageUrl && (
-                                <AvatarImage src={withImageSize(person.imageUrl, 150)} alt={`${person.firstName} ${person.lastName}`} />
+                                <AvatarImage
+                                  src={withImageSize(person.imageUrl, 150)}
+                                  alt={`${person.firstName} ${person.lastName}`}
+                                  loading="lazy"
+                                  decoding="async"
+                                />
                               )}
                               <AvatarFallback className="text-xl">
                                 {getInitials(person.firstName, person.lastName)}
@@ -896,7 +909,11 @@ export default function PeopleList() {
         )}
       </div>
 
-      <PersonDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+      {isAddDialogOpen && (
+        <Suspense fallback={null}>
+          <PersonDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+        </Suspense>
+      )}
 
       <AlertDialog open={!!personToDelete} onOpenChange={(open) => !open && setPersonToDelete(null)}>
         <AlertDialogContent>

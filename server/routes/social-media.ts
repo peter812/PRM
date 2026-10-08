@@ -4,8 +4,6 @@ import { createServer, type Server } from "http";
 import { postedBy, storage } from "../storage";
 import { db } from "../db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialFollows, aiChats, dailyNotes, photos, notes, faces, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
-import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildOllamaToolsArray } from "../ai-tools";
-import { generateFamilyTreeChanges, applyFamilyTreeChanges, type ProposedFamilyChange } from "../family-tree-ai";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, desc, or } from "drizzle-orm";
@@ -32,7 +30,7 @@ import {
 } from "@shared/schema";
 import multer from "multer";
 import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats } from "../prm-s3";
-import { hashPassword, requireAuth, requireAdmin } from "../auth";
+import { hashPassword, requireAuth } from "../auth";
 import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, resolveScrapedAccounts } from "../task-worker";
 import { extractHandles } from "@shared/connection-strength";
 import { queueOsintScansForMeAccount } from "../osint-scan-queue";
@@ -60,14 +58,31 @@ import {
   searchDailyNotes,
 } from "../vector";
 import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
-import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "../image-pass-in-utils";
+import { runAutomaticImagePassIn, autoPassInImageForSocialAccount, autoPassInImageForPerson } from "../image-pass-in-utils";
 import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "../xml-utils";
 import { parseExportZipName } from "../instagram-dm-import";
-import { preserveAccess } from "../access";
+import { onPostAddedForSummary } from "../summary-queue";
+import { getPostSlideAnalysis } from "../face-review";
 
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+const XML_BACKUPS_DIR = path.join(process.cwd(), "backups");
+const xmlUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      fs.promises
+        .mkdir(XML_BACKUPS_DIR, { recursive: true })
+        .then(() => cb(null, XML_BACKUPS_DIR))
+        .catch((err) => cb(err, XML_BACKUPS_DIR));
+    },
+    filename: (_req, _file, cb) => {
+      cb(null, `import-upload-${Date.now()}.xml`);
+    },
+  }),
+  limits: { fileSize: 1024 * 1024 * 1024 },
+});
 
 // Instagram DM export zips can contain video and far exceed what we want in
 // memory — stream them to the OS temp dir instead (task worker deletes the file)
@@ -138,15 +153,9 @@ export function registerRoutes(app: Express) {
         let followsAccountIds: string[] | undefined;
   
         if (followsYou) {
-          const userId = req.user?.id;
-          if (userId) {
-            const mePerson = await storage.getMePerson(userId);
-            if (mePerson && mePerson.socialAccountUuids && mePerson.socialAccountUuids.length > 0) {
-              followsAccountIds = mePerson.socialAccountUuids;
-            } else {
-              res.json([]);
-              return;
-            }
+          const meAccountIds = await storage.getMeSocialAccountIds();
+          if (meAccountIds.length > 0) {
+            followsAccountIds = meAccountIds;
           } else {
             res.json([]);
             return;
@@ -549,10 +558,7 @@ export function registerRoutes(app: Express) {
         // Every @handle in the bio becomes a social account (created on first sight)
         // so the Account tab can link to it.
         const handles = [...extractHandles(account.currentProfile?.bio).keys()].filter((h) => h !== account.username.toLowerCase());
-        const resolved = await resolveScrapedAccounts(handles.map((username) => ({ username })), account.typeId, {
-          createdByUserId: account.createdByUserId ?? null,
-          creationType: "bio mention",
-        });
+        const resolved = await resolveScrapedAccounts(handles.map((username) => ({ username })), account.typeId, "bio mention");
         const bioMentions = handles.flatMap((username) => (resolved.has(username) ? [{ id: resolved.get(username)!, username }] : []));
         res.json({ ...account, bioMentions });
       } catch (error) {
@@ -566,7 +572,6 @@ export function registerRoutes(app: Express) {
         const validatedData = insertSocialAccountSchema.parse(req.body);
         const account = await storage.createSocialAccount({
           ...validatedData,
-          createdByUserId: req.user?.id,
         });
         sseManager.broadcast("social_account.created", { id: account.id, username: account.username });
         syncEntityInBackground("social_account", account.id);
@@ -598,6 +603,7 @@ export function registerRoutes(app: Express) {
         if (body.nickname !== undefined) registryFields.nickname = body.nickname;
         if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
         if (body.bio !== undefined) registryFields.bio = body.bio;
+        if (typeof body.skipStories === "boolean") registryFields.skipStories = body.skipStories;
         // A hand-picked picture goes through the same tiering as a scraped one.
         const changes: Parameters<typeof recordAccountProfileChanges>[1] = registryFields;
         if (body.imageUrl === null) {
@@ -652,7 +658,7 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.delete("/api/social-accounts/delete-all", requireAdmin, async (req, res) => {
+    app.delete("/api/social-accounts/delete-all", requireAuth, async (req, res) => {
       try {
         const deleteMedia = req.query.deleteMedia === "true" || req.body?.deleteMedia === true;
         const result = await storage.deleteAllSocialAccounts({ deleteMedia });
@@ -797,8 +803,7 @@ export function registerRoutes(app: Express) {
         if (!req.user) {
           return res.status(401).json({ error: "Not authenticated" });
         }
-        const mePerson = await storage.getMePerson(req.user.id);
-        const meAccountIds = mePerson?.socialAccountUuids || [];
+        const meAccountIds = await storage.getMeSocialAccountIds();
         if (meAccountIds.length === 0) {
           return res.json([]);
         }
@@ -1047,6 +1052,18 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    app.get("/api/social-account-posts/:id/slides", async (req, res) => {
+      try {
+        if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+        const post = await storage.getPostById(req.params.id);
+        if (!post) return res.status(404).json({ error: "Post not found" });
+        res.json(await getPostSlideAnalysis(post));
+      } catch (error) {
+        console.error("Error fetching post slide analysis:", error);
+        res.status(500).json({ error: "Failed to fetch post slide analysis" });
+      }
+    });
+  
     app.post("/api/social-accounts/:id/posts", async (req, res) => {
       try {
         if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -1056,6 +1073,7 @@ export function registerRoutes(app: Express) {
         });
         if (parsed.likesHidden) parsed.likeCount = 0;
         const post = await storage.createPost(parsed);
+        void onPostAddedForSummary(post.id, post.socialAccountId);
         res.status(201).json(post);
       } catch (error) {
         console.error("Error creating post:", error);
@@ -1437,12 +1455,10 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    function sanitizeTasksForUser(taskList: any[], userId: number) {
+    function sanitizeTasks(taskList: any[]) {
       return taskList.map(t => {
         let payloadObj: Record<string, unknown> = {};
         try { payloadObj = JSON.parse(t.payload || "{}"); } catch {}
-        // Skip tasks belonging to another user
-        if (payloadObj.userId !== undefined && payloadObj.userId !== userId) return null;
         // Strip raw XML from import payloads; expose result on completed/failed/cancelled
         if (t.type === "import_xml") {
           const { xml: _dropped, ...rest } = payloadObj as { xml?: string };
@@ -1465,7 +1481,7 @@ export function registerRoutes(app: Express) {
       }
       try {
         const taskList = await storage.getCurrentTasks();
-        res.json(sanitizeTasksForUser(taskList, req.user.id));
+        res.json(sanitizeTasks(taskList));
       } catch (error) {
         console.error("Error fetching current tasks:", error);
         res.status(500).json({ error: "Failed to fetch current tasks" });
@@ -1485,7 +1501,7 @@ export function registerRoutes(app: Express) {
         } else {
           taskList = await storage.getAllTasks(limit);
         }
-        res.json(sanitizeTasksForUser(taskList, req.user.id));
+        res.json(sanitizeTasks(taskList));
       } catch (error) {
         console.error("Error fetching tasks:", error);
         res.status(500).json({ error: "Failed to fetch tasks" });
@@ -1505,12 +1521,8 @@ export function registerRoutes(app: Express) {
         if (!task) {
           return res.status(404).json({ error: "Task not found" });
         }
-        // Verify ownership for tasks that carry a userId in their payload
         let payloadObj: Record<string, unknown> = {};
         try { payloadObj = JSON.parse(task.payload || "{}"); } catch {}
-        if (payloadObj.userId !== undefined && payloadObj.userId !== req.user.id) {
-          return res.status(403).json({ error: "Access denied" });
-        }
         // Build a sanitized response:
         //   import_xml  — strip raw XML from payload; expose result only on completed/failed
         //   export_xml  — never send large XML result inline; clients fetch via /download
@@ -1540,13 +1552,7 @@ export function registerRoutes(app: Express) {
         if (!task) {
           return res.status(404).json({ error: "Task not found" });
         }
-        // Verify ownership for tasks with userId in payload
-        try {
-          const payload = JSON.parse(task.payload || "{}");
-          if (payload.userId !== undefined && payload.userId !== req.user.id) {
-            return res.status(403).json({ error: "Access denied" });
-          }
-        } catch {}
+
         if (task.status !== "pending" && task.status !== "in_progress") {
           return res.status(400).json({ error: "Can only cancel pending or running tasks" });
         }
@@ -1566,10 +1572,9 @@ export function registerRoutes(app: Express) {
         }
         const includeHistory = req.body.includeHistory === true || req.body.includeHistory === "true";
         const task = await storage.createTask({
-          userId: req.user.id,
           type: "export_xml",
           status: "pending",
-          payload: JSON.stringify({ includeHistory, userId: req.user.id }),
+          payload: JSON.stringify({ includeHistory }),
         });
         triggerTaskWorker();
         res.json(task);
@@ -1580,24 +1585,44 @@ export function registerRoutes(app: Express) {
     });
   
     // POST /api/tasks/import-xml — creates a background import_xml task
-    app.post("/api/tasks/import-xml", upload.single("xml"), async (req, res) => {
+    app.post("/api/tasks/import-xml", xmlUpload.single("xml"), async (req, res) => {
       try {
         if (!req.isAuthenticated() || !req.user) {
+          if (req.file?.path) await fs.promises.unlink(req.file.path).catch(() => {});
           return res.status(401).json({ error: "Not authenticated" });
         }
-        if (!req.file) {
+
+        let filePath: string | null = null;
+        if (req.file) {
+          filePath = `backups/${req.file.filename}`;
+        } else {
+          const rawXml =
+            typeof req.body?.xmlContent === "string"
+              ? req.body.xmlContent
+              : typeof req.body?.xml === "string"
+                ? req.body.xml
+                : null;
+          if (rawXml) {
+            await fs.promises.mkdir(XML_BACKUPS_DIR, { recursive: true });
+            const filename = `import-upload-${Date.now()}.xml`;
+            await fs.promises.writeFile(path.join(XML_BACKUPS_DIR, filename), rawXml, "utf-8");
+            filePath = `backups/${filename}`;
+          }
+        }
+
+        if (!filePath) {
           return res.status(400).json({ error: "No XML file provided" });
         }
-        const xmlText = req.file.buffer.toString("utf-8");
+
         const task = await storage.createTask({
-          userId: req.user.id,
           type: "import_xml",
           status: "pending",
-          payload: JSON.stringify({ xml: xmlText, userId: req.user.id }),
+          payload: JSON.stringify({ filePath }),
         });
         triggerTaskWorker();
         res.json(task);
       } catch (error) {
+        if (req.file?.path) await fs.promises.unlink(req.file.path).catch(() => {});
         console.error("Error creating import_xml task:", error);
         res.status(500).json({ error: "Failed to create import task" });
       }
@@ -1610,7 +1635,7 @@ export function registerRoutes(app: Express) {
     // can be many GB.
     app.post(
       "/api/tasks/import-instagram-backup",
-      preserveAccess(importDmZipUpload.single("zip")),
+      importDmZipUpload.single("zip"),
       async (req, res) => {
         try {
           if (!req.isAuthenticated() || !req.user) {
@@ -1633,11 +1658,9 @@ export function registerRoutes(app: Express) {
           const rootUsername = parsedName?.username || account.username;
 
           const task = await storage.createTask({
-            userId: req.user.id,
             type: "import_instagram_backup",
             status: "pending",
             payload: JSON.stringify({
-              userId: req.user.id,
               zipPath: req.file.path,
               rootSocialAccountId,
               rootUsername,
@@ -1659,7 +1682,7 @@ export function registerRoutes(app: Express) {
 
     // POST /api/tasks/import-sms — imports an "SMS Backup & Restore" XML export
     // for the person whose profile this is invoked from (the phone's owner).
-    app.post("/api/tasks/import-sms", preserveAccess(importDmZipUpload.single("xml")), async (req, res) => {
+    app.post("/api/tasks/import-sms", importDmZipUpload.single("xml"), async (req, res) => {
       try {
         if (!req.isAuthenticated() || !req.user) {
           return res.status(401).json({ error: "Not authenticated" });
@@ -1673,11 +1696,9 @@ export function registerRoutes(app: Express) {
         }
 
         const task = await storage.createTask({
-          userId: req.user.id,
           type: "import_sms",
           status: "pending",
           payload: JSON.stringify({
-            userId: req.user.id,
             xmlPath: req.file.path,
             rootPersonId,
             options: {
@@ -1731,7 +1752,6 @@ export function registerRoutes(app: Express) {
         });
 
         const task = await storage.createTask({
-          userId: req.user!.id,
           type: "multi_image_download",
           status: "pending",
           payload: JSON.stringify({ images: resolvedImages }),
@@ -1760,13 +1780,7 @@ export function registerRoutes(app: Express) {
         const task = await storage.getTaskById(req.params.id);
         if (!task) return res.status(404).json({ error: "Task not found" });
         if (task.type !== "export_xml") return res.status(400).json({ error: "Not an export task" });
-        // Verify ownership
-        try {
-          const payload = JSON.parse(task.payload || "{}");
-          if (payload.userId !== undefined && payload.userId !== req.user.id) {
-            return res.status(403).json({ error: "Access denied" });
-          }
-        } catch {}
+
         if (task.status !== "completed") return res.status(400).json({ error: "Export not yet completed" });
         if (!task.result) return res.status(400).json({ error: "No export data available" });
         const date = new Date().toISOString().split("T")[0];
@@ -2010,7 +2024,6 @@ export function registerRoutes(app: Express) {
         let targetGroupId = imageTaskGroupId;
         if (!targetGroupId) {
           const group = await storage.createImageTaskGroup({
-            userId: req.user.id,
             title: "Instagram Image Download",
             kind: "manual",
             parentTaskId: parentTaskId || null,
@@ -2019,7 +2032,6 @@ export function registerRoutes(app: Express) {
           targetGroupId = group.id;
         }
         const task = await storage.createImageTask({
-          userId: req.user.id,
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: parentTaskId || null,
@@ -2054,9 +2066,8 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // Image storage settings. Stats are readable by everyone (the settings
-    // page shows them); configuring PRM-S3 is an admin action.
-    app.get("/api/image-storage/prm-s3/settings", requireAdmin, async (req, res) => {
+    // Image storage settings.
+    app.get("/api/image-storage/prm-s3/settings", requireAuth, async (req, res) => {
       try {
         const config = await getPrmS3Config();
         res.json({
@@ -2075,7 +2086,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/prm-s3/settings", requireAdmin, async (req, res) => {
+    app.post("/api/image-storage/prm-s3/settings", requireAuth, async (req, res) => {
       try {
         const { endpoint, publicEndpoint, deliveryMode, bucket, region, accessKeyId, secretAccessKey } = req.body;
         if (deliveryMode !== undefined && deliveryMode !== "direct" && deliveryMode !== "proxy") {
@@ -2099,7 +2110,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/prm-s3/test", requireAdmin, async (req, res) => {
+    app.post("/api/image-storage/prm-s3/test", requireAuth, async (req, res) => {
       try {
         const result = await testPrmS3Connection();
         res.json(result);
@@ -2113,13 +2124,12 @@ export function registerRoutes(app: Express) {
       res.json(await checkPrmS3Health());
     });
 
-    app.post("/api/image-storage/migrate-profile-image-tiers", requireAdmin, async (req, res) => {
+    app.post("/api/image-storage/migrate-profile-image-tiers", requireAuth, async (req, res) => {
       try {
         const task = await storage.createTask({
-          userId: req.user!.id,
           type: "migrate_profile_image_tiers",
           status: "pending",
-          payload: JSON.stringify({ userId: req.user!.id }),
+          payload: JSON.stringify({}),
         });
         triggerTaskWorker();
         res.json(task);
@@ -2129,13 +2139,12 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/bake-image-variants", requireAdmin, async (req, res) => {
+    app.post("/api/image-storage/bake-image-variants", requireAuth, async (req, res) => {
       try {
         const task = await storage.createTask({
-          userId: req.user!.id,
           type: "bake_image_variants",
           status: "pending",
-          payload: JSON.stringify({ userId: req.user!.id }),
+          payload: JSON.stringify({}),
         });
         triggerTaskWorker();
         res.json(task);
@@ -2279,11 +2288,11 @@ export function registerRoutes(app: Express) {
         }
         const dbFaces = await db.select().from(faces).where(or(...faceConditions));
 
-        // 4. Extract all PRM-Face generated image UUIDs and face IDs
+        // 4. Extract all PRM Compute generated image UUIDs and face IDs
         const prmFaceImageUuids = [...new Set(dbFaces.map(f => f.photoId).filter(Boolean))] as string[];
         const faceIdsToDelete = dbFaces.map(f => f.id);
 
-        // 5. Fetch sub-images and PRM-Face photo records
+        // 5. Fetch sub-images and PRM Compute photo records
         const subImages = subImageIds.length > 0
           ? await db.select().from(photos).where(inArray(photos.id, subImageIds))
           : [];
@@ -2297,7 +2306,8 @@ export function registerRoutes(app: Express) {
 
         // 6. Clear imageUrl/location fields in database (people, notes, interactions)
         if (locations.length > 0) {
-          await db.update(people).set({ imageUrl: null }).where(inArray(people.imageUrl, locations));
+          const cleared = await db.update(people).set({ imageUrl: null }).where(inArray(people.imageUrl, locations)).returning({ id: people.id });
+          for (const { id: personId } of cleared) await autoPassInImageForPerson(personId);
         }
         await db.update(notes).set({ imageUrl: null }).where(inArray(notes.imageUuid, idsToDelete));
         await db.update(interactions).set({ imageUrl: null }).where(inArray(interactions.imageUuid, idsToDelete));
@@ -2325,7 +2335,7 @@ export function registerRoutes(app: Express) {
           void deleteEntityVector("image", vectorIds);
         }
 
-        // 11. Call PRM-Face API delete endpoint (best-effort)
+        // 11. Call PRM Compute API delete endpoint (best-effort)
         const apiUrl = await storage.getAppSetting("prm_face_api_url");
         const apiKey = await storage.getAppSetting("prm_face_api_key");
         if (apiUrl && apiKey) {
@@ -2341,7 +2351,7 @@ export function registerRoutes(app: Express) {
                 signal: AbortSignal.timeout(10000),
               });
             } catch (err: any) {
-              console.warn(`Failed to delete image ${faceUuid} from PRM-Face service:`, err.message);
+              console.warn(`Failed to delete image ${faceUuid} from PRM Compute service:`, err.message);
             }
           }
         }
@@ -2396,7 +2406,7 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/image-storage/delete-instagram-urls", requireAdmin, async (req, res) => {
+    app.post("/api/image-storage/delete-instagram-urls", requireAuth, async (req, res) => {
       try {
         const result = await storage.deleteInstagramImageUrls();
         const vectorIds = result.deletedPhotos?.map((p) => p.vectorId).filter(Boolean) as string[];
@@ -2410,7 +2420,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    app.post("/api/image-storage/delete-orphans", requireAdmin, async (req, res) => {
+    app.post("/api/image-storage/delete-orphans", requireAuth, async (req, res) => {
       try {
         const result = await storage.deleteOrphanPhotos();
         const vectorIds = result.deletedPhotos?.map((p) => p.vectorId).filter(Boolean) as string[];

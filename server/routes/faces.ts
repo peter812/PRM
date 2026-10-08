@@ -6,7 +6,7 @@ import { requireAuth } from "../auth";
 import { faceGroupUuid, getLikelySameFaces, identityIsVisible, knownFaceDetail, listKnownFaces } from "../faces";
 import { dismissLikelySamePair } from "../face-lookalikes";
 import { faceInReadablePhoto } from "./face-review";
-import { disassociateFace, FaceMergeConflictError, mergeFaceGroups, RecognitionRequestError } from "../recognition";
+import { disassociateFace, disassociateGroup,FaceMergeConflictError, mergeFaceGroups, RecognitionRequestError } from "../recognition";
 
 export function registerFaces(app: Express) {
   app.get("/api/faces", requireAuth, async (req, res) => {
@@ -39,7 +39,7 @@ export function registerFaces(app: Express) {
       const groupA = typeof req.body?.groupA === "string" ? req.body.groupA : undefined;
       const groupB = typeof req.body?.groupB === "string" ? req.body.groupB : undefined;
       if (!groupA || !groupB) return res.status(400).json({ error: "groupA and groupB are required" });
-      await dismissLikelySamePair(groupA, groupB, req.user?.id);
+      await dismissLikelySamePair(groupA, groupB);
       res.json({ ok: true });
     } catch (error) {
       console.error("Faces: dismiss likely same pair:", error);
@@ -73,7 +73,20 @@ export function registerFaces(app: Express) {
     }
   });
 
-  app.post("/api/faces/merge", requireAuth, async (req, res) => {
+  app.post("/api/faces/remove-all-from-group", requireAuth, async (req, res) => {
+    try {
+      const personfaceUuid = typeof req.body?.personfaceUuid === "string" ? req.body.personfaceUuid : undefined;
+      if (!personfaceUuid) return res.status(400).json({ error: "personfaceUuid is required" });
+      if (!(await identityIsVisible(personfaceUuid))) return res.status(404).json({ error: "Identity not found" });
+      res.json(await disassociateGroup(personfaceUuid));
+    } catch (error) {
+      if (error instanceof RecognitionRequestError) return res.status(error.status).json({ error: error.message });
+      console.error("Faces: remove all from group:", error);
+      res.status(500).json({ error: "Failed to unassociate faces" });
+    }
+  });
+
+  app.post("/api/faces/merge",requireAuth, async (req, res) => {
     try {
       const keep = typeof req.body?.keep === "string" ? req.body.keep : undefined;
       const merge = typeof req.body?.merge === "string" ? req.body.merge : undefined;

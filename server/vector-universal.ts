@@ -15,7 +15,7 @@ import {
   messages,
   type AiChatMessage,
 } from "@shared/schema";
-import { embedText, loadVectorConfig, getVectorSetting, setVectorSetting, type VectorConfig } from "./vector";
+import { embedText, ensureCollection, loadVectorConfig, getVectorSetting, setVectorSetting, type VectorConfig } from "./vector";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -76,20 +76,6 @@ function buildClient(cfg: VectorConfig): QdrantClient {
     apiKey: cfg.qdrantApiKey || undefined,
     checkCompatibility: false,
   });
-}
-
-async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
-  try {
-    const info = await client.getCollection(name);
-    const existingSize = (info.config?.params?.vectors as any)?.size;
-    if (existingSize && existingSize !== vectorSize) {
-      console.warn(`[vector-universal] Dimension mismatch in collection '${name}': existing size is ${existingSize}, model outputs ${vectorSize}.`);
-    }
-  } catch {
-    await client.createCollection(name, {
-      vectors: { size: vectorSize, distance: "Cosine" },
-    });
-  }
 }
 
 // ── Text composition per entity type ─────────────────────────────────────────
@@ -254,7 +240,7 @@ async function upsertEntityVector(
   const text = composeTextForEntity(type, data);
   if (!text) throw new Error(`No text to embed for ${type} ${entityId}`);
 
-  const vector = await embedText(text, cfg.embeddingModel);
+  const vector = await embedText(text);
   const client = buildClient(cfg);
   await ensureCollection(client, cfg.universalCollection, vector.length);
 
@@ -275,7 +261,6 @@ async function upsertEntityVector(
         payload: {
           type,
           entity_id: entityId,
-          user_id: data.userId || data.createdByUserId || null,
           title,
           snippet,
           created_at: data.createdAt ? new Date(data.createdAt).toISOString() : new Date().toISOString(),
@@ -338,22 +323,18 @@ export async function deleteEntityVector(
 export async function searchUniversal(
   query: string,
   limit = 20,
-  typeFilter?: UniversalEntityType[],
-  userId?: number
+  typeFilter?: UniversalEntityType[]
 ): Promise<UniversalSearchResult[]> {
   const cfg = await loadUniversalVectorConfig();
   if (!cfg.universalEnabled) throw new Error("Universal vector storage is disabled.");
 
-  const vector = await embedText(query, cfg.embeddingModel);
+  const vector = await embedText(query);
   const client = buildClient(cfg);
   await ensureCollection(client, cfg.universalCollection, vector.length);
 
   const mustConditions: any[] = [];
   if (typeFilter && typeFilter.length > 0) {
     mustConditions.push({ key: "type", match: { any: typeFilter } });
-  }
-  if (userId !== undefined && userId !== null) {
-    mustConditions.push({ key: "user_id", match: { value: userId } });
   }
 
   const filter = mustConditions.length > 0 ? { must: mustConditions } : undefined;
@@ -543,7 +524,7 @@ export async function bulkSyncAll(
     totalCount += rows.length;
   }
 
-  // Process in sequence (throttled to avoid overwhelming Ollama)
+  // Process in sequence (throttled to avoid overwhelming the embedding server)
   for (const { type, ids } of entityIds) {
     for (const id of ids) {
       try {

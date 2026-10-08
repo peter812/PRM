@@ -6,10 +6,10 @@
 //
 // NOTE: The global "/api" auth gate lives in server/routes/auth-setup.ts, which
 // is registered first and protects every /api route in all modules. The extra
-// req.isAuthenticated() checks here mirror the PRM-Face integration.
+// req.isAuthenticated() checks here mirror the PRM Compute integration.
 import type { Express } from "express";
 import { storage } from "../storage";
-import { requireAdmin } from "../auth";
+import { requireAuth } from "../auth";
 import {
   OSINT_ENABLED_KEY,
   OSINT_API_URL_KEY,
@@ -24,7 +24,7 @@ import { z } from "zod";
 import { cancelOsintScan, queueOsintScansForAllMeAccounts, queueOsintScansForLevel, queueOsintScansForTarget, wakeOsintRunner } from "../osint-scan-queue";
 import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
 import { OSINT_TOOLS, mergeOsintScans, type OsintResults, type OsintTargetType } from "@shared/osint-tools";
-import { isAdminRole, type OsintScan } from "@shared/schema";
+import type { OsintScan } from "@shared/schema";
 
 async function setOsintSetting(key: string, value: string): Promise<void> {
   await storage.setAppSetting(key, value);
@@ -43,7 +43,7 @@ export function registerRoutes(app: Express) {
     }
   });
 
-  app.post("/api/osint/settings", requireAdmin, async (req, res) => {
+  app.post("/api/osint/settings", requireAuth, async (req, res) => {
     const { enabled, apiUrl, apiKey } = req.body ?? {};
     try {
       if (typeof enabled === "boolean") {
@@ -91,7 +91,7 @@ export function registerRoutes(app: Express) {
 
   // Test connectivity. Uses values from the request body when provided (so the
   // user can test before saving), otherwise falls back to stored settings.
-  app.post("/api/osint/test", requireAdmin, async (req, res) => {
+  app.post("/api/osint/test", requireAuth, async (req, res) => {
     const stored = await loadConfig();
     // Stored address is already normalized; an unsaved one from the form is not.
     const apiUrl = (typeof req.body?.apiUrl === "string" && req.body.apiUrl.trim())
@@ -188,7 +188,6 @@ export function registerRoutes(app: Express) {
         target,
         targetType: target_type,
         options,
-        requestedByUserId: req.user!.id,
       });
       if (!row) {
         return res.status(409).json({ error: "A live scan for this target and tool is already queued or running" });
@@ -204,20 +203,6 @@ export function registerRoutes(app: Express) {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     const row = await storage.getOsintScan(req.params.id);
     if (!row) return res.status(404).json({ error: "Scan not found" });
-
-    const isAdmin = isAdminRole(req.user!.role);
-    const isOwner = row.requestedByUserId === req.user!.id;
-    if (!isAdmin && !isOwner) {
-      if (row.personId) {
-        const person = await storage.getPersonById(row.personId);
-        if (!person) return res.status(404).json({ error: "Scan not found" });
-      } else if (row.socialAccountId) {
-        const account = await storage.getSocialAccountById(row.socialAccountId);
-        if (!account) return res.status(404).json({ error: "Scan not found" });
-      } else {
-        return res.status(403).json({ error: "Forbidden" });
-      }
-    }
     res.json(toJob(row));
   });
 
@@ -225,11 +210,6 @@ export function registerRoutes(app: Express) {
     if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
     const row = await storage.getOsintScan(req.params.id);
     if (!row) return res.status(404).json({ error: "Scan not found" });
-    const isAdmin = isAdminRole(req.user!.role);
-    const isOwner = row.requestedByUserId === req.user!.id;
-    if (!isAdmin && !isOwner) {
-      return res.status(403).json({ error: "You can only cancel your own scans" });
-    }
     await cancelOsintScan(req.params.id);
     res.status(204).end();
   });
@@ -276,7 +256,7 @@ export function registerRoutes(app: Express) {
       if (typeof socialAccountId === "string") {
         const account = await storage.getSocialAccountById(socialAccountId);
         if (!account) return res.status(404).json({ error: "Social account not found" });
-        queued = await queueOsintScansForTarget({ socialAccountId }, account.username, "username", req.user!.id);
+        queued = await queueOsintScansForTarget({ socialAccountId }, account.username, "username");
       } else if (typeof personId === "string" && typeof target === "string" && ["email", "phone", "username"].includes(targetType)) {
         const cleanTarget = targetType === "email" ? target.trim().toLowerCase() : target.trim();
         if (!cleanTarget) return res.status(400).json({ error: "Target cannot be empty" });
@@ -296,7 +276,7 @@ export function registerRoutes(app: Express) {
         if (!declared.has(cleanTarget)) {
           return res.status(400).json({ error: "Target is not registered for this person" });
         }
-        queued = await queueOsintScansForTarget({ personId }, cleanTarget, targetType as OsintTargetType, req.user!.id);
+        queued = await queueOsintScansForTarget({ personId }, cleanTarget, targetType as OsintTargetType);
       } else {
         return res.status(400).json({ error: "socialAccountId, or personId with target and targetType, is required" });
       }
@@ -307,7 +287,7 @@ export function registerRoutes(app: Express) {
   });
 
   // ── Auto-scan queue ───────────────────────────────────────────────────────
-  app.get("/api/osint/scan-queue", requireAdmin, async (_req, res) => {
+  app.get("/api/osint/scan-queue", requireAuth, async (_req, res) => {
     try {
       const status = typeof _req.query.status === "string" && _req.query.status !== "all" ? _req.query.status : undefined;
       res.json(await storage.getOsintScans(status));
@@ -318,7 +298,7 @@ export function registerRoutes(app: Express) {
 
   // Queue the network of every Me-owned account (a one-time catch-up after
   // turning auto-scans on; new follows are queued as they happen).
-  app.post("/api/osint/scan-queue/backfill", requireAdmin, async (_req, res) => {
+  app.post("/api/osint/scan-queue/backfill", requireAuth, async (_req, res) => {
     try {
       await queueOsintScansForAllMeAccounts();
       res.json(await storage.getOsintScans());
@@ -328,20 +308,20 @@ export function registerRoutes(app: Express) {
   });
 
   // Tracking page: every account the caller can see at { level } or above.
-  app.post("/api/osint/scan-queue/level", requireAdmin, async (req, res) => {
+  app.post("/api/osint/scan-queue/level", requireAuth, async (req, res) => {
     const level = req.body?.level;
     if (!INTEREST_LEVELS.includes(level) || level === "none") {
       return res.status(400).json({ error: "level must be a tracking level above none" });
     }
     if (!await requireConfigured(res)) return;
     try {
-      res.status(202).json({ queued: await queueOsintScansForLevel(level as InterestLevel, req.user!.id) });
+      res.status(202).json({ queued: await queueOsintScansForLevel(level as InterestLevel) });
     } catch (error: any) {
       res.status(500).json({ error: `Failed to queue scans: ${error?.message ?? error}` });
     }
   });
 
-  app.delete("/api/osint/scan-queue", requireAdmin, async (req, res) => {
+  app.delete("/api/osint/scan-queue", requireAuth, async (req, res) => {
     const status = String(req.query.status ?? "");
     if (!["pending", "done", "failed", "cancelled"].includes(status)) {
       return res.status(400).json({ error: "status must be pending, done, failed, or cancelled" });

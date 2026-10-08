@@ -1,7 +1,8 @@
 import { execSync } from "child_process";
 import { pool } from "./db";
 import { log } from "./vite";
-import { applyMeRule } from "./tracking";
+import { applyBigAccountRule, applyMeRule } from "./tracking";
+import { isExternalUrl } from "./ai/http";
 
 /**
  * Drops all tables in the database
@@ -167,9 +168,11 @@ async function hasUsers(): Promise<boolean> {
       SELECT EXISTS(SELECT 1 FROM users LIMIT 1) as has_users
     `);
     return result.rows[0]?.has_users || false;
-  } catch (error) {
-    // If the query fails, it likely means the users table doesn't exist
-    return false;
+  } catch (error: any) {
+    // Only a missing users table means "empty"; any other error (e.g. a network
+    // blip) must not send boot down the drop-all-tables path.
+    if (error?.code === "42P01") return false;
+    throw error;
   }
 }
 
@@ -519,7 +522,7 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
   // the old per-row import (one lookup per CSV row) so expensive.
   //
   // Only the two the import and diff engine actually use are created here. The other
-  // declared-but-absent indexes on social_accounts (visibility, owner_uuid, group_id,
+  // declared-but-absent indexes on social_accounts (owner_uuid, group_id,
   // type_id) affect other pages and are left alone deliberately.
   // Username wants to be UNIQUE: shared/schema.ts declares it so, and the bulk import
   // inserts by handle, so without the constraint two runs naming the same new account
@@ -698,6 +701,12 @@ async function validateAndSyncSchema(): Promise<void> {
         is_hq_image: "BOOLEAN NOT NULL DEFAULT FALSE",
         personface_uuid: "VARCHAR",
         no_face: "BOOLEAN NOT NULL DEFAULT FALSE",
+        skip_stories: "BOOLEAN NOT NULL DEFAULT FALSE",
+        ai_summary: "JSONB",
+        ai_summary_generated_at: "TIMESTAMP",
+        ai_summary_invalidated: "BOOLEAN NOT NULL DEFAULT FALSE",
+        ai_summary_invalidated_at: "TIMESTAMP",
+        ai_summary_model: "TEXT",
       },
       ai_chats: {
         vector_id: "TEXT",
@@ -705,7 +714,6 @@ async function validateAndSyncSchema(): Promise<void> {
         agent_mode: "BOOLEAN NOT NULL DEFAULT FALSE",
       },
       daily_notes: {
-        user_id: "INTEGER REFERENCES users(id) ON DELETE CASCADE",
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         updated_at: "TIMESTAMP",
@@ -749,6 +757,9 @@ async function validateAndSyncSchema(): Promise<void> {
         coauthor_account_ids: "JSONB NOT NULL DEFAULT '[]'::jsonb",
         video_transcript: "JSONB",
         video_transcript_at: "TIMESTAMPTZ",
+        ai_summary: "JSONB",
+        ai_summary_at: "TIMESTAMP",
+        ai_summary_model: "TEXT",
       },
       story_scrape_runs: {
         token_hash: "TEXT",
@@ -812,8 +823,6 @@ async function validateAndSyncSchema(): Promise<void> {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS insights (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-        visibility TEXT NOT NULL DEFAULT 'public',
         type TEXT NOT NULL,
         source TEXT,
         collected_at TIMESTAMP NOT NULL DEFAULT now(),
@@ -833,7 +842,6 @@ async function validateAndSyncSchema(): Promise<void> {
         options JSONB NOT NULL DEFAULT '{}'::jsonb,
         social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE CASCADE,
         status TEXT NOT NULL DEFAULT 'pending',
-        requested_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         compute_job_id TEXT,
         error TEXT,
@@ -850,15 +858,15 @@ async function validateAndSyncSchema(): Promise<void> {
       DROP INDEX IF EXISTS osint_scans_live_uniq;
       CREATE UNIQUE INDEX IF NOT EXISTS osint_scans_live_owner_uniq ON osint_scans ((coalesce(social_account_id, person_id)), tool, target)
         WHERE status IN ('pending','running');
-      CREATE UNIQUE INDEX IF NOT EXISTS osint_scans_live_demo_uniq ON osint_scans (tool, target, requested_by_user_id)
+      CREATE UNIQUE INDEX IF NOT EXISTS osint_scans_live_demo_uniq ON osint_scans (tool, target)
         WHERE social_account_id IS NULL AND person_id IS NULL AND status IN ('pending','running');
       -- osint_scan_queue (auto scans only) was superseded by osint_scans: carry its rows over once.
       DO $$ BEGIN
         IF to_regclass('osint_scan_queue') IS NOT NULL THEN
-          INSERT INTO osint_scans (id, tool, target, social_account_id, status, requested_by_user_id, attempts, error, created_at, completed_at)
+          INSERT INTO osint_scans (id, tool, target, social_account_id, status, attempts, error, created_at, completed_at)
           SELECT q.id, q.tool, sa.username, q.social_account_id,
                  CASE WHEN q.status = 'running' THEN 'pending' ELSE q.status END,
-                 q.requested_by_user_id, q.attempts, q.error, q.created_at, q.completed_at
+                 q.attempts, q.error, q.created_at, q.completed_at
           FROM osint_scan_queue q JOIN social_accounts sa ON sa.id = q.social_account_id
           ON CONFLICT DO NOTHING;
           DROP TABLE osint_scan_queue;
@@ -897,7 +905,6 @@ async function validateAndSyncSchema(): Promise<void> {
         kind TEXT NOT NULL,
         origin TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'queued',
-        requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         importer_id VARCHAR REFERENCES story_importers(id) ON DELETE SET NULL,
         run_id VARCHAR REFERENCES story_scrape_runs(id) ON DELETE SET NULL,
         result JSONB,
@@ -922,6 +929,7 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_post_comments_post_id_idx ON social_post_comments (post_id);
       CREATE INDEX IF NOT EXISTS social_post_comments_username_idx ON social_post_comments (username);
       ALTER TABLE social_account_posts DROP COLUMN IF EXISTS comments;
+      ALTER TABLE social_accounts DROP COLUMN IF EXISTS historical_summary_ids;
       CREATE TABLE IF NOT EXISTS social_account_issues (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
@@ -934,14 +942,39 @@ async function validateAndSyncSchema(): Promise<void> {
         last_seen_at TIMESTAMP NOT NULL DEFAULT now(),
         resolution TEXT,
         previous_username TEXT,
-        resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         resolved_at TIMESTAMP
       );
       CREATE UNIQUE INDEX IF NOT EXISTS social_account_issues_open_uniq ON social_account_issues (social_account_id, kind) WHERE status = 'open';
       CREATE INDEX IF NOT EXISTS social_account_issues_account_idx ON social_account_issues (social_account_id);
+      CREATE TABLE IF NOT EXISTS historical_account_summaries (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        content JSONB NOT NULL,
+        model TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        invalidated_at TIMESTAMP,
+        replaced_at TIMESTAMP NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS historical_account_summaries_account_idx ON historical_account_summaries (social_account_id, replaced_at);
+      CREATE TABLE IF NOT EXISTS summary_jobs (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        kind TEXT NOT NULL,
+        target_id VARCHAR NOT NULL,
+        social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        options JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS summary_jobs_status_created_idx ON summary_jobs (status, created_at);
+      CREATE INDEX IF NOT EXISTS summary_jobs_account_idx ON summary_jobs (social_account_id, status);
+      CREATE UNIQUE INDEX IF NOT EXISTS summary_jobs_live_uniq ON summary_jobs (kind, target_id) WHERE status IN ('pending', 'running');
+      ALTER TABLE summary_jobs ADD COLUMN IF NOT EXISTS progress JSONB;
       CREATE TABLE IF NOT EXISTS image_task_groups (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
         kind TEXT NOT NULL DEFAULT 'general',
         status TEXT NOT NULL DEFAULT 'pending',
@@ -953,7 +986,6 @@ async function validateAndSyncSchema(): Promise<void> {
         started_at TIMESTAMP,
         completed_at TIMESTAMP
       );
-      CREATE INDEX IF NOT EXISTS image_task_groups_user_id_idx ON image_task_groups (user_id);
       CREATE INDEX IF NOT EXISTS image_task_groups_status_idx ON image_task_groups (status);
       CREATE INDEX IF NOT EXISTS image_task_groups_parent_task_id_idx ON image_task_groups (parent_task_id);
       CREATE INDEX IF NOT EXISTS image_task_groups_social_run_id_idx ON image_task_groups (social_run_id);
@@ -1016,6 +1048,7 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_accounts_posts_due_idx ON social_accounts (posts_due_at) WHERE posts_due_at IS NOT NULL;
     `);
     await applyMeRule();
+    await applyBigAccountRule();
 
     // Backfill image_uuid for notes and interactions from the photos table
     // (safe to run repeatedly — only updates rows where image_uuid is still NULL)
@@ -1040,6 +1073,16 @@ async function validateAndSyncSchema(): Promise<void> {
           AND p.location = i.image_url
       `);
       log("Backfilled image_uuid for notes and interactions from photos table");
+
+      // Person pictures uploaded before uploads were tagged with their person: the
+      // current one is still traceable through people.image_url.
+      await pool.query(`
+        UPDATE photos ph
+        SET prm_location = 'person_image:' || p.id
+        FROM people p
+        WHERE ph.location = p.image_url
+          AND ph.prm_location = 'unknown'
+      `);
     }
 
     // Ensure lineage table exists
@@ -1133,7 +1176,6 @@ async function validateAndSyncSchema(): Promise<void> {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS ai_chats (
           id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           title TEXT NOT NULL DEFAULT 'New chat',
           system_message TEXT NOT NULL DEFAULT '',
           model TEXT NOT NULL DEFAULT '',
@@ -1175,7 +1217,6 @@ async function validateAndSyncSchema(): Promise<void> {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS daily_notes (
           id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           date TEXT NOT NULL,
           user_title TEXT NOT NULL DEFAULT '',
           body TEXT NOT NULL DEFAULT '',
@@ -1236,7 +1277,6 @@ async function validateAndSyncSchema(): Promise<void> {
       await pool.query(`
         CREATE TABLE IF NOT EXISTS conversations (
           id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
           title TEXT,
           channel_type TEXT NOT NULL,
           social_account_id VARCHAR REFERENCES social_accounts(id) ON DELETE SET NULL,
@@ -1341,9 +1381,20 @@ async function validateAndSyncSchema(): Promise<void> {
     }
     await addColumnIfNotExists("faces", "dismissed_at", "TIMESTAMPTZ");
     await addColumnIfNotExists("faces", "auto_match_score", "REAL");
+    await addColumnIfNotExists("faces", "yaw", "REAL");
+    await addColumnIfNotExists("faces", "pitch", "REAL");
+    await addColumnIfNotExists("faces", "roll", "REAL");
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_photo_id_idx ON faces (photo_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_personface_uuid_idx ON faces (personface_uuid)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS people_personface_uuid_idx ON people (personface_uuid)`);
+
+    // People list / family-tree lookups: relationships only had its PK, and the
+    // lineage/partnership unique indexes only cover lookups on their first column.
+    await pool.query(`CREATE INDEX IF NOT EXISTS relationships_from_person_idx ON relationships (from_person_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS relationships_to_person_idx ON relationships (to_person_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS lineage_parent_id_idx ON lineage (parent_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS partnerships_person2_id_idx ON partnerships (person2_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS social_accounts_created_at_idx ON social_accounts (created_at DESC)`);
 
     // Ensure face_pair_dismissals table exists
     const facePairDismissalsExists = await tableExists("face_pair_dismissals");
@@ -1354,8 +1405,7 @@ async function validateAndSyncSchema(): Promise<void> {
           id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
           group_a_uuid VARCHAR NOT NULL,
           group_b_uuid VARCHAR NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
       log("face_pair_dismissals table created successfully");
@@ -1378,6 +1428,12 @@ async function validateAndSyncSchema(): Promise<void> {
           END IF;
         END IF;
       END $$;
+    `);
+    // Dismissals used to be per user, so one pair can appear more than once; keep the oldest.
+    await pool.query(`
+      DELETE FROM face_pair_dismissals a USING face_pair_dismissals b
+      WHERE a.group_a_uuid = b.group_a_uuid AND a.group_b_uuid = b.group_b_uuid
+        AND (a.created_at, a.id) > (b.created_at, b.id)
     `);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS face_pair_dismissals_pair_idx ON face_pair_dismissals (group_a_uuid, group_b_uuid)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS face_pair_dismissals_group_a_idx ON face_pair_dismissals (group_a_uuid)`);
@@ -1558,135 +1614,44 @@ async function ensureSsoEmailColumn(): Promise<void> {
   }
 }
 
-const MULTI_USER_MIGRATION_KEY = "multi_user_migration_done";
-
 /**
- * Migrates existing data to the multi-user model (Guides/pathway-to-multi-user.md §3).
- *
- * Adds created_by_user_id and visibility to shared tables, backfills from the
- * primary user, and only then promotes the user-private columns to NOT NULL.
- * This cannot live in `schemaDefinitions` because ADD COLUMN ... NOT NULL fails
- * on a table that already has rows — the backfill has to happen in between.
- *
- * Runs once. The backfill assigns every NULL creator to the primary user, which
- * is right for pre-multi-user rows but wrong afterwards: system-scraped accounts
- * and orphaned entities are meant to keep a NULL creator (§6.7).
- * A flag in app_settings records completion so later boots skip it.
+ * Drops the multi-user ownership columns (Guides/pathway-to-single-user.md, Phase 3).
+ * drizzle-kit push only runs on a fresh database, so existing ones are cleaned here.
+ * Idempotent: every statement is IF EXISTS.
  */
-async function migrateToMultiUser(): Promise<void> {
-  const done = await pool.query(`SELECT 1 FROM app_settings WHERE key = $1`, [MULTI_USER_MIGRATION_KEY]);
-  if (done.rows.length > 0) return;
-
-  // The single owner of everything that exists today. Prefer the super admin;
-  // then whoever owns the "Me" person; fall back to the lowest user id.
-  const primary = await pool.query(`
-    SELECT COALESCE(
-      (SELECT id FROM users WHERE role = 'super_admin' ORDER BY id LIMIT 1),
-      (SELECT user_id FROM people WHERE user_id IS NOT NULL ORDER BY user_id LIMIT 1),
-      (SELECT id FROM users ORDER BY id LIMIT 1)
-    ) AS id
-  `);
-  const primaryUserId: number | null = primary.rows[0]?.id ?? null;
-  if (primaryUserId === null) {
-    log("Multi-user migration: no users yet, skipping backfill");
-    return;
-  }
-  log(`Multi-user migration: attributing existing rows to user ${primaryUserId}`);
-
-  // Shared-by-default entities: creator attribution + a visibility flag.
-  // `conversations` defaults to private (§8.1); the rest default to public.
-  const sharedTables: Array<[table: string, defaultVisibility: string]> = [
-    ["people", "public"],
-    ["social_accounts", "public"],
-    ["groups", "public"],
-    ["interactions", "public"],
-    ["conversations", "private"],
+async function dropMultiUserColumns(): Promise<void> {
+  const drops: Array<[table: string, columns: string[]]> = [
+    ["people", ["user_id", "created_by_user_id", "visibility"]],
+    ["social_accounts", ["created_by_user_id", "visibility"]],
+    ["groups", ["created_by_user_id", "visibility"]],
+    ["interactions", ["created_by_user_id", "visibility"]],
+    ["conversations", ["created_by_user_id", "visibility"]],
+    ["insights", ["created_by_user_id", "visibility"]],
+    ["relationships", ["created_by_user_id"]],
+    ["photos", ["created_by_user_id"]],
+    ["notes", ["user_id"]],
+    ["daily_notes", ["user_id"]],
+    ["tasks", ["user_id"]],
+    ["image_tasks", ["user_id"]],
+    ["image_task_groups", ["user_id"]],
+    ["ai_chats", ["user_id"]],
+    ["face_pair_dismissals", ["user_id"]],
+    ["osint_scans", ["requested_by_user_id"]],
+    ["tracking_jobs", ["requested_by"]],
+    ["social_account_issues", ["resolved_by"]],
+    ["users", ["role"]],
   ];
-  for (const [table, defaultVisibility] of sharedTables) {
+  for (const [table, columns] of drops) {
     if (!(await tableExists(table))) continue;
-    await addColumnIfNotExists(table, "created_by_user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL");
-    await addColumnIfNotExists(table, "visibility", `TEXT NOT NULL DEFAULT '${defaultVisibility}'`);
-    await pool.query(
-      `UPDATE ${table} SET created_by_user_id = $1 WHERE created_by_user_id IS NULL`,
-      [primaryUserId],
-    );
+    await pool.query(`ALTER TABLE ${table} ${columns.map((c) => `DROP COLUMN IF EXISTS ${c}`).join(", ")}`);
   }
-
-  // Attribution only — visibility is derived from their parent rows (§2.4, §3.3).
-  for (const table of ["relationships", "photos"]) {
-    if (!(await tableExists(table))) continue;
-    await addColumnIfNotExists(table, "created_by_user_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL");
-    await pool.query(
-      `UPDATE ${table} SET created_by_user_id = $1 WHERE created_by_user_id IS NULL`,
-      [primaryUserId],
-    );
-  }
-
-  // `conversations` previously carried a nullable `user_id`. Fold it into
-  // `created_by_user_id` (preferring the real owner over the primary-user
-  // default written above) and drop it.
-  if (await columnExists("conversations", "user_id")) {
-    await pool.query(`UPDATE conversations SET created_by_user_id = user_id WHERE user_id IS NOT NULL`);
-    await pool.query(`ALTER TABLE conversations DROP COLUMN user_id`);
-    log("Folded conversations.user_id into created_by_user_id");
-  }
-
-  // User-private entities: add nullable, backfill, then enforce NOT NULL.
-  for (const table of ["notes", "daily_notes", "tasks", "image_tasks"]) {
-    if (!(await tableExists(table))) continue;
-    await addColumnIfNotExists(table, "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE");
-    await pool.query(`UPDATE ${table} SET user_id = $1 WHERE user_id IS NULL`, [primaryUserId]);
-    await pool.query(`ALTER TABLE ${table} ALTER COLUMN user_id SET NOT NULL`);
-  }
-
-  // One "Me" person per user (§8.4). This fails if existing data has more than
-  // one people row per user — historically `people.user_id` was also (mis)used
-  // as an owner column. Don't take the whole app down over it; the operator
-  // needs to dedupe by hand.
-  try {
-    await pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS people_me_user_id_uniq
-      ON people(user_id) WHERE user_id IS NOT NULL
-    `);
-  } catch (error) {
-    log(
-      `WARNING: could not create people_me_user_id_uniq (${error}). ` +
-      `More than one person row shares a user_id. Resolve with: ` +
-      `SELECT user_id, count(*) FROM people WHERE user_id IS NOT NULL GROUP BY user_id HAVING count(*) > 1;`,
-    );
-  }
-
-  // Per-user settings (§3.4). Instance-wide config stays in app_settings.
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS user_settings (
-      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      key TEXT NOT NULL,
-      value TEXT NOT NULL,
-      PRIMARY KEY (user_id, key)
-    )
-  `);
-
-  // The bootstrap user owns the instance (§8.5). It becomes the super admin —
-  // the one account ordinary admins cannot demote, rename, or delete — and an
-  // instance always has at least one.
-  await addColumnIfNotExists("users", "role", "TEXT NOT NULL DEFAULT 'user'");
-  await pool.query(
-    `UPDATE users SET role = 'super_admin'
-      WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'super_admin')`,
-    [primaryUserId],
-  );
-
-  await pool.query(
-    `INSERT INTO app_settings (key, value) VALUES ($1, 'true') ON CONFLICT (key) DO NOTHING`,
-    [MULTI_USER_MIGRATION_KEY],
-  );
-  log("Multi-user migration complete");
+  await pool.query(`DROP TABLE IF EXISTS user_settings`);
 }
 
 /**
  * Seeds example people and groups for demo purposes
  */
-async function seedExampleData(userId: number, mePerson: any): Promise<void> {
+async function seedExampleData(mePerson: any): Promise<void> {
   log("Seeding example people and groups...");
   
   try {
@@ -1703,10 +1668,10 @@ async function seedExampleData(userId: number, mePerson: any): Promise<void> {
     const createdPeopleIds: string[] = [];
     for (const person of examplePeople) {
       const result = await pool.query(
-        `INSERT INTO people (first_name, last_name, email, company, title, created_by_user_id) 
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO people (first_name, last_name, email, company, title) 
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-        [person.firstName, person.lastName, person.email, person.company, person.title, userId]
+        [person.firstName, person.lastName, person.email, person.company, person.title]
       );
       createdPeopleIds.push(result.rows[0].id);
     }
@@ -1716,15 +1681,15 @@ async function seedExampleData(userId: number, mePerson: any): Promise<void> {
     const group2Members = [createdPeopleIds[2], createdPeopleIds[3], mePerson.id]; // Emily, David, Me
     
     await pool.query(
-      `INSERT INTO groups (name, color, members, created_by_user_id) 
-       VALUES ($1, $2, $3, $4)`,
-      ['Work Team', '#3b82f6', group1Members, userId]
+      `INSERT INTO groups (name, color, members) 
+       VALUES ($1, $2, $3)`,
+      ['Work Team', '#3b82f6', group1Members]
     );
     
     await pool.query(
-      `INSERT INTO groups (name, color, members, created_by_user_id) 
-       VALUES ($1, $2, $3, $4)`,
-      ['Close Friends', '#ec4899', group2Members, userId]
+      `INSERT INTO groups (name, color, members) 
+       VALUES ($1, $2, $3)`,
+      ['Close Friends', '#ec4899', group2Members]
     );
     
     log("Seeded 6 example people and 2 groups");
@@ -1772,26 +1737,29 @@ export async function resetDatabase(
     // Only recreate user if userData is provided
     if (userData) {
       // Recreate the user (will get a new ID, likely 1)
-      const userResult = await pool.query(
-        `INSERT INTO users (name, nickname, username, password, role)
-         VALUES ($1, $2, $3, $4, 'super_admin')
-         RETURNING id`,
+      await pool.query(
+        `INSERT INTO users (name, nickname, username, password)
+         VALUES ($1, $2, $3, $4)`,
         [userData.name, userData.nickname, userData.username, userData.password]
       );
-      const newUserId = userResult.rows[0].id;
       
       // Create the "Me" person for the recreated user
       const personResult = await pool.query(
-        `INSERT INTO people (user_id, created_by_user_id, first_name, last_name) 
-         VALUES ($1, $1, $2, $3)
+        `INSERT INTO people (first_name, last_name) 
+         VALUES ($1, $2)
          RETURNING *`,
-        [newUserId, userData.name, '']
+        [userData.name, '']
       );
       const mePerson = personResult.rows[0];
+      await pool.query(
+        `INSERT INTO app_settings (key, value) VALUES ('me_person_id', $1)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [mePerson.id]
+      );
       
       // Optionally seed example data
       if (includeExamples) {
-        await seedExampleData(newUserId, mePerson);
+        await seedExampleData(mePerson);
       }
     }
     
@@ -1835,8 +1803,8 @@ export async function initializeDatabase(): Promise<void> {
       // Validate schema and add missing columns if needed
       await validateAndSyncSchema();
 
-      // Ownership + visibility columns, backfilled to the primary user.
-      await migrateToMultiUser();
+      // Single-user: drop the old ownership columns.
+      await dropMultiUserColumns();
 
       // Always seed defaults so new types (e.g. Ex-spouse) are picked up by existing databases.
       // Seed functions check for existing names before inserting, making this idempotent.
@@ -1844,9 +1812,6 @@ export async function initializeDatabase(): Promise<void> {
       await seedInteractionTypes();
       await seedSocialAccountTypes();
     }
-
-    // Assign any unassigned daily notes to the super admin owner
-    await migrateUnassignedDailyNotesToSuperAdmin();
 
     // Migrate Partner relationship types to spouse role if needed
     await migratePartnerToSpouse();
@@ -1856,6 +1821,9 @@ export async function initializeDatabase(): Promise<void> {
 
     // Migrate old pending-import creation types to PRM-chrome import
     await migratePendingImportCreationType();
+
+    // Single Ollama connection → ai_providers table + (provider, model) settings
+    await migrateOllamaToAiProviders();
   } catch (error) {
     log(`Database initialization failed: ${error}`);
     throw error;
@@ -2046,75 +2014,6 @@ async function migrateFamilyToNormalizedSchema(): Promise<void> {
 }
 
 /**
- * Assigns any unassigned daily notes (where user_id is NULL or references a non-existent user)
- * to the super admin instance owner.
- */
-async function migrateUnassignedDailyNotesToSuperAdmin(): Promise<void> {
-  log("Checking for unassigned daily notes to assign to super admin...");
-  try {
-    if (!(await tableExists("daily_notes")) || !(await tableExists("users"))) {
-      return;
-    }
-
-    // Ensure user_id column exists
-    await addColumnIfNotExists(
-      "daily_notes",
-      "user_id",
-      "INTEGER REFERENCES users(id) ON DELETE CASCADE"
-    );
-
-    // Find the super admin owner (prefer role = 'super_admin', fallback to Me user or first user)
-    const superAdminRes = await pool.query(`
-      SELECT COALESCE(
-        (SELECT id FROM users WHERE role = 'super_admin' ORDER BY id ASC LIMIT 1),
-        (SELECT user_id FROM people WHERE user_id IS NOT NULL ORDER BY user_id ASC LIMIT 1),
-        (SELECT id FROM users ORDER BY id ASC LIMIT 1)
-      ) AS id
-    `);
-
-    const superAdminId: number | null = superAdminRes.rows[0]?.id ?? null;
-    if (!superAdminId) {
-      log("No users found to assign daily notes to. Skipping daily notes assignment.");
-      return;
-    }
-
-    // Check count of unassigned or invalid-owner daily notes
-    const unassignedCountRes = await pool.query(`
-      SELECT COUNT(*) as count FROM daily_notes
-      WHERE user_id IS NULL OR user_id NOT IN (SELECT id FROM users)
-    `);
-    const count = parseInt(unassignedCountRes.rows[0]?.count || "0", 10);
-
-    if (count > 0) {
-      log(`Assigning ${count} unassigned daily note(s) to super admin (user id: ${superAdminId})...`);
-      await pool.query(
-        `UPDATE daily_notes
-         SET user_id = $1
-         WHERE user_id IS NULL OR user_id NOT IN (SELECT id FROM users)`,
-        [superAdminId]
-      );
-      log(`Successfully assigned ${count} daily note(s) to super admin (user id: ${superAdminId})`);
-    }
-
-    // Enforce NOT NULL on user_id if there are no remaining NULLs
-    try {
-      await pool.query(`ALTER TABLE daily_notes ALTER COLUMN user_id SET NOT NULL`);
-    } catch (e) {
-      log(`Note: could not enforce NOT NULL on daily_notes.user_id: ${e}`);
-    }
-
-    // Ensure index on user_id exists
-    try {
-      await pool.query(`CREATE INDEX IF NOT EXISTS daily_notes_user_id_idx ON daily_notes(user_id)`);
-    } catch (e) {
-      log(`Note: could not create index daily_notes_user_id_idx: ${e}`);
-    }
-  } catch (error) {
-    log(`Error assigning unassigned daily notes to super admin: ${error}`);
-  }
-}
-
-/**
  * Migrates existing 'pending-import-ingest' and 'pending-import-contact' creation types
  * on social_accounts to 'PRM-chrome import'.
  */
@@ -2150,4 +2049,77 @@ async function migratePendingImportCreationType(): Promise<void> {
   }
 }
 
+/**
+ * Creates ai_providers and moves the legacy single-Ollama settings onto it:
+ * the old connection becomes the default provider, every ollama_* model key is
+ * renamed to its ai_* key with a sibling *_provider key, and existing chats are
+ * pinned to that provider. Idempotent: the old keys are deleted once migrated.
+ */
+async function migrateOllamaToAiProviders(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ai_providers (
+      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      auth_type TEXT NOT NULL DEFAULT 'none',
+      username TEXT NOT NULL DEFAULT '',
+      secret TEXT NOT NULL DEFAULT '',
+      is_default BOOLEAN NOT NULL DEFAULT FALSE,
+      is_external BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+  `);
+  await addColumnIfNotExists("ai_chats", "provider_id", "TEXT NOT NULL DEFAULT ''");
 
+  const { rows } = await pool.query<{ key: string; value: string }>(
+    `SELECT key, value FROM app_settings WHERE key LIKE 'ollama\\_%'`,
+  );
+  if (rows.length === 0) return;
+  const old = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  log("Migrating Ollama settings to AI providers...");
+
+  let providerId = "";
+  const apiUrl = (old.ollama_api_url ?? "").trim();
+  const { rows: existing } = await pool.query(`SELECT 1 FROM ai_providers LIMIT 1`);
+  if (apiUrl && existing.length === 0) {
+    const basic = old.ollama_auth_required === "true";
+    const { rows: [inserted] } = await pool.query<{ id: string }>(
+      `INSERT INTO ai_providers (name, kind, base_url, auth_type, username, secret, is_default, is_external)
+       VALUES ('Ollama', 'ollama', $1, $2, $3, $4, TRUE, $5) RETURNING id`,
+      [apiUrl, basic ? "basic" : "none", basic ? old.ollama_username ?? "" : "", basic ? old.ollama_password ?? "" : "", isExternalUrl(apiUrl)],
+    );
+    providerId = inserted.id;
+    await pool.query(`UPDATE ai_chats SET provider_id = $1 WHERE model <> '' AND provider_id = ''`, [providerId]);
+  }
+
+  const set = (key: string, value: string) =>
+    pool.query(`INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [key, value]);
+
+  const modelKeys: [string, string, string][] = [
+    ["ollama_model", "ai_vision_model", "ai_vision_provider"],
+    ["ollama_text_model", "ai_text_model", "ai_text_provider"],
+    ["ollama_events_model", "ai_events_model", "ai_events_provider"],
+    ["ollama_sex_guess_model", "ai_sex_guess_model", "ai_sex_guess_provider"],
+  ];
+  for (const [from, modelKey, providerKey] of modelKeys) {
+    if (!old[from]) continue;
+    await set(modelKey, old[from]);
+    await set(providerKey, providerId);
+  }
+  const vectorModel = await pool.query(`SELECT 1 FROM app_settings WHERE key = 'vector_embedding_model' AND value <> ''`);
+  if (vectorModel.rows.length > 0) await set("vector_embedding_provider", providerId);
+
+  const renames: [string, string][] = [
+    ["ollama_prompt", "ai_vision_prompt"],
+    ["ollama_events_prompt", "ai_events_prompt"],
+    ["ollama_enabled", "ai_enabled"],
+    ["ollama_auto_describe_images", "ai_auto_describe_images"],
+  ];
+  for (const [from, to] of renames) {
+    if (old[from] !== undefined) await set(to, old[from]);
+  }
+
+  await pool.query(`DELETE FROM app_settings WHERE key LIKE 'ollama\\_%'`);
+  log(`Migrated ${rows.length} Ollama setting(s)${providerId ? " and created the default \"Ollama\" provider" : ""}`);
+}

@@ -1,65 +1,53 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useLoadOnce } from "@/hooks/use-load-once";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, ImageIcon, Cpu, MessageSquare, RefreshCw, AlertCircle } from "lucide-react";
+import { Loader2, ImageIcon, Cpu, MessageSquare, AlertCircle } from "lucide-react";
+import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/components/provider-model-picker";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 const DEFAULT_PROMPT = "Return 2 sentences explaining what is happening in this image.";
 
-type OllamaSettings = {
+type AiSettings = {
   enabled: boolean;
-  apiUrl: string;
-  model: string;
-  prompt: string;
+  visionPrompt: string;
   autoDescribeImages: boolean;
-};
-
-type OllamaModel = {
-  name: string;
-  parameterSize: string | null;
+  vision: ModelSelection;
 };
 
 export default function IntelligenceImagesSettingsPage() {
   const { toast } = useToast();
 
   const [autoDescribeImages, setAutoDescribeImages] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("");
+  const [vision, setVision] = useState<ModelSelection>({ providerId: "", model: "" });
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
 
-  const { data: settings, isLoading } = useQuery<OllamaSettings>({
-    queryKey: ["/api/ollama/settings"],
+  const { data: settings, isLoading } = useQuery<AiSettings>({
+    queryKey: ["/api/ai/settings"],
   });
 
-  const { data: modelsData, isLoading: isLoadingModels, refetch: refetchModels } = useQuery<{ models: OllamaModel[] }>({
-    queryKey: ["/api/ollama/models"],
-    enabled: !!settings?.apiUrl,
-    retry: false,
+  useLoadOnce(settings, (s) => {
+    setAutoDescribeImages(s.autoDescribeImages ?? false);
+    if (s.vision) setVision(s.vision);
+    setPrompt(s.visionPrompt || DEFAULT_PROMPT);
   });
-
-  useEffect(() => {
-    if (!settings) return;
-    setAutoDescribeImages(settings.autoDescribeImages ?? false);
-    setSelectedModel(settings.model ?? "");
-    setPrompt(settings.prompt || DEFAULT_PROMPT);
-  }, [settings]);
 
   const saveMutation = useMutation({
     mutationFn: async (patch: Record<string, unknown>) => {
-      const res = await apiRequest("POST", "/api/ollama/settings", patch);
+      const res = await apiRequest("POST", "/api/ai/settings", patch);
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/ollama/settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/ai/settings"] });
       toast({ title: "Saved" });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to save", description: apiErrorMessage(error), variant: "destructive" });
     },
   });
 
@@ -69,16 +57,15 @@ export default function IntelligenceImagesSettingsPage() {
   };
 
   const handleSaveModel = () => {
-    saveMutation.mutate({ model: selectedModel });
+    saveMutation.mutate({ vision });
   };
 
   const handleSavePrompt = () => {
-    saveMutation.mutate({ prompt });
+    saveMutation.mutate({ visionPrompt: prompt });
   };
 
-  const models = modelsData?.models ?? [];
-  const urlConfigured = !!settings?.apiUrl;
-  const ollamaReady = settings?.enabled && urlConfigured && !!settings?.model;
+  const aiReady = settings?.enabled && !!settings?.vision?.model;
+  const visionChanged = vision.model !== (settings?.vision?.model ?? "") || vision.providerId !== (settings?.vision?.providerId ?? "");
 
   if (isLoading) {
     return (
@@ -126,91 +113,43 @@ export default function IntelligenceImagesSettingsPage() {
                 {autoDescribeImages ? "Enabled" : "Disabled"}
               </Label>
             </div>
-            {autoDescribeImages && !ollamaReady && (
+            {autoDescribeImages && !aiReady && (
               <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
                 <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                 <span>
-                  Auto-describe is on but Ollama is not fully configured. Make sure the connection
-                  is enabled on the Intelligence page and a vision model is selected below.
+                  Auto-describe is on but AI is not fully configured. Make sure AI is enabled on
+                  the Intelligence page and a vision model is selected below.
                 </span>
               </div>
             )}
           </CardContent>
         </Card>
 
-        <Card data-testid="card-ollama-models">
+        <Card data-testid="card-vision-model">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
               <Cpu className="h-4 w-4" />
               Image Description Model
             </CardTitle>
             <CardDescription>
-              {urlConfigured
-                ? "Choose which vision model to use for image descriptions. Only models already pulled on your Ollama instance are shown."
-                : "Configure and save an API URL on the Intelligence page to load available models."}
+              Choose a vision-capable model (e.g. llava, qwen2.5vl, gpt-4o-mini) and the provider it runs on.
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2 items-end">
-              <div className="flex-1 space-y-2">
-                <Label htmlFor="ollama-model-select">Model</Label>
-                <Select
-                  value={selectedModel}
-                  onValueChange={setSelectedModel}
-                  disabled={!urlConfigured || isLoadingModels}
-                >
-                  <SelectTrigger id="ollama-model-select" data-testid="select-ollama-model">
-                    <SelectValue placeholder={
-                      !urlConfigured ? "No API URL configured" :
-                      isLoadingModels ? "Loading models…" :
-                      models.length === 0 ? "No models found" :
-                      "Select a model"
-                    } />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m.name} value={m.name} data-testid={`option-model-${m.name}`}>
-                        <span className="font-mono text-sm">{m.name}</span>
-                        {m.parameterSize && (
-                          <span className="ml-2 text-xs text-muted-foreground">{m.parameterSize}</span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() => refetchModels()}
-                disabled={!urlConfigured || isLoadingModels}
-                title="Refresh model list"
-                data-testid="button-refresh-models"
-              >
-                {isLoadingModels ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4" />
-                )}
-              </Button>
+          <CardContent className="space-y-3">
+            <ProviderModelPicker value={vision} onChange={setVision} testId="picker-vision" />
+            <div className="flex justify-end">
               <Button
                 onClick={handleSaveModel}
-                disabled={!selectedModel || saveMutation.isPending}
+                disabled={!vision.model || !visionChanged || saveMutation.isPending}
                 data-testid="button-save-model"
               >
                 {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </Button>
             </div>
-
-            {settings?.model && (
-              <p className="text-xs text-muted-foreground" data-testid="text-saved-model">
-                Currently saved: <span className="font-mono">{settings.model}</span>
-              </p>
-            )}
           </CardContent>
         </Card>
 
-        <Card data-testid="card-ollama-prompt">
+        <Card data-testid="card-vision-prompt">
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
               <MessageSquare className="h-4 w-4" />
@@ -226,7 +165,7 @@ export default function IntelligenceImagesSettingsPage() {
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
               className="resize-y"
-              data-testid="textarea-ollama-prompt"
+              data-testid="textarea-vision-prompt"
             />
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-3">

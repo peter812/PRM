@@ -3,7 +3,6 @@ import { storage } from "./storage";
 import { sql, eq, and } from "drizzle-orm";
 import { people, socialAccounts, groups, notes, interactions, messages, socialAccountPosts } from "@shared/schema";
 import type { Photo } from "@shared/schema";
-import { visibleShared } from "./access";
 
 export interface ResolvedPhotoSource {
   type: "person" | "social_account" | "post" | "story" | "group" | "note" | "interaction" | "message";
@@ -113,7 +112,7 @@ export async function resolvePhotoSource(photo: Photo): Promise<ResolvedPhotoSou
           const [matchedPerson] = await db
             .select({ id: people.id, firstName: people.firstName, lastName: people.lastName })
             .from(people)
-            .where(and(eq(people.imageUrl, locationUrl), visibleShared(people.visibility, people.createdByUserId)))
+            .where(eq(people.imageUrl, locationUrl))
             .limit(1);
           if (matchedPerson) {
             const name = `${matchedPerson.firstName || ""} ${matchedPerson.lastName || ""}`.trim() || "Person Profile";
@@ -132,7 +131,6 @@ export async function resolvePhotoSource(photo: Photo): Promise<ResolvedPhotoSou
             .from(socialAccounts)
             .where(and(
               sql`(${socialAccounts.imageUrl} = ${locationUrl} OR ${socialAccounts.externalImageUrl} = ${locationUrl})`,
-              visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId),
             ))
             .limit(1);
           if (matchedAccount) {
@@ -152,7 +150,7 @@ export async function resolvePhotoSource(photo: Photo): Promise<ResolvedPhotoSou
           const [matchedGroup] = await db
             .select({ id: groups.id, name: groups.name })
             .from(groups)
-            .where(and(eq(groups.imageUrl, locationUrl), visibleShared(groups.visibility, groups.createdByUserId)))
+            .where(eq(groups.imageUrl, locationUrl))
             .limit(1);
           if (matchedGroup) {
             return {
@@ -171,7 +169,6 @@ export async function resolvePhotoSource(photo: Photo): Promise<ResolvedPhotoSou
       if (targetId) {
         try {
           const post = await storage.getPostById(targetId);
-          // getPostById isn't visibility-scoped; the account lookup is.
           const account = post ? await storage.getSocialAccountById(post.socialAccountId) : undefined;
           if (post && account) {
             const isStory = post.postType === "story";
@@ -197,7 +194,6 @@ export async function resolvePhotoSource(photo: Photo): Promise<ResolvedPhotoSou
             sql`SELECT id, social_account_id, post_type FROM social_account_posts WHERE content LIKE ${'%' + locationUrl + '%'} AND is_deleted = false LIMIT 1`
           );
           const matchedPost = checkRes.rows?.[0] as { id: string; social_account_id: string; post_type: string } | undefined;
-          // The account lookup is the visibility check.
           const account = matchedPost ? await storage.getSocialAccountById(matchedPost.social_account_id) : undefined;
           if (matchedPost && account) {
             const isStory = matchedPost.post_type === "story";

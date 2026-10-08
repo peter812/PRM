@@ -64,7 +64,7 @@ export default function DescribeMePage() {
   const [isAddingTag, setIsAddingTag] = useState(false);
 
   const { data: settings } = useQuery<{ whisperSource?: "prm-compute" | "external" | null }>({
-    queryKey: ["/api/ollama/settings"],
+    queryKey: ["/api/ai/settings"],
   });
   const whisperConfigured = !!settings?.whisperSource;
 

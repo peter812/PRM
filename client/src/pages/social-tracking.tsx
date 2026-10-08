@@ -18,8 +18,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { AccountTracking, TrackingSchedule } from "@/components/account-tracking";
-import { InterestLevelBadge, InterestLevelSelect } from "@/components/interest-level-badge";
-import { useAuth } from "@/hooks/use-auth";
+import { InterestLevelBadge, InterestLevelChipPicker, InterestLevelSelect } from "@/components/interest-level-badge";
 import { IMPORTERS_KEY, RUNS_KEY, useImporters, type Importer } from "@/lib/instagram";
 import { INSTAGRAM_TYPE_ID, type SocialAccount, type TrackingJob } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -113,8 +112,24 @@ interface Upcoming {
 
 /** On demand: the accounts the next morning run would check, in the order it takes them. */
 function UpcomingCard() {
+  const { toast } = useToast();
   const { data, isFetching, refetch } = useQuery<Upcoming>({ queryKey: ["/api/tracking/upcoming"], enabled: false });
   const day = (d: string) => new Date(d).toLocaleDateString([], { month: "short", day: "numeric" });
+  // Levels just picked, shown (dimmed) until the reload says whether the account is still due.
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const setLevel = useMutation({
+    mutationFn: ({ accountId, level }: { accountId: string; level: string }) =>
+      apiRequest("PATCH", `/api/social-accounts/${accountId}`, { interestLevel: level }),
+    onMutate: ({ accountId, level }) => setPicked((p) => ({ ...p, [accountId]: level })),
+    onSuccess: (_r, { accountId }) => {
+      queryClient.invalidateQueries({ queryKey: [`/api/social-accounts/${accountId}`] });
+      refetch().finally(() => setPicked(({ [accountId]: _, ...rest }) => rest));
+    },
+    onError: (e: Error, { accountId }) => {
+      setPicked(({ [accountId]: _, ...rest }) => rest);
+      toast({ title: "Level not saved", description: e.message, variant: "destructive" });
+    },
+  });
 
   return (
     <Card>
@@ -139,7 +154,10 @@ function UpcomingCard() {
             ) : (
               <div className="border rounded-md divide-y max-h-96 overflow-y-auto" data-testid="list-upcoming">
                 {data.checks.map((c) => (
-                  <div key={`${c.accountId}-${c.kind}`} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+                  <div
+                    key={`${c.accountId}-${c.kind}`}
+                    className={`flex items-center justify-between gap-2 px-3 py-2 text-sm ${c.accountId in picked ? "opacity-50" : ""}`}
+                  >
                     <Link href={`/social-accounts/${c.accountId}`} className="truncate hover:underline">
                       @{c.username}
                       {c.nickname && <span className="text-muted-foreground"> · {c.nickname}</span>}
@@ -147,7 +165,11 @@ function UpcomingCard() {
                     <div className="flex items-center gap-2 shrink-0 text-muted-foreground">
                       <span>{TRACKING_KIND_LABEL[c.kind]}</span>
                       <span className="w-24 text-right">{c.origin === "manual" ? "queued" : `due ${day(c.at)}`}</span>
-                      <InterestLevelBadge level={c.interestLevel} />
+                      <InterestLevelChipPicker
+                        level={picked[c.accountId] ?? c.interestLevel}
+                        disabled={c.accountId in picked}
+                        onChange={(level) => setLevel.mutate({ accountId: c.accountId, level })}
+                      />
                     </div>
                   </div>
                 ))}
@@ -302,7 +324,7 @@ function useSaveImporter(id: string) {
 }
 
 /** An "HH:MM-HH:MM" window as two time inputs, saved on blur when valid and changed. */
-function TimeWindow({ value, disabled, onSave, testId }: { value: string; disabled: boolean; onSave: (w: string) => void; testId: string }) {
+function TimeWindow({ value, onSave, testId }: { value: string; onSave: (w: string) => void; testId: string }) {
   const [start, setStart] = useState(value.split("-")[0] ?? "");
   const [end, setEnd] = useState(value.split("-")[1] ?? "");
   const valid = Boolean(start && end && start < end);
@@ -312,9 +334,9 @@ function TimeWindow({ value, disabled, onSave, testId }: { value: string; disabl
   return (
     <>
       <div className="flex items-center gap-2">
-        <Input type="time" value={start} disabled={disabled} onChange={(e) => setStart(e.target.value)} onBlur={save} aria-label="Earliest" data-testid={`${testId}-start`} />
+        <Input type="time" value={start} onChange={(e) => setStart(e.target.value)} onBlur={save} aria-label="Earliest" data-testid={`${testId}-start`} />
         <span className="text-muted-foreground">to</span>
-        <Input type="time" value={end} disabled={disabled} onChange={(e) => setEnd(e.target.value)} onBlur={save} aria-label="Latest" data-testid={`${testId}-end`} />
+        <Input type="time" value={end} onChange={(e) => setEnd(e.target.value)} onBlur={save} aria-label="Latest" data-testid={`${testId}-end`} />
       </div>
       {!valid && <p className="text-xs text-destructive">The latest time must be after the earliest.</p>}
     </>
@@ -323,7 +345,6 @@ function TimeWindow({ value, disabled, onSave, testId }: { value: string; disabl
 
 /** The evening story run: how often, when, on/off, and a manual run. */
 function StorySchedule({ importer }: { importer: Importer }) {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
   const save = useSaveImporter(importer.id);
   const [skip, setSkip] = useState(String(importer.skipDayProbability));
@@ -355,7 +376,7 @@ function StorySchedule({ importer }: { importer: Importer }) {
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor={`every-${importer.id}`}>How often</Label>
-          <Select value={String(importer.runEveryDays)} disabled={!isAdmin} onValueChange={(v) => save.mutate({ runEveryDays: Number(v) })}>
+          <Select value={String(importer.runEveryDays)} onValueChange={(v) => save.mutate({ runEveryDays: Number(v) })}>
             <SelectTrigger id={`every-${importer.id}`} data-testid={`select-importer-every-${importer.id}`}><SelectValue /></SelectTrigger>
             <SelectContent>
               {EVERY_DAYS_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
@@ -368,7 +389,7 @@ function StorySchedule({ importer }: { importer: Importer }) {
         </div>
         <div className="space-y-2">
           <Label>Time of day</Label>
-          <TimeWindow value={importer.runWindow} disabled={!isAdmin} onSave={(runWindow) => save.mutate({ runWindow })} testId={`input-importer-window-${importer.id}`} />
+          <TimeWindow value={importer.runWindow} onSave={(runWindow) => save.mutate({ runWindow })} testId={`input-importer-window-${importer.id}`} />
           <p className="text-xs text-muted-foreground">A random minute inside this window, in the PRM server's time zone.</p>
         </div>
       </div>
@@ -385,7 +406,7 @@ function StorySchedule({ importer }: { importer: Importer }) {
         <Switch
           id={`enabled-${importer.id}`}
           checked={importer.enabled}
-          disabled={!isAdmin}
+         
           onCheckedChange={(v) => save.mutate({ enabled: v })}
           data-testid={`switch-importer-enabled-${importer.id}`}
         />
@@ -409,7 +430,7 @@ function StorySchedule({ importer }: { importer: Importer }) {
                 max={1}
                 step={0.01}
                 value={skip}
-                disabled={!isAdmin}
+               
                 onChange={(e) => setSkip(e.target.value)}
                 onBlur={saveSkip}
                 data-testid={`input-importer-skip-${importer.id}`}
@@ -424,7 +445,7 @@ function StorySchedule({ importer }: { importer: Importer }) {
               <Switch
                 id={`videos-${importer.id}`}
                 checked={importer.downloadVideos}
-                disabled={!isAdmin}
+               
                 onCheckedChange={(v) => save.mutate({ downloadVideos: v })}
                 data-testid={`switch-importer-videos-${importer.id}`}
               />
@@ -433,19 +454,16 @@ function StorySchedule({ importer }: { importer: Importer }) {
         </CollapsibleContent>
       </Collapsible>
 
-      {isAdmin && (
-        <Button className="self-start" onClick={() => runNow.mutate()} disabled={runNow.isPending || !importer.serviceUrl} data-testid={`button-importer-run-now-${importer.id}`}>
-          {runNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-          {runNow.isPending ? "Checking Instagram login…" : "Run now"}
-        </Button>
-      )}
+      <Button className="self-start" onClick={() => runNow.mutate()} disabled={runNow.isPending || !importer.serviceUrl} data-testid={`button-importer-run-now-${importer.id}`}>
+        {runNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+        {runNow.isPending ? "Checking Instagram login…" : "Run now"}
+      </Button>
     </>
   );
 }
 
 /** The morning account-tracking run: on/off, window, checks per run, and a manual run. */
 function AccountSchedule({ importer }: { importer: Importer }) {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
   const save = useSaveImporter(importer.id);
   const [maxJobs, setMaxJobs] = useState(String(importer.trackingMaxJobs));
@@ -487,7 +505,7 @@ function AccountSchedule({ importer }: { importer: Importer }) {
         <Switch
           id={`tracking-${importer.id}`}
           checked={importer.trackingEnabled}
-          disabled={!isAdmin}
+         
           onCheckedChange={(v) => save.mutate({ trackingEnabled: v })}
           data-testid={`switch-importer-tracking-${importer.id}`}
         />
@@ -495,7 +513,7 @@ function AccountSchedule({ importer }: { importer: Importer }) {
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
           <Label>Tracking window</Label>
-          <TimeWindow value={importer.trackingWindow} disabled={!isAdmin} onSave={(trackingWindow) => save.mutate({ trackingWindow })} testId={`input-importer-track-${importer.id}`} />
+          <TimeWindow value={importer.trackingWindow} onSave={(trackingWindow) => save.mutate({ trackingWindow })} testId={`input-importer-track-${importer.id}`} />
         </div>
         <div className="space-y-2">
           <Label htmlFor={`maxjobs-${importer.id}`}>Checks per run</Label>
@@ -505,7 +523,7 @@ function AccountSchedule({ importer }: { importer: Importer }) {
             min={1}
             max={500}
             value={maxJobs}
-            disabled={!isAdmin}
+           
             onChange={(e) => setMaxJobs(e.target.value)}
             onBlur={saveMaxJobs}
             data-testid={`input-importer-max-jobs-${importer.id}`}
@@ -513,12 +531,10 @@ function AccountSchedule({ importer }: { importer: Importer }) {
           <p className="text-xs text-muted-foreground">The run ends when the window does; whatever it didn't reach stays due.</p>
         </div>
       </div>
-      {isAdmin && (
-        <Button variant="outline" className="self-start" onClick={() => trackNow.mutate()} disabled={trackNow.isPending || !importer.serviceUrl} data-testid={`button-importer-track-now-${importer.id}`}>
-          {trackNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-          {trackNow.isPending ? "Starting…" : "Run tracking now"}
-        </Button>
-      )}
+      <Button variant="outline" className="self-start" onClick={() => trackNow.mutate()} disabled={trackNow.isPending || !importer.serviceUrl} data-testid={`button-importer-track-now-${importer.id}`}>
+        {trackNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+        {trackNow.isPending ? "Starting…" : "Run tracking now"}
+      </Button>
     </>
   );
 }
@@ -572,7 +588,6 @@ const USERNAME_TOOLS = OSINT_TOOLS.filter((t) => t.supportedTargetTypes.includes
 /** The scanners every account scan uses, the yearly sweep, and a bulk queue by tracking level. */
 function OsintTrackingCard() {
   const { toast } = useToast();
-  const { isAdmin } = useAuth();
   const [level, setLevel] = useState("high");
   const { data: status } = useQuery<{ configured: boolean }>({ queryKey: ["/api/osint/status"] });
   const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
@@ -612,7 +627,7 @@ function OsintTrackingCard() {
           <div className="flex flex-wrap gap-4">
             {USERNAME_TOOLS.map((t) => (
               <label key={t.name} className="flex items-center gap-2 text-sm cursor-pointer">
-                <Checkbox checked={tools.includes(t.name)} disabled={!isAdmin} onCheckedChange={(v) => toggleTool(t.name, v === true)} data-testid={`checkbox-osint-tool-${t.name}`} />
+                <Checkbox checked={tools.includes(t.name)} onCheckedChange={(v) => toggleTool(t.name, v === true)} data-testid={`checkbox-osint-tool-${t.name}`} />
                 {t.label}
               </label>
             ))}
@@ -626,7 +641,7 @@ function OsintTrackingCard() {
           <Switch
             id="osint-yearly"
             checked={settings?.osint_yearly_scan_enabled === "true"}
-            disabled={!isAdmin}
+           
             onCheckedChange={(on) => save.mutate({ key: "osint_yearly_scan_enabled", value: on ? "true" : "false" })}
             data-testid="switch-osint-yearly"
           />

@@ -52,6 +52,10 @@ interface SocialAccountDialogProps {
   account?: SocialAccountWithCurrentProfile;
   onAccountCreated?: (account: SocialAccount) => void;
   groupId?: string | null;
+  /** Prefill for add mode (e.g. the text a search came up empty on) */
+  initialUsername?: string;
+  /** Add mode: whether the tracking-job checkboxes start ticked */
+  queueTrackingByDefault?: boolean;
 }
 
 export function SocialAccountDialog({
@@ -60,6 +64,8 @@ export function SocialAccountDialog({
   account,
   onAccountCreated,
   groupId,
+  initialUsername,
+  queueTrackingByDefault = true,
 }: SocialAccountDialogProps) {
   const isEdit = !!account;
   const { toast } = useToast();
@@ -75,6 +81,7 @@ export function SocialAccountDialog({
 
   const { data: socialAccountTypes } = useQuery<SocialAccountType[]>({
     queryKey: ["/api/social-account-types"],
+    enabled: open,
   });
 
   // Find the Instagram type to use as default
@@ -124,11 +131,11 @@ export function SocialAccountDialog({
         const defaultTypeId = instagramType?.id || "";
         setSelectedTypeId(defaultTypeId);
         setSelectedXmlFile(null);
-        setQueueInfo(true);
-        setQueuePosts(true);
-        setQueueFollows(true);
+        setQueueInfo(queueTrackingByDefault);
+        setQueuePosts(queueTrackingByDefault);
+        setQueueFollows(queueTrackingByDefault);
         form.reset({
-          username: "",
+          username: initialUsername ?? "",
           nickname: "",
           accountUrl: "",
           ownerUuid: null,
@@ -141,7 +148,7 @@ export function SocialAccountDialog({
       }
       setIsTypeAutoSelected(false);
     }
-  }, [open, account, isEdit, form, instagramType]);
+  }, [open, account, isEdit, form, instagramType, initialUsername, queueTrackingByDefault]);
 
   useEffect(() => {
     if (!socialAccountTypes) return;

@@ -15,7 +15,6 @@ import {
   Scan,
   ScanText,
   Mic,
-  TrendingUp,
   Map as MapIcon,
   Sparkles,
   MessagesSquare,
@@ -78,23 +77,6 @@ const menuItems = [
     icon: Users,
   },
   {
-    title: "Family Tree",
-    url: "/family-tree",
-    icon: GitBranch,
-    subItems: [
-      {
-        title: "Tree Visualizer",
-        url: "/family-tree",
-        icon: GitBranch,
-      },
-      {
-        title: "Potential Families",
-        url: "/family-tree/potential",
-        icon: Users,
-      },
-    ],
-  },
-  {
     title: "Groups",
     url: "/groups",
     icon: Users2,
@@ -123,6 +105,11 @@ const menuItems = [
         title: "Issues",
         url: "/social-accounts/issues",
         icon: AlertTriangle,
+      },
+      {
+        title: "Summaries",
+        url: "/settings/instagram/summaries",
+        icon: Sparkles,
       },
     ],
   },
@@ -180,13 +167,18 @@ const menuItems = [
       },
 
       {
-        title: "PRM Face Demo",
+        title: "PRM Compute Demo",
         url: "/prm-face-demo",
         icon: Scan,
       },
       {
-        title: "PRM Face Save Demo",
+        title: "PRM Compute Save Demo",
         url: "/prm-face-save-demo",
+        icon: Scan,
+      },
+      {
+        title: "Face Pose Demo",
+        url: "/demos/face-pose",
         icon: Scan,
       },
       {
@@ -203,11 +195,6 @@ const menuItems = [
         title: "Whisper",
         url: "/demos/whisper",
         icon: Mic,
-      },
-      {
-        title: "Account Creation Timeline",
-        url: "/demos/account-timeline",
-        icon: TrendingUp,
       },
       {
         title: "Map",

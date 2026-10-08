@@ -4,14 +4,8 @@ import { useRoute, useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { ProviderModelPicker, ExternalBadge, useAiProviders, type ModelSelection } from "@/components/provider-model-picker";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -40,6 +34,7 @@ import { UserQuestionCard, type UserQuestionRequest } from "@/components/user-qu
 import type { AiUserAnswer } from "@shared/schema";
 import {
   Loader2,
+  Square,
   Plus,
   Send,
   Sparkles,
@@ -92,6 +87,8 @@ type ChatMessage = {
   attachments?: ChatAttachment[];
   toolCalls?: ToolCallTrace[];
   links?: { url: string; title: string }[];
+  /** Set when the user stopped the reply before it finished. */
+  stopped?: boolean;
 };
 
 // Map from server-side icon keys (see server/ai-tools.ts) to Lucide components.
@@ -209,6 +206,7 @@ type ChatSummary = {
   title: string;
   systemMessage: string;
   model?: string;
+  providerId?: string;
   agentMode?: boolean;
   messageCount: number;
   createdAt: string;
@@ -220,13 +218,12 @@ type ChatDetail = {
   title: string;
   systemMessage: string;
   model?: string;
+  providerId?: string;
   agentMode?: boolean;
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
 };
-
-type OllamaModel = { name: string; parameterSize: string | null };
 
 // Per-attachment upload limits — keep modest so the conversation/payload doesn't blow up.
 const ALLOWED_ATTACHMENT_EXTENSIONS = [".txt", ".json", ".csv", ".md"] as const;
@@ -320,14 +317,14 @@ export default function AiChatDemoPage() {
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [systemMessageDraft, setSystemMessageDraft] = useState("");
-  const [modelDraft, setModelDraft] = useState<string>("");
+  const [modelDraft, setModelDraft] = useState<ModelSelection>({ providerId: "", model: "" });
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [editingPrompt, setEditingPrompt] = useState<{
     content: string;
     attachments: ChatAttachment[];
   } | null>(null);
   const [branchOpen, setBranchOpen] = useState(false);
-  const [branchModel, setBranchModel] = useState<string>("");
+  const [branchModel, setBranchModel] = useState<ModelSelection>({ providerId: "", model: "" });
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingUserMessage, setStreamingUserMessage] = useState<ChatMessage | null>(null);
@@ -346,18 +343,19 @@ export default function AiChatDemoPage() {
     enabled: !!activeChatId,
   });
 
-  // Fetch the list of available Ollama models to power the per-chat model selector.
-  const { data: modelsData } = useQuery<{ models: OllamaModel[] }>({
-    queryKey: ["/api/ollama/models"],
-    retry: false,
-  });
-  const availableModels = modelsData?.models ?? [];
+  const { data: providers = [] } = useAiProviders();
+  const { data: aiSettings } = useQuery<{ text: ModelSelection; vision: ModelSelection }>({ queryKey: ["/api/ai/settings"] });
+  // Mirror the server: the chat's own model, else the text model, else the vision model.
+  const effective: ModelSelection = activeChat?.model
+    ? { providerId: activeChat.providerId ?? "", model: activeChat.model }
+    : [aiSettings?.text, aiSettings?.vision].find((sel) => sel?.model) ?? { providerId: "", model: "" };
+  const activeProvider = providers.find((p) => p.id === effective.providerId) ?? providers.find((p) => p.isDefault);
 
   // Keep dialog drafts in sync with whichever chat is open.
   useEffect(() => {
     setSystemMessageDraft(activeChat?.systemMessage ?? "");
-    setModelDraft(activeChat?.model ?? "");
-  }, [activeChat?.id, activeChat?.systemMessage, activeChat?.model]);
+    setModelDraft({ providerId: activeChat?.providerId ?? "", model: activeChat?.model ?? "" });
+  }, [activeChat?.id, activeChat?.systemMessage, activeChat?.model, activeChat?.providerId]);
 
   // Auto-scroll to the bottom when messages change.
   useEffect(() => {
@@ -418,6 +416,24 @@ export default function AiChatDemoPage() {
       await apiRequest("POST", `/api/ai-tools/questions/${id}`, { answers });
     } catch (err: any) {
       toast({ title: "Failed to send answers", description: err.message, variant: "destructive" });
+    }
+  };
+
+  // True between clicking Stop and the stream's final `done` line.
+  const [isStopping, setIsStopping] = useState(false);
+
+  /** Ask the server to stop the in-flight reply; the stream then ends with the partial answer saved. */
+  const stopChat = async () => {
+    if (!activeChatId || isStopping) return;
+    setIsStopping(true);
+    // Anything awaiting the user is answered server-side (reject / skip) on stop.
+    setPendingApprovals([]);
+    setPendingQuestion(null);
+    try {
+      await apiRequest("POST", `/api/ai-chats/${activeChatId}/stop`);
+    } catch (err: any) {
+      setIsStopping(false);
+      toast({ title: "Failed to stop", description: err.message, variant: "destructive" });
     }
   };
 
@@ -539,6 +555,7 @@ export default function AiChatDemoPage() {
       toast({ title: "Message failed", description: err.message, variant: "destructive" });
     } finally {
       setIsStreaming(false);
+      setIsStopping(false);
       setStreamingContent("");
       setStreamingToolCalls([]);
       setPendingApprovals([]);
@@ -603,6 +620,7 @@ export default function AiChatDemoPage() {
       toast({ title: "Failed to update prompt", description: err.message, variant: "destructive" });
     } finally {
       setIsStreaming(false);
+      setIsStopping(false);
       setStreamingContent("");
       setStreamingToolCalls([]);
       setPendingApprovals([]);
@@ -611,7 +629,7 @@ export default function AiChatDemoPage() {
   };
 
   const saveSettingsMutation = useMutation({
-    mutationFn: async (patch: { systemMessage: string; model: string }) => {
+    mutationFn: async (patch: { systemMessage: string; model: string; providerId: string }) => {
       if (!activeChatId) return null;
       const res = await apiRequest("PATCH", `/api/ai-chats/${activeChatId}`, patch);
       return res.json() as Promise<ChatDetail>;
@@ -648,9 +666,9 @@ export default function AiChatDemoPage() {
   });
 
   const branchMutation = useMutation({
-    mutationFn: async (model: string) => {
+    mutationFn: async (selection: ModelSelection) => {
       if (!activeChatId) throw new Error("No active chat");
-      const res = await apiRequest("POST", `/api/ai-chats/${activeChatId}/branch`, { model });
+      const res = await apiRequest("POST", `/api/ai-chats/${activeChatId}/branch`, selection);
       return res.json() as Promise<ChatDetail>;
     },
     onSuccess: (chat) => {
@@ -835,11 +853,12 @@ export default function AiChatDemoPage() {
           <h1 className="text-sm font-semibold flex items-center gap-2 truncate" data-testid="text-ai-chat-title">
             <Bot className="h-4 w-4" />
             {activeChat?.title ?? "AI Chat - Demo"}
-            {activeChat?.model ? (
+            {activeChat && effective.model ? (
               <span className="ml-2 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground" data-testid="text-active-model">
-                {activeChat.model}
+                {activeProvider ? `${activeProvider.name} · ` : ""}{effective.model}
               </span>
             ) : null}
+            {activeChat && activeProvider?.isExternal ? <ExternalBadge compact /> : null}
             {activeChat?.agentMode ? (
               <span className="ml-2 rounded-md bg-violet-100 dark:bg-violet-950/60 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300 border border-violet-200/50 dark:border-violet-900/50" data-testid="text-active-agent-mode">
                 Agent Mode
@@ -866,7 +885,7 @@ export default function AiChatDemoPage() {
                   toast({ title: "No active chat", description: "Open a chat to branch off." });
                   return;
                 }
-                setBranchModel(activeChat?.model ?? "");
+                setBranchModel({ providerId: activeChat?.providerId ?? "", model: activeChat?.model ?? "" });
                 setBranchOpen(true);
               }}
               disabled={!activeChatId}
@@ -922,6 +941,11 @@ export default function AiChatDemoPage() {
                         <MarkdownMessage content={m.content} />
                         {m.links && m.links.length > 0 && (
                           <MessageLinks links={m.links} messageIndex={i} />
+                        )}
+                        {m.stopped && (
+                          <p className="mt-1 text-xs italic text-muted-foreground" data-testid={`text-stopped-${i}`}>
+                            Stopped
+                          </p>
                         )}
                       </>
                     ) : (
@@ -1070,7 +1094,10 @@ export default function AiChatDemoPage() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Escape" && isStreaming) {
+                    e.preventDefault();
+                    void stopChat();
+                  } else if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
                     handleSend();
                   }
@@ -1080,14 +1107,27 @@ export default function AiChatDemoPage() {
                 className="min-h-[2.5rem] max-h-40 resize-none"
                 data-testid="input-chat-message"
               />
-              <Button
-                onClick={handleSend}
-                disabled={(!input.trim() && pendingAttachments.length === 0) || isSending}
-                size="icon"
-                data-testid="button-send-message"
-              >
-                {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              </Button>
+              {isStreaming ? (
+                <Button
+                  onClick={() => void stopChat()}
+                  disabled={isStopping}
+                  size="icon"
+                  variant="destructive"
+                  title="Stop (Esc)"
+                  data-testid="button-stop-chat"
+                >
+                  {isStopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4 fill-current" />}
+                </Button>
+              ) : (
+                <Button
+                  onClick={handleSend}
+                  disabled={!input.trim() && pendingAttachments.length === 0}
+                  size="icon"
+                  data-testid="button-send-message"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              )}
             </div>
           </div>
         </div>
@@ -1104,29 +1144,16 @@ export default function AiChatDemoPage() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label htmlFor="chat-model">Model</Label>
-              <Select
-                value={modelDraft || "__default__"}
-                onValueChange={(v) => setModelDraft(v === "__default__" ? "" : v)}
+              <Label>Model</Label>
+              <ProviderModelPicker
+                value={modelDraft}
+                onChange={setModelDraft}
+                fallbackLabel="Use default text model"
                 disabled={!activeChatId}
-              >
-                <SelectTrigger id="chat-model" data-testid="select-chat-model">
-                  <SelectValue placeholder="Use default text model" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__default__" data-testid="option-chat-model-default">
-                    Use default text model
-                  </SelectItem>
-                  {availableModels.map((m) => (
-                    <SelectItem key={m.name} value={m.name} data-testid={`option-chat-model-${m.name}`}>
-                      {m.name}
-                      {m.parameterSize ? ` (${m.parameterSize})` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                testId="picker-chat-model"
+              />
               <p className="text-xs text-muted-foreground">
-                Pick the Ollama model used when sending new messages in this chat.
+                Pick the provider and model used when sending new messages in this chat.
               </p>
             </div>
             <div className="space-y-2">
@@ -1153,7 +1180,7 @@ export default function AiChatDemoPage() {
               Cancel
             </Button>
             <Button
-              onClick={() => saveSettingsMutation.mutate({ systemMessage: systemMessageDraft, model: modelDraft })}
+              onClick={() => saveSettingsMutation.mutate({ systemMessage: systemMessageDraft, model: modelDraft.model, providerId: modelDraft.providerId })}
               disabled={!activeChatId || saveSettingsMutation.isPending}
               data-testid="button-save-settings"
             >
@@ -1174,26 +1201,13 @@ export default function AiChatDemoPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 py-2">
-            <Label htmlFor="branch-model">Model for the new chat</Label>
-            <Select
-              value={branchModel || "__default__"}
-              onValueChange={(v) => setBranchModel(v === "__default__" ? "" : v)}
-            >
-              <SelectTrigger id="branch-model" data-testid="select-branch-model">
-                <SelectValue placeholder="Use default text model" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__default__" data-testid="option-branch-model-default">
-                  Use default text model
-                </SelectItem>
-                {availableModels.map((m) => (
-                  <SelectItem key={m.name} value={m.name} data-testid={`option-branch-model-${m.name}`}>
-                    {m.name}
-                    {m.parameterSize ? ` (${m.parameterSize})` : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label>Model for the new chat</Label>
+            <ProviderModelPicker
+              value={branchModel}
+              onChange={setBranchModel}
+              fallbackLabel="Use default text model"
+              testId="picker-branch-model"
+            />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setBranchOpen(false)} data-testid="button-cancel-branch">

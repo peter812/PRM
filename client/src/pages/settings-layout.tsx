@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive, Shield, Eye, MessageSquare, Radar, Instagram, Server, History } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive,  MessageSquare, Radar, Instagram, Server, History } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -25,8 +25,6 @@ import { lazy, Suspense } from "react";
 const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
 const UnifiedSetupPage = lazy(() => import("@/pages/unified-setup-page"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
-const AdminSettingsPage = lazy(() => import("@/pages/admin-settings"));
-const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
 const ExperimentalFeaturesPage = lazy(() => import("@/pages/experimental-features"));
@@ -49,8 +47,10 @@ const SocialGraphSettingsPage = lazy(() => import("@/pages/social-graph-settings
 const InstagramImportersPage = lazy(() => import("@/pages/instagram-importers"));
 const InstagramTrackingPage = lazy(() => import("@/pages/instagram-tracking"));
 const InstagramPostsPage = lazy(() => import("@/pages/instagram-posts"));
+const InstagramSummariesPage = lazy(() => import("@/pages/instagram-summaries"));
 const SocialTasksPage = lazy(() => import("@/pages/social-tasks"));
 const OsintTasksPage = lazy(() => import("@/pages/osint-tasks"));
+const SummaryTasksPage = lazy(() => import("@/pages/summary-tasks"));
 const IntelligenceSettingsPage = lazy(() => import("@/pages/intelligence-settings"));
 const IntelligenceToolsSettingsPage = lazy(() => import("@/pages/intelligence-tools-settings"));
 const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelligence-external-tools-settings"));
@@ -82,15 +82,6 @@ const settingsMenuItems: MenuItem[] = [
     title: "Unified Setup",
     url: "/settings/setup",
     icon: Sparkles,
-  },
-  {
-    title: "Admin",
-    url: "/settings/admin",
-    icon: Shield,
-    subItems: [
-      { title: "Admin Mode", url: "/settings/admin", icon: Eye },
-      { title: "User Management", url: "/settings/admin/users", icon: Users },
-    ],
   },
   {
     title: "User Options",
@@ -139,6 +130,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Image Tasks", url: "/settings/image-storage/tasks", icon: ImageIcon },
       { title: "Social Tasks", url: "/settings/tasks/social", icon: History },
       { title: "OSINT Tasks", url: "/settings/tasks/osint", icon: Radar },
+      { title: "Summary Tasks", url: "/settings/tasks/summaries", icon: Sparkles },
     ],
   },
   {
@@ -160,6 +152,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Importers", url: "/settings/instagram", icon: Server },
       { title: "Tracking", url: "/settings/instagram/tracking", icon: Radar },
       { title: "Posts", url: "/settings/instagram/posts", icon: ImageIcon },
+      { title: "Summaries", url: "/settings/instagram/summaries", icon: Sparkles },
     ],
   },
   {
@@ -180,7 +173,6 @@ const settingsMenuItems: MenuItem[] = [
 export function SettingsSidebar() {
   const [location] = useLocation();
 
-  const isAdminActive = location.startsWith("/settings/admin");
   const isImportExportActive = location.startsWith("/settings/import-export");
   const isInstagramActive = location.startsWith("/settings/instagram");
   const isAppOptionsActive =
@@ -205,7 +197,6 @@ export function SettingsSidebar() {
 
   function getIsActive(item: MenuItem): boolean {
     switch (item.url) {
-      case "/settings/admin": return isAdminActive;
       case "/settings/app": return isAppOptionsActive;
       case "/settings/image-storage": return isImageStorageActive;
       case "/settings/intelligence": return isIntelligenceActive;
@@ -318,10 +309,12 @@ export default function SettingsLayout() {
           <Route path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export" />} />
           <Route path="/instagram/tracking" component={InstagramTrackingPage} />
           <Route path="/instagram/posts" component={InstagramPostsPage} />
+          <Route path="/instagram/summaries" component={InstagramSummariesPage} />
           <Route path="/instagram/runs" component={() => <Redirect to="/settings/tasks/social" />} />
           <Route path="/instagram" component={InstagramImportersPage} />
           <Route path="/tasks/social" component={SocialTasksPage} />
           <Route path="/tasks/osint" component={OsintTasksPage} />
+          <Route path="/tasks/summaries" component={SummaryTasksPage} />
           <Route path="/social-tasks" component={SocialTasksPage} />
           <Route path="/tasks" component={TasksSettingsPage} />
           <Route path="/task/:id" component={TaskDetailPage} />
@@ -338,8 +331,6 @@ export default function SettingsLayout() {
           <Route path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
           <Route path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export" />} />
           <Route path="/import-export" component={ImportExportHome} />
-          <Route path="/admin/users" component={AdminUsersPage} />
-          <Route path="/admin" component={AdminSettingsPage} />
           <Route path="/chrome-extension" component={ChromeExtensionSettingsPage} />
           <Route path="/api/settings" component={ApiSettingsPage} />
           <Route path="/api" component={ApiDocs} />

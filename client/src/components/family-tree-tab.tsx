@@ -6,10 +6,9 @@ interface FamilyTreeTabProps {
 }
 
 /**
- * Embedded family-tree tab for profile pages. Renders the same interactive
- * React Flow explorer used by the standalone /family-tree page, rooted at the
- * profile's person and without the dev banner / URL syncing.
+ * Family-tree tab for profile pages: the interactive React Flow explorer,
+ * rooted at the profile's person.
  */
 export function FamilyTreeTab({ personId }: FamilyTreeTabProps) {
-  return <FamilyTreeExplorer initialPersonId={personId} initialDepth={3} embedded />;
+  return <FamilyTreeExplorer initialPersonId={personId} initialDepth={3} />;
 }

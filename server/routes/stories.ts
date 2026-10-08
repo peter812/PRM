@@ -16,15 +16,15 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import { storage } from "../storage";
-import { requireAdmin } from "../auth";
-import { runAsSystem } from "../access";
+import { requireAuth } from "../auth";
 import { uploadStoryImage, uploadMedia } from "../prm-s3";
-import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, imageTaskGroups, isAdminRole, type StoryImporter } from "@shared/schema";
+import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, imageTaskGroups, type StoryImporter } from "@shared/schema";
 import { generateDeterministicUuid } from "./social-media";
-import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, triggerStoriesRun } from "../stories-scheduler";
+import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { getImageDimensions } from "../profile-image";
+import { onPostAddedForSummary } from "../summary-queue";
 
 const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 // A story video (≤ 60 s) is usually 3–15 MB; the scraper skips anything over its own cap (50 MB by default).
@@ -98,10 +98,10 @@ const checkStoriesSchema = z.object({
 export async function authedRun(req: Request, res: Response): Promise<{ id: string } | null> {
   const token = req.headers["x-stories-token"];
   if (typeof token === "string") {
-    const run = await runAsSystem(() => runForToken(token));
+    const run = await runForToken(token);
     if (run) return run;
   }
-  if (req.isAuthenticated?.() && req.user && isAdminRole(req.user.role)) {
+  if (req.isAuthenticated?.() && req.user) {
     return { id: "admin-session" };
   }
   res.status(401).json({ error: "Invalid or expired run token" });
@@ -134,41 +134,41 @@ export function registerStories(app: Express) {
         ...(parsed.data.items?.map(i => i.username).filter((u): u is string => Boolean(u)) ?? []),
       ].map(u => u.trim().toLowerCase()).filter(Boolean)));
 
-      await runAsSystem(async () => {
-        let existingStoryPks: string[] = [];
-        let missingAccountUsernames: string[] = [];
+      let existingStoryPks: string[] = [];
+      let missingAccountUsernames: string[] = [];
 
-        if (pksToCheck.length > 0) {
-          const idToPkMap = new Map<string, string>();
-          for (const pk of pksToCheck) {
-            idToPkMap.set(storyPostId(pk), pk);
-          }
-          const deterministicIds = Array.from(idToPkMap.keys());
-          const existing = await db
-            .select({ id: socialAccountPosts.id })
-            .from(socialAccountPosts)
-            .where(inArray(socialAccountPosts.id, deterministicIds));
-
-          existingStoryPks = existing.map(e => idToPkMap.get(e.id)!).filter(Boolean);
+      if (pksToCheck.length > 0) {
+        const idToPkMap = new Map<string, string>();
+        for (const pk of pksToCheck) {
+          idToPkMap.set(storyPostId(pk), pk);
         }
+        const deterministicIds = Array.from(idToPkMap.keys());
+        const existing = await db
+          .select({ id: socialAccountPosts.id })
+          .from(socialAccountPosts)
+          .where(inArray(socialAccountPosts.id, deterministicIds));
 
-        if (usernamesToCheck.length > 0) {
-          const existingAccounts = await db
-            .select({ username: sql<string>`LOWER(${socialAccounts.username})` })
-            .from(socialAccounts)
-            .where(and(
-              inArray(sql`LOWER(${socialAccounts.username})`, usernamesToCheck),
-              eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID),
-            ));
+        existingStoryPks = existing.map(e => idToPkMap.get(e.id)!).filter(Boolean);
+      }
 
-          const foundSet = new Set(existingAccounts.map(a => a.username));
-          missingAccountUsernames = usernamesToCheck.filter(u => !foundSet.has(u));
-        }
+      if (usernamesToCheck.length > 0) {
+        const existingAccounts = await db
+          .select({ username: sql<string>`LOWER(${socialAccounts.username})` })
+          .from(socialAccounts)
+          .where(and(
+            inArray(sql`LOWER(${socialAccounts.username})`, usernamesToCheck),
+            eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID),
+            // A skipped account reads as unknown, so the scraper never downloads its stories.
+            eq(socialAccounts.skipStories, false),
+          ));
 
-        res.json({
-          existingStoryPks,
-          missingAccountUsernames,
-        });
+        const foundSet = new Set(existingAccounts.map(a => a.username));
+        missingAccountUsernames = usernamesToCheck.filter(u => !foundSet.has(u));
+      }
+
+      res.json({
+        existingStoryPks,
+        missingAccountUsernames,
       });
     } catch (error) {
       console.error("Error checking story duplicates:", error);
@@ -194,104 +194,103 @@ export function registerStories(app: Express) {
       const { storyPk, username, scrapedFrom, takenAt, accessibilityCaption, mentions, width, height, ...rest } = parsed.data;
       const cleanStoryPk = storyPk.trim();
 
-      await runAsSystem(async () => {
-        const [account] = await db
-          .select({ id: socialAccounts.id })
-          .from(socialAccounts)
-          .where(and(eq(sql`LOWER(${socialAccounts.username})`, username.toLowerCase()), eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)))
+      const [account] = await db
+        .select({ id: socialAccounts.id, skipStories: socialAccounts.skipStories })
+        .from(socialAccounts)
+        .where(and(eq(sql`LOWER(${socialAccounts.username})`, username.toLowerCase()), eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)))
+        .limit(1);
+      if (!account) return res.status(202).json({ outcome: "no_account" });
+      if (account.skipStories) return res.status(202).json({ outcome: "skipped" });
+
+      const postId = storyPostId(cleanStoryPk);
+      const [existing] = await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts).where(eq(socialAccountPosts.id, postId)).limit(1);
+      if (existing) return res.status(200).json({ outcome: "duplicate", postId });
+
+      const buffer = image.buffer;
+      const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+      let imageUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
+      if (!imageUrl) {
+        imageUrl = await uploadStoryImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
+      }
+
+      // The video is a bonus on top of the cover frame: if storing it fails the story is still kept.
+      const metadata: Record<string, unknown> = { ...rest };
+      if (video) {
+        try {
+          const mime = video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4";
+          metadata.videoUrl = await uploadMedia(video.buffer, `${cleanStoryPk}.mp4`, mime);
+        } catch (err) {
+          console.error(`Story ${cleanStoryPk}: video not stored:`, err);
+          metadata.videoError = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      // Ensure photos record for this story post exists (even if image file was deduped by fileHash)
+      const [existingPhoto] = await db
+        .select({ id: photos.id })
+        .from(photos)
+        .where(eq(photos.prmLocation, `post:${postId}`))
+        .limit(1);
+
+      let photoId = existingPhoto?.id;
+      if (!photoId) {
+        // The stored file can be smaller than the size Instagram reports; face boxes use the file's pixels.
+        const dims = getImageDimensions(buffer);
+        photoId = (await storage.insertPhoto({
+          location: imageUrl,
+          prmLocation: `post:${postId}`,
+          isSubImage: false,
+          fileHash,
+          widthPx: dims?.width ?? width ?? null,
+          heightPx: dims?.height ?? height ?? null,
+          ogMetadata: { source: "instagram-story", storyPk: cleanStoryPk, takenAt },
+        })).id;
+      }
+
+      const [inserted] = await db
+        .insert(socialAccountPosts)
+        .values({
+          id: postId,
+          socialAccountId: account.id,
+          postType: "story",
+          content: JSON.stringify([imageUrl]),
+          description: accessibilityCaption ?? null,
+          mentionedAccounts: mentions.length ? JSON.stringify([{ imageIndex: 0, accounts: mentions }]) : null,
+          postedAt: new Date(takenAt),
+          metadata,
+          scrapedFrom,
+        })
+        .onConflictDoNothing({ target: socialAccountPosts.id })
+        .returning({ id: socialAccountPosts.id });
+
+      if (!inserted) {
+        return res.status(200).json({ outcome: "duplicate", postId });
+      }
+
+      let imageTaskGroupId: string | undefined;
+      const currentRunId = req.params.runId;
+      if (currentRunId) {
+        const [existingGroup] = await db
+          .select({ id: imageTaskGroups.id })
+          .from(imageTaskGroups)
+          .where(eq(imageTaskGroups.socialRunId, currentRunId))
           .limit(1);
-        if (!account) return res.status(202).json({ outcome: "no_account" });
-
-        const postId = storyPostId(cleanStoryPk);
-        const [existing] = await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts).where(eq(socialAccountPosts.id, postId)).limit(1);
-        if (existing) return res.status(200).json({ outcome: "duplicate", postId });
-
-        const buffer = image.buffer;
-        const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
-        let imageUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
-        if (!imageUrl) {
-          imageUrl = await uploadStoryImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
-        }
-
-        // The video is a bonus on top of the cover frame: if storing it fails the story is still kept.
-        const metadata: Record<string, unknown> = { ...rest };
-        if (video) {
-          try {
-            const mime = video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4";
-            metadata.videoUrl = await uploadMedia(video.buffer, `${cleanStoryPk}.mp4`, mime);
-          } catch (err) {
-            console.error(`Story ${cleanStoryPk}: video not stored:`, err);
-            metadata.videoError = err instanceof Error ? err.message : String(err);
-          }
-        }
-
-        // Ensure photos record for this story post exists (even if image file was deduped by fileHash)
-        const [existingPhoto] = await db
-          .select({ id: photos.id })
-          .from(photos)
-          .where(eq(photos.prmLocation, `post:${postId}`))
-          .limit(1);
-
-        let photoId = existingPhoto?.id;
-        if (!photoId) {
-          // The stored file can be smaller than the size Instagram reports; face boxes use the file's pixels.
-          const dims = getImageDimensions(buffer);
-          photoId = (await storage.insertPhoto({
-            location: imageUrl,
-            prmLocation: `post:${postId}`,
-            isSubImage: false,
-            fileHash,
-            widthPx: dims?.width ?? width ?? null,
-            heightPx: dims?.height ?? height ?? null,
-            ogMetadata: { source: "instagram-story", storyPk: cleanStoryPk, takenAt },
-          })).id;
-        }
-
-        const [inserted] = await db
-          .insert(socialAccountPosts)
-          .values({
-            id: postId,
+        if (existingGroup) {
+          imageTaskGroupId = existingGroup.id;
+        } else {
+          const grp = await storage.createImageTaskGroup({
+            title: `Story Run - @${username}`,
+            kind: "story_run",
+            socialRunId: currentRunId,
             socialAccountId: account.id,
-            postType: "story",
-            content: JSON.stringify([imageUrl]),
-            description: accessibilityCaption ?? null,
-            mentionedAccounts: mentions.length ? JSON.stringify([{ imageIndex: 0, accounts: mentions }]) : null,
-            postedAt: new Date(takenAt),
-            metadata,
-            scrapedFrom,
-          })
-          .onConflictDoNothing({ target: socialAccountPosts.id })
-          .returning({ id: socialAccountPosts.id });
-
-        if (!inserted) {
-          return res.status(200).json({ outcome: "duplicate", postId });
+          });
+          imageTaskGroupId = grp.id;
         }
-
-        let imageTaskGroupId: string | undefined;
-        const currentRunId = req.params.runId;
-        if (currentRunId) {
-          const [existingGroup] = await db
-            .select({ id: imageTaskGroups.id })
-            .from(imageTaskGroups)
-            .where(eq(imageTaskGroups.socialRunId, currentRunId))
-            .limit(1);
-          if (existingGroup) {
-            imageTaskGroupId = existingGroup.id;
-          } else {
-            const grp = await storage.createImageTaskGroup({
-              userId: (account as any).createdByUserId || 1,
-              title: `Story Run - @${username}`,
-              kind: "story_run",
-              socialRunId: currentRunId,
-              socialAccountId: account.id,
-            });
-            imageTaskGroupId = grp.id;
-          }
-        }
-        await db.update(socialAccounts).set({ lastScrapedAt: new Date() }).where(eq(socialAccounts.id, account.id));
-        void enqueueAutoRecognition({ kind: "story", photoIds: [photoId], videoPostId: metadata.videoUrl ? postId : undefined, imageTaskGroupId });
-        res.status(201).json({ outcome: "stored", postId });
-      });
+      }
+      await db.update(socialAccounts).set({ lastScrapedAt: new Date() }).where(eq(socialAccounts.id, account.id));
+      void enqueueAutoRecognition({ kind: "story", photoIds: [photoId], videoPostId: metadata.videoUrl ? postId : undefined, imageTaskGroupId });
+      void onPostAddedForSummary(postId, account.id);
+      res.status(201).json({ outcome: "stored", postId });
     } catch (error) {
       console.error("Error storing story:", error);
       res.status(500).json({ error: "Failed to store story" });
@@ -317,6 +316,8 @@ export function registerStories(app: Express) {
       };
       // importer_id is not in `row`, so the upsert keeps the card PRM minted the run under.
       await db.insert(storyScrapeRuns).values({ id: m.runId, ...row }).onConflictDoUpdate({ target: storyScrapeRuns.id, set: row });
+      // The closing manifest follows every job's result: a tracking job still open was never reported (a start that failed, say).
+      if (m.finishedAt) await failUnfinishedJobs(m.runId, m.status);
       res.status(201).json({ ok: true });
     } catch (error) {
       console.error("Error storing story run:", error);
@@ -417,7 +418,7 @@ export function registerStories(app: Express) {
   });
 
   // Settings page: delete a single story run.
-  app.delete("/api/stories/runs/:id", requireAdmin, async (req, res) => {
+  app.delete("/api/stories/runs/:id", requireAuth, async (req, res) => {
     try {
       const { id } = req.params;
       await failUnfinishedJobs(id, "run_deleted");
@@ -434,7 +435,7 @@ export function registerStories(app: Express) {
   });
 
   // Settings page: bulk delete story runs.
-  app.post("/api/stories/runs/bulk-delete", requireAdmin, async (req, res) => {
+  app.post("/api/stories/runs/bulk-delete", requireAuth, async (req, res) => {
     try {
       const bulkDeleteSchema = z.object({
         ids: z.array(z.string()).min(1),
@@ -464,7 +465,7 @@ export function registerStories(app: Express) {
     }
   });
 
-  app.post("/api/stories/importers", requireAdmin, async (_req, res) => {
+  app.post("/api/stories/importers", requireAuth, async (_req, res) => {
     try {
       const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(storyImporters);
       const [created] = await db.insert(storyImporters).values({ label: `Importer ${n + 1}`, runWindow: DEFAULT_WINDOW }).returning();
@@ -475,7 +476,7 @@ export function registerStories(app: Express) {
     }
   });
 
-  app.patch("/api/stories/importers/:id", requireAdmin, async (req, res) => {
+  app.patch("/api/stories/importers/:id", requireAuth, async (req, res) => {
     try {
       const parsed = importerPatchSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: "Invalid importer", issues: parsed.error.issues });
@@ -504,7 +505,7 @@ export function registerStories(app: Express) {
   });
 
   // Runs keep their history; importer_id becomes null (ON DELETE SET NULL).
-  app.delete("/api/stories/importers/:id", requireAdmin, async (req, res) => {
+  app.delete("/api/stories/importers/:id", requireAuth, async (req, res) => {
     try {
       const result = await db.delete(storyImporters).where(eq(storyImporters.id, req.params.id)).returning({ id: storyImporters.id });
       if (!result.length) return res.status(404).json({ error: "Importer not found" });
@@ -517,7 +518,7 @@ export function registerStories(app: Express) {
 
   // Settings page: have the importer's service open Instagram in a visible
   // Chrome window on its profile so a person can log in.
-  app.post("/api/stories/importers/:id/login", requireAdmin, async (req, res) => {
+  app.post("/api/stories/importers/:id/login", requireAuth, async (req, res) => {
     try {
       const importer = await importerFor(req, res);
       if (!importer) return;
@@ -533,7 +534,7 @@ export function registerStories(app: Express) {
 
   // Settings page: which account the service's profile is logged in as now. A
   // re-login as another account otherwise only reaches PRM on the next run.
-  app.post("/api/stories/importers/:id/whoami", requireAdmin, async (req, res) => {
+  app.post("/api/stories/importers/:id/whoami", requireAuth, async (req, res) => {
     const importer = await importerFor(req, res);
     if (!importer) return;
     let username: string | null = null;
@@ -554,14 +555,26 @@ export function registerStories(app: Express) {
   });
 
   // Settings page: trigger this importer's run outside its nightly window.
-  app.post("/api/stories/importers/:id/run-now", requireAdmin, async (req, res) => {
+  app.post("/api/stories/importers/:id/run-now", requireAuth, async (req, res) => {
     try {
       const importer = await importerFor(req, res);
       if (!importer) return;
-      res.json(await runAsSystem(() => triggerStoriesRun(importer)));
+      res.json(await triggerStoriesRun(importer));
     } catch (error) {
       console.error("Error triggering story run:", error);
       res.status(500).json({ error: "Failed to trigger run" });
+    }
+  });
+
+  // Settings page: start a tracking run for this importer now.
+  app.post("/api/stories/importers/:id/track-now", requireAuth, async (req, res) => {
+    try {
+      const importer = await importerFor(req, res);
+      if (!importer) return;
+      res.json(await trackNow(importer));
+    } catch (error) {
+      console.error("Error triggering tracking run:", error);
+      res.status(500).json({ error: "Failed to trigger tracking run" });
     }
   });
 }

@@ -11,7 +11,6 @@ import { classifyMessage, type AutomatedCategory } from "./message-classifier";
 import { log } from "./vite";
 import { queueOsintScansForMeAccount } from "./osint-scan-queue";
 import { runAutomaticImagePassIn, autoPassInImageForSocialAccount } from "./image-pass-in-utils";
-import { runAsSystem, runAsUser, actingUserId } from "./access";
 import {
   INSTAGRAM_USER_AGENT,
   getImageDimensions,
@@ -52,40 +51,79 @@ interface MessageAttachment {
   [key: string]: any;
 }
 import {
+  users,
+  ssoConfig,
   people,
   tasks,
   imageTasks,
   relationshipTypes,
+  relationships,
   interactionTypes,
+  interactions,
+  groups,
+  subGroups,
+  notes,
+  groupNotes,
+  schooling,
+  socialAccountTypes,
+  socialAccounts,
+  socialFollows,
+  socialAccountHistory,
+  socialProfileVersions,
+  historicalAccountSummaries,
   socialNetworkChanges,
   socialAccountPosts,
+  socialPostComments,
   lineage,
   partnerships,
   photos,
+  faces,
+  facePairDismissals,
+  imageQuestions,
   dailyNotes,
   dailyNoteEvents,
   dailyNoteInvolvedParties,
   dailyNoteAuditLogs,
   sexGuessQueue,
+  aiProviders,
   aiChats,
   appSettings,
-  socialAccounts,
-  socialAccountHistory,
-  socialProfileVersions,
-  groups,
-  relationships,
-  socialFollows,
-  schooling,
-  subGroups,
   truePersonSearch,
-  faces,
+  pendingSocialAccountImports,
+  insights,
+  osintScans,
+  storyImporters,
+  storyScrapeRuns,
+  trackingJobs,
+  socialAccountIssues,
+  conversations,
+  messages,
+  messageRecipients,
+  conversationParticipants,
+  geocodes,
   type SocialAccountHistoryDelta,
   type ImageTask,
   cleanPhoneNumberForStorage,
   formatPhoneNumberForDisplay,
 } from "@shared/schema";
-import { escapeXml, arrayToXml, parseXmlTag, parseAllTags, parseXmlArray, unescapeXml } from "./xml-utils";
-import { runFaceRecognition, runOcr, transcribeVideo, ComputeUnreachableError, ComputeBusyError, RECOGNITION_TASK_TYPES, JOB_TASK_TYPE, getComputeLanes, COMPUTE_LANE_DEFAULTS, enqueueAutoRecognition } from "./recognition";
+import {
+  escapeXml,
+  arrayToXml,
+  parseXmlTag,
+  parseAllTags,
+  parseXmlArray,
+  unescapeXml,
+  extractSection,
+  xmlTag,
+  xmlJsonTag,
+  parseOptStr,
+  parseOptInt,
+  parseOptFloat,
+  parseOptBool,
+  parseOptDate,
+  parseOptJson,
+} from "./xml-utils";
+import { runFaceRecognition, rescanPhotoFaces, runOcr, transcribeVideo, ComputeUnreachableError, ComputeBusyError, RECOGNITION_TASK_TYPES, JOB_TASK_TYPE, getComputeLanes, COMPUTE_LANE_DEFAULTS, enqueueAutoRecognition } from "./recognition";
 
 const POLL_INTERVAL_MS = 60_000;
 const IMAGE_DOWNLOAD_DELAY_MS = 1_000;
@@ -112,7 +150,7 @@ let redispatch = false;
 let imageTaskPollTimer: ReturnType<typeof setTimeout> | null = null;
 // While PRM-Compute is unreachable, recognition tasks stay pending and are
 // skipped until this passes; downloads and the rest keep flowing.
-const COMPUTE_BACKOFF_MS = 5 * 60_000;
+const COMPUTE_BACKOFF_MS = 30_000;
 let recognitionPausedUntil = 0;
 // Compute answered busy: only that lane waits, briefly.
 const COMPUTE_BUSY_BACKOFF_MS = 5_000;
@@ -179,9 +217,9 @@ async function processAnalyzeImgFull(imageTaskId: string, payload: { photoId?: s
   return JSON.stringify({ stub: true, note: "Face detection, metadata extraction, and LLM analysis not yet implemented" });
 }
 
-async function processAnalyzeImgFace(imageTaskId: string, payload: { photoId?: string }): Promise<string> {
+async function processAnalyzeImgFace(imageTaskId: string, payload: { photoId?: string; rescan?: boolean }): Promise<string> {
   if (!payload.photoId) throw new Error("photoId is required");
-  const { facesDetected } = await runFaceRecognition(payload.photoId);
+  const { facesDetected } = await (payload.rescan ? rescanPhotoFaces : runFaceRecognition)(payload.photoId);
   return JSON.stringify({ photoId: payload.photoId, facesDetected });
 }
 
@@ -215,74 +253,71 @@ async function processConvertImg(imageTaskId: string, payload: { photoId?: strin
 
 async function processImageTask(task: ImageTask): Promise<void> {
   log(`[ImageWorker] Processing image task ${task.id} (type: ${task.type})`);
-  const effectiveUserId = task.userId || (await runAsSystem(() => storage.getAllUsers()))[0]?.id;
+  try {
+    let result: string;
+    const payload = JSON.parse(task.payload || "{}");
 
-  return runAsUser(effectiveUserId, async () => {
-    try {
-      let result: string;
-      const payload = JSON.parse(task.payload || "{}");
-
-      switch (task.type) {
-        case "download_img_instagram":
-          result = await processDownloadImgInstagram(task.id, payload);
-          break;
-        case "analyze_img_full":
-          result = await processAnalyzeImgFull(task.id, payload);
-          break;
-        case "analyze_img_face":
-          result = await processAnalyzeImgFace(task.id, payload);
-          break;
-        case "analyze_img_ocr":
-          result = await processAnalyzeImgOcr(task.id, payload);
-          break;
-        case "transcribe_video":
-          result = await processTranscribeVideo(task.id, payload);
-          break;
-        case "analyze_img_metadata":
-          result = await processAnalyzeImgMetadata(task.id, payload);
-          break;
-        case "analyze_img_llm":
-          result = await processAnalyzeImgLlm(task.id, payload);
-          break;
-        case "convert_img":
-          result = await processConvertImg(task.id, payload);
-          break;
-        default:
-          throw new Error(`Unknown image task type: ${task.type}`);
-      }
-
-      // Re-check cancellation before persisting completed state — a DELETE during execution should win
-      const postHandlerTask = await storage.getImageTaskById(task.id);
-      if (postHandlerTask?.status === "cancelled") {
-        log(`[ImageWorker] Image task ${task.id} was cancelled during execution — preserving cancelled state`);
-      } else {
-        await storage.updateImageTaskStatus(task.id, "completed", result);
-        log(`[ImageWorker] Image task ${task.id} completed`);
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      // Only write failed state if not already cancelled
-      const postErrorTask = await storage.getImageTaskById(task.id).catch(() => null);
-      if (postErrorTask && postErrorTask.status === "cancelled") return;
-      if (error instanceof ComputeUnreachableError) {
-        // Not the task's fault: hand it back to the queue and try again later.
-        recognitionPausedUntil = Date.now() + COMPUTE_BACKOFF_MS;
-        log(`[ImageWorker] ${errorMessage} — recognition tasks paused for ${COMPUTE_BACKOFF_MS / 60_000} min`);
-        await storage.updateImageTaskStatus(task.id, "pending");
-        return;
-      }
-      if (error instanceof ComputeBusyError) {
-        const lane = laneOf(task.type);
-        lanePausedUntil[lane] = Date.now() + COMPUTE_BUSY_BACKOFF_MS;
-        log(`[ImageWorker] ${errorMessage} — ${lane} lane retries in ${COMPUTE_BUSY_BACKOFF_MS / 1000}s`);
-        await storage.updateImageTaskStatus(task.id, "pending");
-        setTimeout(dispatchImageTasks, COMPUTE_BUSY_BACKOFF_MS);
-        return;
-      }
-      log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
-      await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
+    switch (task.type) {
+      case "download_img_instagram":
+        result = await processDownloadImgInstagram(task.id, payload);
+        break;
+      case "analyze_img_full":
+        result = await processAnalyzeImgFull(task.id, payload);
+        break;
+      case "analyze_img_face":
+        result = await processAnalyzeImgFace(task.id, payload);
+        break;
+      case "analyze_img_ocr":
+        result = await processAnalyzeImgOcr(task.id, payload);
+        break;
+      case "transcribe_video":
+        result = await processTranscribeVideo(task.id, payload);
+        break;
+      case "analyze_img_metadata":
+        result = await processAnalyzeImgMetadata(task.id, payload);
+        break;
+      case "analyze_img_llm":
+        result = await processAnalyzeImgLlm(task.id, payload);
+        break;
+      case "convert_img":
+        result = await processConvertImg(task.id, payload);
+        break;
+      default:
+        throw new Error(`Unknown image task type: ${task.type}`);
     }
-  });
+
+    // Re-check cancellation before persisting completed state — a DELETE during execution should win
+    const postHandlerTask = await storage.getImageTaskById(task.id);
+    if (postHandlerTask?.status === "cancelled") {
+      log(`[ImageWorker] Image task ${task.id} was cancelled during execution — preserving cancelled state`);
+    } else {
+      await storage.updateImageTaskStatus(task.id, "completed", result);
+      log(`[ImageWorker] Image task ${task.id} completed`);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    // Only write failed state if not already cancelled
+    const postErrorTask = await storage.getImageTaskById(task.id).catch(() => null);
+    if (postErrorTask && postErrorTask.status === "cancelled") return;
+    if (error instanceof ComputeUnreachableError) {
+      // Not the task's fault: hand it back to the queue and try again later.
+      recognitionPausedUntil = Date.now() + COMPUTE_BACKOFF_MS;
+      log(`[ImageWorker] ${errorMessage} — recognition tasks paused for ${COMPUTE_BACKOFF_MS / 1000}s`);
+      await storage.updateImageTaskStatus(task.id, "pending");
+      setTimeout(dispatchImageTasks, COMPUTE_BACKOFF_MS);
+      return;
+    }
+    if (error instanceof ComputeBusyError) {
+      const lane = laneOf(task.type);
+      lanePausedUntil[lane] = Date.now() + COMPUTE_BUSY_BACKOFF_MS;
+      log(`[ImageWorker] ${errorMessage} — ${lane} lane retries in ${COMPUTE_BUSY_BACKOFF_MS / 1000}s`);
+      await storage.updateImageTaskStatus(task.id, "pending");
+      setTimeout(dispatchImageTasks, COMPUTE_BUSY_BACKOFF_MS);
+      return;
+    }
+    log(`[ImageWorker] Image task ${task.id} failed: ${errorMessage}`);
+    await storage.updateImageTaskStatus(task.id, "failed", errorMessage);
+  }
 }
 
 function laneHasRoom(lane: ImageLane): boolean {
@@ -294,7 +329,7 @@ function laneHasRoom(lane: ImageLane): boolean {
 
 function claimForLane(lane: ImageLane): Promise<ImageTask | undefined> {
   const filter = lane === "other" ? { excludeTypes: RECOGNITION_TASK_TYPES } : { types: [LANE_TASK_TYPE[lane]] };
-  return runAsSystem(() => storage.claimNextImageTask(filter));
+  return storage.claimNextImageTask(filter);
 }
 
 let nextLaneIndex = 0;
@@ -378,17 +413,47 @@ async function processGetImgTask(payload: {
   return JSON.stringify({ cdnUrl: outcome.imageUrl, socialAccountId, imageChange: outcome.imageChange });
 }
 
-// ── Export XML task ──────────────────────────────────────────────────────────
+// ── Export & Import XML Engine ───────────────────────────────────────────────
 
-async function processExportXmlTask(taskId: string, payload: {
-  includeHistory: boolean;
-  userId: number;
-  filename?: string;
+async function insertBatchWithFallback<T extends Record<string, any>>(
+  table: any,
+  rows: T[],
+  label: string,
+  chunkSize = 500
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    try {
+      await db.insert(table).values(chunk).onConflictDoNothing();
+      inserted += chunk.length;
+    } catch (err) {
+      console.error(`Batch insert failed for ${label} (chunk ${i}..${i + chunk.length}), falling back to row-by-row:`, err);
+      for (const row of chunk) {
+        try {
+          await db.insert(table).values(row).onConflictDoNothing();
+          inserted++;
+        } catch (rowErr) {
+          console.error(`Error importing ${label} row:`, rowErr);
+        }
+      }
+    }
+  }
+  return inserted;
+}
+
+export async function generateExportXml(options: {
+  includeHistory?: boolean;
+  includePostHistory?: boolean;
+  onProgress?: (progress: number, message: string) => Promise<void> | void;
 }): Promise<string> {
-  const { includeHistory } = payload;
+  const includeHistory = options.includeHistory ?? false;
+  const includePostHistory = options.includePostHistory ?? true;
+  const onProgress = options.onProgress;
   const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 
-  await storage.updateTaskProgress(taskId, 2, "Fetching data…");
+  await onProgress?.(2, "Fetching core data…");
 
   // Run queries in small sequential batches to avoid exhausting the DB connection pool
   const [allUsers, allPeople, allRelationshipTypes, allRelationships] = await Promise.all([
@@ -405,18 +470,16 @@ async function processExportXmlTask(taskId: string, payload: {
     storage.getAllNotes(),
   ]);
 
-  const [allGroupNotes, allSocialAccounts, allSocialAccountTypes] = await Promise.all([
+  const [allGroupNotes, allSocialAccounts, allSocialAccountTypes, allFollows, mePersonId] = await Promise.all([
     storage.getAllGroupNotes(),
     storage.getAllSocialAccounts(),
     storage.getAllSocialAccountTypes(),
-  ]);
-
-  const [allFollows, mePersonResult] = await Promise.all([
     storage.getAllFollows(),
-    db.select().from(people).where(isNotNull(people.userId)).limit(1),
+    storage.getMePersonId(),
   ]);
 
   const [
+    allSsoConfigs,
     allLineages,
     allPartnerships,
     allPhotos,
@@ -425,9 +488,11 @@ async function processExportXmlTask(taskId: string, payload: {
     allDailyNoteInvolvedParties,
     allDailyNoteAuditLogs,
     allSexGuesses,
+    allAiProviders,
     allAiChats,
     allAppSettings,
   ] = await Promise.all([
+    db.select().from(ssoConfig),
     db.select().from(lineage),
     db.select().from(partnerships),
     db.select().from(photos),
@@ -436,12 +501,56 @@ async function processExportXmlTask(taskId: string, payload: {
     db.select().from(dailyNoteInvolvedParties),
     db.select().from(dailyNoteAuditLogs),
     db.select().from(sexGuessQueue),
+    db.select().from(aiProviders),
     db.select().from(aiChats),
     db.select().from(appSettings),
   ]);
 
+  const [
+    allSchooling,
+    allSubGroups,
+    allTps,
+    allFaces,
+    allFacePairDismissals,
+    allImageQuestions,
+    allPendingImports,
+    allInsights,
+    allOsintScans,
+  ] = await Promise.all([
+    db.select().from(schooling),
+    db.select().from(subGroups),
+    db.select().from(truePersonSearch),
+    db.select().from(faces),
+    db.select().from(facePairDismissals),
+    db.select().from(imageQuestions),
+    db.select().from(pendingSocialAccountImports),
+    db.select().from(insights),
+    db.select().from(osintScans),
+  ]);
+
+  const [
+    allStoryImporters,
+    allStoryScrapeRuns,
+    allTrackingJobs,
+    allSocialAccountIssues,
+    allConversations,
+    allMessages,
+    allMessageRecipients,
+    allConversationParticipants,
+    allGeocodes,
+  ] = await Promise.all([
+    db.select().from(storyImporters),
+    db.select().from(storyScrapeRuns),
+    db.select().from(trackingJobs),
+    db.select().from(socialAccountIssues),
+    db.select().from(conversations),
+    db.select().from(messages),
+    db.select().from(messageRecipients),
+    db.select().from(conversationParticipants),
+    db.select().from(geocodes),
+  ]);
+
   const user = allUsers[0];
-  const mePersonId = mePersonResult[0]?.id || null;
   const peopleToExport = allPeople.filter(p => p.id !== mePersonId);
   const followersMap = new Map<string, string[]>();
   const followingMap = new Map<string, string[]>();
@@ -454,7 +563,11 @@ async function processExportXmlTask(taskId: string, payload: {
     else followingMap.set(edge.followerId, [edge.followedId]);
   }
 
-  // Helper to map mePersonId to ZERO_UUID in photos.prmLocation
+  const mapPersonExport = (id: string | null | undefined): string => {
+    if (!id) return "";
+    return mePersonId && id === mePersonId ? ZERO_UUID : id;
+  };
+
   const mapPrmLocationExport = (loc: string | null): string => {
     if (!loc) return "";
     if (mePersonId && loc.includes(mePersonId)) {
@@ -463,424 +576,975 @@ async function processExportXmlTask(taskId: string, payload: {
     return loc;
   };
 
-  // Helper function to escape XML special characters
-  const escapeXml = (str: any): string => {
-    if (str === null || str === undefined) return "";
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&apos;");
-  };
+  await onProgress?.(8, "Building export file…");
 
-  // Helper function to convert array to XML
-  const arrayToXml = (arr: any[], itemName: string): string => {
-    if (!arr || arr.length === 0) return "";
-    return arr.map(item => `<${itemName}>${escapeXml(item)}</${itemName}>`).join("");
-  };
+  const chunks: string[] = [];
+  chunks.push('<?xml version="1.0" encoding="UTF-8"?>\n<crm_data>\n');
 
-  await storage.updateTaskProgress(taskId, 8, "Building export file…");
+  // ── User profile ──
+  chunks.push("  <user_profile>\n");
+  chunks.push(`    ${xmlTag("name", user?.name || "")}\n`);
+  chunks.push(`    ${xmlTag("nickname", user?.nickname || "")}\n`);
+  chunks.push(`    ${xmlTag("username", user?.username || "")}\n`);
+  chunks.push(`    ${xmlTag("sso_email", user?.ssoEmail || "")}\n`);
+  chunks.push(`    ${xmlTag("created_at", user?.createdAt)}\n`);
+  chunks.push("  </user_profile>\n");
 
-  let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<crm_data>\n';
+  // ── SSO Config ──
+  chunks.push("  <sso_config>\n");
+  for (const cfg of allSsoConfigs) {
+    chunks.push("    <sso_config_entry>\n");
+    chunks.push(`      ${xmlTag("id", cfg.id)}\n`);
+    chunks.push(`      ${xmlTag("user_id", cfg.userId)}\n`);
+    chunks.push(`      ${xmlTag("enabled", cfg.enabled)}\n`);
+    chunks.push(`      ${xmlTag("auto_sso", cfg.autoSso)}\n`);
+    chunks.push(`      ${xmlTag("client_id", cfg.clientId || "")}\n`);
+    chunks.push(`      ${xmlTag("client_secret", cfg.clientSecret || "")}\n`);
+    chunks.push(`      ${xmlTag("auth_url", cfg.authUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("token_url", cfg.tokenUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("user_info_url", cfg.userInfoUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("redirect_url", cfg.redirectUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("logout_url", cfg.logoutUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("user_identifier", cfg.userIdentifier || "")}\n`);
+    chunks.push(`      ${xmlTag("scopes", cfg.scopes || "")}\n`);
+    chunks.push(`      ${xmlTag("auth_style", cfg.authStyle || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", cfg.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("updated_at", cfg.updatedAt)}\n`);
+    chunks.push("    </sso_config_entry>\n");
+  }
+  chunks.push("  </sso_config>\n");
 
-  xml += '  <user_profile>\n';
-  xml += `    <name>${escapeXml(user?.name || "")}</name>\n`;
-  xml += `    <nickname>${escapeXml(user?.nickname || "")}</nickname>\n`;
-  xml += '  </user_profile>\n';
-
-  xml += '  <relationship_types>\n';
+  // ── Relationship types ──
+  chunks.push("  <relationship_types>\n");
   for (const type of allRelationshipTypes) {
-    xml += '    <relationship_type>\n';
-    xml += `      <id>${escapeXml(type.id)}</id>\n`;
-    xml += `      <name>${escapeXml(type.name)}</name>\n`;
-    xml += `      <color>${escapeXml(type.color)}</color>\n`;
-    xml += `      <value>${escapeXml(type.value)}</value>\n`;
-    xml += `      <notes>${escapeXml(type.notes || "")}</notes>\n`;
-    xml += `      <created_at>${escapeXml(type.createdAt)}</created_at>\n`;
-    xml += '    </relationship_type>\n';
+    chunks.push("    <relationship_type>\n");
+    chunks.push(`      ${xmlTag("id", type.id)}\n`);
+    chunks.push(`      ${xmlTag("name", type.name)}\n`);
+    chunks.push(`      ${xmlTag("color", type.color)}\n`);
+    chunks.push(`      ${xmlTag("value", type.value)}\n`);
+    chunks.push(`      ${xmlTag("notes", type.notes || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", type.createdAt)}\n`);
+    chunks.push("    </relationship_type>\n");
   }
-  xml += '  </relationship_types>\n';
+  chunks.push("  </relationship_types>\n");
 
-  xml += '  <interaction_types>\n';
+  // ── Interaction types ──
+  chunks.push("  <interaction_types>\n");
   for (const type of allInteractionTypes) {
-    xml += '    <interaction_type>\n';
-    xml += `      <id>${escapeXml(type.id)}</id>\n`;
-    xml += `      <name>${escapeXml(type.name)}</name>\n`;
-    xml += `      <color>${escapeXml(type.color)}</color>\n`;
-    xml += `      <description>${escapeXml(type.description || "")}</description>\n`;
-    xml += `      <value>${escapeXml(type.value)}</value>\n`;
-    xml += `      <created_at>${escapeXml(type.createdAt)}</created_at>\n`;
-    xml += '    </interaction_type>\n';
+    chunks.push("    <interaction_type>\n");
+    chunks.push(`      ${xmlTag("id", type.id)}\n`);
+    chunks.push(`      ${xmlTag("name", type.name)}\n`);
+    chunks.push(`      ${xmlTag("color", type.color)}\n`);
+    chunks.push(`      ${xmlTag("description", type.description || "")}\n`);
+    chunks.push(`      ${xmlTag("value", type.value)}\n`);
+    chunks.push(`      ${xmlTag("created_at", type.createdAt)}\n`);
+    chunks.push("    </interaction_type>\n");
   }
-  xml += '  </interaction_types>\n';
+  chunks.push("  </interaction_types>\n");
 
-  await storage.updateTaskProgress(taskId, 15, "Exporting people…");
+  await onProgress?.(15, "Exporting people…");
 
-  xml += '  <people>\n';
+  // ── People ──
+  chunks.push("  <people>\n");
   for (const person of peopleToExport) {
-    xml += '    <person>\n';
-    xml += `      <id>${escapeXml(person.id)}</id>\n`;
-    xml += `      <first_name>${escapeXml(person.firstName)}</first_name>\n`;
-    xml += `      <last_name>${escapeXml(person.lastName)}</last_name>\n`;
-    xml += `      <email>${escapeXml(person.email || "")}</email>\n`;
-    xml += `      <phone>${escapeXml(person.phone || "")}</phone>\n`;
-    xml += `      <company>${escapeXml(person.company || "")}</company>\n`;
-    xml += `      <title>${escapeXml(person.title || "")}</title>\n`;
-    xml += `      <tags>${arrayToXml(person.tags || [], "tag")}</tags>\n`;
-    xml += `      <image_url>${escapeXml(person.imageUrl || "")}</image_url>\n`;
-    xml += `      <social_account_uuids>${arrayToXml(person.socialAccountUuids || [], "social_account_uuid")}</social_account_uuids>\n`;
-    xml += `      <is_starred>${escapeXml(person.isStarred)}</is_starred>\n`;
-    xml += `      <elo_score>${escapeXml(person.eloScore)}</elo_score>\n`;
-    xml += `      <no_social_media>${escapeXml(person.noSocialMedia ?? 0)}</no_social_media>\n`;
-    xml += `      <sex>${escapeXml(person.sex || "unknown")}</sex>\n`;
-    xml += `      <elo_rankable>${escapeXml(person.eloRankable ?? 1)}</elo_rankable>\n`;
-    xml += `      <created_at>${escapeXml(person.createdAt)}</created_at>\n`;
-    xml += '    </person>\n';
+    chunks.push("    <person>\n");
+    chunks.push(`      ${xmlTag("id", person.id)}\n`);
+    chunks.push(`      ${xmlTag("first_name", person.firstName)}\n`);
+    chunks.push(`      ${xmlTag("last_name", person.lastName)}\n`);
+    chunks.push(`      ${xmlTag("email", person.email || "")}\n`);
+    chunks.push(`      ${xmlTag("phone", person.phone || "")}\n`);
+    chunks.push(`      ${xmlTag("company", person.company || "")}\n`);
+    chunks.push(`      ${xmlTag("title", person.title || "")}\n`);
+    chunks.push(`      <tags>${arrayToXml(person.tags || [], "tag")}</tags>\n`);
+    chunks.push(`      ${xmlTag("image_url", person.imageUrl || "")}\n`);
+    chunks.push(`      <social_account_uuids>${arrayToXml(person.socialAccountUuids || [], "social_account_uuid")}</social_account_uuids>\n`);
+    chunks.push(`      ${xmlTag("is_starred", person.isStarred)}\n`);
+    chunks.push(`      ${xmlTag("elo_score", person.eloScore)}\n`);
+    chunks.push(`      ${xmlTag("no_social_media", person.noSocialMedia ?? 0)}\n`);
+    chunks.push(`      ${xmlTag("sex", person.sex || "unknown")}\n`);
+    chunks.push(`      ${xmlTag("elo_rankable", person.eloRankable ?? 1)}\n`);
+    chunks.push(`      ${xmlTag("personface_uuid", person.personfaceUuid || "")}\n`);
+    chunks.push(`      ${xmlTag("maiden_name", person.maidenName || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("jobs", person.jobs)}\n`);
+    chunks.push(`      ${xmlTag("tps_id", person.tpsId || "")}\n`);
+    chunks.push(`      ${xmlTag("birthday", person.birthday || "")}\n`);
+    chunks.push(`      ${xmlTag("address", person.address || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("additional_emails", person.additionalEmails)}\n`);
+    chunks.push(`      ${xmlJsonTag("additional_phones", person.additionalPhones)}\n`);
+    chunks.push(`      ${xmlJsonTag("osint_runs", person.osintRuns)}\n`);
+    chunks.push(`      ${xmlJsonTag("denied_recommendations", person.deniedRecommendations)}\n`);
+    chunks.push(`      ${xmlTag("last_described_at", person.lastDescribedAt)}\n`);
+    chunks.push(`      ${xmlTag("political_left_right", person.politicalLeftRight)}\n`);
+    chunks.push(`      ${xmlTag("political_lib_auth", person.politicalLibAuth)}\n`);
+    chunks.push(`      ${xmlTag("political_updated_at", person.politicalUpdatedAt)}\n`);
+    chunks.push(`      ${xmlTag("created_at", person.createdAt)}\n`);
+    chunks.push("    </person>\n");
   }
-  xml += '  </people>\n';
+  chunks.push("  </people>\n");
 
-  await storage.updateTaskProgress(taskId, 28, "Exporting relationships…");
+  await onProgress?.(25, "Exporting relationships & groups…");
 
-  xml += '  <relationships>\n';
+  // ── Relationships ──
+  chunks.push("  <relationships>\n");
   for (const rel of allRelationships) {
-    const fromPersonId = rel.fromPersonId === mePersonId ? ZERO_UUID : rel.fromPersonId;
-    const toPersonId = rel.toPersonId === mePersonId ? ZERO_UUID : rel.toPersonId;
-    xml += '    <relationship>\n';
-    xml += `      <id>${escapeXml(rel.id)}</id>\n`;
-    xml += `      <from_person_id>${escapeXml(fromPersonId)}</from_person_id>\n`;
-    xml += `      <to_person_id>${escapeXml(toPersonId)}</to_person_id>\n`;
-    xml += `      <type_id>${escapeXml(rel.typeId)}</type_id>\n`;
-    xml += `      <notes>${escapeXml(rel.notes || "")}</notes>\n`;
-    xml += `      <family_relationship_type>${escapeXml(rel.familyRelationshipType || "")}</family_relationship_type>\n`;
-    xml += `      <created_at>${escapeXml(rel.createdAt)}</created_at>\n`;
-    xml += '    </relationship>\n';
+    chunks.push("    <relationship>\n");
+    chunks.push(`      ${xmlTag("id", rel.id)}\n`);
+    chunks.push(`      ${xmlTag("from_person_id", mapPersonExport(rel.fromPersonId))}\n`);
+    chunks.push(`      ${xmlTag("to_person_id", mapPersonExport(rel.toPersonId))}\n`);
+    chunks.push(`      ${xmlTag("type_id", rel.typeId)}\n`);
+    chunks.push(`      ${xmlTag("notes", rel.notes || "")}\n`);
+    chunks.push(`      ${xmlTag("family_relationship_type", rel.familyRelationshipType || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", rel.createdAt)}\n`);
+    chunks.push("    </relationship>\n");
   }
-  xml += '  </relationships>\n';
+  chunks.push("  </relationships>\n");
 
-  await storage.updateTaskProgress(taskId, 38, "Exporting groups & interactions…");
-
-  xml += '  <groups>\n';
+  // ── Groups ──
+  chunks.push("  <groups>\n");
   for (const group of allGroups) {
-    const members = (group.members || []).map((id: string) => id === mePersonId ? ZERO_UUID : id);
-    xml += '    <group>\n';
-    xml += `      <id>${escapeXml(group.id)}</id>\n`;
-    xml += `      <name>${escapeXml(group.name)}</name>\n`;
-    xml += `      <color>${escapeXml(group.color)}</color>\n`;
-    xml += `      <type>${arrayToXml(group.type || [], "group_type")}</type>\n`;
-    xml += `      <members>${arrayToXml(members, "member_id")}</members>\n`;
-    xml += `      <image_url>${escapeXml(group.imageUrl || "")}</image_url>\n`;
-    xml += `      <created_at>${escapeXml(group.createdAt)}</created_at>\n`;
-    xml += '    </group>\n';
+    const members = (group.members || []).map((id: string) => mapPersonExport(id));
+    const crowdMembers = (group.crowdMembers || []).map((id: string) => mapPersonExport(id));
+    chunks.push("    <group>\n");
+    chunks.push(`      ${xmlTag("id", group.id)}\n`);
+    chunks.push(`      ${xmlTag("name", group.name)}\n`);
+    chunks.push(`      ${xmlTag("color", group.color)}\n`);
+    chunks.push(`      <type>${arrayToXml(group.type || [], "group_type")}</type>\n`);
+    chunks.push(`      <members>${arrayToXml(members, "member_id")}</members>\n`);
+    chunks.push(`      ${xmlTag("image_url", group.imageUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("center_account_id", group.centerAccountId || "")}\n`);
+    chunks.push(`      <crowd_members>${arrayToXml(crowdMembers, "crowd_member_id")}</crowd_members>\n`);
+    chunks.push(`      ${xmlTag("crowd_last_calculated_at", group.crowdLastCalculatedAt)}\n`);
+    chunks.push(`      ${xmlTag("crowd_mode", group.crowdMode || "")}\n`);
+    chunks.push(`      ${xmlTag("crowd_follow_threshold", group.crowdFollowThreshold)}\n`);
+    chunks.push(`      ${xmlTag("created_at", group.createdAt)}\n`);
+    chunks.push("    </group>\n");
   }
-  xml += '  </groups>\n';
+  chunks.push("  </groups>\n");
 
-  xml += '  <interactions>\n';
+  // ── Sub-groups ──
+  chunks.push("  <sub_groups>\n");
+  for (const sg of allSubGroups) {
+    const members = (sg.members || []).map((id: string) => mapPersonExport(id));
+    chunks.push("    <sub_group_entry>\n");
+    chunks.push(`      ${xmlTag("id", sg.id)}\n`);
+    chunks.push(`      ${xmlTag("group_id", sg.groupId)}\n`);
+    chunks.push(`      ${xmlTag("name", sg.name)}\n`);
+    chunks.push(`      ${xmlTag("color", sg.color)}\n`);
+    chunks.push(`      <members>${arrayToXml(members, "member_id")}</members>\n`);
+    chunks.push(`      ${xmlTag("created_at", sg.createdAt)}\n`);
+    chunks.push("    </sub_group_entry>\n");
+  }
+  chunks.push("  </sub_groups>\n");
+
+  // ── Interactions ──
+  chunks.push("  <interactions>\n");
   for (const interaction of allInteractions) {
-    const peopleIds = (interaction.peopleIds || []).map(id => id === mePersonId ? ZERO_UUID : id);
-    xml += '    <interaction>\n';
-    xml += `      <id>${escapeXml(interaction.id)}</id>\n`;
-    xml += `      <type_id>${escapeXml(interaction.typeId)}</type_id>\n`;
-    xml += `      <title>${escapeXml(interaction.title || "")}</title>\n`;
-    xml += `      <date>${escapeXml(interaction.date)}</date>\n`;
-    xml += `      <description>${escapeXml(interaction.description || "")}</description>\n`;
-    xml += `      <image_url>${escapeXml(interaction.imageUrl || "")}</image_url>\n`;
-    xml += `      <image_uuid>${escapeXml(interaction.imageUuid || "")}</image_uuid>\n`;
-    xml += `      <people_ids>${arrayToXml(peopleIds, "person_id")}</people_ids>\n`;
-    xml += `      <group_ids>${arrayToXml(interaction.groupIds || [], "group_id")}</group_ids>\n`;
-    xml += `      <created_at>${escapeXml(interaction.createdAt)}</created_at>\n`;
-    xml += '    </interaction>\n';
+    const peopleIds = (interaction.peopleIds || []).map(id => mapPersonExport(id));
+    chunks.push("    <interaction>\n");
+    chunks.push(`      ${xmlTag("id", interaction.id)}\n`);
+    chunks.push(`      ${xmlTag("type_id", interaction.typeId)}\n`);
+    chunks.push(`      ${xmlTag("title", interaction.title || "")}\n`);
+    chunks.push(`      ${xmlTag("date", interaction.date)}\n`);
+    chunks.push(`      ${xmlTag("description", interaction.description || "")}\n`);
+    chunks.push(`      ${xmlTag("image_url", interaction.imageUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("image_uuid", interaction.imageUuid || "")}\n`);
+    chunks.push(`      <people_ids>${arrayToXml(peopleIds, "person_id")}</people_ids>\n`);
+    chunks.push(`      <group_ids>${arrayToXml(interaction.groupIds || [], "group_id")}</group_ids>\n`);
+    chunks.push(`      ${xmlTag("created_at", interaction.createdAt)}\n`);
+    chunks.push("    </interaction>\n");
   }
-  xml += '  </interactions>\n';
+  chunks.push("  </interactions>\n");
 
-  await storage.updateTaskProgress(taskId, 48, "Exporting notes…");
+  await onProgress?.(35, "Exporting notes & schooling…");
 
-  xml += '  <notes>\n';
+  // ── Notes ──
+  chunks.push("  <notes>\n");
   for (const note of allNotes) {
     if (note.personId === mePersonId) continue;
-    xml += '    <note>\n';
-    xml += `      <id>${escapeXml(note.id)}</id>\n`;
-    xml += `      <person_id>${escapeXml(note.personId)}</person_id>\n`;
-    xml += `      <content>${escapeXml(note.content)}</content>\n`;
-    xml += `      <image_url>${escapeXml(note.imageUrl || "")}</image_url>\n`;
-    xml += `      <image_uuid>${escapeXml(note.imageUuid || "")}</image_uuid>\n`;
-    xml += `      <created_at>${escapeXml(note.createdAt)}</created_at>\n`;
-    xml += '    </note>\n';
+    chunks.push("    <note>\n");
+    chunks.push(`      ${xmlTag("id", note.id)}\n`);
+    chunks.push(`      ${xmlTag("person_id", note.personId)}\n`);
+    chunks.push(`      ${xmlTag("content", note.content)}\n`);
+    chunks.push(`      ${xmlTag("image_url", note.imageUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("image_uuid", note.imageUuid || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", note.createdAt)}\n`);
+    chunks.push("    </note>\n");
   }
-  xml += '  </notes>\n';
+  chunks.push("  </notes>\n");
 
-  xml += '  <group_notes>\n';
+  // ── Group notes ──
+  chunks.push("  <group_notes>\n");
   for (const note of allGroupNotes) {
-    xml += '    <group_note>\n';
-    xml += `      <id>${escapeXml(note.id)}</id>\n`;
-    xml += `      <group_id>${escapeXml(note.groupId)}</group_id>\n`;
-    xml += `      <content>${escapeXml(note.content)}</content>\n`;
-    xml += `      <created_at>${escapeXml(note.createdAt)}</created_at>\n`;
-    xml += '    </group_note>\n';
+    chunks.push("    <group_note>\n");
+    chunks.push(`      ${xmlTag("id", note.id)}\n`);
+    chunks.push(`      ${xmlTag("group_id", note.groupId)}\n`);
+    chunks.push(`      ${xmlTag("content", note.content)}\n`);
+    chunks.push(`      ${xmlTag("created_at", note.createdAt)}\n`);
+    chunks.push("    </group_note>\n");
   }
-  xml += '  </group_notes>\n';
+  chunks.push("  </group_notes>\n");
 
-  await storage.updateTaskProgress(taskId, 58, "Exporting social accounts…");
+  // ── Schooling ──
+  chunks.push("  <schooling>\n");
+  for (const s of allSchooling) {
+    chunks.push("    <schooling_entry>\n");
+    chunks.push(`      ${xmlTag("id", s.id)}\n`);
+    chunks.push(`      ${xmlTag("person_id", mapPersonExport(s.personId))}\n`);
+    chunks.push(`      ${xmlTag("high_school", s.highSchool || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("colleges", s.colleges)}\n`);
+    chunks.push(`      ${xmlJsonTag("additional_schooling", s.additionalSchooling)}\n`);
+    chunks.push(`      ${xmlTag("created_at", s.createdAt)}\n`);
+    chunks.push("    </schooling_entry>\n");
+  }
+  chunks.push("  </schooling>\n");
 
-  xml += '  <social_accounts>\n';
+  await onProgress?.(45, "Exporting social accounts…");
+
+  // ── Social accounts ──
+  chunks.push("  <social_accounts>\n");
   for (const account of allSocialAccounts) {
-    const ownerUuid = account.ownerUuid === mePersonId ? ZERO_UUID : account.ownerUuid;
-    xml += '    <social_account>\n';
-    xml += `      <id>${escapeXml(account.id)}</id>\n`;
-    xml += `      <username>${escapeXml(account.username)}</username>\n`;
-    xml += `      <nickname>${escapeXml(account.currentProfile?.nickname || "")}</nickname>\n`;
-    xml += `      <bio>${escapeXml(account.currentProfile?.bio || "")}</bio>
-`;
-    xml += `      <account_url>${escapeXml(account.currentProfile?.accountUrl || "")}</account_url>\n`;
-    xml += `      <owner_uuid>${escapeXml(ownerUuid || "")}</owner_uuid>\n`;
-    xml += `      <type_id>${escapeXml(account.typeId || "")}</type_id>\n`;
-    xml += `      <image_url>${escapeXml(account.currentProfile?.imageUrl || "")}</image_url>\n`;
-    xml += `      <notes></notes>\n`;
-    xml += `      <following>${arrayToXml(followingMap.get(account.id) || [], "account_id")}</following>\n`;
-    xml += `      <followers>${arrayToXml(followersMap.get(account.id) || [], "account_id")}</followers>\n`;
-    xml += `      <internal_account_creation_date>${escapeXml(account.internalAccountCreationDate)}</internal_account_creation_date>\n`;
-    xml += `      <internal_account_creation_type>${escapeXml(account.internalAccountCreationType)}</internal_account_creation_type>\n`;
-    xml += `      <last_scraped_at>${escapeXml(account.lastScrapedAt)}</last_scraped_at>\n`;
-    xml += `      <current_posts>${escapeXml(account.currentPosts || "")}</current_posts>\n`;
-    xml += `      <deleted_posts>${escapeXml(account.deletedPosts || "")}</deleted_posts>\n`;
-    xml += `      <created_at>${escapeXml(account.createdAt)}</created_at>\n`;
-    xml += '    </social_account>\n';
+    const ownerUuid = mapPersonExport(account.ownerUuid);
+    const nickname = account.nickname ?? account.currentProfile?.nickname ?? "";
+    const bio = account.bio ?? account.currentProfile?.bio ?? "";
+    const accountUrl = account.accountUrl ?? account.currentProfile?.accountUrl ?? "";
+    const imageUrl = account.imageUrl ?? account.currentProfile?.imageUrl ?? "";
+    const externalImageUrl = account.externalImageUrl ?? account.currentProfile?.externalImageUrl ?? "";
+    chunks.push("    <social_account>\n");
+    chunks.push(`      ${xmlTag("id", account.id)}\n`);
+    chunks.push(`      ${xmlTag("username", account.username)}\n`);
+    chunks.push(`      ${xmlTag("nickname", nickname)}\n`);
+    chunks.push(`      ${xmlTag("bio", bio)}\n`);
+    chunks.push(`      ${xmlTag("account_url", accountUrl)}\n`);
+    chunks.push(`      ${xmlTag("owner_uuid", ownerUuid)}\n`);
+    chunks.push(`      ${xmlTag("group_id", account.groupId || "")}\n`);
+    chunks.push(`      ${xmlTag("type_id", account.typeId || "")}\n`);
+    chunks.push(`      ${xmlTag("image_url", imageUrl)}\n`);
+    chunks.push(`      ${xmlTag("is_hq_image", account.isHqImage)}\n`);
+    chunks.push(`      ${xmlTag("external_image_url", externalImageUrl)}\n`);
+    chunks.push(`      ${xmlTag("location", account.location || "")}\n`);
+    chunks.push(`      ${xmlTag("followers_count", account.followersCount)}\n`);
+    chunks.push(`      ${xmlTag("following_count", account.followingCount)}\n`);
+    chunks.push(`      ${xmlTag("reported_followers_count", account.reportedFollowersCount)}\n`);
+    chunks.push(`      ${xmlTag("reported_following_count", account.reportedFollowingCount)}\n`);
+    chunks.push(`      ${xmlTag("is_simple", account.isSimple)}\n`);
+    chunks.push(`      ${xmlTag("interest_level", account.interestLevel)}\n`);
+    chunks.push(`      ${xmlTag("interest_level_manual", account.interestLevelManual)}\n`);
+    chunks.push(`      ${xmlTag("info_every_days", account.infoEveryDays)}\n`);
+    chunks.push(`      ${xmlTag("follows_every_days", account.followsEveryDays)}\n`);
+    chunks.push(`      ${xmlTag("posts_every_days", account.postsEveryDays)}\n`);
+    chunks.push(`      ${xmlTag("info_checked_at", account.infoCheckedAt)}\n`);
+    chunks.push(`      ${xmlTag("info_due_at", account.infoDueAt)}\n`);
+    chunks.push(`      ${xmlTag("follows_checked_at", account.followsCheckedAt)}\n`);
+    chunks.push(`      ${xmlTag("follows_due_at", account.followsDueAt)}\n`);
+    chunks.push(`      ${xmlTag("posts_checked_at", account.postsCheckedAt)}\n`);
+    chunks.push(`      ${xmlTag("posts_due_at", account.postsDueAt)}\n`);
+    chunks.push(`      ${xmlTag("joined_at", account.joinedAt)}\n`);
+    chunks.push(`      ${xmlTag("reported_posts_count", account.reportedPostsCount)}\n`);
+    chunks.push(`      ${xmlTag("is_private", account.isPrivate)}\n`);
+    chunks.push(`      ${xmlTag("personface_uuid", account.personfaceUuid || "")}\n`);
+    chunks.push(`      ${xmlTag("no_face", account.noFace)}\n`);
+    chunks.push(`      ${xmlTag("skip_stories", account.skipStories)}\n`);
+    chunks.push(`      ${xmlJsonTag("ai_summary", account.aiSummary)}\n`);
+    chunks.push(`      ${xmlTag("ai_summary_generated_at", account.aiSummaryGeneratedAt)}\n`);
+    chunks.push(`      ${xmlTag("ai_summary_invalidated", account.aiSummaryInvalidated)}\n`);
+    chunks.push(`      ${xmlTag("ai_summary_invalidated_at", account.aiSummaryInvalidatedAt)}\n`);
+    chunks.push(`      ${xmlTag("ai_summary_model", account.aiSummaryModel || "")}\n`);
+    chunks.push("      <notes></notes>\n");
+    chunks.push(`      <following>${arrayToXml(followingMap.get(account.id) || [], "account_id")}</following>\n`);
+    chunks.push(`      <followers>${arrayToXml(followersMap.get(account.id) || [], "account_id")}</followers>\n`);
+    chunks.push(`      ${xmlTag("internal_account_creation_date", account.internalAccountCreationDate)}\n`);
+    chunks.push(`      ${xmlTag("internal_account_creation_type", account.internalAccountCreationType)}\n`);
+    chunks.push(`      ${xmlTag("last_scraped_at", account.lastScrapedAt)}\n`);
+    chunks.push(`      ${xmlTag("current_posts", account.currentPosts || "")}\n`);
+    chunks.push(`      ${xmlTag("deleted_posts", account.deletedPosts || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", account.createdAt)}\n`);
+    chunks.push("    </social_account>\n");
   }
-  xml += '  </social_accounts>\n';
+  chunks.push("  </social_accounts>\n");
 
-  await storage.updateTaskProgress(taskId, 68, "Exporting social account types…");
+  // ── Social follows (explicit table preserving detectedAt & source) ──
+  chunks.push("  <social_follows>\n");
+  for (const edge of allFollows) {
+    chunks.push("    <social_follow>\n");
+    chunks.push(`      ${xmlTag("follower_id", edge.followerId)}\n`);
+    chunks.push(`      ${xmlTag("followed_id", edge.followedId)}\n`);
+    chunks.push(`      ${xmlTag("detected_at", edge.detectedAt)}\n`);
+    chunks.push(`      ${xmlTag("source", edge.source || "")}\n`);
+    chunks.push("    </social_follow>\n");
+  }
+  chunks.push("  </social_follows>\n");
 
-  xml += '  <social_account_types>\n';
+  // ── Social account types ──
+  chunks.push("  <social_account_types>\n");
   for (const type of allSocialAccountTypes) {
-    xml += '    <social_account_type>\n';
-    xml += `      <id>${escapeXml(type.id)}</id>\n`;
-    xml += `      <name>${escapeXml(type.name)}</name>\n`;
-    xml += `      <color>${escapeXml(type.color)}</color>\n`;
-    xml += `      <created_at>${escapeXml(type.createdAt)}</created_at>\n`;
-    xml += '    </social_account_type>\n';
+    chunks.push("    <social_account_type>\n");
+    chunks.push(`      ${xmlTag("id", type.id)}\n`);
+    chunks.push(`      ${xmlTag("name", type.name)}\n`);
+    chunks.push(`      ${xmlTag("color", type.color)}\n`);
+    chunks.push(`      ${xmlTag("created_at", type.createdAt)}\n`);
+    chunks.push("    </social_account_type>\n");
   }
-  xml += '  </social_account_types>\n';
+  chunks.push("  </social_account_types>\n");
 
-  await storage.updateTaskProgress(taskId, 76, "Exporting posts…");
+  if (includePostHistory) {
+    await onProgress?.(55, "Exporting posts & comments…");
 
-  const allPosts = await storage.getAllPosts();
-  xml += '  <social_account_posts>\n';
-  for (const post of allPosts) {
-    xml += '    <social_account_post>\n';
-    xml += `      <id>${escapeXml(post.id)}</id>\n`;
-    xml += `      <social_account_id>${escapeXml(post.socialAccountId)}</social_account_id>\n`;
-    xml += `      <post_type>${escapeXml(post.postType)}</post_type>\n`;
-    xml += `      <content>${escapeXml(post.content || "")}</content>\n`;
-    xml += `      <description>${escapeXml(post.description || "")}</description>\n`;
-    xml += `      <like_count>${escapeXml(post.likeCount)}</like_count>\n`;
-    xml += `      <comment_count>${escapeXml(post.commentCount)}</comment_count>\n`;
-    xml += `      <mentioned_accounts>${escapeXml(post.mentionedAccounts || "")}</mentioned_accounts>\n`;
-    xml += `      <face_ids>${escapeXml(post.faceIds || "")}</face_ids>\n`;
-    xml += `      <is_deleted>${escapeXml(post.isDeleted)}</is_deleted>\n`;
-    xml += `      <posted_at>${escapeXml(post.postedAt || "")}</posted_at>\n`;
-    xml += `      <created_at>${escapeXml(post.createdAt)}</created_at>\n`;
-    xml += '    </social_account_post>\n';
-  }
-  xml += '  </social_account_posts>\n';
+    const [allPosts, allPostComments] = await Promise.all([
+      storage.getAllPosts(),
+      db.select().from(socialPostComments),
+    ]);
 
-  // Export photos (new)
-  xml += '  <photos>\n';
-  for (const photo of allPhotos) {
-    xml += '    <photo_entry>\n';
-    xml += `      <id>${escapeXml(photo.id)}</id>\n`;
-    xml += `      <location>${escapeXml(photo.location)}</location>\n`;
-    xml += `      <uploaded_at>${escapeXml(photo.uploadedAt)}</uploaded_at>\n`;
-    xml += `      <is_sub_image>${escapeXml(photo.isSubImage)}</is_sub_image>\n`;
-    xml += `      <processed_at>${escapeXml(photo.processedAt)}</processed_at>\n`;
-    xml += `      <image_description_at>${escapeXml(photo.imageDescriptionAt)}</image_description_at>\n`;
-    xml += `      <image_description>${escapeXml(photo.imageDescription || "")}</image_description>\n`;
-    xml += `      <face_id_at>${escapeXml(photo.faceIdAt)}</face_id_at>\n`;
-    xml += `      <face_uuids>${escapeXml(photo.faceUuids ? JSON.stringify(photo.faceUuids) : "")}</face_uuids>\n`;
-    xml += `      <prm_location>${escapeXml(mapPrmLocationExport(photo.prmLocation))}</prm_location>\n`;
-    xml += `      <metadata>${escapeXml(photo.metadata ? JSON.stringify(photo.metadata) : "")}</metadata>\n`;
-    xml += `      <og_metadata>${escapeXml(photo.ogMetadata ? JSON.stringify(photo.ogMetadata) : "")}</og_metadata>\n`;
-    xml += `      <file_hash>${escapeXml(photo.fileHash || "")}</file_hash>\n`;
-    xml += `      <width_px>${escapeXml(photo.widthPx)}</width_px>\n`;
-    xml += `      <height_px>${escapeXml(photo.heightPx)}</height_px>\n`;
-    xml += '    </photo_entry>\n';
-  }
-  xml += '  </photos>\n';
-
-  // Export lineages (new)
-  xml += '  <lineages>\n';
-  for (const lin of allLineages) {
-    const childId = lin.childId === mePersonId ? ZERO_UUID : lin.childId;
-    const parentId = lin.parentId === mePersonId ? ZERO_UUID : lin.parentId;
-    xml += '    <lineage_entry>\n';
-    xml += `      <id>${escapeXml(lin.id)}</id>\n`;
-    xml += `      <child_id>${escapeXml(childId)}</child_id>\n`;
-    xml += `      <parent_id>${escapeXml(parentId)}</parent_id>\n`;
-    xml += `      <lineage_type>${escapeXml(lin.lineageType)}</lineage_type>\n`;
-    xml += `      <created_at>${escapeXml(lin.createdAt)}</created_at>\n`;
-    xml += '    </lineage_entry>\n';
-  }
-  xml += '  </lineages>\n';
-
-  // Export partnerships (new)
-  xml += '  <partnerships>\n';
-  for (const part of allPartnerships) {
-    const person1Id = part.person1Id === mePersonId ? ZERO_UUID : part.person1Id;
-    const person2Id = part.person2Id === mePersonId ? ZERO_UUID : part.person2Id;
-    xml += '    <partnership_entry>\n';
-    xml += `      <id>${escapeXml(part.id)}</id>\n`;
-    xml += `      <person1_id>${escapeXml(person1Id)}</person1_id>\n`;
-    xml += `      <person2_id>${escapeXml(person2Id)}</person2_id>\n`;
-    xml += `      <status>${escapeXml(part.status)}</status>\n`;
-    xml += `      <created_at>${escapeXml(part.createdAt)}</created_at>\n`;
-    xml += '    </partnership_entry>\n';
-  }
-  xml += '  </partnerships>\n';
-
-  // Export daily notes (new)
-  xml += '  <daily_notes>\n';
-  for (const dn of allDailyNotes) {
-    xml += '    <daily_note_entry>\n';
-    xml += `      <id>${escapeXml(dn.id)}</id>\n`;
-    xml += `      <date>${escapeXml(dn.date)}</date>\n`;
-    xml += `      <user_title>${escapeXml(dn.userTitle)}</user_title>\n`;
-    xml += `      <body>${escapeXml(dn.body)}</body>\n`;
-    xml += `      <created_at>${escapeXml(dn.createdAt)}</created_at>\n`;
-    xml += `      <updated_at>${escapeXml(dn.updatedAt)}</updated_at>\n`;
-    xml += '    </daily_note_entry>\n';
-  }
-  xml += '  </daily_notes>\n';
-
-  // Export daily note events (new)
-  xml += '  <daily_note_events>\n';
-  for (const ev of allDailyNoteEvents) {
-    xml += '    <daily_note_event_entry>\n';
-    xml += `      <id>${escapeXml(ev.id)}</id>\n`;
-    xml += `      <daily_note_id>${escapeXml(ev.dailyNoteId)}</daily_note_id>\n`;
-    xml += `      <text>${escapeXml(ev.text)}</text>\n`;
-    xml += `      <position>${escapeXml(ev.position)}</position>\n`;
-    xml += `      <created_at>${escapeXml(ev.createdAt)}</created_at>\n`;
-    xml += '    </daily_note_event_entry>\n';
-  }
-  xml += '  </daily_note_events>\n';
-
-  // Export daily note involved parties (new)
-  xml += '  <daily_note_involved_parties>\n';
-  for (const party of allDailyNoteInvolvedParties) {
-    let refId = party.refId;
-    if (party.partyType === "person" && refId === mePersonId) {
-      refId = ZERO_UUID;
+    chunks.push("  <social_account_posts>\n");
+    for (const post of allPosts) {
+      chunks.push("    <social_account_post>\n");
+      chunks.push(`      ${xmlTag("id", post.id)}\n`);
+      chunks.push(`      ${xmlTag("social_account_id", post.socialAccountId)}\n`);
+      chunks.push(`      ${xmlJsonTag("coauthor_account_ids", post.coauthorAccountIds)}\n`);
+      chunks.push(`      ${xmlTag("post_type", post.postType)}\n`);
+      chunks.push(`      ${xmlTag("instagram_pk", post.instagramPk || "")}\n`);
+      chunks.push(`      ${xmlTag("content", post.content || "")}\n`);
+      chunks.push(`      ${xmlTag("description", post.description || "")}\n`);
+      chunks.push(`      ${xmlTag("like_count", post.likeCount)}\n`);
+      chunks.push(`      ${xmlTag("likes_hidden", post.likesHidden)}\n`);
+      chunks.push(`      ${xmlTag("comment_count", post.commentCount)}\n`);
+      chunks.push(`      ${xmlTag("mentioned_accounts", post.mentionedAccounts || "")}\n`);
+      chunks.push(`      ${xmlTag("face_ids", post.faceIds || "")}\n`);
+      chunks.push(`      ${xmlTag("is_deleted", post.isDeleted)}\n`);
+      chunks.push(`      ${xmlTag("posted_at", post.postedAt)}\n`);
+      chunks.push(`      ${xmlJsonTag("metadata", post.metadata)}\n`);
+      chunks.push(`      ${xmlJsonTag("video_transcript", post.videoTranscript)}\n`);
+      chunks.push(`      ${xmlTag("video_transcript_at", post.videoTranscriptAt)}\n`);
+      chunks.push(`      ${xmlTag("scraped_from", post.scrapedFrom || "")}\n`);
+      chunks.push(`      ${xmlJsonTag("ai_summary", post.aiSummary)}\n`);
+      chunks.push(`      ${xmlTag("ai_summary_at", post.aiSummaryAt)}\n`);
+      chunks.push(`      ${xmlTag("ai_summary_model", post.aiSummaryModel || "")}\n`);
+      chunks.push(`      ${xmlTag("created_at", post.createdAt)}\n`);
+      chunks.push(`      ${xmlTag("updated_at", post.updatedAt)}\n`);
+      chunks.push("    </social_account_post>\n");
     }
-    xml += '    <daily_note_involved_party_entry>\n';
-    xml += `      <id>${escapeXml(party.id)}</id>\n`;
-    xml += `      <daily_note_id>${escapeXml(party.dailyNoteId)}</daily_note_id>\n`;
-    xml += `      <party_type>${escapeXml(party.partyType)}</party_type>\n`;
-    xml += `      <ref_id>${escapeXml(refId)}</ref_id>\n`;
-    xml += '    </daily_note_involved_party_entry>\n';
-  }
-  xml += '  </daily_note_involved_parties>\n';
+    chunks.push("  </social_account_posts>\n");
 
-  // Export daily note audit logs (new)
-  xml += '  <daily_note_audit_logs>\n';
-  for (const log of allDailyNoteAuditLogs) {
-    xml += '    <daily_note_audit_log_entry>\n';
-    xml += `      <id>${escapeXml(log.id)}</id>\n`;
-    xml += `      <daily_note_id>${escapeXml(log.dailyNoteId)}</daily_note_id>\n`;
-    xml += `      <action>${escapeXml(log.action)}</action>\n`;
-    xml += `      <timestamp>${escapeXml(log.timestamp)}</timestamp>\n`;
-    xml += `      <pin_used>${escapeXml(log.pinUsed)}</pin_used>\n`;
-    xml += '    </daily_note_audit_log_entry>\n';
+    chunks.push("  <social_post_comments>\n");
+    for (const c of allPostComments) {
+      chunks.push("    <social_post_comment>\n");
+      chunks.push(`      ${xmlTag("id", c.id)}\n`);
+      chunks.push(`      ${xmlTag("post_id", c.postId)}\n`);
+      chunks.push(`      ${xmlTag("instagram_comment_id", c.instagramCommentId)}\n`);
+      chunks.push(`      ${xmlTag("username", c.username)}\n`);
+      chunks.push(`      ${xmlTag("text", c.text)}\n`);
+      chunks.push(`      ${xmlTag("like_count", c.likeCount)}\n`);
+      chunks.push(`      ${xmlTag("posted_at", c.postedAt)}\n`);
+      chunks.push(`      ${xmlTag("created_at", c.createdAt)}\n`);
+      chunks.push(`      ${xmlTag("updated_at", c.updatedAt)}\n`);
+      chunks.push("    </social_post_comment>\n");
+    }
+    chunks.push("  </social_post_comments>\n");
   }
-  xml += '  </daily_note_audit_logs>\n';
 
-  // Export sex guesses queue (new)
-  xml += '  <sex_guess_records>\n';
+  await onProgress?.(65, "Exporting photos & face recognition data…");
+
+  // ── Photos ──
+  chunks.push("  <photos>\n");
+  for (const photo of allPhotos) {
+    chunks.push("    <photo_entry>\n");
+    chunks.push(`      ${xmlTag("id", photo.id)}\n`);
+    chunks.push(`      ${xmlTag("location", photo.location)}\n`);
+    chunks.push(`      ${xmlTag("uploaded_at", photo.uploadedAt)}\n`);
+    chunks.push(`      ${xmlTag("is_sub_image", photo.isSubImage)}\n`);
+    chunks.push(`      ${xmlTag("processed_at", photo.processedAt)}\n`);
+    chunks.push(`      ${xmlTag("image_description_at", photo.imageDescriptionAt)}\n`);
+    chunks.push(`      ${xmlTag("image_description", photo.imageDescription || "")}\n`);
+    chunks.push(`      ${xmlTag("face_id_at", photo.faceIdAt)}\n`);
+    chunks.push(`      ${xmlJsonTag("face_uuids", photo.faceUuids)}\n`);
+    chunks.push(`      ${xmlJsonTag("facial_ids", photo.facialIds)}\n`);
+    chunks.push(`      ${xmlTag("ocr_at", photo.ocrAt)}\n`);
+    chunks.push(`      ${xmlJsonTag("ocr_data", photo.ocrData)}\n`);
+    chunks.push(`      ${xmlTag("prm_location", mapPrmLocationExport(photo.prmLocation))}\n`);
+    chunks.push(`      ${xmlJsonTag("metadata", photo.metadata)}\n`);
+    chunks.push(`      ${xmlJsonTag("og_metadata", photo.ogMetadata)}\n`);
+    chunks.push(`      ${xmlTag("file_hash", photo.fileHash || "")}\n`);
+    chunks.push(`      ${xmlTag("width_px", photo.widthPx)}\n`);
+    chunks.push(`      ${xmlTag("height_px", photo.heightPx)}\n`);
+    chunks.push(`      ${xmlTag("perceptual_hash", photo.perceptualHash || "")}\n`);
+    chunks.push("    </photo_entry>\n");
+  }
+  chunks.push("  </photos>\n");
+
+  // ── Faces ──
+  chunks.push("  <faces>\n");
+  for (const face of allFaces) {
+    chunks.push("    <face_entry>\n");
+    chunks.push(`      ${xmlTag("id", face.id)}\n`);
+    chunks.push(`      ${xmlTag("photo_id", face.photoId || "")}\n`);
+    chunks.push(`      ${xmlTag("s3_url", face.s3Url)}\n`);
+    chunks.push(`      ${xmlJsonTag("embedding", face.embedding)}\n`);
+    chunks.push(`      ${xmlTag("personface_uuid", face.personfaceUuid || "")}\n`);
+    chunks.push(`      ${xmlTag("detection_confidence", face.detectionConfidence || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("coordinates", face.coordinates)}\n`);
+    chunks.push(`      ${xmlTag("created_at", face.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("dismissed_at", face.dismissedAt)}\n`);
+    chunks.push(`      ${xmlTag("pitch", face.pitch)}\n`);
+    chunks.push(`      ${xmlTag("roll", face.roll)}\n`);
+    chunks.push(`      ${xmlTag("yaw", face.yaw)}\n`);
+    chunks.push(`      ${xmlTag("auto_match_score", face.autoMatchScore)}\n`);
+    chunks.push("    </face_entry>\n");
+  }
+  chunks.push("  </faces>\n");
+
+  // ── Face pair dismissals ──
+  chunks.push("  <face_pair_dismissals>\n");
+  for (const d of allFacePairDismissals) {
+    chunks.push("    <face_pair_dismissal>\n");
+    chunks.push(`      ${xmlTag("id", d.id)}\n`);
+    chunks.push(`      ${xmlTag("group_a_uuid", d.groupAUuid)}\n`);
+    chunks.push(`      ${xmlTag("group_b_uuid", d.groupBUuid)}\n`);
+    chunks.push(`      ${xmlTag("created_at", d.createdAt)}\n`);
+    chunks.push("    </face_pair_dismissal>\n");
+  }
+  chunks.push("  </face_pair_dismissals>\n");
+
+  // ── Image questions ──
+  chunks.push("  <image_questions>\n");
+  for (const q of allImageQuestions) {
+    chunks.push("    <image_question>\n");
+    chunks.push(`      ${xmlTag("id", q.id)}\n`);
+    chunks.push(`      ${xmlTag("photo_id", q.photoId)}\n`);
+    chunks.push(`      ${xmlTag("face_uuid", q.faceUuid || "")}\n`);
+    chunks.push(`      ${xmlTag("sub_image_url", q.subImageUrl)}\n`);
+    chunks.push(`      ${xmlJsonTag("coordinates", q.coordinates)}\n`);
+    chunks.push(`      ${xmlTag("status", q.status)}\n`);
+    chunks.push(`      ${xmlTag("resolved_as", q.resolvedAs || "")}\n`);
+    chunks.push(`      ${xmlTag("resolved_person_id", mapPersonExport(q.resolvedPersonId))}\n`);
+    chunks.push(`      ${xmlTag("created_at", q.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("resolved_at", q.resolvedAt)}\n`);
+    chunks.push("    </image_question>\n");
+  }
+  chunks.push("  </image_questions>\n");
+
+  // ── Lineages ──
+  chunks.push("  <lineages>\n");
+  for (const lin of allLineages) {
+    chunks.push("    <lineage_entry>\n");
+    chunks.push(`      ${xmlTag("id", lin.id)}\n`);
+    chunks.push(`      ${xmlTag("child_id", mapPersonExport(lin.childId))}\n`);
+    chunks.push(`      ${xmlTag("parent_id", mapPersonExport(lin.parentId))}\n`);
+    chunks.push(`      ${xmlTag("lineage_type", lin.lineageType)}\n`);
+    chunks.push(`      ${xmlTag("created_at", lin.createdAt)}\n`);
+    chunks.push("    </lineage_entry>\n");
+  }
+  chunks.push("  </lineages>\n");
+
+  // ── Partnerships ──
+  chunks.push("  <partnerships>\n");
+  for (const part of allPartnerships) {
+    chunks.push("    <partnership_entry>\n");
+    chunks.push(`      ${xmlTag("id", part.id)}\n`);
+    chunks.push(`      ${xmlTag("person1_id", mapPersonExport(part.person1Id))}\n`);
+    chunks.push(`      ${xmlTag("person2_id", mapPersonExport(part.person2Id))}\n`);
+    chunks.push(`      ${xmlTag("status", part.status)}\n`);
+    chunks.push(`      ${xmlTag("created_at", part.createdAt)}\n`);
+    chunks.push("    </partnership_entry>\n");
+  }
+  chunks.push("  </partnerships>\n");
+
+  await onProgress?.(74, "Exporting daily notes, AI & OSINT records…");
+
+  // ── Daily notes ──
+  chunks.push("  <daily_notes>\n");
+  for (const dn of allDailyNotes) {
+    chunks.push("    <daily_note_entry>\n");
+    chunks.push(`      ${xmlTag("id", dn.id)}\n`);
+    chunks.push(`      ${xmlTag("date", dn.date)}\n`);
+    chunks.push(`      ${xmlTag("user_title", dn.userTitle)}\n`);
+    chunks.push(`      ${xmlTag("body", dn.body)}\n`);
+    chunks.push(`      ${xmlTag("status", dn.status)}\n`);
+    chunks.push(`      ${xmlTag("created_at", dn.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("updated_at", dn.updatedAt)}\n`);
+    chunks.push("    </daily_note_entry>\n");
+  }
+  chunks.push("  </daily_notes>\n");
+
+  // ── Daily note events ──
+  chunks.push("  <daily_note_events>\n");
+  for (const ev of allDailyNoteEvents) {
+    chunks.push("    <daily_note_event_entry>\n");
+    chunks.push(`      ${xmlTag("id", ev.id)}\n`);
+    chunks.push(`      ${xmlTag("daily_note_id", ev.dailyNoteId)}\n`);
+    chunks.push(`      ${xmlTag("text", ev.text)}\n`);
+    chunks.push(`      ${xmlTag("position", ev.position)}\n`);
+    chunks.push(`      ${xmlTag("created_at", ev.createdAt)}\n`);
+    chunks.push("    </daily_note_event_entry>\n");
+  }
+  chunks.push("  </daily_note_events>\n");
+
+  // ── Daily note involved parties ──
+  chunks.push("  <daily_note_involved_parties>\n");
+  for (const party of allDailyNoteInvolvedParties) {
+    const refId = party.partyType === "person" ? mapPersonExport(party.refId) : party.refId;
+    chunks.push("    <daily_note_involved_party_entry>\n");
+    chunks.push(`      ${xmlTag("id", party.id)}\n`);
+    chunks.push(`      ${xmlTag("daily_note_id", party.dailyNoteId)}\n`);
+    chunks.push(`      ${xmlTag("party_type", party.partyType)}\n`);
+    chunks.push(`      ${xmlTag("ref_id", refId)}\n`);
+    chunks.push("    </daily_note_involved_party_entry>\n");
+  }
+  chunks.push("  </daily_note_involved_parties>\n");
+
+  // ── Daily note audit logs ──
+  chunks.push("  <daily_note_audit_logs>\n");
+  for (const audit of allDailyNoteAuditLogs) {
+    chunks.push("    <daily_note_audit_log_entry>\n");
+    chunks.push(`      ${xmlTag("id", audit.id)}\n`);
+    chunks.push(`      ${xmlTag("daily_note_id", audit.dailyNoteId)}\n`);
+    chunks.push(`      ${xmlTag("action", audit.action)}\n`);
+    chunks.push(`      ${xmlTag("timestamp", audit.timestamp)}\n`);
+    chunks.push(`      ${xmlTag("pin_used", audit.pinUsed)}\n`);
+    chunks.push("    </daily_note_audit_log_entry>\n");
+  }
+  chunks.push("  </daily_note_audit_logs>\n");
+
+  // ── Sex guess records ──
+  chunks.push("  <sex_guess_records>\n");
   for (const guess of allSexGuesses) {
-    const personId = guess.personId === mePersonId ? ZERO_UUID : guess.personId;
-    xml += '    <sex_guess_entry>\n';
-    xml += `      <id>${escapeXml(guess.id)}</id>\n`;
-    xml += `      <person_id>${escapeXml(personId)}</person_id>\n`;
-    xml += `      <guessed_sex>${escapeXml(guess.guessedSex)}</guessed_sex>\n`;
-    xml += `      <reasoning>${escapeXml(guess.reasoning)}</reasoning>\n`;
-    xml += `      <date_added>${escapeXml(guess.dateAdded)}</date_added>\n`;
-    xml += `      <answered>${escapeXml(guess.answered)}</answered>\n`;
-    xml += `      <snooze_until>${escapeXml(guess.snoozedUntil)}</snooze_until>\n`;
-    xml += '    </sex_guess_entry>\n';
+    chunks.push("    <sex_guess_entry>\n");
+    chunks.push(`      ${xmlTag("id", guess.id)}\n`);
+    chunks.push(`      ${xmlTag("person_id", mapPersonExport(guess.personId))}\n`);
+    chunks.push(`      ${xmlTag("guessed_sex", guess.guessedSex)}\n`);
+    chunks.push(`      ${xmlTag("reasoning", guess.reasoning)}\n`);
+    chunks.push(`      ${xmlTag("date_added", guess.dateAdded)}\n`);
+    chunks.push(`      ${xmlTag("answered", guess.answered)}\n`);
+    chunks.push(`      ${xmlTag("snooze_until", guess.snoozedUntil)}\n`);
+    chunks.push("    </sex_guess_entry>\n");
   }
-  xml += '  </sex_guess_records>\n';
+  chunks.push("  </sex_guess_records>\n");
 
-  // Export AI chats (new)
-  xml += '  <ai_chats>\n';
+  // ── AI Providers ──
+  chunks.push("  <ai_providers>\n");
+  for (const prov of allAiProviders) {
+    chunks.push("    <ai_provider>\n");
+    chunks.push(`      ${xmlTag("id", prov.id)}\n`);
+    chunks.push(`      ${xmlTag("name", prov.name)}\n`);
+    chunks.push(`      ${xmlTag("kind", prov.kind)}\n`);
+    chunks.push(`      ${xmlTag("base_url", prov.baseUrl)}\n`);
+    chunks.push(`      ${xmlTag("auth_type", prov.authType)}\n`);
+    chunks.push(`      ${xmlTag("username", prov.username || "")}\n`);
+    chunks.push(`      ${xmlTag("secret", prov.secret || "")}\n`);
+    chunks.push(`      ${xmlTag("is_default", prov.isDefault)}\n`);
+    chunks.push(`      ${xmlTag("is_external", prov.isExternal)}\n`);
+    chunks.push(`      ${xmlTag("created_at", prov.createdAt)}\n`);
+    chunks.push("    </ai_provider>\n");
+  }
+  chunks.push("  </ai_providers>\n");
+
+  // ── AI Chats ──
+  chunks.push("  <ai_chats>\n");
   for (const chat of allAiChats) {
-    if (chat.userId !== payload.userId) continue;
-    xml += '    <ai_chat_entry>\n';
-    xml += `      <id>${escapeXml(chat.id)}</id>\n`;
-    xml += `      <title>${escapeXml(chat.title)}</title>\n`;
-    xml += `      <system_message>${escapeXml(chat.systemMessage)}</system_message>\n`;
-    xml += `      <model>${escapeXml(chat.model)}</model>\n`;
-    xml += `      <messages>${escapeXml(chat.messages ? JSON.stringify(chat.messages) : "[]")}</messages>\n`;
-    xml += `      <created_at>${escapeXml(chat.createdAt)}</created_at>\n`;
-    xml += `      <updated_at>${escapeXml(chat.updatedAt)}</updated_at>\n`;
-    xml += '    </ai_chat_entry>\n';
+    chunks.push("    <ai_chat_entry>\n");
+    chunks.push(`      ${xmlTag("id", chat.id)}\n`);
+    chunks.push(`      ${xmlTag("title", chat.title)}\n`);
+    chunks.push(`      ${xmlTag("system_message", chat.systemMessage || "")}\n`);
+    chunks.push(`      ${xmlTag("model", chat.model || "")}\n`);
+    chunks.push(`      ${xmlTag("provider_id", chat.providerId || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("messages", chat.messages || [])}\n`);
+    chunks.push(`      ${xmlTag("agent_mode", chat.agentMode)}\n`);
+    chunks.push(`      ${xmlTag("created_at", chat.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("updated_at", chat.updatedAt)}\n`);
+    chunks.push("    </ai_chat_entry>\n");
   }
-  xml += '  </ai_chats>\n';
+  chunks.push("  </ai_chats>\n");
 
-  // Export app settings (new)
-  xml += '  <app_settings_list>\n';
+  // ── App settings ──
+  chunks.push("  <app_settings_list>\n");
   for (const setting of allAppSettings) {
-    xml += '    <app_setting_entry>\n';
-    xml += `      <key>${escapeXml(setting.key)}</key>\n`;
-    xml += `      <value>${escapeXml(setting.value)}</value>\n`;
-    xml += '    </app_setting_entry>\n';
+    const val = setting.key === "me_person_id" ? mapPersonExport(setting.value) : setting.value;
+    chunks.push("    <app_setting_entry>\n");
+    chunks.push(`      ${xmlTag("key", setting.key)}\n`);
+    chunks.push(`      ${xmlTag("value", val)}\n`);
+    chunks.push("    </app_setting_entry>\n");
   }
-  xml += '  </app_settings_list>\n';
+  chunks.push("  </app_settings_list>\n");
+
+  // ── TruePersonSearch ──
+  chunks.push("  <true_person_search>\n");
+  for (const tps of allTps) {
+    chunks.push("    <true_person_search_entry>\n");
+    chunks.push(`      ${xmlTag("id", tps.id)}\n`);
+    chunks.push(`      ${xmlTag("tps_id", tps.tpsId)}\n`);
+    chunks.push(`      ${xmlTag("person_id", mapPersonExport(tps.personId))}\n`);
+    chunks.push(`      ${xmlTag("import_date", tps.importDate)}\n`);
+    chunks.push(`      ${xmlTag("full_name", tps.fullName || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("akas", tps.akas)}\n`);
+    chunks.push(`      ${xmlTag("birthday", tps.birthday || "")}\n`);
+    chunks.push(`      ${xmlTag("current_address", tps.currentAddress || "")}\n`);
+    chunks.push(`      ${xmlTag("current_address_property_details", tps.currentAddressPropertyDetails || "")}\n`);
+    chunks.push(`      ${xmlTag("current_address_property_url", tps.currentAddressPropertyUrl || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("addresses", tps.addresses)}\n`);
+    chunks.push(`      ${xmlJsonTag("phone_numbers", tps.phoneNumbers)}\n`);
+    chunks.push(`      ${xmlJsonTag("emails", tps.emails)}\n`);
+    chunks.push(`      ${xmlJsonTag("relatives", tps.relatives)}\n`);
+    chunks.push(`      ${xmlJsonTag("associates", tps.associates)}\n`);
+    chunks.push(`      ${xmlTag("background_profile", tps.backgroundProfile || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", tps.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("updated_at", tps.updatedAt)}\n`);
+    chunks.push("    </true_person_search_entry>\n");
+  }
+  chunks.push("  </true_person_search>\n");
+
+  // ── Pending social account imports ──
+  chunks.push("  <pending_social_account_imports>\n");
+  for (const p of allPendingImports) {
+    chunks.push("    <pending_social_account_import>\n");
+    chunks.push(`      ${xmlTag("id", p.id)}\n`);
+    chunks.push(`      ${xmlTag("timestamp_added", p.timestampAdded)}\n`);
+    chunks.push(`      ${xmlTag("timestamp_imported", p.timestampImported)}\n`);
+    chunks.push(`      ${xmlTag("already_added", p.alreadyAdded)}\n`);
+    chunks.push(`      ${xmlTag("account_username", p.accountUsername)}\n`);
+    chunks.push(`      ${xmlTag("account_display_name", p.accountDisplayName || "")}\n`);
+    chunks.push(`      ${xmlTag("account_bio", p.accountBio || "")}\n`);
+    chunks.push(`      ${xmlTag("account_website", p.accountWebsite || "")}\n`);
+    chunks.push(`      ${xmlTag("account_email", p.accountEmail || "")}\n`);
+    chunks.push(`      ${xmlTag("account_phone", p.accountPhone || "")}\n`);
+    chunks.push(`      ${xmlTag("account_location_area", p.accountLocationArea || "")}\n`);
+    chunks.push(`      ${xmlTag("account_followers", p.accountFollowers || "")}\n`);
+    chunks.push(`      ${xmlTag("account_following", p.accountFollowing || "")}\n`);
+    chunks.push(`      ${xmlTag("account_image_url", p.accountImageUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("account_followers_count", p.accountFollowersCount)}\n`);
+    chunks.push(`      ${xmlTag("account_following_count", p.accountFollowingCount)}\n`);
+    chunks.push(`      ${xmlTag("import_type", p.importType)}\n`);
+    chunks.push(`      ${xmlTag("capture_scope", p.captureScope)}\n`);
+    chunks.push(`      ${xmlTag("created_at", p.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("updated_at", p.updatedAt)}\n`);
+    chunks.push("    </pending_social_account_import>\n");
+  }
+  chunks.push("  </pending_social_account_imports>\n");
+
+  // ── Insights ──
+  chunks.push("  <insights>\n");
+  for (const ins of allInsights) {
+    const peopleIds = (ins.applicablePeopleIds || []).map(id => mapPersonExport(id));
+    chunks.push("    <insight>\n");
+    chunks.push(`      ${xmlTag("id", ins.id)}\n`);
+    chunks.push(`      ${xmlTag("type", ins.type)}\n`);
+    chunks.push(`      ${xmlTag("source", ins.source)}\n`);
+    chunks.push(`      ${xmlTag("collected_at", ins.collectedAt)}\n`);
+    chunks.push(`      ${xmlTag("raw_text", ins.rawText || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("data", ins.data)}\n`);
+    chunks.push(`      <applicable_people_ids>${arrayToXml(peopleIds, "person_id")}</applicable_people_ids>\n`);
+    chunks.push(`      <applicable_social_account_ids>${arrayToXml(ins.applicableSocialAccountIds || [], "account_id")}</applicable_social_account_ids>\n`);
+    chunks.push("    </insight>\n");
+  }
+  chunks.push("  </insights>\n");
+
+  // ── OSINT Scans ──
+  chunks.push("  <osint_scans>\n");
+  for (const scan of allOsintScans) {
+    chunks.push("    <osint_scan>\n");
+    chunks.push(`      ${xmlTag("id", scan.id)}\n`);
+    chunks.push(`      ${xmlTag("tool", scan.tool)}\n`);
+    chunks.push(`      ${xmlTag("target", scan.target)}\n`);
+    chunks.push(`      ${xmlTag("target_type", scan.targetType)}\n`);
+    chunks.push(`      ${xmlJsonTag("options", scan.options)}\n`);
+    chunks.push(`      ${xmlTag("social_account_id", scan.socialAccountId || "")}\n`);
+    chunks.push(`      ${xmlTag("person_id", mapPersonExport(scan.personId))}\n`);
+    chunks.push(`      ${xmlTag("status", scan.status)}\n`);
+    chunks.push(`      ${xmlTag("attempts", scan.attempts)}\n`);
+    chunks.push(`      ${xmlTag("compute_job_id", scan.computeJobId || "")}\n`);
+    chunks.push(`      ${xmlTag("error", scan.error || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("result", scan.result)}\n`);
+    chunks.push(`      ${xmlTag("created_at", scan.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("started_at", scan.startedAt)}\n`);
+    chunks.push(`      ${xmlTag("completed_at", scan.completedAt)}\n`);
+    chunks.push("    </osint_scan>\n");
+  }
+  chunks.push("  </osint_scans>\n");
+
+  await onProgress?.(82, "Exporting story importers, messages & geocodes…");
+
+  // ── Story importers ──
+  chunks.push("  <story_importers>\n");
+  for (const imp of allStoryImporters) {
+    chunks.push("    <story_importer>\n");
+    chunks.push(`      ${xmlTag("id", imp.id)}\n`);
+    chunks.push(`      ${xmlTag("label", imp.label)}\n`);
+    chunks.push(`      ${xmlTag("service_url", imp.serviceUrl)}\n`);
+    chunks.push(`      ${xmlTag("service_secret", imp.serviceSecret)}\n`);
+    chunks.push(`      ${xmlTag("enabled", imp.enabled)}\n`);
+    chunks.push(`      ${xmlTag("run_every_days", imp.runEveryDays)}\n`);
+    chunks.push(`      ${xmlTag("run_window", imp.runWindow)}\n`);
+    chunks.push(`      ${xmlTag("skip_day_probability", imp.skipDayProbability)}\n`);
+    chunks.push(`      ${xmlTag("download_videos", imp.downloadVideos)}\n`);
+    chunks.push(`      ${xmlTag("next_run_at", imp.nextRunAt)}\n`);
+    chunks.push(`      ${xmlTag("last_username", imp.lastUsername || "")}\n`);
+    chunks.push(`      ${xmlTag("tracking_enabled", imp.trackingEnabled)}\n`);
+    chunks.push(`      ${xmlTag("tracking_window", imp.trackingWindow)}\n`);
+    chunks.push(`      ${xmlTag("tracking_max_jobs", imp.trackingMaxJobs)}\n`);
+    chunks.push(`      ${xmlTag("next_tracking_run_at", imp.nextTrackingRunAt)}\n`);
+    chunks.push(`      ${xmlTag("created_at", imp.createdAt)}\n`);
+    chunks.push("    </story_importer>\n");
+  }
+  chunks.push("  </story_importers>\n");
+
+  // ── Story scrape runs ──
+  chunks.push("  <story_scrape_runs>\n");
+  for (const run of allStoryScrapeRuns) {
+    chunks.push("    <story_scrape_run>\n");
+    chunks.push(`      ${xmlTag("id", run.id)}\n`);
+    chunks.push(`      ${xmlTag("importer_id", run.importerId || "")}\n`);
+    chunks.push(`      ${xmlTag("kind", run.kind)}\n`);
+    chunks.push(`      ${xmlTag("status", run.status)}\n`);
+    chunks.push(`      ${xmlTag("started_at", run.startedAt)}\n`);
+    chunks.push(`      ${xmlTag("finished_at", run.finishedAt)}\n`);
+    chunks.push(`      ${xmlJsonTag("counts", run.counts)}\n`);
+    chunks.push(`      ${xmlJsonTag("items", run.items)}\n`);
+    chunks.push(`      ${xmlTag("error", run.error || "")}\n`);
+    chunks.push(`      ${xmlTag("scraped_from", run.scrapedFrom || "")}\n`);
+    chunks.push(`      ${xmlTag("token_hash", run.tokenHash || "")}\n`);
+    chunks.push(`      ${xmlTag("token_expires_at", run.tokenExpiresAt)}\n`);
+    chunks.push("    </story_scrape_run>\n");
+  }
+  chunks.push("  </story_scrape_runs>\n");
+
+  // ── Tracking jobs ──
+  chunks.push("  <tracking_jobs>\n");
+  for (const job of allTrackingJobs) {
+    chunks.push("    <tracking_job>\n");
+    chunks.push(`      ${xmlTag("id", job.id)}\n`);
+    chunks.push(`      ${xmlTag("social_account_id", job.socialAccountId)}\n`);
+    chunks.push(`      ${xmlTag("kind", job.kind)}\n`);
+    chunks.push(`      ${xmlTag("origin", job.origin)}\n`);
+    chunks.push(`      ${xmlTag("status", job.status)}\n`);
+    chunks.push(`      ${xmlTag("importer_id", job.importerId || "")}\n`);
+    chunks.push(`      ${xmlTag("run_id", job.runId || "")}\n`);
+    chunks.push(`      ${xmlTag("batch_id", job.batchId || "")}\n`);
+    chunks.push(`      ${xmlTag("attempts", job.attempts)}\n`);
+    chunks.push(`      ${xmlJsonTag("result", job.result)}\n`);
+    chunks.push(`      ${xmlTag("error", job.error || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", job.createdAt)}\n`);
+    chunks.push(`      ${xmlTag("started_at", job.startedAt)}\n`);
+    chunks.push(`      ${xmlTag("finished_at", job.finishedAt)}\n`);
+    chunks.push("    </tracking_job>\n");
+  }
+  chunks.push("  </tracking_jobs>\n");
+
+  // ── Social account issues ──
+  chunks.push("  <social_account_issues>\n");
+  for (const iss of allSocialAccountIssues) {
+    chunks.push("    <social_account_issue>\n");
+    chunks.push(`      ${xmlTag("id", iss.id)}\n`);
+    chunks.push(`      ${xmlTag("social_account_id", iss.socialAccountId)}\n`);
+    chunks.push(`      ${xmlTag("kind", iss.kind)}\n`);
+    chunks.push(`      ${xmlTag("status", iss.status)}\n`);
+    chunks.push(`      ${xmlTag("job_id", iss.jobId || "")}\n`);
+    chunks.push(`      ${xmlTag("job_kind", iss.jobKind || "")}\n`);
+    chunks.push(`      ${xmlTag("times_seen", iss.timesSeen)}\n`);
+    chunks.push(`      ${xmlTag("first_seen_at", iss.firstSeenAt)}\n`);
+    chunks.push(`      ${xmlTag("last_seen_at", iss.lastSeenAt)}\n`);
+    chunks.push(`      ${xmlTag("resolution", iss.resolution || "")}\n`);
+    chunks.push(`      ${xmlTag("previous_username", iss.previousUsername || "")}\n`);
+    chunks.push(`      ${xmlTag("resolved_at", iss.resolvedAt)}\n`);
+    chunks.push("    </social_account_issue>\n");
+  }
+  chunks.push("  </social_account_issues>\n");
+
+  // ── Conversations ──
+  chunks.push("  <conversations>\n");
+  for (const conv of allConversations) {
+    chunks.push("    <conversation>\n");
+    chunks.push(`      ${xmlTag("id", conv.id)}\n`);
+    chunks.push(`      ${xmlTag("title", conv.title || "")}\n`);
+    chunks.push(`      ${xmlTag("channel_type", conv.channelType)}\n`);
+    chunks.push(`      ${xmlTag("social_account_id", conv.socialAccountId || "")}\n`);
+    chunks.push(`      ${xmlTag("external_url", conv.externalUrl || "")}\n`);
+    chunks.push(`      ${xmlJsonTag("metadata", conv.metadata)}\n`);
+    chunks.push(`      ${xmlTag("last_message_at", conv.lastMessageAt)}\n`);
+    chunks.push(`      ${xmlTag("import_date", conv.importDate)}\n`);
+    chunks.push(`      ${xmlTag("import_uuid", conv.importUuid || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", conv.createdAt)}\n`);
+    chunks.push("    </conversation>\n");
+  }
+  chunks.push("  </conversations>\n");
+
+  // ── Messages ──
+  chunks.push("  <messages>\n");
+  for (const msg of allMessages) {
+    chunks.push("    <message>\n");
+    chunks.push(`      ${xmlTag("id", msg.id)}\n`);
+    chunks.push(`      ${xmlTag("conversation_id", msg.conversationId)}\n`);
+    chunks.push(`      ${xmlTag("sender_person_id", mapPersonExport(msg.senderPersonId))}\n`);
+    chunks.push(`      ${xmlTag("sender_social_account_id", msg.senderSocialAccountId || "")}\n`);
+    chunks.push(`      ${xmlTag("content", msg.content || "")}\n`);
+    chunks.push(`      ${xmlTag("content_type", msg.contentType)}\n`);
+    chunks.push(`      <image_uuids>${arrayToXml(msg.imageUuids || [], "image_uuid")}</image_uuids>\n`);
+    chunks.push(`      ${xmlJsonTag("attachments", msg.attachments)}\n`);
+    chunks.push(`      ${xmlTag("external_id", msg.externalId || "")}\n`);
+    chunks.push(`      ${xmlTag("sent_at", msg.sentAt)}\n`);
+    chunks.push(`      ${xmlJsonTag("metadata", msg.metadata)}\n`);
+    chunks.push(`      ${xmlTag("import_date", msg.importDate)}\n`);
+    chunks.push(`      ${xmlTag("import_uuid", msg.importUuid || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", msg.createdAt)}\n`);
+    chunks.push("    </message>\n");
+  }
+  chunks.push("  </messages>\n");
+
+  // ── Message recipients ──
+  chunks.push("  <message_recipients>\n");
+  for (const rec of allMessageRecipients) {
+    chunks.push("    <message_recipient>\n");
+    chunks.push(`      ${xmlTag("id", rec.id)}\n`);
+    chunks.push(`      ${xmlTag("message_id", rec.messageId)}\n`);
+    chunks.push(`      ${xmlTag("person_id", mapPersonExport(rec.personId))}\n`);
+    chunks.push(`      ${xmlTag("social_account_id", rec.socialAccountId || "")}\n`);
+    chunks.push(`      ${xmlTag("recipient_type", rec.recipientType)}\n`);
+    chunks.push(`      ${xmlTag("import_date", rec.importDate)}\n`);
+    chunks.push(`      ${xmlTag("import_uuid", rec.importUuid || "")}\n`);
+    chunks.push("    </message_recipient>\n");
+  }
+  chunks.push("  </message_recipients>\n");
+
+  // ── Conversation participants ──
+  chunks.push("  <conversation_participants>\n");
+  for (const part of allConversationParticipants) {
+    chunks.push("    <conversation_participant>\n");
+    chunks.push(`      ${xmlTag("id", part.id)}\n`);
+    chunks.push(`      ${xmlTag("conversation_id", part.conversationId)}\n`);
+    chunks.push(`      ${xmlTag("person_id", mapPersonExport(part.personId))}\n`);
+    chunks.push(`      ${xmlTag("social_account_id", part.socialAccountId || "")}\n`);
+    chunks.push(`      ${xmlTag("role", part.role)}\n`);
+    chunks.push(`      ${xmlTag("joined_at", part.joinedAt)}\n`);
+    chunks.push(`      ${xmlTag("import_date", part.importDate)}\n`);
+    chunks.push(`      ${xmlTag("import_uuid", part.importUuid || "")}\n`);
+    chunks.push("    </conversation_participant>\n");
+  }
+  chunks.push("  </conversation_participants>\n");
+
+  // ── Geocodes ──
+  chunks.push("  <geocodes>\n");
+  for (const geo of allGeocodes) {
+    chunks.push("    <geocode>\n");
+    chunks.push(`      ${xmlTag("query", geo.query)}\n`);
+    chunks.push(`      ${xmlTag("status", geo.status)}\n`);
+    chunks.push(`      ${xmlTag("latitude", geo.latitude)}\n`);
+    chunks.push(`      ${xmlTag("longitude", geo.longitude)}\n`);
+    chunks.push(`      ${xmlTag("display_name", geo.displayName || "")}\n`);
+    chunks.push(`      ${xmlTag("geocoded_at", geo.geocodedAt)}\n`);
+    chunks.push("    </geocode>\n");
+  }
+  chunks.push("  </geocodes>\n");
 
   if (includeHistory) {
-    await storage.updateTaskProgress(taskId, 84, "Exporting profile history…");
+    await onProgress?.(90, "Exporting account history & network changes…");
 
+    const [allHistory, allHistoricalSummaries, allNetworkChanges] = await Promise.all([
+      db.select().from(socialAccountHistory),
+      db.select().from(historicalAccountSummaries),
+      storage.getAllNetworkChanges(),
+    ]);
 
-    xml += '  <social_network_snapshots>\n';
+    chunks.push("  <social_account_history>\n");
+    for (const h of allHistory) {
+      chunks.push("    <history_entry>\n");
+      chunks.push(`      ${xmlTag("id", h.id)}\n`);
+      chunks.push(`      ${xmlTag("social_account_id", h.socialAccountId)}\n`);
+      chunks.push(`      ${xmlTag("batch_id", h.batchId)}\n`);
+      chunks.push(`      ${xmlTag("entry_kind", h.entryKind)}\n`);
+      chunks.push(`      ${xmlTag("change_source", h.changeSource)}\n`);
+      chunks.push(`      ${xmlTag("capture_scope", h.captureScope)}\n`);
+      chunks.push(`      ${xmlTag("is_initial_capture", h.isInitialCapture)}\n`);
+      chunks.push(`      ${xmlTag("pending_import_id", h.pendingImportId || "")}\n`);
+      chunks.push(`      ${xmlTag("observed_via_account_id", h.observedViaAccountId || "")}\n`);
+      chunks.push(`      ${xmlTag("detected_at", h.detectedAt)}\n`);
+      chunks.push(`      ${xmlTag("followers_after", h.followersAfter)}\n`);
+      chunks.push(`      ${xmlTag("followers_added", h.followersAdded)}\n`);
+      chunks.push(`      ${xmlTag("followers_lost", h.followersLost)}\n`);
+      chunks.push(`      ${xmlTag("following_after", h.followingAfter)}\n`);
+      chunks.push(`      ${xmlTag("following_added", h.followingAdded)}\n`);
+      chunks.push(`      ${xmlTag("following_lost", h.followingLost)}\n`);
+      chunks.push(`      ${xmlTag("reported_followers_after", h.reportedFollowersAfter)}\n`);
+      chunks.push(`      ${xmlTag("reported_following_after", h.reportedFollowingAfter)}\n`);
+      chunks.push(`      ${xmlTag("posts_added", h.postsAdded)}\n`);
+      chunks.push(`      ${xmlTag("posts_deleted", h.postsDeleted)}\n`);
+      chunks.push(`      <profile_fields_changed>${arrayToXml(h.profileFieldsChanged || [], "field")}</profile_fields_changed>\n`);
+      chunks.push(`      ${xmlTag("previous_username", h.previousUsername || "")}\n`);
+      chunks.push(`      ${xmlTag("previous_nickname", h.previousNickname || "")}\n`);
+      chunks.push(`      ${xmlTag("previous_bio", h.previousBio || "")}\n`);
+      chunks.push(`      ${xmlTag("previous_location", h.previousLocation || "")}\n`);
+      chunks.push(`      ${xmlTag("previous_image_url", h.previousImageUrl || "")}\n`);
+      chunks.push(`      ${xmlTag("image_change", h.imageChange || "")}\n`);
+      chunks.push(`      ${xmlJsonTag("delta", h.delta)}\n`);
+      chunks.push("    </history_entry>\n");
+    }
+    chunks.push("  </social_account_history>\n");
+
+    chunks.push("  <historical_account_summaries>\n");
+    for (const hs of allHistoricalSummaries) {
+      chunks.push("    <historical_account_summary>\n");
+      chunks.push(`      ${xmlTag("id", hs.id)}\n`);
+      chunks.push(`      ${xmlTag("social_account_id", hs.socialAccountId)}\n`);
+      chunks.push(`      ${xmlJsonTag("content", hs.content)}\n`);
+      chunks.push(`      ${xmlTag("model", hs.model || "")}\n`);
+      chunks.push(`      ${xmlTag("created_at", hs.createdAt)}\n`);
+      chunks.push(`      ${xmlTag("invalidated_at", hs.invalidatedAt)}\n`);
+      chunks.push(`      ${xmlTag("replaced_at", hs.replacedAt)}\n`);
+      chunks.push("    </historical_account_summary>\n");
+    }
+    chunks.push("  </historical_account_summaries>\n");
+
+    chunks.push("  <social_network_snapshots>\n");
     for (const account of allSocialAccounts) {
       const snapFollowers = followersMap.get(account.id) || [];
       const snapFollowing = followingMap.get(account.id) || [];
       if (snapFollowers.length === 0 && snapFollowing.length === 0) continue;
-      xml += '    <social_network_snapshot>\n';
-      xml += `      <id>${escapeXml(account.id)}</id>\n`;
-      xml += `      <social_account_id>${escapeXml(account.id)}</social_account_id>\n`;
-      xml += `      <follower_count>${escapeXml(snapFollowers.length)}</follower_count>\n`;
-      xml += `      <following_count>${escapeXml(snapFollowing.length)}</following_count>\n`;
-      xml += `      <followers>${arrayToXml(snapFollowers, "account_id")}</followers>\n`;
-      xml += `      <following>${arrayToXml(snapFollowing, "account_id")}</following>\n`;
-      xml += `      <captured_at>${escapeXml(new Date())}</captured_at>\n`;
-      xml += '    </social_network_snapshot>\n';
+      chunks.push("    <social_network_snapshot>\n");
+      chunks.push(`      ${xmlTag("id", account.id)}\n`);
+      chunks.push(`      ${xmlTag("social_account_id", account.id)}\n`);
+      chunks.push(`      ${xmlTag("follower_count", snapFollowers.length)}\n`);
+      chunks.push(`      ${xmlTag("following_count", snapFollowing.length)}\n`);
+      chunks.push(`      <followers>${arrayToXml(snapFollowers, "account_id")}</followers>\n`);
+      chunks.push(`      <following>${arrayToXml(snapFollowing, "account_id")}</following>\n`);
+      chunks.push(`      ${xmlTag("captured_at", new Date())}\n`);
+      chunks.push("    </social_network_snapshot>\n");
     }
-    xml += '  </social_network_snapshots>\n';
+    chunks.push("  </social_network_snapshots>\n");
 
-    await storage.updateTaskProgress(taskId, 92, "Exporting network changes…");
-
-    const allNetworkChanges = await storage.getAllNetworkChanges();
-    xml += '  <social_network_changes>\n';
+    chunks.push("  <social_network_changes>\n");
     for (const change of allNetworkChanges) {
-      xml += '    <social_network_change>\n';
-      xml += `      <id>${escapeXml(change.id)}</id>\n`;
-      xml += `      <social_account_id>${escapeXml(change.socialAccountId)}</social_account_id>\n`;
-      xml += `      <change_type>${escapeXml(change.changeType)}</change_type>\n`;
-      xml += `      <direction>${escapeXml(change.direction)}</direction>\n`;
-      xml += `      <target_account_id>${escapeXml(change.targetAccountId)}</target_account_id>\n`;
-      xml += `      <detected_at>${escapeXml(change.detectedAt)}</detected_at>\n`;
-      xml += `      <batch_id>${escapeXml(change.batchId || "")}</batch_id>\n`;
-      xml += '    </social_network_change>\n';
+      chunks.push("    <social_network_change>\n");
+      chunks.push(`      ${xmlTag("id", change.id)}\n`);
+      chunks.push(`      ${xmlTag("social_account_id", change.socialAccountId)}\n`);
+      chunks.push(`      ${xmlTag("change_type", change.changeType)}\n`);
+      chunks.push(`      ${xmlTag("direction", change.direction)}\n`);
+      chunks.push(`      ${xmlTag("target_account_id", change.targetAccountId)}\n`);
+      chunks.push(`      ${xmlTag("detected_at", change.detectedAt)}\n`);
+      chunks.push(`      ${xmlTag("batch_id", change.batchId || "")}\n`);
+      chunks.push("    </social_network_change>\n");
     }
-    xml += '  </social_network_changes>\n';
+    chunks.push("  </social_network_changes>\n");
   }
 
-  xml += '</crm_data>';
+  chunks.push("</crm_data>");
+  return chunks.join("");
+}
 
-  await storage.updateTaskProgress(taskId, 99, "Saving file…");
+export async function writeExportXmlToFile(
+  filePath: string,
+  options: {
+    includeHistory?: boolean;
+    includePostHistory?: boolean;
+    onProgress?: (progress: number, message: string) => Promise<void> | void;
+  }
+): Promise<void> {
+  const xml = await generateExportXml(options);
+  await options.onProgress?.(99, "Saving file…");
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.promises.writeFile(filePath, xml, "utf8");
+}
 
+async function processExportXmlTask(taskId: string, payload: {
+  includeHistory?: boolean;
+  includePostHistory?: boolean;
+  filename?: string;
+}): Promise<string> {
   const backupsDir = path.join(process.cwd(), "backups");
-  if (!fs.existsSync(backupsDir)) {
-    fs.mkdirSync(backupsDir, { recursive: true });
-  }
   const nowStr = new Date().toISOString().replace(/[:.]/g, "-");
   let fileName = payload.filename
     ? (payload.filename.endsWith(".xml") ? payload.filename : `${payload.filename}.xml`)
@@ -891,63 +1555,64 @@ async function processExportXmlTask(taskId: string, payload: {
   if (!fileName.endsWith(".xml")) fileName += ".xml";
 
   const filePath = path.join(backupsDir, fileName);
-  fs.writeFileSync(filePath, xml, "utf8");
+  await writeExportXmlToFile(filePath, {
+    includeHistory: payload.includeHistory ?? false,
+    includePostHistory: payload.includePostHistory ?? true,
+    onProgress: (progress, message) => storage.updateTaskProgress(taskId, progress, message),
+  });
 
   return `backups/${fileName}`;
 }
 
-// ── Import XML task ──────────────────────────────────────────────────────────
+// ── Import XML Engine ────────────────────────────────────────────────────────
 
-async function processImportXmlTask(taskId: string, payload: {
-  xml?: string;
-  filePath?: string;
-  userId: number;
-}): Promise<string> {
-  let xmlText = payload.xml || "";
-  if (!xmlText && payload.filePath) {
-    const backupsDir = path.resolve(process.cwd(), "backups");
-    const safeFilename = path.basename(payload.filePath.replace(/\\/g, "/"));
-    const fullPath = path.resolve(backupsDir, safeFilename);
-    if (fullPath.startsWith(backupsDir + path.sep) && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-      xmlText = fs.readFileSync(fullPath, "utf8");
-    }
+export async function executeImportXml(
+  xmlText: string,
+  options?: {
+    includeHistory?: boolean;
+    includePostHistory?: boolean;
+    onProgress?: (progress: number, message: string) => Promise<void> | void;
   }
-  if (!xmlText) {
-    throw new Error("No XML data found for restore/import task");
-  }
+): Promise<{ imported: Record<string, number>; skipped: Record<string, number> }> {
+  const includeHistory = options?.includeHistory ?? true;
+  const includePostHistory = options?.includePostHistory ?? true;
+  const onProgress = options?.onProgress;
   const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 
-  const mePersonResult = await db.select().from(people).where(isNotNull(people.userId)).limit(1);
-  const mePersonId = mePersonResult[0]?.id || null;
+  const mePersonId = await storage.getMePersonId();
 
   const replaceZeroUUID = (uuid: string): string => {
     if (!mePersonId) return uuid;
     return uuid === ZERO_UUID ? mePersonId : uuid;
   };
 
-  const mapPrmLocationImport = (loc: string | null): string => {
-    if (!loc) return "";
-    if (mePersonId && loc.includes(ZERO_UUID)) {
-      return loc.replace(ZERO_UUID, mePersonId);
-    }
-    return loc;
-  };
-
-  let importedCounts: Record<string, number> = {
+  const importedCounts: Record<string, number> = {
     relationshipTypes: 0,
     interactionTypes: 0,
     people: 0,
     relationships: 0,
     groups: 0,
+    subGroups: 0,
     interactions: 0,
     notes: 0,
     groupNotes: 0,
+    schooling: 0,
     socialAccounts: 0,
     socialAccountTypes: 0,
+    socialFollows: 0,
     posts: 0,
+    postComments: 0,
     messages: 0,
+    conversations: 0,
+    messageRecipients: 0,
+    conversationParticipants: 0,
     networkChanges: 0,
+    socialAccountHistory: 0,
+    historicalAccountSummaries: 0,
     photos: 0,
+    faces: 0,
+    facePairDismissals: 0,
+    imageQuestions: 0,
     lineages: 0,
     partnerships: 0,
     dailyNotes: 0,
@@ -955,10 +1620,21 @@ async function processImportXmlTask(taskId: string, payload: {
     dailyNoteInvolvedParties: 0,
     dailyNoteAuditLogs: 0,
     sexGuessQueue: 0,
+    aiProviders: 0,
     aiChats: 0,
     appSettings: 0,
+    truePersonSearch: 0,
+    pendingSocialAccountImports: 0,
+    insights: 0,
+    osintScans: 0,
+    storyImporters: 0,
+    storyScrapeRuns: 0,
+    trackingJobs: 0,
+    socialAccountIssues: 0,
+    geocodes: 0,
+    ssoConfig: 0,
   };
-  let skippedCounts: Record<string, number> = {
+  const skippedCounts: Record<string, number> = {
     relationshipTypes: 0,
     interactionTypes: 0,
     people: 0,
@@ -969,291 +1645,391 @@ async function processImportXmlTask(taskId: string, payload: {
     messages: 0,
   };
 
-  await storage.updateTaskProgress(taskId, 5, "Loading existing data…");
+  await onProgress?.(5, "Loading existing data…");
 
   const [
+    allUsers,
     existingRelationshipTypes,
     existingInteractionTypes,
     existingPeople,
+    existingGroups,
     existingRelationships,
     existingInteractions,
     existingSocialAccounts,
+    existingSocialAccountTypes,
   ] = await Promise.all([
+    storage.getAllUsers(),
     storage.getAllRelationshipTypes(),
     storage.getAllInteractionTypes(),
     storage.getAllPeople(),
+    storage.getAllGroups(),
     storage.getAllRelationships(),
     storage.getAllInteractions(),
     storage.getAllSocialAccounts(),
+    storage.getAllSocialAccountTypes(),
   ]);
 
   const existingRelationshipTypeUuids = new Set(existingRelationshipTypes.map(t => t.id));
   const existingInteractionTypeUuids = new Set(existingInteractionTypes.map(t => t.id));
   const existingRelationshipUuids = new Set(existingRelationships.map(r => r.id));
   const existingInteractionUuids = new Set(existingInteractions.map(i => i.id));
-  const existingSocialAccountUuids = new Set(existingSocialAccounts.map(s => s.id));
+  const existingSocialAccountTypeUuids = new Set(existingSocialAccountTypes.map(t => t.id));
+  const existingPersonIds = new Set(existingPeople.map(p => p.id));
+  const existingGroupIds = new Set(existingGroups.map(g => g.id));
+
+  // Build O(1) lookup maps for existing social accounts
+  const existingAccountById = new Map<string, typeof existingSocialAccounts[number]>();
+  const existingAccountByTypeAndUsername = new Map<string, typeof existingSocialAccounts[number]>();
+  const existingSocialAccountUuids = new Set<string>();
+  for (const s of existingSocialAccounts) {
+    existingAccountById.set(s.id, s);
+    existingAccountByTypeAndUsername.set(`${s.typeId || ""}:${s.username.toLowerCase()}`, s);
+    existingSocialAccountUuids.add(s.id);
+  }
+
+  // Pre-scan social_accounts section so socialAccountIdMap is ready before importing photos, people, and groups
+  const socialAccountsSection = extractSection(xmlText, "social_accounts");
+  const socialAccountBlocks = parseAllTags("social_account", socialAccountsSection);
   const socialAccountIdMap = new Map<string, string>();
-
-  await storage.updateTaskProgress(taskId, 10, "Importing relationship types…");
-
-  for (const block of parseAllTags("relationship_type", xmlText)) {
+  for (const block of socialAccountBlocks) {
     const id = unescapeXml(parseXmlTag("id", block));
-    const name = unescapeXml(parseXmlTag("name", block));
-    const color = unescapeXml(parseXmlTag("color", block));
-    const notes = unescapeXml(parseXmlTag("notes", block));
-    if (existingRelationshipTypeUuids.has(id)) { skippedCounts.relationshipTypes++; continue; }
-    try {
-      await db.insert(relationshipTypes).values({ id, name, color, notes: notes || null, value: 50 }).onConflictDoNothing();
-      importedCounts.relationshipTypes++;
-      existingRelationshipTypeUuids.add(id);
-    } catch (e) { console.error(`Error importing relationship type ${id}:`, e); }
-  }
-
-  for (const block of parseAllTags("interaction_type", xmlText)) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const name = unescapeXml(parseXmlTag("name", block));
-    const color = unescapeXml(parseXmlTag("color", block));
-    const description = unescapeXml(parseXmlTag("description", block));
-    const value = parseInt(parseXmlTag("value", block)) || 50;
-    if (existingInteractionTypeUuids.has(id)) { skippedCounts.interactionTypes++; continue; }
-    try {
-      await db.insert(interactionTypes).values({ id, name, color, description: description || null, value }).onConflictDoNothing();
-      importedCounts.interactionTypes++;
-      existingInteractionTypeUuids.add(id);
-    } catch (e) { console.error(`Error importing interaction type ${id}:`, e); }
-  }
-
-  // Parse and import photos (import early so entity imageUuid references resolve)
-  const photoBlocks = parseAllTags("photo_entry", xmlText);
-  for (const block of photoBlocks) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const location = unescapeXml(parseXmlTag("location", block));
-    const uploadedAtStr = unescapeXml(parseXmlTag("uploaded_at", block));
-    const isSubImage = parseXmlTag("is_sub_image", block) === "true";
-    const processedAtStr = unescapeXml(parseXmlTag("processed_at", block));
-    const imageDescriptionAtStr = unescapeXml(parseXmlTag("image_description_at", block));
-    const imageDescription = unescapeXml(parseXmlTag("image_description", block));
-    const faceIdAtStr = unescapeXml(parseXmlTag("face_id_at", block));
-    const faceUuidsStr = unescapeXml(parseXmlTag("face_uuids", block));
-    const prmLocation = mapPrmLocationImport(unescapeXml(parseXmlTag("prm_location", block)));
-    const metadataStr = unescapeXml(parseXmlTag("metadata", block));
-    const ogMetadataStr = unescapeXml(parseXmlTag("og_metadata", block));
-    const fileHash = unescapeXml(parseXmlTag("file_hash", block));
-    const widthPxStr = unescapeXml(parseXmlTag("width_px", block));
-    const heightPxStr = unescapeXml(parseXmlTag("height_px", block));
-
-    try {
-      await db.insert(photos).values({
-        id, location,
-        uploadedAt: uploadedAtStr ? new Date(uploadedAtStr) : new Date(),
-        isSubImage,
-        processedAt: processedAtStr ? new Date(processedAtStr) : null,
-        imageDescriptionAt: imageDescriptionAtStr ? new Date(imageDescriptionAtStr) : null,
-        imageDescription: imageDescription || null,
-        faceIdAt: faceIdAtStr ? new Date(faceIdAtStr) : null,
-        faceUuids: faceUuidsStr ? JSON.parse(faceUuidsStr) : null,
-        prmLocation,
-        metadata: metadataStr ? JSON.parse(metadataStr) : null,
-        ogMetadata: ogMetadataStr ? JSON.parse(ogMetadataStr) : null,
-        fileHash: fileHash || null,
-        widthPx: widthPxStr ? parseInt(widthPxStr) : null,
-        heightPx: heightPxStr ? parseInt(heightPxStr) : null,
-      }).onConflictDoNothing();
-      importedCounts.photos++;
-    } catch (e) {
-      console.error(`Error importing photo entry ${id}:`, e);
+    const username = unescapeXml(parseXmlTag("username", block));
+    const typeId = unescapeXml(parseXmlTag("type_id", block));
+    if (!id) continue;
+    const existing =
+      existingAccountById.get(id) ||
+      (username ? existingAccountByTypeAndUsername.get(`${typeId || ""}:${username.toLowerCase()}`) : undefined);
+    if (existing) {
+      socialAccountIdMap.set(id, existing.id);
+    } else {
+      socialAccountIdMap.set(id, id);
     }
   }
 
-  await storage.updateTaskProgress(taskId, 20, "Importing people…");
+  const mapSocialAccountId = (id: string | null | undefined): string => {
+    if (!id) return "";
+    return socialAccountIdMap.get(id) || id;
+  };
 
+  const mapPrmLocationImport = (loc: string | null): string => {
+    if (!loc) return "";
+    let out = loc;
+    if (mePersonId && out.includes(ZERO_UUID)) {
+      out = out.replace(ZERO_UUID, mePersonId);
+    }
+    return out;
+  };
+
+  // ── User profile & SSO config ──
+  const userProfileSection = extractSection(xmlText, "user_profile");
+  const currentUser = allUsers[0];
+  if (userProfileSection && currentUser) {
+    const importedNickname = parseOptStr(userProfileSection, "nickname");
+    const importedSsoEmail = parseOptStr(userProfileSection, "sso_email");
+    const userUpdates: Record<string, any> = {};
+    if (importedNickname && !currentUser.nickname) userUpdates.nickname = importedNickname;
+    if (importedSsoEmail && !currentUser.ssoEmail) userUpdates.ssoEmail = importedSsoEmail;
+    if (Object.keys(userUpdates).length > 0) {
+      try {
+        await db.update(users).set(userUpdates).where(eq(users.id, currentUser.id));
+      } catch (e) {
+        console.error("Error updating user_profile fields:", e);
+      }
+    }
+  }
+
+  const ssoSection = extractSection(xmlText, "sso_config");
+  if (ssoSection && currentUser) {
+    for (const block of parseAllTags("sso_config_entry", ssoSection)) {
+      const id = parseOptStr(block, "id");
+      if (!id) continue;
+      try {
+        await db.insert(ssoConfig).values({
+          id,
+          userId: currentUser.id,
+          enabled: parseOptInt(block, "enabled") ?? (parseOptBool(block, "enabled", false) ? 1 : 0),
+          autoSso: parseOptInt(block, "auto_sso") ?? (parseOptBool(block, "auto_sso", false) ? 1 : 0),
+          clientId: parseOptStr(block, "client_id") ?? "",
+          clientSecret: parseOptStr(block, "client_secret") ?? "",
+          authUrl: parseOptStr(block, "auth_url") ?? "",
+          tokenUrl: parseOptStr(block, "token_url") ?? "",
+          userInfoUrl: parseOptStr(block, "user_info_url") ?? "",
+          redirectUrl: parseOptStr(block, "redirect_url") ?? "",
+          logoutUrl: parseOptStr(block, "logout_url"),
+          userIdentifier: parseOptStr(block, "user_identifier") || "email",
+          scopes: parseOptStr(block, "scopes") || "openid profile email",
+          authStyle: parseOptStr(block, "auth_style") || "auto",
+          createdAt: parseOptDate(block, "created_at") ?? new Date(),
+          updatedAt: parseOptDate(block, "updated_at") ?? new Date(),
+        }).onConflictDoNothing();
+        importedCounts.ssoConfig++;
+      } catch (e) {
+        console.error(`Error importing sso_config ${id}:`, e);
+      }
+    }
+  }
+
+  await onProgress?.(10, "Importing relationship & interaction types…");
+
+  // ── Relationship types ──
+  const relTypesSection = extractSection(xmlText, "relationship_types");
+  for (const block of parseAllTags("relationship_type", relTypesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const name = unescapeXml(parseXmlTag("name", block));
+    const color = unescapeXml(parseXmlTag("color", block));
+    const notesVal = parseOptStr(block, "notes");
+    const value = parseOptInt(block, "value") ?? 50;
+    const createdAt = parseOptDate(block, "created_at") ?? new Date();
+    if (!id || !name) continue;
+    if (existingRelationshipTypeUuids.has(id)) {
+      skippedCounts.relationshipTypes++;
+      continue;
+    }
+    try {
+      await db.insert(relationshipTypes).values({
+        id,
+        name,
+        color,
+        notes: notesVal,
+        value,
+        createdAt,
+      }).onConflictDoNothing();
+      importedCounts.relationshipTypes++;
+      existingRelationshipTypeUuids.add(id);
+    } catch (e) {
+      console.error(`Error importing relationship type ${id}:`, e);
+    }
+  }
+
+  // ── Interaction types ──
+  const intTypesSection = extractSection(xmlText, "interaction_types");
+  for (const block of parseAllTags("interaction_type", intTypesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const name = unescapeXml(parseXmlTag("name", block));
+    const color = unescapeXml(parseXmlTag("color", block));
+    const description = parseOptStr(block, "description");
+    const value = parseOptInt(block, "value") ?? 50;
+    const createdAt = parseOptDate(block, "created_at") ?? new Date();
+    if (!id || !name) continue;
+    if (existingInteractionTypeUuids.has(id)) {
+      skippedCounts.interactionTypes++;
+      continue;
+    }
+    try {
+      await db.insert(interactionTypes).values({
+        id,
+        name,
+        color,
+        description,
+        value,
+        createdAt,
+      }).onConflictDoNothing();
+      importedCounts.interactionTypes++;
+      existingInteractionTypeUuids.add(id);
+    } catch (e) {
+      console.error(`Error importing interaction type ${id}:`, e);
+    }
+  }
+
+  // ── Social account types (import early so social accounts can reference them) ──
+  const socialAccountTypesSection = extractSection(xmlText, "social_account_types");
+  for (const block of parseAllTags("social_account_type", socialAccountTypesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const name = unescapeXml(parseXmlTag("name", block));
+    const color = unescapeXml(parseXmlTag("color", block));
+    const createdAt = parseOptDate(block, "created_at") ?? new Date();
+    if (!id || !name) continue;
+    if (existingSocialAccountTypeUuids.has(id)) {
+      skippedCounts.socialAccountTypes++;
+      continue;
+    }
+    try {
+      await db.insert(socialAccountTypes).values({
+        id,
+        name,
+        color,
+        createdAt,
+      }).onConflictDoNothing();
+      importedCounts.socialAccountTypes++;
+      existingSocialAccountTypeUuids.add(id);
+    } catch (e) {
+      console.error(`Error importing social account type ${id}:`, e);
+    }
+  }
+
+  // ── Photos (import early so entity imageUuid references resolve) ──
+  const existingPhotoIds = new Set(
+    (await db.select({ id: photos.id }).from(photos)).map(p => p.id)
+  );
+  const photosSection = extractSection(xmlText, "photos");
+  const photoBatch: (typeof photos.$inferInsert)[] = [];
+  for (const block of parseAllTags("photo_entry", photosSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const location = unescapeXml(parseXmlTag("location", block));
+    if (!id || !location) continue;
+    if (existingPhotoIds.has(id)) continue;
+
+    photoBatch.push({
+      id,
+      location,
+      uploadedAt: parseOptDate(block, "uploaded_at") ?? new Date(),
+      isSubImage: parseOptBool(block, "is_sub_image", false),
+      processedAt: parseOptDate(block, "processed_at"),
+      imageDescriptionAt: parseOptDate(block, "image_description_at"),
+      imageDescription: parseOptStr(block, "image_description"),
+      faceIdAt: parseOptDate(block, "face_id_at"),
+      faceUuids: parseOptJson<string[] | null>(block, "face_uuids", null),
+      facialIds: parseOptJson<string[] | null>(block, "facial_ids", null),
+      ocrAt: parseOptDate(block, "ocr_at"),
+      ocrData: parseOptJson<any>(block, "ocr_data", null),
+      prmLocation: mapPrmLocationImport(unescapeXml(parseXmlTag("prm_location", block))),
+      metadata: parseOptJson<any>(block, "metadata", null),
+      ogMetadata: parseOptJson<any>(block, "og_metadata", null),
+      fileHash: parseOptStr(block, "file_hash"),
+      widthPx: parseOptInt(block, "width_px"),
+      heightPx: parseOptInt(block, "height_px"),
+      perceptualHash: parseOptStr(block, "perceptual_hash"),
+    });
+    existingPhotoIds.add(id);
+  }
+  importedCounts.photos += await insertBatchWithFallback(photos, photoBatch, "photos");
+
+  await onProgress?.(20, "Importing people…");
+
+  // ── People ──
   const existingPeopleMap = new Map<string, boolean>();
   for (const p of existingPeople) {
     existingPeopleMap.set(`${p.firstName.toLowerCase()}:${p.id}`, true);
   }
-  for (const block of parseAllTags("person", xmlText)) {
+  const peopleSection = extractSection(xmlText, "people");
+  const peopleBatch: (typeof people.$inferInsert)[] = [];
+  for (const block of parseAllTags("person", peopleSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const firstName = unescapeXml(parseXmlTag("first_name", block));
     const lastName = unescapeXml(parseXmlTag("last_name", block));
-    const email = unescapeXml(parseXmlTag("email", block));
-    const phone = unescapeXml(parseXmlTag("phone", block));
-    const company = unescapeXml(parseXmlTag("company", block));
-    const title = unescapeXml(parseXmlTag("title", block));
-    const tags = parseXmlArray("tags", "tag", block);
-    const imageUrl = unescapeXml(parseXmlTag("image_url", block));
-    const socialAccountUuids = parseXmlArray("social_account_uuids", "social_account_uuid", block);
-    const isStarred = parseInt(parseXmlTag("is_starred", block)) || 0;
-    const eloScore = parseInt(parseXmlTag("elo_score", block)) || 1200;
-    const noSocialMedia = parseInt(parseXmlTag("no_social_media", block)) || 0;
-    const sex = unescapeXml(parseXmlTag("sex", block)) || "unknown";
-    const eloRankable = parseXmlTag("elo_rankable", block) !== "" ? (parseInt(parseXmlTag("elo_rankable", block)) || 0) : 1;
+    if (!id || !firstName) continue;
     const lookupKey = `${firstName.toLowerCase()}:${id}`;
-    if (existingPeopleMap.has(lookupKey)) { skippedCounts.people++; continue; }
-    try {
-      await storage.createPersonWithId({
-        id, firstName, lastName,
-        email: email || null, phone: phone || null, company: company || null, title: title || null,
-        tags: tags.length > 0 ? tags : [],
-        imageUrl: imageUrl || null,
-        socialAccountUuids: socialAccountUuids.length > 0 ? socialAccountUuids : [],
-        isStarred, eloScore, noSocialMedia,
-        sex, eloRankable,
-      });
-      importedCounts.people++;
-      existingPeopleMap.set(lookupKey, true);
-    } catch (e) { console.error(`Error importing person ${id}:`, e); }
+    if (existingPeopleMap.has(lookupKey) || existingPersonIds.has(id)) {
+      skippedCounts.people++;
+      continue;
+    }
+
+    const tags = parseXmlArray("tags", "tag", block);
+    const rawSocialUuids = parseXmlArray("social_account_uuids", "social_account_uuid", block);
+    const mappedSocialUuids = rawSocialUuids.map(u => mapSocialAccountId(u)).filter(Boolean);
+    const eloRankableRaw = parseXmlTag("elo_rankable", block);
+
+    peopleBatch.push({
+      id,
+      firstName,
+      lastName,
+      email: parseOptStr(block, "email"),
+      phone: parseOptStr(block, "phone"),
+      company: parseOptStr(block, "company"),
+      title: parseOptStr(block, "title"),
+      tags: tags.length > 0 ? tags : [],
+      imageUrl: parseOptStr(block, "image_url"),
+      socialAccountUuids: mappedSocialUuids.length > 0 ? mappedSocialUuids : [],
+      isStarred: parseOptInt(block, "is_starred") ?? 0,
+      eloScore: parseOptInt(block, "elo_score") ?? 1200,
+      noSocialMedia: parseOptInt(block, "no_social_media") ?? 0,
+      sex: parseOptStr(block, "sex") || "unknown",
+      eloRankable: eloRankableRaw !== "" ? (parseInt(eloRankableRaw, 10) || 0) : 1,
+      personfaceUuid: parseOptStr(block, "personface_uuid"),
+      maidenName: parseOptStr(block, "maiden_name"),
+      jobs: parseOptJson<any[]>(block, "jobs", []),
+      tpsId: parseOptStr(block, "tps_id"),
+      birthday: parseOptStr(block, "birthday"),
+      address: parseOptStr(block, "address"),
+      additionalEmails: parseOptJson<any[]>(block, "additional_emails", []),
+      additionalPhones: parseOptJson<any[]>(block, "additional_phones", []),
+      osintRuns: parseOptJson<any>(block, "osint_runs", null),
+      deniedRecommendations: parseOptJson<string[]>(block, "denied_recommendations", []),
+      lastDescribedAt: parseOptDate(block, "last_described_at"),
+      politicalLeftRight: parseOptFloat(block, "political_left_right"),
+      politicalLibAuth: parseOptFloat(block, "political_lib_auth"),
+      politicalUpdatedAt: parseOptDate(block, "political_updated_at"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingPeopleMap.set(lookupKey, true);
+    existingPersonIds.add(id);
   }
+  importedCounts.people += await insertBatchWithFallback(people, peopleBatch, "people");
 
-  await storage.updateTaskProgress(taskId, 30, "Importing groups…");
+  await onProgress?.(30, "Importing groups…");
 
-  for (const block of parseAllTags("group", xmlText)) {
+  // ── Groups (defer centerAccountId if socialAccount not yet in DB to break FK cycle) ──
+  const deferredGroupCenterAccounts: { groupId: string; centerAccountId: string }[] = [];
+  const groupsSection = extractSection(xmlText, "groups");
+  const groupsBatch: (typeof groups.$inferInsert)[] = [];
+  for (const block of parseAllTags("group", groupsSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const name = unescapeXml(parseXmlTag("name", block));
     const color = unescapeXml(parseXmlTag("color", block));
+    if (!id || !name || !color) continue;
+    if (existingGroupIds.has(id)) continue;
+
     const type = parseXmlArray("type", "group_type", block);
-    const members = parseXmlArray("members", "member_id", block);
-    const imageUrl = unescapeXml(parseXmlTag("image_url", block));
-    const processedMembers = members.map(m => replaceZeroUUID(m));
-    try {
-      await storage.createGroupWithId({
-        id, name, color,
-        type: type.length > 0 ? type : [],
-        members: processedMembers.length > 0 ? processedMembers : [],
-        imageUrl: imageUrl || null,
-      });
-      importedCounts.groups++;
-    } catch (e) { console.error(`Error importing group ${id}:`, e); }
+    const members = parseXmlArray("members", "member_id", block).map(m => replaceZeroUUID(m));
+    const crowdMode = parseOptStr(block, "crowd_mode") || "social_accounts";
+    let crowdMembers = parseXmlArray("crowd_members", "crowd_member_id", block);
+    if (crowdMembers.length === 0) {
+      crowdMembers = parseOptJson<string[]>(block, "crowd_members", []);
+    }
+    const processedCrowdMembers = crowdMembers.map(cm =>
+      crowdMode === "person_profiles" ? replaceZeroUUID(cm) : mapSocialAccountId(cm)
+    );
+
+    const rawCenterAccountId = parseOptStr(block, "center_account_id");
+    const mappedCenterAccountId = rawCenterAccountId ? mapSocialAccountId(rawCenterAccountId) : null;
+    const canSetCenterImmediately = mappedCenterAccountId && existingAccountById.has(mappedCenterAccountId);
+    if (mappedCenterAccountId && !canSetCenterImmediately) {
+      deferredGroupCenterAccounts.push({ groupId: id, centerAccountId: mappedCenterAccountId });
+    }
+
+    groupsBatch.push({
+      id,
+      name,
+      color,
+      type: type.length > 0 ? type : [],
+      members: members.length > 0 ? members : [],
+      imageUrl: parseOptStr(block, "image_url"),
+      centerAccountId: canSetCenterImmediately ? mappedCenterAccountId : null,
+      crowdMembers: processedCrowdMembers,
+      crowdLastCalculatedAt: parseOptDate(block, "crowd_last_calculated_at"),
+      crowdMode,
+      crowdFollowThreshold: parseOptInt(block, "crowd_follow_threshold") ?? 5,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingGroupIds.add(id);
   }
+  importedCounts.groups += await insertBatchWithFallback(groups, groupsBatch, "groups");
 
-  await storage.updateTaskProgress(taskId, 40, "Importing relationships & interactions…");
-
-  for (const block of parseAllTags("relationship", xmlText)) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const fromPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("from_person_id", block)));
-    const toPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("to_person_id", block)));
-    const typeId = unescapeXml(parseXmlTag("type_id", block)) || null;
-    const notes = unescapeXml(parseXmlTag("notes", block));
-    const familyRelationshipType = unescapeXml(parseXmlTag("family_relationship_type", block)) || null;
-    if (existingRelationshipUuids.has(id)) { skippedCounts.relationships++; continue; }
-    try {
-      await storage.createRelationshipWithId({
-        id, fromPersonId, toPersonId, typeId,
-        notes: notes || null,
-        familyRelationshipType: (familyRelationshipType || null) as any,
-      });
-      importedCounts.relationships++;
-      existingRelationshipUuids.add(id);
-    } catch (e) { console.error(`Error importing relationship ${id}:`, e); }
-  }
-
-  // Parse and import lineages (new)
-  const lineageBlocks = parseAllTags("lineage_entry", xmlText);
-  for (const block of lineageBlocks) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const childId = replaceZeroUUID(unescapeXml(parseXmlTag("child_id", block)));
-    const parentId = replaceZeroUUID(unescapeXml(parseXmlTag("parent_id", block)));
-    const lineageType = unescapeXml(parseXmlTag("lineage_type", block)) || "biological";
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-
-    try {
-      await db.insert(lineage).values({
-        id, childId, parentId, lineageType,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.lineages++;
-    } catch (e) { console.error(`Error importing lineage entry ${id}:`, e); }
-  }
-
-  // Parse and import partnerships (new)
-  const partnershipBlocks = parseAllTags("partnership_entry", xmlText);
-  for (const block of partnershipBlocks) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const person1Id = replaceZeroUUID(unescapeXml(parseXmlTag("person1_id", block)));
-    const person2Id = replaceZeroUUID(unescapeXml(parseXmlTag("person2_id", block)));
-    const status = unescapeXml(parseXmlTag("status", block)) || "partner";
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-
-    try {
-      await db.insert(partnerships).values({
-        id, person1Id, person2Id, status,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.partnerships++;
-    } catch (e) { console.error(`Error importing partnership entry ${id}:`, e); }
-  }
-
-  for (const block of parseAllTags("interaction", xmlText)) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const typeId = unescapeXml(parseXmlTag("type_id", block));
-    const interactionTitle = unescapeXml(parseXmlTag("title", block));
-    const date = unescapeXml(parseXmlTag("date", block));
-    const description = unescapeXml(parseXmlTag("description", block));
-    const imageUrl = unescapeXml(parseXmlTag("image_url", block));
-    const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
-    const peopleIds = parseXmlArray("people_ids", "person_id", block);
-    const groupIds = parseXmlArray("group_ids", "group_id", block);
-    const processedPeopleIds = peopleIds.map(p => replaceZeroUUID(p));
-    if (existingInteractionUuids.has(id)) { skippedCounts.interactions++; continue; }
-    try {
-      await storage.createInteractionWithId({
-        id, typeId: typeId || undefined,
-        title: interactionTitle || undefined,
-        date: new Date(date),
-        description: description || undefined,
-        peopleIds: processedPeopleIds.length > 0 ? processedPeopleIds : [],
-        groupIds: groupIds.length > 0 ? groupIds : [],
-        imageUrl: imageUrl || undefined,
-        imageUuid: imageUuid || undefined,
-      });
-      importedCounts.interactions++;
-      existingInteractionUuids.add(id);
-    } catch (e) { console.error(`Error importing interaction ${id}:`, e); }
-  }
-
-  await storage.updateTaskProgress(taskId, 52, "Importing notes…");
-
-  for (const block of parseAllTags("note", xmlText)) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const personId = unescapeXml(parseXmlTag("person_id", block));
-    const content = unescapeXml(parseXmlTag("content", block));
-    const imageUrl = unescapeXml(parseXmlTag("image_url", block));
-    const imageUuid = unescapeXml(parseXmlTag("image_uuid", block));
-    try {
-      await storage.createNoteWithId({ id, userId: payload.userId, personId, content, imageUrl: imageUrl || null, imageUuid: imageUuid || null });
-      importedCounts.notes++;
-    } catch (e) { console.error(`Error importing note ${id}:`, e); }
-  }
-
-  for (const block of parseAllTags("group_note", xmlText)) {
+  // ── Sub-groups ──
+  const subGroupsSection = extractSection(xmlText, "sub_groups");
+  const subGroupsBatch: (typeof subGroups.$inferInsert)[] = [];
+  for (const block of parseAllTags("sub_group_entry", subGroupsSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const groupId = unescapeXml(parseXmlTag("group_id", block));
-    const content = unescapeXml(parseXmlTag("content", block));
-    try {
-      await storage.createGroupNoteWithId({ id, groupId, content });
-      importedCounts.groupNotes++;
-    } catch (e) { console.error(`Error importing group note ${id}:`, e); }
-  }
-
-  await storage.updateTaskProgress(taskId, 62, "Importing social account types…");
-
-  const existingSocialAccountTypeUuids = new Set((await storage.getAllSocialAccountTypes()).map(t => t.id));
-  for (const block of parseAllTags("social_account_type", xmlText)) {
-    const id = unescapeXml(parseXmlTag("id", block));
     const name = unescapeXml(parseXmlTag("name", block));
     const color = unescapeXml(parseXmlTag("color", block));
-    if (existingSocialAccountTypeUuids.has(id)) { skippedCounts.socialAccountTypes = (skippedCounts.socialAccountTypes || 0) + 1; continue; }
-    try {
-      await storage.createSocialAccountTypeWithId({ id, name, color });
-      importedCounts.socialAccountTypes = (importedCounts.socialAccountTypes || 0) + 1;
-      existingSocialAccountTypeUuids.add(id);
-    } catch (e) { console.error(`Error importing social account type ${id}:`, e); }
+    if (!id || !groupId || !name || !color || !existingGroupIds.has(groupId)) continue;
+    const members = parseXmlArray("members", "member_id", block).map(m => replaceZeroUUID(m));
+    subGroupsBatch.push({
+      id,
+      groupId,
+      name,
+      color,
+      members,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
   }
+  importedCounts.subGroups += await insertBatchWithFallback(subGroups, subGroupsBatch, "sub_groups");
 
-  await storage.updateTaskProgress(taskId, 72, "Importing social accounts…");
+  await onProgress?.(40, "Importing social accounts…");
 
-  // Follow edges referenced in the file, keyed by the file's account ids.
-  // Resolved through socialAccountIdMap and inserted after all accounts exist.
-  const pendingFollowEdges: { followerId: string; followedId: string }[] = [];
+  // ── Social accounts (single-step insert with all columns) ──
+  const pendingFollowEdges: { followerId: string; followedId: string; detectedAt?: Date; source?: string }[] = [];
   const collectFollowEdges = (accountId: string, followerIds: string[], followingIds: string[]) => {
     for (const f of followerIds) {
       if (f) pendingFollowEdges.push({ followerId: f, followedId: accountId });
@@ -1263,26 +2039,20 @@ async function processImportXmlTask(taskId: string, payload: {
     }
   };
 
-  for (const block of parseAllTags("social_account", xmlText)) {
+  const socialAccountsBatch: (typeof socialAccounts.$inferInsert)[] = [];
+  for (const block of socialAccountBlocks) {
     const id = unescapeXml(parseXmlTag("id", block));
     const username = unescapeXml(parseXmlTag("username", block));
-    const nickname = unescapeXml(parseXmlTag("nickname", block));
-    const bio = unescapeXml(parseXmlTag("bio", block));
-    const accountUrl = unescapeXml(parseXmlTag("account_url", block));
-    const ownerUuid = unescapeXml(parseXmlTag("owner_uuid", block));
-    const typeId = unescapeXml(parseXmlTag("type_id", block));
-    const imageUrl = unescapeXml(parseXmlTag("image_url", block));
+    if (!id || !username) continue;
+
+    const typeIdRaw = parseOptStr(block, "type_id");
+    const typeId = typeIdRaw && existingSocialAccountTypeUuids.has(typeIdRaw) ? typeIdRaw : null;
     const following = parseXmlArray("following", "account_id", block);
     const followers = parseXmlArray("followers", "account_id", block);
-    const internalAccountCreationDateStr = unescapeXml(parseXmlTag("internal_account_creation_date", block));
-    const internalAccountCreationType = unescapeXml(parseXmlTag("internal_account_creation_type", block));
-    const lastScrapedAtStr = unescapeXml(parseXmlTag("last_scraped_at", block));
-    const currentPosts = unescapeXml(parseXmlTag("current_posts", block)) || null;
-    const deletedPosts = unescapeXml(parseXmlTag("deleted_posts", block)) || null;
-    
-    const existing = existingSocialAccounts.find(
-      s => s.id === id || (s.username.toLowerCase() === username.toLowerCase() && s.typeId === (typeId || null))
-    );
+
+    const existing =
+      existingAccountById.get(id) ||
+      existingAccountByTypeAndUsername.get(`${typeIdRaw || ""}:${username.toLowerCase()}`);
     if (existing) {
       skippedCounts.socialAccounts++;
       socialAccountIdMap.set(id, existing.id);
@@ -1291,293 +2061,481 @@ async function processImportXmlTask(taskId: string, payload: {
       continue;
     }
 
-    const processedOwnerUuid = replaceZeroUUID(ownerUuid);
-    try {
-      const created = await storage.createSocialAccountWithId({
-        id, username,
-        ownerUuid: processedOwnerUuid || null,
-        typeId: typeId || null,
-        internalAccountCreationType: internalAccountCreationType || "Import",
-        internalAccountCreationDate: internalAccountCreationDateStr ? new Date(internalAccountCreationDateStr) : undefined,
-      });
+    const ownerUuidRaw = replaceZeroUUID(unescapeXml(parseXmlTag("owner_uuid", block)));
+    const ownerUuid = ownerUuidRaw && existingPersonIds.has(ownerUuidRaw) ? ownerUuidRaw : null;
+    const groupIdRaw = parseOptStr(block, "group_id");
+    const groupId = groupIdRaw && existingGroupIds.has(groupIdRaw) ? groupIdRaw : null;
 
-      // Update extra columns using Drizzle
-      await db.update(socialAccounts).set({
-        lastScrapedAt: lastScrapedAtStr ? new Date(lastScrapedAtStr) : null,
-        currentPosts: currentPosts || null,
-        deletedPosts: deletedPosts || null,
-        // Profile fields are columns here now, so they ride along rather than
-        // needing a second write against a separate table.
-        nickname: nickname || null,
-        bio: bio || null,
-        accountUrl: accountUrl || null,
-        imageUrl: imageUrl || null,
-      }).where(eq(socialAccounts.id, id));
+    socialAccountsBatch.push({
+      id,
+      username,
+      ownerUuid,
+      groupId,
+      typeId,
+      internalAccountCreationDate: parseOptDate(block, "internal_account_creation_date") ?? new Date(),
+      internalAccountCreationType: parseOptStr(block, "internal_account_creation_type") || "Import",
+      lastScrapedAt: parseOptDate(block, "last_scraped_at"),
+      nickname: parseOptStr(block, "nickname"),
+      bio: parseOptStr(block, "bio"),
+      accountUrl: parseOptStr(block, "account_url"),
+      imageUrl: parseOptStr(block, "image_url"),
+      isHqImage: parseOptBool(block, "is_hq_image", false),
+      externalImageUrl: parseOptStr(block, "external_image_url"),
+      location: parseOptStr(block, "location"),
+      followersCount: parseOptInt(block, "followers_count") ?? 0,
+      followingCount: parseOptInt(block, "following_count") ?? 0,
+      reportedFollowersCount: parseOptInt(block, "reported_followers_count"),
+      reportedFollowingCount: parseOptInt(block, "reported_following_count"),
+      currentPosts: parseOptStr(block, "current_posts"),
+      deletedPosts: parseOptStr(block, "deleted_posts"),
+      isSimple: parseOptBool(block, "is_simple", true),
+      interestLevel: parseOptStr(block, "interest_level") || "none",
+      interestLevelManual: parseOptBool(block, "interest_level_manual", false),
+      infoEveryDays: parseOptInt(block, "info_every_days"),
+      followsEveryDays: parseOptInt(block, "follows_every_days"),
+      postsEveryDays: parseOptInt(block, "posts_every_days"),
+      infoCheckedAt: parseOptDate(block, "info_checked_at"),
+      infoDueAt: parseOptDate(block, "info_due_at"),
+      followsCheckedAt: parseOptDate(block, "follows_checked_at"),
+      followsDueAt: parseOptDate(block, "follows_due_at"),
+      postsCheckedAt: parseOptDate(block, "posts_checked_at"),
+      postsDueAt: parseOptDate(block, "posts_due_at"),
+      joinedAt: parseOptDate(block, "joined_at"),
+      reportedPostsCount: parseOptInt(block, "reported_posts_count"),
+      isPrivate: parseXmlTag("is_private", block) !== "" ? parseOptBool(block, "is_private", false) : null,
+      personfaceUuid: parseOptStr(block, "personface_uuid"),
+      noFace: parseOptBool(block, "no_face", false),
+      skipStories: parseOptBool(block, "skip_stories", false),
+      aiSummary: parseOptJson<any>(block, "ai_summary", null),
+      aiSummaryGeneratedAt: parseOptDate(block, "ai_summary_generated_at"),
+      aiSummaryInvalidated: parseOptBool(block, "ai_summary_invalidated", false),
+      aiSummaryInvalidatedAt: parseOptDate(block, "ai_summary_invalidated_at"),
+      aiSummaryModel: parseOptStr(block, "ai_summary_model"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
 
-      socialAccountIdMap.set(id, id);
-      existingSocialAccountUuids.add(id);
-      existingSocialAccounts.push(created);
+    socialAccountIdMap.set(id, id);
+    existingSocialAccountUuids.add(id);
+    collectFollowEdges(id, followers, following);
+  }
+  importedCounts.socialAccounts += await insertBatchWithFallback(socialAccounts, socialAccountsBatch, "social_accounts");
 
-      collectFollowEdges(id, followers, following);
-      importedCounts.socialAccounts++;
-    } catch (e) { console.error(`Error importing social account ${id}:`, e); }
+  // Resolve deferred group centerAccountId references now that socialAccounts exist
+  for (const def of deferredGroupCenterAccounts) {
+    if (existingSocialAccountUuids.has(def.centerAccountId)) {
+      try {
+        await db.update(groups).set({ centerAccountId: def.centerAccountId }).where(eq(groups.id, def.groupId));
+      } catch (e) {
+        console.error(`Error updating deferred centerAccountId for group ${def.groupId}:`, e);
+      }
+    }
   }
 
-  await storage.updateTaskProgress(taskId, 80, "Importing posts…");
+  await onProgress?.(50, "Importing relationships, interactions & notes…");
 
-  const existingPostIds = new Set(
-    (await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts)).map(p => p.id)
-  );
-  for (const block of parseAllTags("social_account_post", xmlText)) {
-    try {
+  // ── Relationships ──
+  const relationshipsSection = extractSection(xmlText, "relationships");
+  const relationshipsBatch: (typeof relationships.$inferInsert)[] = [];
+  for (const block of parseAllTags("relationship", relationshipsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const fromPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("from_person_id", block)));
+    const toPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("to_person_id", block)));
+    const typeIdRaw = parseOptStr(block, "type_id");
+    const typeId = typeIdRaw && existingRelationshipTypeUuids.has(typeIdRaw) ? typeIdRaw : null;
+    if (!id || !fromPersonId || !toPersonId) continue;
+    if (existingRelationshipUuids.has(id)) {
+      skippedCounts.relationships++;
+      continue;
+    }
+    if (!existingPersonIds.has(fromPersonId) || !existingPersonIds.has(toPersonId)) continue;
+
+    relationshipsBatch.push({
+      id,
+      fromPersonId,
+      toPersonId,
+      typeId,
+      notes: parseOptStr(block, "notes"),
+      familyRelationshipType: (parseOptStr(block, "family_relationship_type") || null) as any,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingRelationshipUuids.add(id);
+  }
+  importedCounts.relationships += await insertBatchWithFallback(relationships, relationshipsBatch, "relationships");
+
+  // ── Lineages ──
+  const lineagesSection = extractSection(xmlText, "lineages");
+  const lineagesBatch: (typeof lineage.$inferInsert)[] = [];
+  for (const block of parseAllTags("lineage_entry", lineagesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const childId = replaceZeroUUID(unescapeXml(parseXmlTag("child_id", block)));
+    const parentId = replaceZeroUUID(unescapeXml(parseXmlTag("parent_id", block)));
+    if (!id || !childId || !parentId) continue;
+    if (!existingPersonIds.has(childId) || !existingPersonIds.has(parentId)) continue;
+    lineagesBatch.push({
+      id,
+      childId,
+      parentId,
+      lineageType: parseOptStr(block, "lineage_type") || "biological",
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+  }
+  importedCounts.lineages += await insertBatchWithFallback(lineage, lineagesBatch, "lineages");
+
+  // ── Partnerships ──
+  const partnershipsSection = extractSection(xmlText, "partnerships");
+  const partnershipsBatch: (typeof partnerships.$inferInsert)[] = [];
+  for (const block of parseAllTags("partnership_entry", partnershipsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const person1Id = replaceZeroUUID(unescapeXml(parseXmlTag("person1_id", block)));
+    const person2Id = replaceZeroUUID(unescapeXml(parseXmlTag("person2_id", block)));
+    if (!id || !person1Id || !person2Id) continue;
+    if (!existingPersonIds.has(person1Id) || !existingPersonIds.has(person2Id)) continue;
+    partnershipsBatch.push({
+      id,
+      person1Id,
+      person2Id,
+      status: parseOptStr(block, "status") || "partner",
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+  }
+  importedCounts.partnerships += await insertBatchWithFallback(partnerships, partnershipsBatch, "partnerships");
+
+  // ── Interactions ──
+  const interactionsSection = extractSection(xmlText, "interactions");
+  const interactionsBatch: (typeof interactions.$inferInsert)[] = [];
+  for (const block of parseAllTags("interaction", interactionsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const dateVal = parseOptDate(block, "date");
+    if (!id || !dateVal) continue;
+    if (existingInteractionUuids.has(id)) {
+      skippedCounts.interactions++;
+      continue;
+    }
+    const typeIdRaw = parseOptStr(block, "type_id");
+    const typeId = typeIdRaw && existingInteractionTypeUuids.has(typeIdRaw) ? typeIdRaw : null;
+    const imageUuidRaw = parseOptStr(block, "image_uuid");
+    const imageUuid = imageUuidRaw && existingPhotoIds.has(imageUuidRaw) ? imageUuidRaw : null;
+    const peopleIds = parseXmlArray("people_ids", "person_id", block).map(p => replaceZeroUUID(p));
+    const groupIds = parseXmlArray("group_ids", "group_id", block);
+
+    interactionsBatch.push({
+      id,
+      typeId,
+      title: parseOptStr(block, "title"),
+      date: dateVal,
+      description: parseOptStr(block, "description"),
+      peopleIds: peopleIds.length > 0 ? peopleIds : [],
+      groupIds: groupIds.length > 0 ? groupIds : [],
+      imageUrl: parseOptStr(block, "image_url"),
+      imageUuid,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingInteractionUuids.add(id);
+  }
+  importedCounts.interactions += await insertBatchWithFallback(interactions, interactionsBatch, "interactions");
+
+  // ── Notes ──
+  const notesSection = extractSection(xmlText, "notes");
+  const notesBatch: (typeof notes.$inferInsert)[] = [];
+  for (const block of parseAllTags("note", notesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
+    const content = unescapeXml(parseXmlTag("content", block));
+    if (!id || !personId || !existingPersonIds.has(personId)) continue;
+    const imageUuidRaw = parseOptStr(block, "image_uuid");
+    const imageUuid = imageUuidRaw && existingPhotoIds.has(imageUuidRaw) ? imageUuidRaw : null;
+    notesBatch.push({
+      id,
+      personId,
+      content,
+      imageUrl: parseOptStr(block, "image_url"),
+      imageUuid,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+  }
+  importedCounts.notes += await insertBatchWithFallback(notes, notesBatch, "notes");
+
+  // ── Group notes ──
+  const groupNotesSection = extractSection(xmlText, "group_notes");
+  const groupNotesBatch: (typeof groupNotes.$inferInsert)[] = [];
+  for (const block of parseAllTags("group_note", groupNotesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const groupId = unescapeXml(parseXmlTag("group_id", block));
+    const content = unescapeXml(parseXmlTag("content", block));
+    if (!id || !groupId || !existingGroupIds.has(groupId)) continue;
+    groupNotesBatch.push({
+      id,
+      groupId,
+      content,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+  }
+  importedCounts.groupNotes += await insertBatchWithFallback(groupNotes, groupNotesBatch, "group_notes");
+
+  // ── Schooling ──
+  const schoolingSection = extractSection(xmlText, "schooling");
+  const schoolingBatch: (typeof schooling.$inferInsert)[] = [];
+  for (const block of parseAllTags("schooling_entry", schoolingSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
+    if (!id || !personId || !existingPersonIds.has(personId)) continue;
+    schoolingBatch.push({
+      id,
+      personId,
+      highSchool: parseOptStr(block, "high_school"),
+      colleges: parseOptJson<any[]>(block, "colleges", []),
+      additionalSchooling: parseOptJson<any[]>(block, "additional_schooling", []),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+  }
+  importedCounts.schooling += await insertBatchWithFallback(schooling, schoolingBatch, "schooling");
+
+  if (includePostHistory) {
+    await onProgress?.(60, "Importing posts & comments…");
+
+    const existingPostIds = new Set(
+      (await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts)).map(p => p.id)
+    );
+    const postsSection = extractSection(xmlText, "social_account_posts");
+    const postsBatch: (typeof socialAccountPosts.$inferInsert)[] = [];
+    for (const block of parseAllTags("social_account_post", postsSection)) {
       const id = unescapeXml(parseXmlTag("id", block));
       const postSocialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-      const postType = unescapeXml(parseXmlTag("post_type", block)) || "post";
-      const content = unescapeXml(parseXmlTag("content", block));
-      const description = unescapeXml(parseXmlTag("description", block));
-      const likeCount = parseInt(parseXmlTag("like_count", block)) || 0;
-      const commentCount = parseInt(parseXmlTag("comment_count", block)) || 0;
-      const mentionedAccounts = unescapeXml(parseXmlTag("mentioned_accounts", block));
-      const faceIds = unescapeXml(parseXmlTag("face_ids", block));
-      const isDeleted = parseXmlTag("is_deleted", block) === "true";
-      const postedAtStr = unescapeXml(parseXmlTag("posted_at", block));
-      const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-      if (!id || !postSocialAccountId) continue;
-      if (existingPostIds.has(id)) continue;
-      
-      const mappedAccountId = socialAccountIdMap.get(postSocialAccountId) || postSocialAccountId;
+      if (!id || !postSocialAccountId || existingPostIds.has(id)) continue;
+
+      const mappedAccountId = mapSocialAccountId(postSocialAccountId);
       if (!existingSocialAccountUuids.has(mappedAccountId)) continue;
 
-      await db.insert(socialAccountPosts).values({
-        id, socialAccountId: mappedAccountId, postType,
-        content: content || null, description: description || null,
-        likeCount, commentCount,
-        mentionedAccounts: mentionedAccounts || null,
-        faceIds: faceIds || null,
-        isDeleted,
-        postedAt: postedAtStr ? new Date(postedAtStr) : null,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-      }).onConflictDoNothing();
+      const coauthorsRaw = parseOptJson<string[]>(block, "coauthor_account_ids", []);
+      const coauthorAccountIds = Array.isArray(coauthorsRaw)
+        ? coauthorsRaw.map(cid => mapSocialAccountId(cid)).filter(Boolean)
+        : [];
+
+      postsBatch.push({
+        id,
+        socialAccountId: mappedAccountId,
+        coauthorAccountIds,
+        postType: parseOptStr(block, "post_type") || "post",
+        instagramPk: parseOptStr(block, "instagram_pk"),
+        content: parseOptStr(block, "content"),
+        description: parseOptStr(block, "description"),
+        likeCount: parseOptInt(block, "like_count") ?? 0,
+        likesHidden: parseOptBool(block, "likes_hidden", false),
+        commentCount: parseOptInt(block, "comment_count") ?? 0,
+        mentionedAccounts: parseOptStr(block, "mentioned_accounts"),
+        faceIds: parseOptStr(block, "face_ids"),
+        isDeleted: parseOptBool(block, "is_deleted", false),
+        postedAt: parseOptDate(block, "posted_at"),
+        metadata: parseOptJson<any>(block, "metadata", null),
+        videoTranscript: parseOptJson<any>(block, "video_transcript", null),
+        videoTranscriptAt: parseOptDate(block, "video_transcript_at"),
+        scrapedFrom: parseOptStr(block, "scraped_from"),
+        aiSummary: parseOptJson<any>(block, "ai_summary", null),
+        aiSummaryAt: parseOptDate(block, "ai_summary_at"),
+        aiSummaryModel: parseOptStr(block, "ai_summary_model"),
+        createdAt: parseOptDate(block, "created_at") ?? new Date(),
+        updatedAt: parseOptDate(block, "updated_at") ?? new Date(),
+      });
       existingPostIds.add(id);
-      importedCounts.posts++;
-    } catch (e) { console.error("Error importing post:", e); }
-  }
+    }
+    importedCounts.posts += await insertBatchWithFallback(socialAccountPosts, postsBatch, "social_account_posts");
 
-  await storage.updateTaskProgress(taskId, 88, "Importing profile history…");
+    // ── Social post comments ──
+    const postCommentsSection = extractSection(xmlText, "social_post_comments");
+    const postCommentsBatch: (typeof socialPostComments.$inferInsert)[] = [];
+    for (const block of parseAllTags("social_post_comment", postCommentsSection)) {
+      const id = unescapeXml(parseXmlTag("id", block));
+      const postId = unescapeXml(parseXmlTag("post_id", block));
+      const instagramCommentId = unescapeXml(parseXmlTag("instagram_comment_id", block));
+      const username = unescapeXml(parseXmlTag("username", block));
+      const text = unescapeXml(parseXmlTag("text", block));
+      if (!id || !postId || !instagramCommentId || !username || !existingPostIds.has(postId)) continue;
 
-  for (const block of parseAllTags("social_profile_version", xmlText)) {
-    try {
-      const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-      const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
-      if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
-
-      const pvNickname = unescapeXml(parseXmlTag("nickname", block));
-      const pvBio = unescapeXml(parseXmlTag("bio", block));
-      const pvAccountUrl = unescapeXml(parseXmlTag("account_url", block));
-      const pvImageUrl = unescapeXml(parseXmlTag("image_url", block));
-      const pvExternalImageUrl = unescapeXml(parseXmlTag("external_image_url", block));
-      const pvIsCurrent = parseXmlTag("is_current", block) === "true";
-      // Backups written before the journal carry a profile-version history. That
-      // table is gone and superseded entries have nowhere truthful to go, so only
-      // the current one is restored — onto the account itself.
-      if (!pvIsCurrent) continue;
-      await storage.updateSocialAccount(mappedAccountId, {
-        nickname: pvNickname || null, bio: pvBio || null,
-        accountUrl: pvAccountUrl || null, imageUrl: pvImageUrl || null,
-        externalImageUrl: pvExternalImageUrl || null,
+      postCommentsBatch.push({
+        id,
+        postId,
+        instagramCommentId,
+        username,
+        text,
+        likeCount: parseOptInt(block, "like_count") ?? 0,
+        postedAt: parseOptDate(block, "posted_at"),
+        createdAt: parseOptDate(block, "created_at") ?? new Date(),
+        updatedAt: parseOptDate(block, "updated_at") ?? new Date(),
       });
-    } catch (e) { console.error("Error importing profile version:", e); }
+    }
+    importedCounts.postComments += await insertBatchWithFallback(socialPostComments, postCommentsBatch, "social_post_comments");
   }
 
-  for (const block of parseAllTags("social_network_snapshot", xmlText)) {
-    try {
-      const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-      const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
-      if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
+  await onProgress?.(70, "Importing daily notes, AI, faces & OSINT…");
 
-      const snFollowers = parseXmlArray("followers", "account_id", block);
-      const snFollowing = parseXmlArray("following", "account_id", block);
-      collectFollowEdges(socialAccountId, snFollowers, snFollowing);
-    } catch (e) { console.error("Error importing network snapshot:", e); }
-  }
-
-  await storage.updateTaskProgress(taskId, 94, "Importing network changes…");
-
-  for (const block of parseAllTags("social_network_change", xmlText)) {
-    try {
-      const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
-      const mappedAccountId = socialAccountIdMap.get(socialAccountId) || socialAccountId;
-      if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
-
-      const changeType = unescapeXml(parseXmlTag("change_type", block));
-      const direction = unescapeXml(parseXmlTag("direction", block));
-      const targetAccountId = unescapeXml(parseXmlTag("target_account_id", block));
-      const detectedAtStr = unescapeXml(parseXmlTag("detected_at", block));
-      const batchId = unescapeXml(parseXmlTag("batch_id", block));
-      if (!changeType || !direction || !targetAccountId) continue;
-      await db.insert(socialNetworkChanges).values({
-        socialAccountId: mappedAccountId, changeType, direction, targetAccountId,
-        detectedAt: detectedAtStr ? new Date(detectedAtStr) : new Date(),
-        batchId: batchId || null,
-      });
-      importedCounts.networkChanges = (importedCounts.networkChanges || 0) + 1;
-    } catch (e) { console.error("Error importing network change:", e); }
-  }
-
-  // Insert the collected follow edges now that every referenced account exists.
-  // Ids are remapped for accounts that matched an existing account; edges
-  // pointing at accounts not present in the database are skipped.
-  const resolveFollowId = (fileId: string) => socialAccountIdMap.get(fileId) || fileId;
-  await storage.addFollows(
-    pendingFollowEdges
-      .map(e => ({ followerId: resolveFollowId(e.followerId), followedId: resolveFollowId(e.followedId), source: "xml-import" }))
-      .filter(e => existingSocialAccountUuids.has(e.followerId) && existingSocialAccountUuids.has(e.followedId))
+  // ── Daily notes ──
+  const existingDailyNoteIds = new Set(
+    (await db.select({ id: dailyNotes.id }).from(dailyNotes)).map(d => d.id)
   );
-
-  // Parse and import daily notes (new)
-  const dailyNoteBlocks = parseAllTags("daily_note_entry", xmlText);
-  for (const block of dailyNoteBlocks) {
+  const dailyNotesSection = extractSection(xmlText, "daily_notes");
+  const dailyNotesBatch: (typeof dailyNotes.$inferInsert)[] = [];
+  for (const block of parseAllTags("daily_note_entry", dailyNotesSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const date = unescapeXml(parseXmlTag("date", block));
-    const userTitle = unescapeXml(parseXmlTag("user_title", block));
-    const body = unescapeXml(parseXmlTag("body", block));
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-    const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
-
-    try {
-      await db.insert(dailyNotes).values({
-        id, userId: payload.userId, date, userTitle, body,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-        updatedAt: updatedAtStr ? new Date(updatedAtStr) : null,
-      }).onConflictDoNothing();
-      importedCounts.dailyNotes++;
-    } catch (e) {
-      console.error(`Error importing daily note ${id}:`, e);
-    }
+    if (!id || !date) continue;
+    dailyNotesBatch.push({
+      id,
+      date,
+      userTitle: parseOptStr(block, "user_title") ?? "",
+      body: unescapeXml(parseXmlTag("body", block)),
+      status: parseOptStr(block, "status") || "unfinished",
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      updatedAt: parseOptDate(block, "updated_at"),
+    });
+    existingDailyNoteIds.add(id);
   }
+  importedCounts.dailyNotes += await insertBatchWithFallback(dailyNotes, dailyNotesBatch, "daily_notes");
 
-  // Parse and import daily note events (new)
-  const dailyNoteEventBlocks = parseAllTags("daily_note_event_entry", xmlText);
-  for (const block of dailyNoteEventBlocks) {
+  // ── Daily note events ──
+  const dailyNoteEventsSection = extractSection(xmlText, "daily_note_events");
+  const dailyNoteEventsBatch: (typeof dailyNoteEvents.$inferInsert)[] = [];
+  for (const block of parseAllTags("daily_note_event_entry", dailyNoteEventsSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
-    const text = unescapeXml(parseXmlTag("text", block));
-    const position = parseInt(parseXmlTag("position", block)) || 0;
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-
-    try {
-      await db.insert(dailyNoteEvents).values({
-        id, dailyNoteId, text, position,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.dailyNoteEvents++;
-    } catch (e) {
-      console.error(`Error importing daily note event ${id}:`, e);
-    }
+    if (!id || !dailyNoteId || !existingDailyNoteIds.has(dailyNoteId)) continue;
+    dailyNoteEventsBatch.push({
+      id,
+      dailyNoteId,
+      text: unescapeXml(parseXmlTag("text", block)),
+      position: parseOptInt(block, "position") ?? 0,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
   }
+  importedCounts.dailyNoteEvents += await insertBatchWithFallback(dailyNoteEvents, dailyNoteEventsBatch, "daily_note_events");
 
-  // Parse and import daily note involved parties (new)
-  const involvedPartyBlocks = parseAllTags("daily_note_involved_party_entry", xmlText);
-  for (const block of involvedPartyBlocks) {
+  // ── Daily note involved parties ──
+  const involvedPartiesSection = extractSection(xmlText, "daily_note_involved_parties");
+  const involvedPartiesBatch: (typeof dailyNoteInvolvedParties.$inferInsert)[] = [];
+  for (const block of parseAllTags("daily_note_involved_party_entry", involvedPartiesSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
     const partyType = unescapeXml(parseXmlTag("party_type", block));
     let refId = unescapeXml(parseXmlTag("ref_id", block));
-    if (partyType === "person") {
-      refId = replaceZeroUUID(refId);
-    }
-
-    try {
-      await db.insert(dailyNoteInvolvedParties).values({
-        id, dailyNoteId, partyType, refId,
-      }).onConflictDoNothing();
-      importedCounts.dailyNoteInvolvedParties++;
-    } catch (e) {
-      console.error(`Error importing daily note involved party ${id}:`, e);
-    }
+    if (!id || !dailyNoteId || !partyType || !refId || !existingDailyNoteIds.has(dailyNoteId)) continue;
+    if (partyType === "person") refId = replaceZeroUUID(refId);
+    else if (partyType === "social_account") refId = mapSocialAccountId(refId);
+    involvedPartiesBatch.push({ id, dailyNoteId, partyType, refId });
   }
+  importedCounts.dailyNoteInvolvedParties += await insertBatchWithFallback(
+    dailyNoteInvolvedParties,
+    involvedPartiesBatch,
+    "daily_note_involved_parties"
+  );
 
-  // Parse and import daily note audit logs (new)
-  const auditLogBlocks = parseAllTags("daily_note_audit_log_entry", xmlText);
-  for (const block of auditLogBlocks) {
+  // ── Daily note audit logs ──
+  const auditLogsSection = extractSection(xmlText, "daily_note_audit_logs");
+  const auditLogsBatch: (typeof dailyNoteAuditLogs.$inferInsert)[] = [];
+  for (const block of parseAllTags("daily_note_audit_log_entry", auditLogsSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
     const action = unescapeXml(parseXmlTag("action", block));
-    const timestampStr = unescapeXml(parseXmlTag("timestamp", block));
-    const pinUsed = parseXmlTag("pin_used", block) === "true";
-
-    try {
-      await db.insert(dailyNoteAuditLogs).values({
-        id, dailyNoteId, action,
-        timestamp: timestampStr ? new Date(timestampStr) : new Date(),
-        pinUsed,
-      }).onConflictDoNothing();
-      importedCounts.dailyNoteAuditLogs++;
-    } catch (e) {
-      console.error(`Error importing daily note audit log ${id}:`, e);
-    }
+    if (!id || !dailyNoteId || !action || !existingDailyNoteIds.has(dailyNoteId)) continue;
+    auditLogsBatch.push({
+      id,
+      dailyNoteId,
+      action,
+      timestamp: parseOptDate(block, "timestamp") ?? new Date(),
+      pinUsed: parseOptBool(block, "pin_used", false),
+    });
   }
+  importedCounts.dailyNoteAuditLogs += await insertBatchWithFallback(
+    dailyNoteAuditLogs,
+    auditLogsBatch,
+    "daily_note_audit_logs"
+  );
 
-  // Parse and import sex guess records (new)
-  const sexGuessBlocks = parseAllTags("sex_guess_entry", xmlText);
-  for (const block of sexGuessBlocks) {
+  // ── Sex guess records ──
+  const sexGuessSection = extractSection(xmlText, "sex_guess_records");
+  const sexGuessBatch: (typeof sexGuessQueue.$inferInsert)[] = [];
+  for (const block of parseAllTags("sex_guess_entry", sexGuessSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
     const guessedSex = unescapeXml(parseXmlTag("guessed_sex", block));
     const reasoning = unescapeXml(parseXmlTag("reasoning", block));
-    const dateAddedStr = unescapeXml(parseXmlTag("date_added", block));
-    const answered = parseInt(parseXmlTag("answered", block)) || 0;
-    const snoozeUntilStr = unescapeXml(parseXmlTag("snooze_until", block));
-
-    try {
-      await db.insert(sexGuessQueue).values({
-        id, personId, guessedSex, reasoning,
-        dateAdded: dateAddedStr ? new Date(dateAddedStr) : new Date(),
-        answered,
-        snoozedUntil: snoozeUntilStr ? new Date(snoozeUntilStr) : null,
-      }).onConflictDoNothing();
-      importedCounts.sexGuessQueue++;
-    } catch (e) {
-      console.error(`Error importing sex guess entry ${id}:`, e);
-    }
+    if (!id || !personId || !guessedSex || !existingPersonIds.has(personId)) continue;
+    sexGuessBatch.push({
+      id,
+      personId,
+      guessedSex,
+      reasoning,
+      dateAdded: parseOptDate(block, "date_added") ?? new Date(),
+      answered: parseOptInt(block, "answered") ?? 0,
+      snoozedUntil: parseOptDate(block, "snooze_until"),
+    });
   }
+  importedCounts.sexGuessQueue += await insertBatchWithFallback(sexGuessQueue, sexGuessBatch, "sex_guess_queue");
 
-  // Parse and import AI chats (new)
-  const aiChatBlocks = parseAllTags("ai_chat_entry", xmlText);
-  for (const block of aiChatBlocks) {
+  // ── AI Providers (import before ai_chats so providerId FK resolves) ──
+  const existingAiProviderIds = new Set(
+    (await db.select({ id: aiProviders.id }).from(aiProviders)).map(p => p.id)
+  );
+  const aiProvidersSection = extractSection(xmlText, "ai_providers");
+  const aiProvidersBatch: (typeof aiProviders.$inferInsert)[] = [];
+  for (const block of parseAllTags("ai_provider", aiProvidersSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
-    const title = unescapeXml(parseXmlTag("title", block)) || "New chat";
-    const systemMessage = unescapeXml(parseXmlTag("system_message", block));
-    const model = unescapeXml(parseXmlTag("model", block));
-    const messagesStr = unescapeXml(parseXmlTag("messages", block));
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-    const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
-
-    try {
-      await db.insert(aiChats).values({
-        id, userId: payload.userId, title, systemMessage, model,
-        messages: messagesStr ? JSON.parse(messagesStr) : [],
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-        updatedAt: updatedAtStr ? new Date(updatedAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.aiChats++;
-    } catch (e) {
-      console.error(`Error importing AI chat ${id}:`, e);
-    }
+    const name = unescapeXml(parseXmlTag("name", block));
+    const kind = unescapeXml(parseXmlTag("kind", block));
+    const baseUrl = unescapeXml(parseXmlTag("base_url", block));
+    if (!id || !name || !kind || !baseUrl || existingAiProviderIds.has(id)) continue;
+    aiProvidersBatch.push({
+      id,
+      name,
+      kind,
+      baseUrl,
+      authType: parseOptStr(block, "auth_type") || "none",
+      username: parseOptStr(block, "username") ?? "",
+      secret: parseOptStr(block, "secret") ?? "",
+      isDefault: parseOptBool(block, "is_default", false),
+      isExternal: parseOptBool(block, "is_external", false),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingAiProviderIds.add(id);
   }
+  importedCounts.aiProviders += await insertBatchWithFallback(aiProviders, aiProvidersBatch, "ai_providers");
 
-  // Parse and import app settings (new)
-  const appSettingBlocks = parseAllTags("app_setting_entry", xmlText);
-  for (const block of appSettingBlocks) {
+  // ── AI Chats ──
+  const aiChatsSection = extractSection(xmlText, "ai_chats");
+  const aiChatsBatch: (typeof aiChats.$inferInsert)[] = [];
+  for (const block of parseAllTags("ai_chat_entry", aiChatsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    if (!id) continue;
+    const providerIdRaw = parseOptStr(block, "provider_id");
+    const providerId = providerIdRaw && existingAiProviderIds.has(providerIdRaw) ? providerIdRaw : "";
+    aiChatsBatch.push({
+      id,
+      title: parseOptStr(block, "title") || "New chat",
+      systemMessage: parseOptStr(block, "system_message") ?? "",
+      model: parseOptStr(block, "model") ?? "",
+      providerId,
+      messages: parseOptJson<any[]>(block, "messages", []),
+      agentMode: parseOptBool(block, "agent_mode", false),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      updatedAt: parseOptDate(block, "updated_at") ?? new Date(),
+    });
+  }
+  importedCounts.aiChats += await insertBatchWithFallback(aiChats, aiChatsBatch, "ai_chats");
+
+  // ── App settings ──
+  const appSettingsSection = extractSection(xmlText, "app_settings_list");
+  for (const block of parseAllTags("app_setting_entry", appSettingsSection)) {
     const key = unescapeXml(parseXmlTag("key", block));
-    const value = unescapeXml(parseXmlTag("value", block));
+    let value = unescapeXml(parseXmlTag("value", block));
     if (!key) continue;
-
+    if (key === "me_person_id") {
+      value = replaceZeroUUID(value);
+      // Do not overwrite me_person_id with a UUID that does not exist in people
+      if (mePersonId && !existingPersonIds.has(value)) continue;
+    }
     try {
       await db.insert(appSettings).values({ key, value })
         .onConflictDoUpdate({
           target: appSettings.key,
-          set: { value }
+          set: { value },
         });
       importedCounts.appSettings++;
     } catch (e) {
@@ -1585,145 +2543,746 @@ async function processImportXmlTask(taskId: string, payload: {
     }
   }
 
-  // Parse and import schooling
-  const schoolingBlocks = parseAllTags("schooling_entry", xmlText);
-  for (const block of schoolingBlocks) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
-    const highSchool = unescapeXml(parseXmlTag("high_school", block)) || null;
-    const collegesStr = unescapeXml(parseXmlTag("colleges", block));
-    const additionalSchoolingStr = unescapeXml(parseXmlTag("additional_schooling", block));
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-
-    try {
-      await db.insert(schooling).values({
-        id,
-        personId,
-        highSchool,
-        colleges: collegesStr ? JSON.parse(collegesStr) : [],
-        additionalSchooling: additionalSchoolingStr ? JSON.parse(additionalSchoolingStr) : [],
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.schooling = (importedCounts.schooling || 0) + 1;
-    } catch (e) {
-      console.error(`Error importing schooling entry ${id}:`, e);
-    }
-  }
-
-  // Parse and import sub_groups
-  const subGroupBlocks = parseAllTags("sub_group_entry", xmlText);
-  for (const block of subGroupBlocks) {
-    const id = unescapeXml(parseXmlTag("id", block));
-    const groupId = unescapeXml(parseXmlTag("group_id", block));
-    const name = unescapeXml(parseXmlTag("name", block));
-    const color = unescapeXml(parseXmlTag("color", block));
-    const members = parseXmlArray("members", "member_id", block);
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-    const processedMembers = members.map(m => replaceZeroUUID(m));
-
-    if (!groupId || !name || !color) continue;
-
-    try {
-      await db.insert(subGroups).values({
-        id,
-        groupId,
-        name,
-        color,
-        members: processedMembers,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.subGroups = (importedCounts.subGroups || 0) + 1;
-    } catch (e) {
-      console.error(`Error importing sub_group entry ${id}:`, e);
-    }
-  }
-
-  // Parse and import true_person_search
-  const tpsBlocks = parseAllTags("true_person_search_entry", xmlText);
-  for (const block of tpsBlocks) {
+  // ── TruePersonSearch ──
+  const tpsSection = extractSection(xmlText, "true_person_search");
+  const tpsBatch: (typeof truePersonSearch.$inferInsert)[] = [];
+  for (const block of parseAllTags("true_person_search_entry", tpsSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const tpsId = unescapeXml(parseXmlTag("tps_id", block));
-    if (!tpsId) continue;
-
-    let personId: string | null = unescapeXml(parseXmlTag("person_id", block)) || null;
-    if (personId) personId = replaceZeroUUID(personId);
-    const importDateStr = unescapeXml(parseXmlTag("import_date", block));
-    const fullName = unescapeXml(parseXmlTag("full_name", block)) || null;
-    const akasStr = unescapeXml(parseXmlTag("akas", block));
-    const birthday = unescapeXml(parseXmlTag("birthday", block)) || null;
-    const currentAddress = unescapeXml(parseXmlTag("current_address", block)) || null;
-    const currentAddressPropertyDetails = unescapeXml(parseXmlTag("current_address_property_details", block)) || null;
-    const currentAddressPropertyUrl = unescapeXml(parseXmlTag("current_address_property_url", block)) || null;
-    const addressesStr = unescapeXml(parseXmlTag("addresses", block));
-    const phoneNumbersStr = unescapeXml(parseXmlTag("phone_numbers", block));
-    const emailsStr = unescapeXml(parseXmlTag("emails", block));
-    const relativesStr = unescapeXml(parseXmlTag("relatives", block));
-    const associatesStr = unescapeXml(parseXmlTag("associates", block));
-    const backgroundProfile = unescapeXml(parseXmlTag("background_profile", block)) || null;
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
-    const updatedAtStr = unescapeXml(parseXmlTag("updated_at", block));
-
-    try {
-      await db.insert(truePersonSearch).values({
-        id,
-        tpsId,
-        personId: personId || null,
-        importDate: importDateStr ? new Date(importDateStr) : new Date(),
-        fullName,
-        akas: akasStr ? JSON.parse(akasStr) : [],
-        birthday,
-        currentAddress,
-        currentAddressPropertyDetails,
-        currentAddressPropertyUrl,
-        addresses: addressesStr ? JSON.parse(addressesStr) : [],
-        phoneNumbers: phoneNumbersStr ? JSON.parse(phoneNumbersStr) : [],
-        emails: emailsStr ? JSON.parse(emailsStr) : [],
-        relatives: relativesStr ? JSON.parse(relativesStr) : [],
-        associates: associatesStr ? JSON.parse(associatesStr) : [],
-        backgroundProfile,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-        updatedAt: updatedAtStr ? new Date(updatedAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.truePersonSearch = (importedCounts.truePersonSearch || 0) + 1;
-    } catch (e) {
-      console.error(`Error importing true_person_search entry ${id}:`, e);
-    }
+    if (!id || !tpsId) continue;
+    const personIdRaw = parseOptStr(block, "person_id");
+    const resolvedPersonId = personIdRaw ? replaceZeroUUID(personIdRaw) : null;
+    const personId = resolvedPersonId && existingPersonIds.has(resolvedPersonId) ? resolvedPersonId : null;
+    tpsBatch.push({
+      id,
+      tpsId,
+      personId,
+      importDate: parseOptDate(block, "import_date") ?? new Date(),
+      fullName: parseOptStr(block, "full_name"),
+      akas: parseOptJson<any[]>(block, "akas", []),
+      birthday: parseOptStr(block, "birthday"),
+      currentAddress: parseOptStr(block, "current_address"),
+      currentAddressPropertyDetails: parseOptStr(block, "current_address_property_details"),
+      currentAddressPropertyUrl: parseOptStr(block, "current_address_property_url"),
+      addresses: parseOptJson<any[]>(block, "addresses", []),
+      phoneNumbers: parseOptJson<any[]>(block, "phone_numbers", []),
+      emails: parseOptJson<any[]>(block, "emails", []),
+      relatives: parseOptJson<any[]>(block, "relatives", []),
+      associates: parseOptJson<any[]>(block, "associates", []),
+      backgroundProfile: parseOptStr(block, "background_profile"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      updatedAt: parseOptDate(block, "updated_at") ?? new Date(),
+    });
   }
+  importedCounts.truePersonSearch += await insertBatchWithFallback(truePersonSearch, tpsBatch, "true_person_search");
 
-  // Parse and import faces
-  const faceBlocks = parseAllTags("face_entry", xmlText);
-  for (const block of faceBlocks) {
+  // ── Faces ──
+  const facesSection = extractSection(xmlText, "faces");
+  const facesBatch: (typeof faces.$inferInsert)[] = [];
+  for (const block of parseAllTags("face_entry", facesSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
-    const photoId = unescapeXml(parseXmlTag("photo_id", block)) || null;
     const s3Url = unescapeXml(parseXmlTag("s3_url", block));
-    const embeddingStr = unescapeXml(parseXmlTag("embedding", block));
-    const personfaceUuid = unescapeXml(parseXmlTag("personface_uuid", block)) || null;
-    const detectionConfidence = unescapeXml(parseXmlTag("detection_confidence", block)) || null;
-    const coordinatesStr = unescapeXml(parseXmlTag("coordinates", block));
-    const createdAtStr = unescapeXml(parseXmlTag("created_at", block));
+    if (!id || !s3Url) continue;
+    const photoIdRaw = parseOptStr(block, "photo_id");
+    const photoId = photoIdRaw && existingPhotoIds.has(photoIdRaw) ? photoIdRaw : null;
+    facesBatch.push({
+      id,
+      photoId,
+      s3Url,
+      embedding: parseOptJson<number[]>(block, "embedding", []),
+      personfaceUuid: parseOptStr(block, "personface_uuid"),
+      detectionConfidence: parseOptStr(block, "detection_confidence"),
+      coordinates: parseOptJson<any>(block, "coordinates", null),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      dismissedAt: parseOptDate(block, "dismissed_at"),
+      pitch: parseOptFloat(block, "pitch"),
+      roll: parseOptFloat(block, "roll"),
+      yaw: parseOptFloat(block, "yaw"),
+      autoMatchScore: parseOptFloat(block, "auto_match_score"),
+    });
+  }
+  importedCounts.faces += await insertBatchWithFallback(faces, facesBatch, "faces");
 
-    if (!s3Url) continue;
+  // ── Face pair dismissals ──
+  const faceDismissalsSection = extractSection(xmlText, "face_pair_dismissals");
+  const faceDismissalsBatch: (typeof facePairDismissals.$inferInsert)[] = [];
+  for (const block of parseAllTags("face_pair_dismissal", faceDismissalsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const groupAUuid = unescapeXml(parseXmlTag("group_a_uuid", block));
+    const groupBUuid = unescapeXml(parseXmlTag("group_b_uuid", block));
+    if (!id || !groupAUuid || !groupBUuid) continue;
+    faceDismissalsBatch.push({
+      id,
+      groupAUuid,
+      groupBUuid,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+  }
+  importedCounts.facePairDismissals += await insertBatchWithFallback(
+    facePairDismissals,
+    faceDismissalsBatch,
+    "face_pair_dismissals"
+  );
 
-    try {
-      await db.insert(faces).values({
+  // ── Image questions ──
+  const imageQuestionsSection = extractSection(xmlText, "image_questions");
+  const imageQuestionsBatch: (typeof imageQuestions.$inferInsert)[] = [];
+  for (const block of parseAllTags("image_question", imageQuestionsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const photoId = unescapeXml(parseXmlTag("photo_id", block));
+    const subImageUrl = unescapeXml(parseXmlTag("sub_image_url", block));
+    if (!id || !photoId || !subImageUrl || !existingPhotoIds.has(photoId)) continue;
+    const resolvedPersonRaw = parseOptStr(block, "resolved_person_id");
+    const mappedPerson = resolvedPersonRaw ? replaceZeroUUID(resolvedPersonRaw) : null;
+    const resolvedPersonId = mappedPerson && existingPersonIds.has(mappedPerson) ? mappedPerson : null;
+    imageQuestionsBatch.push({
+      id,
+      photoId,
+      faceUuid: parseOptStr(block, "face_uuid") ?? "",
+      subImageUrl,
+      coordinates: parseOptJson<any>(block, "coordinates", null),
+      status: parseOptStr(block, "status") || "pending",
+      resolvedAs: parseOptStr(block, "resolved_as"),
+      resolvedPersonId,
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      resolvedAt: parseOptDate(block, "resolved_at"),
+    });
+  }
+  importedCounts.imageQuestions += await insertBatchWithFallback(imageQuestions, imageQuestionsBatch, "image_questions");
+
+  await onProgress?.(78, "Importing OSINT, story importers, messages & geocodes…");
+
+  // ── Pending social account imports ──
+  const pendingImportsSection = extractSection(xmlText, "pending_social_account_imports");
+  const pendingImportsBatch: (typeof pendingSocialAccountImports.$inferInsert)[] = [];
+  for (const block of parseAllTags("pending_social_account_import", pendingImportsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const accountUsername = unescapeXml(parseXmlTag("account_username", block));
+    if (!id || !accountUsername) continue;
+    pendingImportsBatch.push({
+      id,
+      timestampAdded: parseOptDate(block, "timestamp_added") ?? new Date(),
+      timestampImported: parseOptDate(block, "timestamp_imported"),
+      alreadyAdded: parseOptBool(block, "already_added", false),
+      accountUsername,
+      accountDisplayName: parseOptStr(block, "account_display_name"),
+      accountBio: parseOptStr(block, "account_bio"),
+      accountWebsite: parseOptStr(block, "account_website"),
+      accountEmail: parseOptStr(block, "account_email"),
+      accountPhone: parseOptStr(block, "account_phone"),
+      accountLocationArea: parseOptStr(block, "account_location_area"),
+      accountFollowers: parseOptStr(block, "account_followers"),
+      accountFollowing: parseOptStr(block, "account_following"),
+      accountImageUrl: parseOptStr(block, "account_image_url"),
+      accountFollowersCount: parseOptInt(block, "account_followers_count"),
+      accountFollowingCount: parseOptInt(block, "account_following_count"),
+      importType: parseOptStr(block, "import_type") || "full",
+      captureScope: parseOptStr(block, "capture_scope") || "both",
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      updatedAt: parseOptDate(block, "updated_at") ?? new Date(),
+    });
+  }
+  importedCounts.pendingSocialAccountImports += await insertBatchWithFallback(
+    pendingSocialAccountImports,
+    pendingImportsBatch,
+    "pending_social_account_imports"
+  );
+
+  // ── Insights ──
+  const insightsSection = extractSection(xmlText, "insights");
+  const insightsBatch: (typeof insights.$inferInsert)[] = [];
+  for (const block of parseAllTags("insight", insightsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const type = unescapeXml(parseXmlTag("type", block));
+    const source = unescapeXml(parseXmlTag("source", block));
+    const data = parseOptJson<Record<string, unknown> | null>(block, "data", null);
+    if (!id || !type || !source || !data) continue;
+    const applicablePeopleIds = parseXmlArray("applicable_people_ids", "person_id", block).map(p => replaceZeroUUID(p));
+    const applicableSocialAccountIds = parseXmlArray("applicable_social_account_ids", "account_id", block).map(a =>
+      mapSocialAccountId(a)
+    );
+    insightsBatch.push({
+      id,
+      type,
+      source,
+      collectedAt: parseOptDate(block, "collected_at") ?? new Date(),
+      rawText: parseOptStr(block, "raw_text"),
+      data,
+      applicablePeopleIds,
+      applicableSocialAccountIds,
+    });
+  }
+  importedCounts.insights += await insertBatchWithFallback(insights, insightsBatch, "insights");
+
+  // ── OSINT scans ──
+  const osintScansSection = extractSection(xmlText, "osint_scans");
+  const osintScansBatch: (typeof osintScans.$inferInsert)[] = [];
+  for (const block of parseAllTags("osint_scan", osintScansSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const tool = unescapeXml(parseXmlTag("tool", block));
+    const target = unescapeXml(parseXmlTag("target", block));
+    const targetType = unescapeXml(parseXmlTag("target_type", block));
+    if (!id || !tool || !target || !targetType) continue;
+    const saRaw = parseOptStr(block, "social_account_id");
+    const mappedSa = saRaw ? mapSocialAccountId(saRaw) : null;
+    const socialAccountId = mappedSa && existingSocialAccountUuids.has(mappedSa) ? mappedSa : null;
+    const personRaw = parseOptStr(block, "person_id");
+    const mappedPerson = personRaw ? replaceZeroUUID(personRaw) : null;
+    const personId = mappedPerson && existingPersonIds.has(mappedPerson) ? mappedPerson : null;
+    osintScansBatch.push({
+      id,
+      tool,
+      target,
+      targetType,
+      options: parseOptJson<Record<string, unknown>>(block, "options", {}),
+      socialAccountId,
+      personId,
+      status: parseOptStr(block, "status") || "pending",
+      attempts: parseOptInt(block, "attempts") ?? 0,
+      computeJobId: parseOptStr(block, "compute_job_id"),
+      error: parseOptStr(block, "error"),
+      result: parseOptJson<any>(block, "result", null),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      startedAt: parseOptDate(block, "started_at"),
+      completedAt: parseOptDate(block, "completed_at"),
+    });
+  }
+  importedCounts.osintScans += await insertBatchWithFallback(osintScans, osintScansBatch, "osint_scans");
+
+  // ── Story importers ──
+  const existingStoryImporterIds = new Set(
+    (await db.select({ id: storyImporters.id }).from(storyImporters)).map(s => s.id)
+  );
+  const storyImportersSection = extractSection(xmlText, "story_importers");
+  const storyImportersBatch: (typeof storyImporters.$inferInsert)[] = [];
+  for (const block of parseAllTags("story_importer", storyImportersSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const label = unescapeXml(parseXmlTag("label", block));
+    const serviceUrl = unescapeXml(parseXmlTag("service_url", block));
+    const serviceSecret = unescapeXml(parseXmlTag("service_secret", block));
+    if (!id || !label || !serviceUrl || !serviceSecret || existingStoryImporterIds.has(id)) continue;
+    storyImportersBatch.push({
+      id,
+      label,
+      serviceUrl,
+      serviceSecret,
+      enabled: parseOptBool(block, "enabled", true),
+      runEveryDays: parseOptInt(block, "run_every_days") ?? 1,
+      runWindow: parseOptStr(block, "run_window") || "daytime",
+      skipDayProbability: parseOptFloat(block, "skip_day_probability") ?? 0.14,
+      downloadVideos: parseOptBool(block, "download_videos", true),
+      nextRunAt: parseOptDate(block, "next_run_at"),
+      lastUsername: parseOptStr(block, "last_username"),
+      trackingEnabled: parseOptBool(block, "tracking_enabled", false),
+      trackingWindow: parseOptStr(block, "tracking_window") || "daytime",
+      trackingMaxJobs: parseOptInt(block, "tracking_max_jobs") ?? 5,
+      nextTrackingRunAt: parseOptDate(block, "next_tracking_run_at"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingStoryImporterIds.add(id);
+  }
+  importedCounts.storyImporters += await insertBatchWithFallback(
+    storyImporters,
+    storyImportersBatch,
+    "story_importers"
+  );
+
+  // ── Story scrape runs ──
+  const existingStoryScrapeRunIds = new Set(
+    (await db.select({ id: storyScrapeRuns.id }).from(storyScrapeRuns)).map(r => r.id)
+  );
+  const storyScrapeRunsSection = extractSection(xmlText, "story_scrape_runs");
+  const storyScrapeRunsBatch: (typeof storyScrapeRuns.$inferInsert)[] = [];
+  for (const block of parseAllTags("story_scrape_run", storyScrapeRunsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    if (!id || existingStoryScrapeRunIds.has(id)) continue;
+    const importerIdRaw = parseOptStr(block, "importer_id");
+    const importerId = importerIdRaw && existingStoryImporterIds.has(importerIdRaw) ? importerIdRaw : null;
+    storyScrapeRunsBatch.push({
+      id,
+      importerId,
+      kind: parseOptStr(block, "kind") || "stories",
+      status: parseOptStr(block, "status") || "running",
+      startedAt: parseOptDate(block, "started_at") ?? new Date(),
+      finishedAt: parseOptDate(block, "finished_at"),
+      counts: parseOptJson<any>(block, "counts", null),
+      items: parseOptJson<any>(block, "items", null),
+      error: parseOptStr(block, "error"),
+      scrapedFrom: parseOptStr(block, "scraped_from"),
+      tokenHash: parseOptStr(block, "token_hash"),
+      tokenExpiresAt: parseOptDate(block, "token_expires_at"),
+    });
+    existingStoryScrapeRunIds.add(id);
+  }
+  importedCounts.storyScrapeRuns += await insertBatchWithFallback(
+    storyScrapeRuns,
+    storyScrapeRunsBatch,
+    "story_scrape_runs"
+  );
+
+  // ── Tracking jobs ──
+  const trackingJobsSection = extractSection(xmlText, "tracking_jobs");
+  const trackingJobsBatch: (typeof trackingJobs.$inferInsert)[] = [];
+  for (const block of parseAllTags("tracking_job", trackingJobsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
+    const kind = unescapeXml(parseXmlTag("kind", block));
+    const origin = unescapeXml(parseXmlTag("origin", block));
+    if (!id || !saRaw || !kind || !origin) continue;
+    const socialAccountId = mapSocialAccountId(saRaw);
+    if (!existingSocialAccountUuids.has(socialAccountId)) continue;
+    const importerIdRaw = parseOptStr(block, "importer_id");
+    const importerId = importerIdRaw && existingStoryImporterIds.has(importerIdRaw) ? importerIdRaw : null;
+    const runIdRaw = parseOptStr(block, "run_id");
+    const runId = runIdRaw && existingStoryScrapeRunIds.has(runIdRaw) ? runIdRaw : null;
+    trackingJobsBatch.push({
+      id,
+      socialAccountId,
+      kind,
+      origin,
+      status: parseOptStr(block, "status") || "queued",
+      importerId,
+      runId,
+      batchId: parseOptStr(block, "batch_id"),
+      attempts: parseOptInt(block, "attempts") ?? 0,
+      result: parseOptJson<any>(block, "result", null),
+      error: parseOptStr(block, "error"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+      startedAt: parseOptDate(block, "started_at"),
+      finishedAt: parseOptDate(block, "finished_at"),
+    });
+  }
+  importedCounts.trackingJobs += await insertBatchWithFallback(trackingJobs, trackingJobsBatch, "tracking_jobs");
+
+  // ── Social account issues ──
+  const issuesSection = extractSection(xmlText, "social_account_issues");
+  const issuesBatch: (typeof socialAccountIssues.$inferInsert)[] = [];
+  for (const block of parseAllTags("social_account_issue", issuesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
+    const kind = unescapeXml(parseXmlTag("kind", block));
+    if (!id || !saRaw || !kind) continue;
+    const socialAccountId = mapSocialAccountId(saRaw);
+    if (!existingSocialAccountUuids.has(socialAccountId)) continue;
+    issuesBatch.push({
+      id,
+      socialAccountId,
+      kind,
+      status: parseOptStr(block, "status") || "open",
+      jobId: parseOptStr(block, "job_id"),
+      jobKind: parseOptStr(block, "job_kind"),
+      timesSeen: parseOptInt(block, "times_seen") ?? 1,
+      firstSeenAt: parseOptDate(block, "first_seen_at") ?? new Date(),
+      lastSeenAt: parseOptDate(block, "last_seen_at") ?? new Date(),
+      resolution: parseOptStr(block, "resolution"),
+      previousUsername: parseOptStr(block, "previous_username"),
+      resolvedAt: parseOptDate(block, "resolved_at"),
+    });
+  }
+  importedCounts.socialAccountIssues += await insertBatchWithFallback(
+    socialAccountIssues,
+    issuesBatch,
+    "social_account_issues"
+  );
+
+  // ── Conversations ──
+  const existingConversationIds = new Set(
+    (await db.select({ id: conversations.id }).from(conversations)).map(c => c.id)
+  );
+  const conversationsSection = extractSection(xmlText, "conversations");
+  const conversationsBatch: (typeof conversations.$inferInsert)[] = [];
+  for (const block of parseAllTags("conversation", conversationsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const channelType = unescapeXml(parseXmlTag("channel_type", block));
+    if (!id || !channelType || existingConversationIds.has(id)) continue;
+    const saRaw = parseOptStr(block, "social_account_id");
+    const mappedSa = saRaw ? mapSocialAccountId(saRaw) : null;
+    const socialAccountId = mappedSa && existingSocialAccountUuids.has(mappedSa) ? mappedSa : null;
+    conversationsBatch.push({
+      id,
+      title: parseOptStr(block, "title"),
+      channelType,
+      socialAccountId,
+      externalUrl: parseOptStr(block, "external_url"),
+      metadata: parseOptJson<any>(block, "metadata", null),
+      lastMessageAt: parseOptDate(block, "last_message_at"),
+      importDate: parseOptDate(block, "import_date"),
+      importUuid: parseOptStr(block, "import_uuid"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingConversationIds.add(id);
+  }
+  importedCounts.conversations += await insertBatchWithFallback(conversations, conversationsBatch, "conversations");
+
+  // ── Messages ──
+  const existingMessageIds = new Set(
+    (await db.select({ id: messages.id }).from(messages)).map(m => m.id)
+  );
+  const messagesSection = extractSection(xmlText, "messages");
+  const messagesBatch: (typeof messages.$inferInsert)[] = [];
+  for (const block of parseAllTags("message", messagesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const conversationId = unescapeXml(parseXmlTag("conversation_id", block));
+    const sentAt = parseOptDate(block, "sent_at");
+    if (!id || !conversationId || !sentAt || !existingConversationIds.has(conversationId)) continue;
+    if (existingMessageIds.has(id)) {
+      skippedCounts.messages++;
+      continue;
+    }
+    const personRaw = parseOptStr(block, "sender_person_id");
+    const mappedPerson = personRaw ? replaceZeroUUID(personRaw) : null;
+    const senderPersonId = mappedPerson && existingPersonIds.has(mappedPerson) ? mappedPerson : null;
+    const saRaw = parseOptStr(block, "sender_social_account_id");
+    const mappedSa = saRaw ? mapSocialAccountId(saRaw) : null;
+    const senderSocialAccountId = mappedSa && existingSocialAccountUuids.has(mappedSa) ? mappedSa : null;
+    const imageUuids = parseXmlArray("image_uuids", "image_uuid", block);
+
+    messagesBatch.push({
+      id,
+      conversationId,
+      senderPersonId,
+      senderSocialAccountId,
+      content: parseOptStr(block, "content"),
+      contentType: parseOptStr(block, "content_type") || "text",
+      imageUuids: imageUuids.length > 0 ? imageUuids : [],
+      attachments: parseOptJson<any[]>(block, "attachments", []),
+      externalId: parseOptStr(block, "external_id"),
+      sentAt,
+      metadata: parseOptJson<any>(block, "metadata", null),
+      importDate: parseOptDate(block, "import_date"),
+      importUuid: parseOptStr(block, "import_uuid"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+    existingMessageIds.add(id);
+  }
+  importedCounts.messages += await insertBatchWithFallback(messages, messagesBatch, "messages");
+
+  // ── Message recipients ──
+  const recipientsSection = extractSection(xmlText, "message_recipients");
+  const recipientsBatch: (typeof messageRecipients.$inferInsert)[] = [];
+  for (const block of parseAllTags("message_recipient", recipientsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const messageId = unescapeXml(parseXmlTag("message_id", block));
+    if (!id || !messageId || !existingMessageIds.has(messageId)) continue;
+    const personRaw = parseOptStr(block, "person_id");
+    const mappedPerson = personRaw ? replaceZeroUUID(personRaw) : null;
+    const personId = mappedPerson && existingPersonIds.has(mappedPerson) ? mappedPerson : null;
+    const saRaw = parseOptStr(block, "social_account_id");
+    const mappedSa = saRaw ? mapSocialAccountId(saRaw) : null;
+    const socialAccountId = mappedSa && existingSocialAccountUuids.has(mappedSa) ? mappedSa : null;
+    recipientsBatch.push({
+      id,
+      messageId,
+      personId,
+      socialAccountId,
+      recipientType: parseOptStr(block, "recipient_type") || "to",
+      importDate: parseOptDate(block, "import_date"),
+      importUuid: parseOptStr(block, "import_uuid"),
+    });
+  }
+  importedCounts.messageRecipients += await insertBatchWithFallback(
+    messageRecipients,
+    recipientsBatch,
+    "message_recipients"
+  );
+
+  // ── Conversation participants ──
+  const participantsSection = extractSection(xmlText, "conversation_participants");
+  const participantsBatch: (typeof conversationParticipants.$inferInsert)[] = [];
+  for (const block of parseAllTags("conversation_participant", participantsSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const conversationId = unescapeXml(parseXmlTag("conversation_id", block));
+    if (!id || !conversationId || !existingConversationIds.has(conversationId)) continue;
+    const personRaw = parseOptStr(block, "person_id");
+    const mappedPerson = personRaw ? replaceZeroUUID(personRaw) : null;
+    const personId = mappedPerson && existingPersonIds.has(mappedPerson) ? mappedPerson : null;
+    const saRaw = parseOptStr(block, "social_account_id");
+    const mappedSa = saRaw ? mapSocialAccountId(saRaw) : null;
+    const socialAccountId = mappedSa && existingSocialAccountUuids.has(mappedSa) ? mappedSa : null;
+    participantsBatch.push({
+      id,
+      conversationId,
+      personId,
+      socialAccountId,
+      role: parseOptStr(block, "role") || "member",
+      joinedAt: parseOptDate(block, "joined_at") ?? new Date(),
+      importDate: parseOptDate(block, "import_date"),
+      importUuid: parseOptStr(block, "import_uuid"),
+    });
+  }
+  importedCounts.conversationParticipants += await insertBatchWithFallback(
+    conversationParticipants,
+    participantsBatch,
+    "conversation_participants"
+  );
+
+  // ── Geocodes ──
+  const geocodesSection = extractSection(xmlText, "geocodes");
+  const geocodesBatch: (typeof geocodes.$inferInsert)[] = [];
+  for (const block of parseAllTags("geocode", geocodesSection)) {
+    const query = unescapeXml(parseXmlTag("query", block));
+    const status = unescapeXml(parseXmlTag("status", block));
+    if (!query || !status) continue;
+    geocodesBatch.push({
+      query,
+      status,
+      latitude: parseOptFloat(block, "latitude"),
+      longitude: parseOptFloat(block, "longitude"),
+      displayName: parseOptStr(block, "display_name"),
+      geocodedAt: parseOptDate(block, "geocoded_at") ?? new Date(),
+    });
+  }
+  importedCounts.geocodes += await insertBatchWithFallback(geocodes, geocodesBatch, "geocodes");
+
+  await onProgress?.(88, "Importing follow graph & history…");
+
+  // ── Social follows (explicit <social_follows> section + edges from <social_account> and <social_network_snapshot>) ──
+  const socialFollowsSection = extractSection(xmlText, "social_follows");
+  for (const block of parseAllTags("social_follow", socialFollowsSection)) {
+    const followerId = unescapeXml(parseXmlTag("follower_id", block));
+    const followedId = unescapeXml(parseXmlTag("followed_id", block));
+    if (!followerId || !followedId) continue;
+    pendingFollowEdges.push({
+      followerId,
+      followedId,
+      detectedAt: parseOptDate(block, "detected_at") ?? undefined,
+      source: parseOptStr(block, "source") ?? undefined,
+    });
+  }
+
+  const snapshotsSection = extractSection(xmlText, "social_network_snapshots");
+  for (const block of parseAllTags("social_network_snapshot", snapshotsSection)) {
+    const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+    const mappedAccountId = mapSocialAccountId(socialAccountId);
+    if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
+    const snFollowers = parseXmlArray("followers", "account_id", block);
+    const snFollowing = parseXmlArray("following", "account_id", block);
+    collectFollowEdges(socialAccountId, snFollowers, snFollowing);
+  }
+
+  if (includeHistory) {
+    // Legacy social_profile_versions fallback
+    const profileVersionsSection = extractSection(xmlText, "social_profile_versions");
+    for (const block of parseAllTags("social_profile_version", profileVersionsSection)) {
+      try {
+        const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
+        const mappedAccountId = mapSocialAccountId(socialAccountId);
+        if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
+        if (!parseOptBool(block, "is_current", false)) continue;
+        await storage.updateSocialAccount(mappedAccountId, {
+          nickname: parseOptStr(block, "nickname"),
+          bio: parseOptStr(block, "bio"),
+          accountUrl: parseOptStr(block, "account_url"),
+          imageUrl: parseOptStr(block, "image_url"),
+          externalImageUrl: parseOptStr(block, "external_image_url"),
+        });
+      } catch (e) {
+        console.error("Error importing legacy profile version:", e);
+      }
+    }
+
+    // ── Social account history ──
+    const historySection = extractSection(xmlText, "social_account_history");
+    const historyBatch: (typeof socialAccountHistory.$inferInsert)[] = [];
+    for (const block of parseAllTags("history_entry", historySection)) {
+      const id = unescapeXml(parseXmlTag("id", block));
+      const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
+      const batchId = unescapeXml(parseXmlTag("batch_id", block));
+      const entryKind = unescapeXml(parseXmlTag("entry_kind", block));
+      const changeSource = unescapeXml(parseXmlTag("change_source", block));
+      if (!id || !saRaw || !batchId || !entryKind || !changeSource) continue;
+      const socialAccountId = mapSocialAccountId(saRaw);
+      if (!existingSocialAccountUuids.has(socialAccountId)) continue;
+
+      const obsRaw = parseOptStr(block, "observed_via_account_id");
+      const mappedObs = obsRaw ? mapSocialAccountId(obsRaw) : null;
+      const observedViaAccountId = mappedObs && existingSocialAccountUuids.has(mappedObs) ? mappedObs : null;
+
+      let profileFieldsChanged = parseXmlArray("profile_fields_changed", "field", block);
+      if (profileFieldsChanged.length === 0) {
+        profileFieldsChanged = parseOptJson<string[]>(block, "profile_fields_changed", []);
+      }
+
+      const delta = parseOptJson<any>(block, "delta", null);
+      if (delta && typeof delta === "object") {
+        for (const k of [
+          "followersAdded",
+          "followersLost",
+          "followersRemoved",
+          "followingAdded",
+          "followingLost",
+          "followingRemoved",
+        ]) {
+          if (Array.isArray(delta[k])) {
+            delta[k] = delta[k].map((aid: string) => mapSocialAccountId(aid));
+          }
+        }
+      }
+
+      historyBatch.push({
         id,
-        photoId,
-        s3Url,
-        embedding: embeddingStr ? JSON.parse(embeddingStr) : [],
-        personfaceUuid,
-        detectionConfidence,
-        coordinates: coordinatesStr ? JSON.parse(coordinatesStr) : null,
-        createdAt: createdAtStr ? new Date(createdAtStr) : new Date(),
-      }).onConflictDoNothing();
-      importedCounts.faces = (importedCounts.faces || 0) + 1;
+        socialAccountId,
+        batchId,
+        entryKind,
+        changeSource,
+        captureScope: parseOptStr(block, "capture_scope") || "none",
+        isInitialCapture: parseOptBool(block, "is_initial_capture", false),
+        pendingImportId: parseOptStr(block, "pending_import_id"),
+        observedViaAccountId,
+        detectedAt: parseOptDate(block, "detected_at") ?? new Date(),
+        followersAfter: parseOptInt(block, "followers_after") ?? 0,
+        followersAdded: parseOptInt(block, "followers_added") ?? 0,
+        followersLost: parseOptInt(block, "followers_lost") ?? 0,
+        followingAfter: parseOptInt(block, "following_after") ?? 0,
+        followingAdded: parseOptInt(block, "following_added") ?? 0,
+        followingLost: parseOptInt(block, "following_lost") ?? 0,
+        reportedFollowersAfter: parseOptInt(block, "reported_followers_after"),
+        reportedFollowingAfter: parseOptInt(block, "reported_following_after"),
+        postsAdded: parseOptInt(block, "posts_added") ?? 0,
+        postsDeleted: parseOptInt(block, "posts_deleted") ?? 0,
+        profileFieldsChanged,
+        previousUsername: parseOptStr(block, "previous_username"),
+        previousNickname: parseOptStr(block, "previous_nickname"),
+        previousBio: parseOptStr(block, "previous_bio"),
+        previousLocation: parseOptStr(block, "previous_location"),
+        previousImageUrl: parseOptStr(block, "previous_image_url"),
+        imageChange: parseOptStr(block, "image_change"),
+        delta: delta as SocialAccountHistoryDelta | null,
+      });
+    }
+    importedCounts.socialAccountHistory += await insertBatchWithFallback(
+      socialAccountHistory,
+      historyBatch,
+      "social_account_history"
+    );
+
+    // ── Historical account summaries ──
+    const histSummariesSection = extractSection(xmlText, "historical_account_summaries");
+    const histSummariesBatch: (typeof historicalAccountSummaries.$inferInsert)[] = [];
+    for (const block of parseAllTags("historical_account_summary", histSummariesSection)) {
+      const id = unescapeXml(parseXmlTag("id", block));
+      const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
+      const content = parseOptJson<any>(block, "content", null);
+      if (!id || !saRaw || !content) continue;
+      const socialAccountId = mapSocialAccountId(saRaw);
+      if (!existingSocialAccountUuids.has(socialAccountId)) continue;
+      histSummariesBatch.push({
+        id,
+        socialAccountId,
+        content,
+        model: parseOptStr(block, "model"),
+        createdAt: parseOptDate(block, "created_at") ?? new Date(),
+        invalidatedAt: parseOptDate(block, "invalidated_at"),
+        replacedAt: parseOptDate(block, "replaced_at") ?? new Date(),
+      });
+    }
+    importedCounts.historicalAccountSummaries += await insertBatchWithFallback(
+      historicalAccountSummaries,
+      histSummariesBatch,
+      "historical_account_summaries"
+    );
+
+    // ── Social network changes ──
+    const networkChangesSection = extractSection(xmlText, "social_network_changes");
+    const networkChangesBatch: (typeof socialNetworkChanges.$inferInsert)[] = [];
+    for (const block of parseAllTags("social_network_change", networkChangesSection)) {
+      const id = parseOptStr(block, "id");
+      const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
+      const changeType = unescapeXml(parseXmlTag("change_type", block));
+      const direction = unescapeXml(parseXmlTag("direction", block));
+      const targetRaw = unescapeXml(parseXmlTag("target_account_id", block));
+      if (!saRaw || !changeType || !direction || !targetRaw) continue;
+      const socialAccountId = mapSocialAccountId(saRaw);
+      if (!existingSocialAccountUuids.has(socialAccountId)) continue;
+      const targetAccountId = mapSocialAccountId(targetRaw);
+
+      networkChangesBatch.push({
+        ...(id ? { id } : {}),
+        socialAccountId,
+        changeType,
+        direction,
+        targetAccountId,
+        detectedAt: parseOptDate(block, "detected_at") ?? new Date(),
+        batchId: parseOptStr(block, "batch_id"),
+      });
+    }
+    importedCounts.networkChanges += await insertBatchWithFallback(
+      socialNetworkChanges,
+      networkChangesBatch,
+      "social_network_changes"
+    );
+  }
+
+  // Deduplicate and batch-insert all follow edges now that all social accounts exist
+  const uniqueFollows = new Map<string, typeof socialFollows.$inferInsert>();
+  for (const e of pendingFollowEdges) {
+    const followerId = mapSocialAccountId(e.followerId);
+    const followedId = mapSocialAccountId(e.followedId);
+    if (!existingSocialAccountUuids.has(followerId) || !existingSocialAccountUuids.has(followedId)) continue;
+    const key = `${followerId}:${followedId}`;
+    const existingEdge = uniqueFollows.get(key);
+    if (!existingEdge || (e.detectedAt && !existingEdge.detectedAt)) {
+      uniqueFollows.set(key, {
+        followerId,
+        followedId,
+        detectedAt: e.detectedAt ?? new Date(),
+        source: e.source || "xml-import",
+      });
+    }
+  }
+  const followBatch = Array.from(uniqueFollows.values());
+  importedCounts.socialFollows += await insertBatchWithFallback(socialFollows, followBatch, "social_follows");
+
+  // Recompute denormalized followers_count and following_count on social_accounts in a single SQL query
+  if (followBatch.length > 0 || socialAccountsBatch.length > 0) {
+    try {
+      await db.execute(sql`
+        UPDATE social_accounts sa SET
+          followers_count = COALESCE((SELECT COUNT(*)::int FROM social_follows WHERE followed_id = sa.id), 0),
+          following_count = COALESCE((SELECT COUNT(*)::int FROM social_follows WHERE follower_id = sa.id), 0)
+      `);
     } catch (e) {
-      console.error(`Error importing face entry ${id}:`, e);
+      console.error("Error recomputing social_accounts follow counts:", e);
     }
   }
 
-  await storage.updateTaskProgress(taskId, 99, "Finalizing…");
+  await onProgress?.(99, "Finalizing…");
   await runAutomaticImagePassIn();
-  return JSON.stringify({ imported: importedCounts, skipped: skippedCounts });
+  return { imported: importedCounts, skipped: skippedCounts };
+}
+
+async function processImportXmlTask(taskId: string, payload: {
+  xml?: string;
+  filePath?: string;
+  includeHistory?: boolean;
+  includePostHistory?: boolean;
+}): Promise<string> {
+  let xmlText = payload.xml || "";
+  if (!xmlText && payload.filePath) {
+    const backupsDir = path.resolve(process.cwd(), "backups");
+    const safeFilename = path.basename(payload.filePath.replace(/\\/g, "/"));
+    const fullPath = path.resolve(backupsDir, safeFilename);
+    if (fullPath.startsWith(backupsDir + path.sep)) {
+      try {
+        const stat = await fs.promises.stat(fullPath);
+        if (stat.isFile()) {
+          xmlText = await fs.promises.readFile(fullPath, "utf8");
+        }
+      } catch {
+        // File does not exist or cannot be read
+      }
+    }
+  }
+  if (!xmlText) {
+    throw new Error("No XML data found for restore/import task");
+  }
+
+  const result = await executeImportXml(xmlText, {
+    includeHistory: payload.includeHistory ?? true,
+    includePostHistory: payload.includePostHistory ?? true,
+    onProgress: (progress, message) => storage.updateTaskProgress(taskId, progress, message),
+  });
+  return JSON.stringify(result);
 }
 
 async function isTaskCancelled(taskId: string): Promise<boolean> {
@@ -2109,7 +3668,6 @@ async function processImportInstagram(taskId: string, payload: {
   const mutualFollowIds: string[] = [];
 
   const imageTaskGroup = await storage.createImageTaskGroup({
-    userId: actingUserId(),
     title: `Instagram Import - @${targetAccountUsername} (${importType})`,
     kind: "social_import",
     parentTaskId: taskId,
@@ -2139,7 +3697,6 @@ async function processImportInstagram(taskId: string, payload: {
 
       if (profilePicUrl && (!existingAccount.currentProfile?.imageUrl || forceUpdateImages)) {
         await storage.createImageTask({
-          userId: actingUserId(),
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
@@ -2164,7 +3721,6 @@ async function processImportInstagram(taskId: string, payload: {
 
       if (profilePicUrl) {
         await storage.createImageTask({
-          userId: actingUserId(),
           type: "download_img_instagram",
           status: "pending",
           parentTaskId: taskId,
@@ -2345,7 +3901,6 @@ interface ImportThreadSummary {
 
 async function importOneDmThread(
   taskId: string,
-  userId: number,
   threadFolder: string,
   root: { socialAccountId: string; username: string },
   options: ImportDmOptions,
@@ -2398,7 +3953,6 @@ async function importOneDmThread(
   let conversation = await storage.getConversationByMetadata("igThreadId", parsed.threadId);
   if (!conversation) {
     conversation = await storage.createConversation({
-      createdByUserId: userId,
       title: parsed.title,
       channelType: "instagram",
       // Primary "other party" ref; both sides are also in participants below
@@ -2636,7 +4190,6 @@ async function importOneDmThread(
 async function queueSocialProfileImage(
   socialAccountId: string,
   imageUrl: string | null | undefined,
-  userId: number,
   parentTaskId?: string,
   imageTaskGroupId?: string,
 ) {
@@ -2648,7 +4201,6 @@ async function queueSocialProfileImage(
     .where(eq(socialAccounts.id, socialAccountId));
 
   await storage.createImageTask({
-    userId,
     type: "download_img_instagram",
     status: "pending",
     parentTaskId: parentTaskId || null,
@@ -2692,9 +4244,7 @@ const handleOf = (row: any): string =>
 export async function resolveScrapedAccounts(
   rows: any[],
   typeId: string | null,
-  // A system-context caller (a tracking run) names the owner explicitly; the
-  // extension import runs as the user, so it is stamped from the ambient context.
-  owner: { createdByUserId: number | null; creationType: string } = { createdByUserId: actingUserId(), creationType: "PRM-chrome import" },
+  creationType = "PRM-chrome import",
 ): Promise<Map<string, string>> {
   const byHandle = new Map<string, any>();
   for (const row of rows) {
@@ -2728,10 +4278,7 @@ export async function resolveScrapedAccounts(
           username: handle,
           typeId: typeId || undefined,
           ownerUuid: null,
-          // Without this the row lands with a null creator, which visibleShared()
-          // reads as public — a 10k import would publish 10k accounts to every user.
-          createdByUserId: owner.createdByUserId ?? undefined,
-          internalAccountCreationType: owner.creationType,
+          internalAccountCreationType: creationType,
           nickname: row.full_name || row.displayName || null,
           accountUrl: `https://instagram.com/${handle}`,
         };
@@ -2762,7 +4309,6 @@ export async function processImportSocial(
     throw new Error(`Pending social account import ${pendingImportId} not found`);
   }
 
-  const userId = actingUserId() || 1;
   const instagramType = await storage.getSocialAccountTypeByName("instagram");
   const typeId = instagramType?.id || null;
 
@@ -2879,7 +4425,6 @@ export async function processImportSocial(
   if (includeGraphImages) {
     await storage.updateTaskProgress(taskId, 85, "Queueing profile images...");
     const group = await storage.createImageTaskGroup({
-      userId,
       title: `Social Import - @${mainUsername}`,
       kind: "social_import",
       parentTaskId: taskId,
@@ -2888,7 +4433,7 @@ export async function processImportSocial(
     const imageTaskGroupId = group.id;
     for (const row of graphRows) {
       const id = resolved.get(handleOf(row));
-      if (id) await queueSocialProfileImage(id, row.profile_pic_url || row.profilePicUrl, userId, taskId, imageTaskGroupId);
+      if (id) await queueSocialProfileImage(id, row.profile_pic_url || row.profilePicUrl, taskId, imageTaskGroupId);
     }
   }
 
@@ -2922,14 +4467,13 @@ export async function processImportSocial(
 export async function processImportInstagramBackup(
   taskId: string,
   payload: {
-    userId: number;
     zipPath: string;
     rootSocialAccountId: string;
     rootUsername: string;
     options?: ImportDmOptions;
   }
 ): Promise<string> {
-  const { userId, zipPath, rootSocialAccountId, rootUsername, options = {} } = payload;
+  const { zipPath, rootSocialAccountId, rootUsername, options = {} } = payload;
 
   const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), "prm-ig-dm-"));
   try {
@@ -2952,7 +4496,6 @@ export async function processImportInstagramBackup(
       try {
         const summary = await importOneDmThread(
           taskId,
-          userId,
           importable[t],
           root,
           options,
@@ -2996,13 +4539,12 @@ export async function processImportInstagramBackup(
 export async function processImportSms(
   taskId: string,
   payload: {
-    userId: number;
     xmlPath: string;
     rootPersonId: string;
     options?: ImportDmOptions;
   }
 ): Promise<string> {
-  const { userId, xmlPath, rootPersonId, options = {} } = payload;
+  const { xmlPath, rootPersonId, options = {} } = payload;
   try {
     const { threads } = parseSmsBackup(fs.readFileSync(xmlPath, "utf-8"));
     if (threads.length === 0) {
@@ -3011,7 +4553,7 @@ export async function processImportSms(
 
     // The Me person's own messages use the null-sender "self" convention that
     // manual entry uses; anyone else's phone attributes them to that person.
-    const me = await storage.getMePerson(userId);
+    const me = await storage.getMePerson();
     const ownerSenderPersonId = me?.id === rootPersonId ? null : rootPersonId;
 
     const personByPhone = new Map<string, string>();
@@ -3069,7 +4611,6 @@ export async function processImportSms(
       let conversation = await storage.getConversationByMetadata("smsThreadKey", thread.key);
       if (!conversation) {
         conversation = await storage.createConversation({
-          createdByUserId: userId,
           // Participant names label fully-matched threads; otherwise show who the number is
           title: unmatched.length === 0
             ? null
@@ -4098,111 +5639,98 @@ async function processFindPotentialGroups(taskId: string, payload: {
 }
 
 async function processNextTask(): Promise<boolean> {
-  const task = await runAsSystem(() => storage.getNextPendingTask());
+  const task = await storage.getNextPendingTask();
   if (!task) return false;
 
   log(`[TaskWorker] Processing task ${task.id} (type: ${task.type})`);
-  await runAsSystem(() => storage.updateTaskStatus(task.id, "in_progress"));
+  await storage.updateTaskStatus(task.id, "in_progress");
 
-  let taskUserId = task.userId;
-  if (!taskUserId) {
-    try {
-      const p = JSON.parse(task.payload);
-      taskUserId = p.userId;
-    } catch {}
-  }
-  if (!taskUserId) {
-    taskUserId = (await runAsSystem(() => storage.getAllUsers()))[0]?.id;
-  }
+  try {
+    let result: string;
 
-  return runAsUser(taskUserId, async () => {
-    try {
-      let result: string;
-
-      switch (task.type) {
-        case "calculate_crowd": {
-          const payload = JSON.parse(task.payload);
-          result = await processCalculateCrowd(task.id, payload);
-          break;
-        }
-        case "find_potential_groups": {
-          const payload = JSON.parse(task.payload);
-          result = await processFindPotentialGroups(task.id, payload);
-          break;
-        }
-        case "multi_image_download": {
-          const payload = JSON.parse(task.payload);
-          result = await processMultiImageDownload(task.id, payload);
-          break;
-        }
-        case "get_img": {
-          const payload = JSON.parse(task.payload);
-          result = await processGetImgTask(payload);
-          break;
-        }
-        case "migrate_profile_image_tiers": {
-          result = await processMigrateProfileImageTiers(task.id);
-          break;
-        }
-        case "migrate_image_prefixes": {
-          result = await processMigrateImagePrefixes(task.id);
-          break;
-        }
-        case "bake_image_variants": {
-          result = await processBakeImageVariants(task.id);
-          break;
-        }
-        case "import_social": {
-          const payload = JSON.parse(task.payload);
-          result = await processImportSocial(task.id, payload);
-          break;
-        }
-        case "import_instagram": {
-          const payload = JSON.parse(task.payload);
-          result = await processImportInstagram(task.id, payload);
-          break;
-        }
-        case "import_instagram_backup": {
-          const payload = JSON.parse(task.payload);
-          result = await processImportInstagramBackup(task.id, payload);
-          break;
-        }
-        case "import_sms": {
-          const payload = JSON.parse(task.payload);
-          result = await processImportSms(task.id, payload);
-          break;
-        }
-        case "export_xml": {
-          const payload = JSON.parse(task.payload);
-          result = await processExportXmlTask(task.id, payload);
-          break;
-        }
-        case "import_xml": {
-          const payload = JSON.parse(task.payload);
-          await db.update(tasks).set({
-            payload: JSON.stringify({ userId: payload.userId, xmlCleared: true }),
-          }).where(eq(tasks.id, task.id));
-          result = await processImportXmlTask(task.id, payload);
-          break;
-        }
-        default:
-          throw new Error(`Unknown task type: ${task.type}`);
+    switch (task.type) {
+      case "calculate_crowd": {
+        const payload = JSON.parse(task.payload);
+        result = await processCalculateCrowd(task.id, payload);
+        break;
       }
-
-      if (await isTaskCancelled(task.id)) {
-        log(`[TaskWorker] Task ${task.id} was cancelled during processing`);
-        return true;
+      case "find_potential_groups": {
+        const payload = JSON.parse(task.payload);
+        result = await processFindPotentialGroups(task.id, payload);
+        break;
       }
-      await storage.updateTaskStatus(task.id, "completed", result);
-      log(`[TaskWorker] Task ${task.id} completed`);
-      return true;
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      log(`[TaskWorker] Task ${task.id} failed: ${errorMessage}`);
-      await storage.updateTaskStatus(task.id, "failed", errorMessage);
+      case "multi_image_download": {
+        const payload = JSON.parse(task.payload);
+        result = await processMultiImageDownload(task.id, payload);
+        break;
+      }
+      case "get_img": {
+        const payload = JSON.parse(task.payload);
+        result = await processGetImgTask(payload);
+        break;
+      }
+      case "migrate_profile_image_tiers": {
+        result = await processMigrateProfileImageTiers(task.id);
+        break;
+      }
+      case "migrate_image_prefixes": {
+        result = await processMigrateImagePrefixes(task.id);
+        break;
+      }
+      case "bake_image_variants": {
+        result = await processBakeImageVariants(task.id);
+        break;
+      }
+      case "import_social": {
+        const payload = JSON.parse(task.payload);
+        result = await processImportSocial(task.id, payload);
+        break;
+      }
+      case "import_instagram": {
+        const payload = JSON.parse(task.payload);
+        result = await processImportInstagram(task.id, payload);
+        break;
+      }
+      case "import_instagram_backup": {
+        const payload = JSON.parse(task.payload);
+        result = await processImportInstagramBackup(task.id, payload);
+        break;
+      }
+      case "import_sms": {
+        const payload = JSON.parse(task.payload);
+        result = await processImportSms(task.id, payload);
+        break;
+      }
+      case "export_xml": {
+        const payload = JSON.parse(task.payload);
+        result = await processExportXmlTask(task.id, payload);
+        break;
+      }
+      case "import_xml": {
+        const payload = JSON.parse(task.payload);
+        await db.update(tasks).set({
+          payload: JSON.stringify({ xmlCleared: true }),
+        }).where(eq(tasks.id, task.id));
+        result = await processImportXmlTask(task.id, payload);
+        break;
+      }
+      default:
+        throw new Error(`Unknown task type: ${task.type}`);
+    }
+
+    if (await isTaskCancelled(task.id)) {
+      log(`[TaskWorker] Task ${task.id} was cancelled during processing`);
       return true;
     }
-  });
+    await storage.updateTaskStatus(task.id, "completed", result);
+    log(`[TaskWorker] Task ${task.id} completed`);
+    return true;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log(`[TaskWorker] Task ${task.id} failed: ${errorMessage}`);
+    await storage.updateTaskStatus(task.id, "failed", errorMessage);
+    return true;
+  }
 }
 
 async function runWorkerLoop() {
@@ -4269,11 +5797,13 @@ export function pauseTaskWorker() {
     clearTimeout(imageTaskPollTimer);
     imageTaskPollTimer = null;
   }
+  sseManager.broadcast("worker.status", { paused: true });
   log("[TaskWorker] Worker paused");
 }
 
 export function resumeTaskWorker() {
   isPaused = false;
+  sseManager.broadcast("worker.status", { paused: false });
   log("[TaskWorker] Worker resumed");
   runWorkerLoop();
   dispatchImageTasks();

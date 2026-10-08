@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
+import { useLoadOnce } from "@/hooks/use-load-once";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProviderModelPicker, type ModelSelection } from "@/components/provider-model-picker";
 import { Database, CheckCircle2, Loader2, RefreshCw, AlertCircle, Sparkles, BookOpen } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -16,10 +17,10 @@ type VectorSettings = {
   hasApiKey: boolean;
   collectionName: string;
   embeddingModel: string;
+  embeddingProviderId: string;
 };
 
 type TestResult = { ok: boolean; message: string };
-type EmbeddingModel = { name: string; parameterSize: string | null };
 type VectorStats = {
   totalNotes: number;
   vectorized: number;
@@ -36,29 +37,23 @@ export default function VectorSettingsPage() {
   const [qdrantUrl, setQdrantUrl] = useState("");
   const [qdrantApiKey, setQdrantApiKey] = useState("");
   const [collectionName, setCollectionName] = useState("");
-  const [embeddingModel, setEmbeddingModel] = useState("");
+  const [embedding, setEmbedding] = useState<ModelSelection>({ providerId: "", model: "" });
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data: settings, isLoading } = useQuery<VectorSettings>({
     queryKey: ["/api/vector/settings"],
   });
 
-  const { data: modelsData, isLoading: isLoadingModels, refetch: refetchModels } = useQuery<{ models: EmbeddingModel[] }>({
-    queryKey: ["/api/vector/embedding-models"],
-    retry: false,
-  });
-
   const { data: stats, refetch: refetchStats } = useQuery<VectorStats>({
     queryKey: ["/api/vector/stats"],
   });
 
-  useEffect(() => {
-    if (!settings) return;
-    setEnabled(settings.enabled);
-    setQdrantUrl(settings.qdrantUrl);
-    setCollectionName(settings.collectionName);
-    setEmbeddingModel(settings.embeddingModel);
-  }, [settings]);
+  useLoadOnce(settings, (s) => {
+    setEnabled(s.enabled);
+    setQdrantUrl(s.qdrantUrl);
+    setCollectionName(s.collectionName);
+    setEmbedding({ providerId: s.embeddingProviderId ?? "", model: s.embeddingModel });
+  });
 
   const saveMutation = useMutation({
     mutationFn: async (patch: Record<string, unknown>) => {
@@ -107,10 +102,9 @@ export default function VectorSettingsPage() {
   };
 
   const handleSaveModel = () => {
-    saveMutation.mutate({ embeddingModel });
+    saveMutation.mutate({ embeddingModel: embedding.model, embeddingProviderId: embedding.providerId });
   };
 
-  const models = modelsData?.models ?? [];
 
   if (isLoading) {
     return (
@@ -235,35 +229,19 @@ export default function VectorSettingsPage() {
           <CardHeader>
             <CardTitle className="text-lg">Embedding Model</CardTitle>
             <CardDescription>
-              Ollama model used to generate embeddings (e.g. <code className="text-xs bg-muted px-1 rounded">nomic-embed-text</code>).
+              Model used to generate embeddings, and the provider it runs on (e.g. <code className="text-xs bg-muted px-1 rounded">nomic-embed-text</code>).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="embedding-model">Model</Label>
-              <div className="flex gap-2">
-                <Select value={embeddingModel || undefined} onValueChange={setEmbeddingModel}>
-                  <SelectTrigger id="embedding-model" data-testid="select-embedding-model">
-                    <SelectValue placeholder={isLoadingModels ? "Loading models…" : (models.length === 0 ? "No models available — configure Ollama first" : "Select a model")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map(m => (
-                      <SelectItem key={m.name} value={m.name}>
-                        {m.name}{m.parameterSize ? ` (${m.parameterSize})` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button variant="outline" size="icon" onClick={() => refetchModels()} disabled={isLoadingModels} data-testid="button-refresh-models">
-                  <RefreshCw className={`h-4 w-4 ${isLoadingModels ? "animate-spin" : ""}`} />
-                </Button>
-              </div>
+              <Label>Model</Label>
+              <ProviderModelPicker value={embedding} onChange={setEmbedding} testId="picker-embedding" />
               <p className="text-xs text-muted-foreground">
                 Changing this invalidates existing vectors. Use "Vectorize all daily notes" below to re-embed.
               </p>
             </div>
             <div className="flex gap-2">
-              <Button onClick={handleSaveModel} disabled={saveMutation.isPending || !embeddingModel} data-testid="button-save-model">
+              <Button onClick={handleSaveModel} disabled={saveMutation.isPending || !embedding.model} data-testid="button-save-model">
                 {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save model"}
               </Button>
             </div>

@@ -14,7 +14,6 @@ import {
   User,
   Image as ImageIcon,
   Circle,
-  Sparkles,
   Eye,
   EyeOff,
   X,
@@ -22,7 +21,6 @@ import {
   Crosshair,
   ExternalLink,
   Download,
-  Users,
 } from "lucide-react";
 import {
   FamilyTreeFlow,
@@ -32,7 +30,6 @@ import {
 } from "@/components/family-tree-flow";
 import { FamilyTreePersonSelector } from "@/components/family-tree-person-selector";
 import { FamilyMemberDialog } from "@/components/family-member-dialog";
-import { GenerateFamilyConnectionsDialog } from "@/components/generate-family-connections-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -85,11 +82,10 @@ interface PersonBasic {
   lastName: string;
 }
 
-const VIEW_MODE_CYCLE: FamilyTreeViewMode[] = ["name", "avatar-name", "avatar-circle"];
+const VIEW_MODE_CYCLE: FamilyTreeViewMode[] = ["name", "avatar-name"];
 const VIEW_MODE_LABELS: Record<FamilyTreeViewMode, string> = {
   name: "Name & relation",
   "avatar-name": "Photo & name",
-  "avatar-circle": "Photo only",
 };
 
 function personName(p: { firstName: string; lastName: string } | undefined | null): string {
@@ -101,34 +97,18 @@ function initials(p: { firstName: string; lastName: string }): string {
 }
 
 export interface FamilyTreeExplorerProps {
-  /** Initial root person for the tree. When omitted, defaults to the current user. */
+  /** Initial root person for the tree. When omitted, defaults to your "Me" person. */
   initialPersonId?: string | null;
   /** Initial depth of the tree. */
   initialDepth?: number;
   /** Initial node view mode. */
   initialView?: FamilyTreeViewMode;
-  /**
-   * Embedded mode (e.g. inside a profile tab): hides the dev banner, skips URL
-   * syncing, and shows a "Full Tree" link to the standalone page instead.
-   */
-  embedded?: boolean;
-  /**
-   * Called whenever the explorer's view state changes. The standalone page uses
-   * this to keep the URL in sync.
-   */
-  onStateChange?: (state: {
-    personId: string;
-    depth: number;
-    viewMode: FamilyTreeViewMode;
-  }) => void;
 }
 
 export function FamilyTreeExplorer({
   initialPersonId = null,
   initialDepth = 6,
   initialView = "name",
-  embedded = false,
-  onStateChange,
 }: FamilyTreeExplorerProps) {
   const [, navigate] = useLocation();
   const canvasRef = useRef<FamilyTreeCanvasHandle>(null);
@@ -138,7 +118,6 @@ export function FamilyTreeExplorer({
   const [depth, setDepth] = useState(initialDepth);
   const [viewMode, setViewMode] = useState<FamilyTreeViewMode>(initialView);
   const [showPersonSelector, setShowPersonSelector] = useState(false);
-  const [showGenerateDialog, setShowGenerateDialog] = useState(false);
   const [showAddOptions, setShowAddOptions] = useState(true);
   const [addMemberContext, setAddMemberContext] = useState<{
     relatedPersonId: string;
@@ -178,13 +157,6 @@ export function FamilyTreeExplorer({
       setSelectedPersonId(meUser.id);
     }
   }, [meUser, selectedPersonId]);
-
-  // Notify host of state changes (used for URL syncing on the standalone page)
-  useEffect(() => {
-    if (selectedPersonId && onStateChange) {
-      onStateChange({ personId: selectedPersonId, depth, viewMode });
-    }
-  }, [selectedPersonId, depth, viewMode, onStateChange]);
 
   // Fetch tree data
   const {
@@ -755,21 +727,6 @@ export function FamilyTreeExplorer({
           {selectedPersonName || "Select Person"}
         </Button>
 
-        {embedded && selectedPersonId && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              navigate(`/family-tree?person=${selectedPersonId}&depth=${depth}&view=${viewMode}`)
-            }
-            title="Open the full-page family tree"
-            data-testid="button-open-full-tree"
-          >
-            <ExternalLink className="h-4 w-4 mr-1" />
-            Full Tree
-          </Button>
-        )}
-
         <div className="flex items-center gap-2 ml-auto">
           <span className="text-xs text-muted-foreground">Depth: {depth}</span>
           <Slider
@@ -783,27 +740,6 @@ export function FamilyTreeExplorer({
         </div>
 
         <div className="flex items-center gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => navigate("/family-tree/potential")}
-            title="View Potential Families grouped by surname"
-            data-testid="button-potential-families"
-          >
-            <Users className="h-4 w-4 mr-1 text-primary" />
-            Potential Families
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowGenerateDialog(true)}
-            disabled={!selectedPersonId}
-            title="Generate connections with AI"
-            data-testid="button-generate-connections"
-          >
-            <Sparkles className="h-4 w-4 mr-1" />
-            Generate
-          </Button>
           <Button
             variant={showAddOptions ? "default" : "outline"}
             size="sm"
@@ -1025,14 +961,6 @@ export function FamilyTreeExplorer({
           }}
         />
       )}
-
-      {/* Generate connections (AI) dialog */}
-      <GenerateFamilyConnectionsDialog
-        open={showGenerateDialog}
-        onOpenChange={setShowGenerateDialog}
-        personId={selectedPersonId}
-        personName={selectedPersonName || undefined}
-      />
 
       {/* User-drawn relationship confirmation dialog */}
       {connectRequest && (

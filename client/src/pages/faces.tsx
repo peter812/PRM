@@ -17,6 +17,7 @@ import {
   ImageIcon,
   X,
   Merge,
+  Unlink,
   MessageSquare,
   Clapperboard,
   StickyNote,
@@ -333,6 +334,7 @@ function IdentityDialog({
 }) {
   const { toast } = useToast();
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [removeAllOpen, setRemoveAllOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{ faceUuid: string; label: string } | null>(null);
 
   const { data: detail, isLoading, isError } = useQuery<KnownFaceDetail>({
@@ -355,6 +357,21 @@ function IdentityDialog({
     },
     onError: (err: Error) => {
       toast({ title: "Failed to remove face", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const removeAllMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/faces/remove-all-from-group", { personfaceUuid });
+      return res.json() as Promise<{ count: number }>;
+    },
+    onSuccess: async ({ count }) => {
+      await invalidateFacesQueries();
+      toast({ title: `Unassociated ${count} face${count !== 1 ? "s" : ""}` });
+      onClose();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to unassociate faces", description: err.message, variant: "destructive" });
     },
   });
 
@@ -431,6 +448,17 @@ function IdentityDialog({
             <Merge className="h-3.5 w-3.5" />
             Merge with…
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-destructive"
+            onClick={() => setRemoveAllOpen(true)}
+            disabled={removeAllMutation.isPending}
+            data-testid="button-unassociate-all"
+          >
+            <Unlink className="h-3.5 w-3.5" />
+            Unassociate all
+          </Button>
         </div>
 
         <div className="text-xs text-muted-foreground">
@@ -503,6 +531,22 @@ function IdentityDialog({
       </DialogContent>
 
       {mergeOpen && <MergeDialog current={header} onClose={() => setMergeOpen(false)} />}
+
+      <AlertDialog open={removeAllOpen} onOpenChange={setRemoveAllOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unassociate all faces?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Every face in this group will stop being counted as {identityTitle(header)} and move to its own group,
+              ready to be reviewed again in Face review.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => removeAllMutation.mutate()}>Unassociate all</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!removeTarget} onOpenChange={(v) => !v && setRemoveTarget(null)}>
         <AlertDialogContent>

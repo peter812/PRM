@@ -35,6 +35,7 @@ const FamilyTreeTab = lazy(() =>
   }))
 );
 import { SocialAccountDialog } from "@/components/social-account-dialog";
+import { ChoosePersonImageDialog } from "@/components/choose-person-image-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { getInitials } from "@/lib/utils";
 import { MessagesTab } from "@/components/messages-tab";
@@ -100,6 +101,7 @@ export default function PersonProfile() {
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isEditAdditionalOpen, setIsEditAdditionalOpen] = useState(false);
+  const [isChooseImageOpen, setIsChooseImageOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
   const [isAddSocialAccountOpen, setIsAddSocialAccountOpen] = useState(false);
   const [isAccountInfoOpen, setIsAccountInfoOpen] = useState(false);
@@ -126,8 +128,6 @@ export default function PersonProfile() {
       navigate('/graph');
     } else if (from === 'graph-3d' || from === 'social-graph-3d') {
       navigate('/social-graph-3d?view=person');
-    } else if (from === 'family-tree') {
-      navigate('/family-tree');
     } else if (from === 'group' && groupId) {
       navigate(`/group/${groupId}`);
     } else {
@@ -541,7 +541,7 @@ export default function PersonProfile() {
               {/* Right Column: Large Profile Picture & Contact details */}
               <div className="w-full lg:w-80 shrink-0 space-y-4">
                 {/* Large Profile Image */}
-                <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden group shadow-sm">
+                <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden shadow-sm">
                   {person.imageUrl ? (
                     <img src={withImageSize(person.imageUrl, "max")} alt={`${person.firstName} ${person.lastName}`} className="w-full h-full object-cover" />
                   ) : (
@@ -549,12 +549,10 @@ export default function PersonProfile() {
                       {getInitials(person.firstName, person.lastName)}
                     </div>
                   )}
-                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                    <Button variant="secondary" size="sm" onClick={() => setIsEditPersonOpen(true)}>
-                      Change Image
-                    </Button>
-                  </div>
                 </div>
+                <Button variant="outline" size="sm" className="w-full" onClick={() => setIsChooseImageOpen(true)} data-testid="button-choose-image">
+                  Choose image
+                </Button>
 
                 {/* Contact Details Card */}
                 <Card className="p-4 space-y-3 text-xs shadow-none">
@@ -831,6 +829,11 @@ export default function PersonProfile() {
         onOpenChange={setIsEditPersonOpen}
         person={person}
         onDelete={() => navigate("/people")}
+      />
+      <ChoosePersonImageDialog
+        person={person}
+        open={isChooseImageOpen}
+        onOpenChange={setIsChooseImageOpen}
       />
       <AdditionalInfoDialog
         open={isEditAdditionalOpen}

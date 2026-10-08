@@ -94,7 +94,6 @@ export function PersonDialog({
   useEffect(() => {
     if (open) {
       if (person) {
-        setImageUrl(person.imageUrl || null);
         form.reset({
           firstName: person.firstName,
           lastName: person.lastName,
@@ -103,7 +102,6 @@ export function PersonDialog({
           company: person.company || "",
           title: person.title || "",
           tags: person.tags || [],
-          imageUrl: person.imageUrl || null,
           noSocialMedia: person.noSocialMedia || 0,
           sex: person.sex || "unknown",
         });
@@ -207,7 +205,8 @@ export function PersonDialog({
   };
 
   const onSubmit = (data: FormValues) => {
-    mutation.mutate({ ...data, imageUrl });
+    // Editing leaves the picture alone: the person page's "Choose image" dialog owns it.
+    mutation.mutate({ ...data, imageUrl: isEdit ? undefined : imageUrl });
   };
 
   return (
@@ -219,7 +218,7 @@ export function PersonDialog({
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div>
+            {!isEdit && <div>
               <FormLabel>Photo</FormLabel>
               <div className="mt-2">
                 <ImageUpload
@@ -228,7 +227,7 @@ export function PersonDialog({
                   aspectRatio={1}
                 />
               </div>
-            </div>
+            </div>}
 
             <div className="grid grid-cols-2 gap-4">
               <FormField

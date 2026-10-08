@@ -16,7 +16,6 @@
 import crypto from "crypto";
 import { desc, eq, gt, inArray, and, lt, or } from "drizzle-orm";
 import { db } from "./db";
-import { runAsSystem } from "./access";
 import { log } from "./vite";
 import { storyImporters, storyScrapeRuns, trackingJobs, type StoryImporter } from "@shared/schema";
 import { claimTrackingJobs, failUnfinishedJobs, postSettings, releaseTrackingJobs, rollForwardDueDates, type ClaimedJob } from "./tracking";
@@ -169,10 +168,11 @@ async function startRun(
       // The service opens Instagram before answering; give it time to load.
       signal: AbortSignal.timeout(120_000),
     });
-    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; reason?: string; username?: string };
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; reason?: string; username?: string; until?: string };
     if (!body.ok) {
       status = body.reason || `http_${res.status}`;
-      error = `Stories service declined: ${status}`;
+      // "paused": the service is still in its own rate-limit backoff, which can outlast ours by a run's length.
+      error = `Stories service declined: ${status}${body.until ? ` until ${new Date(body.until).toLocaleString()}` : ""}`;
     } else if (typeof body.username === "string" && body.username) {
       username = body.username;
     }
@@ -298,7 +298,7 @@ export function kickManualTrackingJobs(delayMs = 250): void {
   if (manualKick) clearTimeout(manualKick);
   manualKick = setTimeout(() => {
     manualKick = null;
-    runAsSystem(async () => {
+    (async () => {
       const importer = await manualImporter();
       if (!importer) return;
       const until = await rateLimitedUntil(importer.id);
@@ -310,10 +310,17 @@ export function kickManualTrackingJobs(delayMs = 250): void {
       const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs, { manualOnly: true });
       if (jobs.length === 0) return;
       const result = await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs.length));
-      if (result.status === "unreachable") kickManualTrackingJobs(UNREACHABLE_RETRY_MS);
+      if (result.status === "unreachable" || result.status === "paused") kickManualTrackingJobs(UNREACHABLE_RETRY_MS);
       else if (result.status === "already_running") kickManualTrackingJobs(BUSY_RETRY_MS);
-    }).catch((err) => log(`[Stories] manual tracking run: ${err instanceof Error ? err.message : err}`));
+    })().catch((err) => log(`[Stories] manual tracking run: ${err instanceof Error ? err.message : err}`));
   }, delayMs);
+}
+
+/** Settings page: start a tracking run now with whatever is due (plus queued manual jobs). */
+export async function trackNow(importer: StoryImporter): Promise<RunStart & { jobs: number }> {
+  const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs);
+  if (jobs.length === 0) return { runId: "", status: "nothing_due", error: null, username: null, jobs: 0 };
+  return { ...(await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs.length))), jobs: jobs.length };
 }
 
 /** A run just ended: whatever manual jobs are still queued go next. */
@@ -366,7 +373,7 @@ async function tick(): Promise<void> {
 export function startStoriesScheduler(): void {
   const loop = async () => {
     try {
-      await runAsSystem(tick);
+      await tick();
     } catch (err) {
       log(`[Stories] Scheduler error: ${err instanceof Error ? err.message : err}`);
     }

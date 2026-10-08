@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { ProviderModelPicker, type ModelSelection } from "@/components/provider-model-picker";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ScanText,
@@ -70,34 +71,25 @@ export default function OcrDemoPage() {
   const [systemPrompt, setSystemPrompt] = useState<string>("");
   const [copiedAi, setCopiedAi] = useState(false);
 
-  // Verify whether PRM-Compute / PRM-Face connection is configured
+  // Verify whether PRM Compute connection is configured
   const { data: settings } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
   });
 
   const isConfigured = !!(settings?.apiUrl && settings?.hasApiKey);
 
-  // Query Ollama settings for the text model and prompt
-  const { data: ollamaSettings } = useQuery<{
-    enabled?: boolean;
-    apiUrl?: string;
-    model?: string;
-    textModel?: string;
-    prompt?: string;
-  }>({
-    queryKey: ["/api/ollama/settings"],
+  const { data: aiSettings } = useQuery<{ visionPrompt?: string; vision: ModelSelection }>({
+    queryKey: ["/api/ai/settings"],
   });
-
-  // Prefer the standard text generation model; fall back to the vision model.
-  const aiModel = ollamaSettings?.textModel || ollamaSettings?.model;
+  const [aiModel, setAiModel] = useState<ModelSelection>({ providerId: "", model: "" });
 
   useEffect(() => {
-    if (ollamaSettings?.prompt && !systemPrompt) {
-      setSystemPrompt(ollamaSettings.prompt);
-    } else if (!systemPrompt) {
-      setSystemPrompt("Identify and describe all key elements, people, text context, and details visible in this image.");
+    if (!aiSettings) return;
+    setAiModel(aiSettings.vision);
+    if (!systemPrompt) {
+      setSystemPrompt(aiSettings.visionPrompt || "Identify and describe all key elements, people, text context, and details visible in this image.");
     }
-  }, [ollamaSettings]);
+  }, [aiSettings]);
 
   const handleRunAi = async () => {
     if (!imageFile) return;
@@ -121,11 +113,10 @@ ${ocrText}`
       if (systemPrompt.trim()) {
         formData.append("system", systemPrompt.trim());
       }
-      if (aiModel) {
-        formData.append("model", aiModel);
-      }
+      if (aiModel.providerId) formData.append("providerId", aiModel.providerId);
+      if (aiModel.model) formData.append("model", aiModel.model);
 
-      const res = await fetch("/api/ollama/describe", {
+      const res = await fetch("/api/ai/describe", {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -709,13 +700,12 @@ ${ocrText}`
                   Run this image through the vision model using your system prompt. The OCR-extracted text above is appended to the prompt so the model can use it.
                 </CardDescription>
               </div>
-              {aiModel && (
-                <Badge variant="outline" className="font-mono text-xs self-start sm:self-auto">
-                  {aiModel}
-                </Badge>
-              )}
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-muted-foreground">Vision model</Label>
+                <ProviderModelPicker value={aiModel} onChange={setAiModel} disabled={isAiLoading} testId="picker-ocr-model" />
+              </div>
               <div className="space-y-1.5">
                 <Label
                   htmlFor="ocr-ai-system-prompt"
@@ -737,19 +727,10 @@ ${ocrText}`
 
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pt-1">
                 <p className="text-xs text-muted-foreground">
-                  {ollamaSettings?.apiUrl ? (
-                    <span>
-                      Connected to Ollama at{" "}
-                      <code className="text-foreground">{ollamaSettings.apiUrl}</code>
-                    </span>
-                  ) : (
-                    <span>
-                      Configure Ollama under{" "}
-                      <Link href="/settings/intelligence/images" className="underline">
-                        Settings → Intelligence
-                      </Link>
-                    </span>
-                  )}
+                  Manage providers under{" "}
+                  <Link href="/settings/intelligence" className="underline">
+                    Settings → Intelligence
+                  </Link>
                 </p>
 
                 <Button

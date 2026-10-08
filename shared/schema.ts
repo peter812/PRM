@@ -46,74 +46,8 @@ export const users = pgTable("users", {
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
   ssoEmail: text("sso_email"),
-  role: text("role").$type<UserRole>().notNull().default("user"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
-
-/**
- * Instance roles, least to most privileged.
- *
- * - `user`      — ordinary account.
- * - `admin`     — edits lookup tables, instance settings, and other users.
- * - `super_admin` — the instance owner. Everything an admin can do, plus: only a
- *   super admin may create or modify another super admin. An admin cannot change
- *   a super admin's role, rename them, reset their password, or delete them.
- *
- * The bootstrap account is promoted to `super_admin` by the migration, and the
- * last remaining super admin can never be demoted or deleted.
- */
-export type UserRole = "user" | "admin" | "super_admin";
-
-export const USER_ROLES = ["user", "admin", "super_admin"] as const;
-
-export const userRoleSchema = z.enum(USER_ROLES);
-
-/** Rank for privilege comparisons. Higher wins. */
-export const ROLE_RANK: Record<UserRole, number> = {
-  user: 0,
-  admin: 1,
-  super_admin: 2,
-};
-
-export const ROLE_LABELS: Record<UserRole, string> = {
-  user: "User",
-  admin: "Admin",
-  super_admin: "Super Admin",
-};
-
-/** Admin-or-better: may reach user management and instance settings at all. */
-export function isAdminRole(role: UserRole | undefined | null): boolean {
-  return role === "admin" || role === "super_admin";
-}
-
-/**
- * Whether `actor` may modify `target` (role change, rename, password reset,
- * deletion). A super admin is untouchable by anyone below them — that is the
- * whole point of the role — and nobody may demote or delete themselves.
- */
-export function canManageUser(
-  actor: { id: number; role: UserRole },
-  target: { id: number; role: UserRole },
-): boolean {
-  if (!isAdminRole(actor.role)) return false;
-  if (target.role === "super_admin" && actor.role !== "super_admin") return false;
-  return true;
-}
-
-/** Whether `actor` may grant `role`. You cannot hand out more than you hold. */
-export function canAssignRole(actorRole: UserRole, role: UserRole): boolean {
-  return isAdminRole(actorRole) && ROLE_RANK[role] <= ROLE_RANK[actorRole];
-}
-
-// Per-user key/value settings. Instance-wide config stays in `app_settings`;
-// anything a user should be able to set independently lives here.
-export const userSettings = pgTable("user_settings", {
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  key: text("key").notNull(),
-  value: text("value").notNull(),
-}, (t) => [
-  primaryKey({ columns: [t.userId, t.key] }),
-]);
 
 // API Keys table for external API access (NEVER EXPORT THIS TABLE)
 export const apiKeys = pgTable("api_keys", {
@@ -146,28 +80,9 @@ export const ssoConfig = pgTable("sso_config", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export type Visibility = "public" | "private";
-
-/**
- * Ownership + visibility columns for "shared by default" entities
- * (see Guides/pathway-to-multi-user.md §2.2).
- *
- * `createdByUserId` is nullable on purpose: NULL means the row is orphaned
- * (its creator's account was deleted) or was created by a system importer, and
- * such rows are always treated as public. Pass "private" to default a table to
- * private — `conversations` does this, since a DM thread is personal until
- * explicitly shared (§8.1).
- */
-const sharedOwnership = (defaultVisibility: Visibility = "public") => ({
-  createdByUserId: integer("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
-  visibility: text("visibility").$type<Visibility>().notNull().default(defaultVisibility),
-});
-
 // People table
 export const people = pgTable("people", {
-  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }), // set only on this user's "Me" person; at most one row per user
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email"),
@@ -201,10 +116,6 @@ export const people = pgTable("people", {
   politicalUpdatedAt: timestamp("political_updated_at"), // Timestamp of political leaning last update
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
-  // One "Me" person per user (§8.4). Partial so the many non-Me rows stay unconstrained.
-  uniqueIndex("people_me_user_id_uniq").on(t.userId).where(sql`user_id IS NOT NULL`),
-  index("people_visibility_idx").on(t.visibility),
-  index("people_created_by_user_id_idx").on(t.createdByUserId),
   index("people_last_name_idx").on(t.lastName),
   index("people_elo_score_idx").on(t.eloScore),
   index("people_created_at_idx").on(t.createdAt),
@@ -215,7 +126,6 @@ export const people = pgTable("people", {
 // Notes table
 export const notes = pgTable("notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   content: text("content").notNull(),
   imageUrl: text("image_url"),
@@ -225,7 +135,6 @@ export const notes = pgTable("notes", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("notes_person_id_idx").on(t.personId),
-  index("notes_user_id_idx").on(t.userId),
   index("notes_image_uuid_idx").on(t.imageUuid),
 ]);
 
@@ -241,7 +150,6 @@ export const interactionTypes = pgTable("interaction_types", {
 
 // Interactions table
 export const interactions = pgTable("interactions", {
-  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   peopleIds: text("people_ids").array().notNull().default(sql`ARRAY[]::text[]`), // Array of person UUIDs (2 or more)
   groupIds: text("group_ids").array().default(sql`ARRAY[]::text[]`), // Optional array of group UUIDs
@@ -256,7 +164,6 @@ export const interactions = pgTable("interactions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("interactions_type_id_idx").on(t.typeId),
-  index("interactions_visibility_idx").on(t.visibility),
   index("interactions_image_uuid_idx").on(t.imageUuid),
   index("interactions_people_ids_gin_idx").using("gin", t.peopleIds),
 ]);
@@ -274,9 +181,6 @@ export const relationshipTypes = pgTable("relationship_types", {
 // Relationships table
 export const relationships = pgTable("relationships", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  // Attribution only — a relationship's visibility is derived from its two endpoints
-  // (§2.4), so it deliberately has no `visibility` column of its own.
-  createdByUserId: integer("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   fromPersonId: varchar("from_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   toPersonId: varchar("to_person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
   typeId: varchar("type_id").references(() => relationshipTypes.id, { onDelete: "set null" }),
@@ -329,7 +233,6 @@ export const schooling = pgTable("schooling", {
 
 // Groups table
 export const groups = pgTable("groups", {
-  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   color: text("color").notNull(), // hex color code
@@ -346,7 +249,6 @@ export const groups = pgTable("groups", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("groups_center_account_id_idx").on(t.centerAccountId),
-  index("groups_visibility_idx").on(t.visibility),
   index("groups_members_gin_idx").using("gin", t.members),
   index("groups_crowd_members_gin_idx").using("gin", t.crowdMembers),
 ]);
@@ -386,7 +288,6 @@ export const socialAccountTypes = pgTable("social_account_types", {
 
 // Social accounts table (Registry - lightweight stable identity)
 export const socialAccounts = pgTable("social_accounts", {
-  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull(),
   ownerUuid: varchar("owner_uuid").references(() => people.id, { onDelete: "cascade" }),
@@ -444,11 +345,18 @@ export const socialAccounts = pgTable("social_accounts", {
   // An organisation/brand account with no single owner: face review and the
   // profile auto-link never try to match a face to it.
   noFace: boolean("no_face").notNull().default(false),
+  // Unimportant account: PRM Stories never collects its stories (already-stored ones stay).
+  skipStories: boolean("skip_stories").notNull().default(false),
+  // ── Account Summary & Invalidation Tracking ──
+  aiSummary: jsonb("ai_summary"),
+  aiSummaryGeneratedAt: timestamp("ai_summary_generated_at"),
+  aiSummaryInvalidated: boolean("ai_summary_invalidated").notNull().default(false),
+  aiSummaryInvalidatedAt: timestamp("ai_summary_invalidated_at"),
+  aiSummaryModel: text("ai_summary_model"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("social_accounts_username_idx").on(t.username),
   index("social_accounts_personface_uuid_idx").on(t.personfaceUuid),
-  index("social_accounts_visibility_idx").on(t.visibility),
   index("social_accounts_owner_uuid_idx").on(t.ownerUuid),
   index("social_accounts_group_id_idx").on(t.groupId),
   index("social_accounts_type_id_idx").on(t.typeId),
@@ -456,6 +364,74 @@ export const socialAccounts = pgTable("social_accounts", {
   index("social_accounts_info_due_idx").on(t.infoDueAt).where(sql`info_due_at IS NOT NULL`),
   index("social_accounts_follows_due_idx").on(t.followsDueAt).where(sql`follows_due_at IS NOT NULL`),
   index("social_accounts_posts_due_idx").on(t.postsDueAt).where(sql`posts_due_at IS NOT NULL`),
+]);
+
+export interface PostImageSummary {
+  imageIndex: number;
+  description: string;
+}
+
+// Per-image progress of a post summary job; 'final' covers the combining run.
+export type SummaryStepStatus = "queued" | "running" | "done" | "failed";
+
+export interface SummaryJobImageResult {
+  imageIndex: number;
+  url: string;
+  status: SummaryStepStatus;
+  description?: string;
+  error?: string;
+}
+
+export interface SummaryJobProgress {
+  images: SummaryJobImageResult[];
+  final: SummaryStepStatus;
+}
+
+export interface PostAiSummary {
+  overview: string;
+  images: PostImageSummary[];
+  tags?: string[];
+}
+
+export interface AccountAiSummary {
+  profile: string;
+  postCount?: number;
+  storyCount?: number;
+}
+
+// Historical account summaries — archived versions when an account summary is replaced.
+export const historicalAccountSummaries = pgTable("historical_account_summaries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  content: jsonb("content").$type<AccountAiSummary>().notNull(),
+  model: text("model"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  invalidatedAt: timestamp("invalidated_at"),
+  replacedAt: timestamp("replaced_at").notNull().defaultNow(),
+}, (t) => [
+  index("historical_account_summaries_account_idx").on(t.socialAccountId, t.replacedAt),
+]);
+
+// Queue table for post and account summary jobs
+export const summaryJobs = pgTable("summary_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  kind: text("kind").notNull(), // 'post' | 'account'
+  targetId: varchar("target_id").notNull(), // social_account_posts.id or social_accounts.id
+  socialAccountId: varchar("social_account_id").references(() => socialAccounts.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"), // 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  attempts: integer("attempts").notNull().default(0),
+  error: text("error"),
+  options: jsonb("options").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  progress: jsonb("progress").$type<SummaryJobProgress>(), // post jobs only
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+}, (t) => [
+  index("summary_jobs_status_created_idx").on(t.status, t.createdAt),
+  index("summary_jobs_account_idx").on(t.socialAccountId, t.status),
+  uniqueIndex("summary_jobs_live_uniq")
+    .on(t.kind, t.targetId)
+    .where(sql`status IN ('pending', 'running')`),
 ]);
 
 // Social profile versions table (Visual Identity History)
@@ -600,6 +576,9 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   videoTranscript: jsonb("video_transcript"), // PRM-Compute Whisper result for metadata.videoUrl: { text, language, segments: [{ start, end, text }] }
   videoTranscriptAt: timestamp("video_transcript_at", { withTimezone: true }),
   scrapedFrom: text("scraped_from"), // stories: the Instagram @username the scraper was logged in as when it saw this
+  aiSummary: jsonb("ai_summary"),
+  aiSummaryAt: timestamp("ai_summary_at"),
+  aiSummaryModel: text("ai_summary_model"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
@@ -657,12 +636,25 @@ export const appSettings = pgTable("app_settings", {
   value: text("value").notNull(),
 });
 
+// AI providers - Ollama or OpenAI-compatible endpoints that model settings point at
+export const aiProviders = pgTable("ai_providers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  kind: text("kind").notNull(), // 'ollama' | 'openai'
+  baseUrl: text("base_url").notNull(),
+  authType: text("auth_type").notNull().default("none"), // 'none' | 'basic' | 'bearer'
+  username: text("username").notNull().default(""),
+  secret: text("secret").notNull().default(""), // password or API key; never returned by the API
+  isDefault: boolean("is_default").notNull().default(false),
+  isExternal: boolean("is_external").notNull().default(false), // data leaves the local network
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export type AiProvider = typeof aiProviders.$inferSelect;
+
 // Photos table - central registry for every image in the system
 export const photos = pgTable("photos", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  // Attribution only. A photo's visibility is derived from the entity named by
-  // `prmLocation` (§3.3 option A); `faces` and `image_questions` inherit from here.
-  createdByUserId: integer("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   location: text("location").notNull(), // current CDN or local URL/path
   uploadedAt: timestamp("uploaded_at").notNull().defaultNow(),
   isSubImage: boolean("is_sub_image").notNull().default(false),
@@ -691,7 +683,6 @@ export const photos = pgTable("photos", {
 // Daily notes tables
 export const dailyNotes = pgTable("daily_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   date: text("date").notNull(), // YYYY-MM-DD format
   userTitle: text("user_title").notNull().default(""),
   body: text("body").notNull().default(""),
@@ -702,7 +693,6 @@ export const dailyNotes = pgTable("daily_notes", {
   updatedAt: timestamp("updated_at"), // Timestamp of last edit; null = never edited
 }, (t) => [
   index("daily_notes_date_idx").on(t.date),
-  index("daily_notes_user_id_idx").on(t.userId),
 ]);
 
 export const dailyNoteEvents = pgTable("daily_note_events", {
@@ -750,7 +740,6 @@ export const geocodes = pgTable("geocodes", {
 // Background tasks table - for long-running operations like image downloads
 export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), // user this task was queued on behalf of; results land in their view
   type: text("type").notNull(), // e.g. 'get_img'
   status: text("status").notNull().default("pending"), // 'pending', 'in_progress', 'completed', 'failed'
   title: text("title"), // Name/username of the entity targeted by the task
@@ -762,15 +751,12 @@ export const tasks = pgTable("tasks", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
 }, (t) => [
-  index("tasks_user_id_idx").on(t.userId),
   index("tasks_status_idx").on(t.status),
-  index("tasks_user_id_status_idx").on(t.userId, t.status),
 ]);
 
 // Image task groups table - overarching groups for batch/pipeline image operations
 export const imageTaskGroups = pgTable("image_task_groups", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   title: text("title").notNull(),
   kind: text("kind").notNull().default("general"), // 'social_import' | 'story_run' | 'tracking_job' | 'message_import' | 'recognition_batch' | 'manual'
   status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
@@ -782,7 +768,6 @@ export const imageTaskGroups = pgTable("image_task_groups", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
 }, (t) => [
-  index("image_task_groups_user_id_idx").on(t.userId),
   index("image_task_groups_status_idx").on(t.status),
   index("image_task_groups_parent_task_id_idx").on(t.parentTaskId),
   index("image_task_groups_social_run_id_idx").on(t.socialRunId),
@@ -792,7 +777,6 @@ export const imageTaskGroups = pgTable("image_task_groups", {
 // Image tasks table - specialized operations performed on images
 export const imageTasks = pgTable("image_tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   imageTaskGroupId: varchar("image_task_group_id").references((): AnyPgColumn => imageTaskGroups.id, { onDelete: "cascade" }),
   type: text("type").notNull(), // 'download_img_instagram' | 'analyze_img_full' | 'analyze_img_face' | 'analyze_img_ocr' | 'transcribe_video' | 'analyze_img_metadata' | 'analyze_img_llm' | 'convert_img'
   status: text("status").notNull().default("pending"), // 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
@@ -808,10 +792,8 @@ export const imageTasks = pgTable("image_tasks", {
 }, (t) => [
   index("image_tasks_group_id_idx").on(t.imageTaskGroupId),
   index("image_tasks_parent_task_id_idx").on(t.parentTaskId),
-  index("image_tasks_user_id_idx").on(t.userId),
   index("image_tasks_photo_id_idx").on(t.photoId),
   index("image_tasks_status_idx").on(t.status),
-  index("image_tasks_user_id_status_idx").on(t.userId, t.status),
   index("image_tasks_pending_idx").on(t.type, t.createdAt).where(sql`status = 'pending'`),
 ]);
 
@@ -845,6 +827,9 @@ export const faces = pgTable("faces", {
   coordinates: jsonb("coordinates"), // { x, y, w, h } bbox in the source image
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   dismissedAt: timestamp("dismissed_at", { withTimezone: true }), // "not someone I track": Face review stops asking about this face
+  pitch: real("pitch"), // head pitch (+ = up, rough) from landmarks; null = not measured
+  roll: real("roll"), // head roll (+ = clockwise tilt) from landmarks; null = not measured
+  yaw: real("yaw"), // signed head yaw in degrees estimated from landmarks by PRM-compute; null = not measured yet
   autoMatchScore: real("auto_match_score"), // set = PRM auto-assigned this face to its group at this look-alike score, unconfirmed; null = set by a person (or by compute's grouping)
 }, (t) => [
   index("faces_photo_id_idx").on(t.photoId),
@@ -857,7 +842,6 @@ export const facePairDismissals = pgTable("face_pair_dismissals", {
   groupAUuid: varchar("group_a_uuid").notNull(),
   groupBUuid: varchar("group_b_uuid").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
 }, (t) => [
   uniqueIndex("face_pair_dismissals_pair_idx").on(t.groupAUuid, t.groupBUuid),
   index("face_pair_dismissals_group_a_idx").on(t.groupAUuid),
@@ -870,19 +854,17 @@ export type InsertFacePairDismissal = typeof facePairDismissals.$inferInsert;
 // AI chats table - stores historical AI chat conversations so they can be recalled and continued
 export const aiChats = pgTable("ai_chats", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   title: text("title").notNull().default("New chat"),
   systemMessage: text("system_message").notNull().default(""),
   model: text("model").notNull().default(""),
+  providerId: text("provider_id").notNull().default(""), // ai_providers.id; '' = default provider
   messages: jsonb("messages").notNull().default(sql`'[]'::jsonb`), // Array of { role: 'user' | 'assistant', content: string, attachments?: AiChatAttachment[] }
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   agentMode: boolean("agent_mode").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-}, (t) => [
-  index("ai_chats_user_id_idx").on(t.userId),
-]);
+});
 
 // App knowledge table - stores chunked app documentation for internal AI tool usage
 export const appKnowledge = pgTable("app_knowledge", {
@@ -976,7 +958,6 @@ export const pendingSocialAccountImports = pgTable("pending_social_account_impor
 // people and social accounts it is about. Rows only ever accumulate — a
 // re-scan appends a new row rather than replacing the old one.
 export const insights = pgTable("insights", {
-  ...sharedOwnership(),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   type: text("type").notNull(),      // e.g. 'osint'
   source: text("source"),            // finer than type, e.g. the OSINT tool name
@@ -1005,7 +986,6 @@ export const osintScans = pgTable("osint_scans", {
   socialAccountId: varchar("social_account_id").references(() => socialAccounts.id, { onDelete: "cascade" }),
   personId: varchar("person_id").references(() => people.id, { onDelete: "cascade" }),
   status: text("status").notNull().default("pending"), // pending | running | done | failed | cancelled
-  requestedByUserId: integer("requested_by_user_id").references(() => users.id, { onDelete: "set null" }),
   attempts: integer("attempts").notNull().default(0),
   computeJobId: text("compute_job_id"), // PRM-compute's job id while running
   error: text("error"),
@@ -1022,12 +1002,11 @@ export const osintScans = pgTable("osint_scans", {
     .on(sql`coalesce(${t.socialAccountId}, ${t.personId})`, t.tool, t.target)
     .where(sql`status IN ('pending','running')`),
   uniqueIndex("osint_scans_live_demo_uniq")
-    .on(t.tool, t.target, t.requestedByUserId)
+    .on(t.tool, t.target)
     .where(sql`${t.socialAccountId} IS NULL AND ${t.personId} IS NULL AND status IN ('pending','running')`),
 ]);
 
-// One row per prm-stories run, instance-wide (stories are an admin feature, not
-// per user). PRM mints the row and a short-lived token when it triggers the
+// One row per prm-stories run. PRM mints the row and a short-lived token when it triggers the
 // scraper; the scraper authenticates its callbacks with that token. `items` is
 // the scraper's per-story log with PRM's verdict merged in — including the
 // stories that were seen but dropped because no social account exists for the
@@ -1057,7 +1036,7 @@ export const storyScrapeRuns = pgTable("story_scrape_runs", {
   id: varchar("id").primaryKey(),
   importerId: varchar("importer_id").references(() => storyImporters.id, { onDelete: "set null" }),
   kind: text("kind").notNull().default("stories"), // 'stories' | 'tracking'; a tracking run's `items` are job summaries
-  // starting | running | completed | skipped | needs_login | checkpoint | no_username | rate_limited | parse_failed | error | unreachable | already_running
+  // starting | running | completed | skipped | needs_login | checkpoint | no_username | rate_limited | parse_failed | error | unreachable | already_running | paused
   status: text("status").notNull(),
   startedAt: timestamp("started_at").notNull(),
   finishedAt: timestamp("finished_at"),
@@ -1080,7 +1059,6 @@ export const trackingJobs = pgTable("tracking_jobs", {
   kind: text("kind").notNull(), // TrackingKind
   origin: text("origin").notNull(), // 'schedule' | 'manual'
   status: text("status").notNull().default("queued"), // queued | running | completed | failed | skipped
-  requestedBy: integer("requested_by").references(() => users.id, { onDelete: "set null" }),
   importerId: varchar("importer_id").references(() => storyImporters.id, { onDelete: "set null" }),
   runId: varchar("run_id").references(() => storyScrapeRuns.id, { onDelete: "set null" }),
   /** Jobs queued together from the Tracking page share one id, so the page can show that batch's progress. */
@@ -1120,7 +1098,6 @@ export const socialAccountIssues = pgTable("social_account_issues", {
   /** How it closed: renamed | recheck_ok | became_public | dismissed. */
   resolution: text("resolution"),
   previousUsername: text("previous_username"), // set on 'renamed'
-  resolvedBy: integer("resolved_by").references(() => users.id, { onDelete: "set null" }),
   resolvedAt: timestamp("resolved_at"),
 }, (t) => [
   uniqueIndex("social_account_issues_open_uniq").on(t.socialAccountId, t.kind).where(sql`status = 'open'`),
@@ -1128,18 +1105,7 @@ export const socialAccountIssues = pgTable("social_account_issues", {
 ]);
 
 // Relations
-export const usersRelations = relations(users, ({ one }) => ({
-  person: one(people, {
-    fields: [users.id],
-    references: [people.userId],
-  }),
-}));
-
 export const peopleRelations = relations(people, ({ one, many }) => ({
-  user: one(users, {
-    fields: [people.userId],
-    references: [users.id],
-  }),
   notes: many(notes),
   relationshipsFrom: many(relationships, { relationName: "relationshipsFrom" }),
   relationshipsTo: many(relationships, { relationName: "relationshipsTo" }),
@@ -1346,22 +1312,6 @@ export const additionalSchoolingExperienceZodSchema = z.object({
   endDate: z.string().nullable().optional(),
 });
 
-export const visibilitySchema = z.enum(["public", "private"]);
-
-/**
- * Ownership columns are assigned by the server, never accepted from a request
- * body — otherwise a client could spoof attribution. Request schemas therefore
- * `.omit()` them, and the Insert* types intersect them back in so the storage
- * layer can still be handed a value.
- *
- * `visibility` is *not* here: creating something already-private is a legitimate
- * thing for a client to ask for.
- */
-export type OwnershipInput = { createdByUserId?: number | null };
-
-/** Same idea for the user-private bucket, where the owner is stamped by the server. */
-export type UserOwnedInput = { userId?: number };
-
 /** A person's OSINT Runs: the emails, phones and non-social usernames to scan. */
 export type OsintRuns = { emails: string[]; phones: string[]; usernames: string[] };
 const osintTargetList = z.array(z.string().trim().min(1).max(255)).max(100).transform((list) => Array.from(new Set(list.map((t) => t.trim()).filter(Boolean))));
@@ -1371,10 +1321,8 @@ export const insertPersonSchema = createInsertSchema(people)
   .omit({
     id: true,
     createdAt: true,
-    createdByUserId: true,
   })
   .extend({
-    visibility: visibilitySchema.optional(),
     jobs: z.array(jobExperienceZodSchema).optional(),
     birthday: z.string().optional().nullable(),
     address: z.string().optional().nullable(),
@@ -1400,17 +1348,14 @@ export const insertSchoolingSchema = createInsertSchema(schooling)
 export const insertNoteSchema = createInsertSchema(notes).omit({
   id: true,
   createdAt: true,
-  userId: true,
 });
 
 export const insertInteractionSchema = createInsertSchema(interactions)
   .omit({
     id: true,
     createdAt: true,
-    createdByUserId: true,
   })
   .extend({
-    visibility: visibilitySchema.optional(),
     date: z.coerce.date(),
     peopleIds: z.array(z.string()).min(2, "At least 2 people are required"),
     groupIds: z.array(z.string()).optional(),
@@ -1633,7 +1578,6 @@ export const FAMILY_RELATIONSHIP_RULES: Array<{
 export const insertRelationshipSchema = createInsertSchema(relationships).omit({
   id: true,
   createdAt: true,
-  createdByUserId: true,
 }).extend({
   familyRelationshipType: z.enum(FAMILY_RELATIONSHIP_TYPES).nullable().optional(),
 });
@@ -1648,20 +1592,14 @@ export const insertPartnershipSchema = createInsertSchema(partnerships).omit({
   createdAt: true,
 });
 
-// `role` is server-assigned (bootstrap admin, or an admin promoting someone) and
-// never accepted from a signup body — see OwnershipInput for the same pattern.
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
   createdAt: true,
-  role: true,
 });
 
 export const insertGroupSchema = createInsertSchema(groups).omit({
   id: true,
   createdAt: true,
-  createdByUserId: true,
-}).extend({
-  visibility: visibilitySchema.optional(),
 });
 
 export const insertSubGroupSchema = createInsertSchema(subGroups).omit({
@@ -1698,9 +1636,6 @@ export const insertSsoConfigSchema = createInsertSchema(ssoConfig).omit({
 export const insertSocialAccountSchema = createInsertSchema(socialAccounts).omit({
   id: true,
   createdAt: true,
-  createdByUserId: true,
-}).extend({
-  visibility: visibilitySchema.optional(),
 });
 
 export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTypes).omit({
@@ -1747,7 +1682,6 @@ export const insertAppSettingSchema = createInsertSchema(appSettings);
 
 export const insertPhotoSchema = createInsertSchema(photos).omit({
   uploadedAt: true,
-  createdByUserId: true,
 }).extend({
   id: z.string().optional(),
 });
@@ -1757,7 +1691,6 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
   createdAt: true,
   startedAt: true,
   completedAt: true,
-  userId: true,
 });
 
 export const insertImageTaskGroupSchema = createInsertSchema(imageTaskGroups).omit({
@@ -1765,7 +1698,6 @@ export const insertImageTaskGroupSchema = createInsertSchema(imageTaskGroups).om
   createdAt: true,
   startedAt: true,
   completedAt: true,
-  userId: true,
 });
 
 export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
@@ -1773,7 +1705,6 @@ export const insertImageTaskSchema = createInsertSchema(imageTasks).omit({
   createdAt: true,
   startedAt: true,
   completedAt: true,
-  userId: true,
 });
 
 export const insertFaceSchema = createInsertSchema(faces).omit({
@@ -1791,7 +1722,6 @@ export const insertDailyNoteSchema = createInsertSchema(dailyNotes).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
-  userId: true,
 });
 
 export const insertDailyNoteEventSchema = createInsertSchema(dailyNoteEvents).omit({
@@ -1837,6 +1767,8 @@ export type InsertPendingSocialAccountImport = z.infer<typeof insertPendingSocia
 export type Insight = typeof insights.$inferSelect;
 export type InsertInsight = typeof insights.$inferInsert;
 export type OsintScan = typeof osintScans.$inferSelect;
+export type HistoricalAccountSummary = typeof historicalAccountSummaries.$inferSelect;
+export type SummaryJob = typeof summaryJobs.$inferSelect;
 export type StoryScrapeRun = typeof storyScrapeRuns.$inferSelect;
 export type StoryImporter = typeof storyImporters.$inferSelect;
 export type TrackingJob = typeof trackingJobs.$inferSelect;
@@ -1844,13 +1776,13 @@ export type SocialAccountIssue = typeof socialAccountIssues.$inferSelect;
 
 // Types
 export type User = typeof users.$inferSelect;
-export type InsertUser = z.infer<typeof insertUserSchema> & { role?: UserRole };
+export type InsertUser = z.infer<typeof insertUserSchema>;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type InsertApiKey = z.infer<typeof insertApiKeySchema>;
 export type SsoConfig = typeof ssoConfig.$inferSelect;
 export type InsertSsoConfig = z.infer<typeof insertSsoConfigSchema>;
 export type Person = typeof people.$inferSelect;
-export type InsertPerson = z.infer<typeof insertPersonSchema> & OwnershipInput;
+export type InsertPerson = z.infer<typeof insertPersonSchema>;
 
 export const insertAppKnowledgeSchema = createInsertSchema(appKnowledge).omit({
   id: true,
@@ -1861,13 +1793,13 @@ export type InsertAppKnowledge = z.infer<typeof insertAppKnowledgeSchema>;
 
 
 export type Note = typeof notes.$inferSelect;
-export type InsertNote = z.infer<typeof insertNoteSchema> & UserOwnedInput;
+export type InsertNote = z.infer<typeof insertNoteSchema>;
 
 export type Interaction = typeof interactions.$inferSelect;
-export type InsertInteraction = z.infer<typeof insertInteractionSchema> & OwnershipInput;
+export type InsertInteraction = z.infer<typeof insertInteractionSchema>;
 
 export type Relationship = typeof relationships.$inferSelect;
-export type InsertRelationship = z.infer<typeof insertRelationshipSchema> & OwnershipInput;
+export type InsertRelationship = z.infer<typeof insertRelationshipSchema>;
 
 export type Lineage = typeof lineage.$inferSelect;
 export type InsertLineage = z.infer<typeof insertLineageSchema>;
@@ -1875,7 +1807,7 @@ export type Partnership = typeof partnerships.$inferSelect;
 export type InsertPartnership = z.infer<typeof insertPartnershipSchema>;
 
 export type Group = typeof groups.$inferSelect;
-export type InsertGroup = z.infer<typeof insertGroupSchema> & OwnershipInput;
+export type InsertGroup = z.infer<typeof insertGroupSchema>;
 
 export type SubGroup = typeof subGroups.$inferSelect;
 export type InsertSubGroup = z.infer<typeof insertSubGroupSchema>;
@@ -1913,7 +1845,7 @@ export type InteractionType = typeof interactionTypes.$inferSelect;
 export type InsertInteractionType = z.infer<typeof insertInteractionTypeSchema>;
 
 export type SocialAccount = typeof socialAccounts.$inferSelect;
-export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema> & OwnershipInput;
+export type InsertSocialAccount = z.infer<typeof insertSocialAccountSchema>;
 
 export type SocialAccountType = typeof socialAccountTypes.$inferSelect;
 export type InsertSocialAccountType = z.infer<typeof insertSocialAccountTypeSchema>;
@@ -2043,22 +1975,23 @@ export type SocialAccountWithCurrentProfile = SocialAccount & {
   latestState: SocialNetworkState | null;
   latestImportFollowers?: Date | string | null;
   latestImportFollowing?: Date | string | null;
+  capturedPostsCount?: number;
 };
 
 export type AppSetting = typeof appSettings.$inferSelect;
 export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
 
 export type Photo = typeof photos.$inferSelect;
-export type InsertPhoto = z.infer<typeof insertPhotoSchema> & OwnershipInput;
+export type InsertPhoto = z.infer<typeof insertPhotoSchema>;
 
 export type Task = typeof tasks.$inferSelect;
-export type InsertTask = z.infer<typeof insertTaskSchema> & UserOwnedInput;
+export type InsertTask = z.infer<typeof insertTaskSchema>;
 
 export type ImageTaskGroup = typeof imageTaskGroups.$inferSelect;
-export type InsertImageTaskGroup = z.infer<typeof insertImageTaskGroupSchema> & UserOwnedInput;
+export type InsertImageTaskGroup = z.infer<typeof insertImageTaskGroupSchema>;
 
 export type ImageTask = typeof imageTasks.$inferSelect;
-export type InsertImageTask = z.infer<typeof insertImageTaskSchema> & UserOwnedInput;
+export type InsertImageTask = z.infer<typeof insertImageTaskSchema>;
 
 export type Face = typeof faces.$inferSelect;
 export type InsertFace = z.infer<typeof insertFaceSchema>;
@@ -2132,7 +2065,7 @@ export type TruePersonSearch = typeof truePersonSearch.$inferSelect;
 export type InsertTruePersonSearch = z.infer<typeof insertTruePersonSearchSchema>;
 
 export type DailyNote = typeof dailyNotes.$inferSelect;
-export type InsertDailyNote = z.infer<typeof insertDailyNoteSchema> & UserOwnedInput;
+export type InsertDailyNote = z.infer<typeof insertDailyNoteSchema>;
 export type DailyNoteEvent = typeof dailyNoteEvents.$inferSelect;
 export type InsertDailyNoteEvent = z.infer<typeof insertDailyNoteEventSchema>;
 export type DailyNoteInvolvedParty = typeof dailyNoteInvolvedParties.$inferSelect;
@@ -2196,61 +2129,6 @@ export type PersonWithRelations = Person & {
   socialAccounts?: SocialAccountWithCurrentProfile[];
 };
 
-export interface PotentialFamilyMember {
-  id: string;
-  firstName: string;
-  lastName: string;
-  maidenName?: string | null;
-  imageUrl?: string | null;
-  sex?: string;
-  isStarred?: number;
-  company?: string | null;
-  title?: string | null;
-  isMaidenMatch?: boolean;
-  inGroupConnections: Array<{
-    relatedPersonId: string;
-    relatedPersonName: string;
-    type: "parent" | "child" | "spouse";
-  }>;
-}
-
-export interface PotentialFamilySocialAccount {
-  id: string;
-  username: string;
-  nickname?: string | null;
-  imageUrl?: string | null;
-  typeName?: string | null;
-  typeColor?: string | null;
-  ownerUuid?: string | null;
-  ownerName?: string | null;
-  isLinked: boolean;
-  matchSource: "owner" | "display_name" | "username";
-}
-
-export interface PotentialFamilyGroup {
-  surname: string;
-  totalCount: number;
-  peopleCount: number;
-  socialCount: number;
-  connectedPeopleCount: number;
-  unconnectedPeopleCount: number;
-  unlinkedSocialCount: number;
-  hasExistingTreeLinks: boolean;
-  people: PotentialFamilyMember[];
-  socialAccounts: PotentialFamilySocialAccount[];
-}
-
-export interface PotentialFamiliesResponse {
-  families: PotentialFamilyGroup[];
-  stats: {
-    totalFamilies: number;
-    totalPeople: number;
-    totalSocialAccounts: number;
-    unlinkedSocialCount: number;
-    unconnectedPeopleCount: number;
-  };
-}
-
 export type GroupWithNotes = Group & {
   notes: GroupNote[];
 };
@@ -2264,11 +2142,7 @@ export type FlowItem = {
   date: Date;
   content: string;
   imageUuid?: string | null;
-  // Note-specific: notes are user-private, so this is the owner
-  userId?: number;
   // Interaction-specific
-  createdByUserId?: number | null;
-  visibility?: Visibility;
   imageUrl?: string | null;
   title?: string | null;
   description?: string | null;
@@ -2377,13 +2251,8 @@ export type UuidLookupResult = {
 
 // ── Conversations & Messages Tables ──
 
-// A conversation uses the shared-entity column pair but defaults to private (§8.1):
-// the thread hangs off a social account everyone can see, yet it is a personal inbox
-// until its owner deliberately shares it. Messages, recipients, and participants all
-// inherit visibility from here and carry no ownership columns of their own.
 export const conversations = pgTable("conversations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  ...sharedOwnership("private"),
   title: text("title"),                          // Optional display name (e.g. email subject, group chat name)
   channelType: text("channel_type").notNull(),   // "phone" | "instagram" | "email" | "discord" | "x" | "facebook" | "generic"
   socialAccountId: varchar("social_account_id")  // Optional FK
@@ -2394,10 +2263,7 @@ export const conversations = pgTable("conversations", {
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => [
-  index("conversations_visibility_idx").on(t.visibility),
-  index("conversations_created_by_user_id_idx").on(t.createdByUserId),
-]);
+});
 
 export const messages = pgTable("messages", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -2450,8 +2316,7 @@ export const conversationParticipants = pgTable("conversation_participants", {
 
 // Zod insert schemas
 export const insertConversationSchema = createInsertSchema(conversations)
-  .omit({ id: true, createdAt: true, createdByUserId: true })
-  .extend({ visibility: visibilitySchema.optional() });
+  .omit({ id: true, createdAt: true });
 export const insertMessageSchema = createInsertSchema(messages).omit({ id: true, createdAt: true });
 export const insertMessageRecipientSchema = createInsertSchema(messageRecipients).omit({ id: true });
 export const insertConversationParticipantSchema = createInsertSchema(conversationParticipants).omit({ id: true });
@@ -2484,7 +2349,7 @@ export interface MessageMetadata {
 
 // Types
 export type Conversation = typeof conversations.$inferSelect;
-export type InsertConversation = z.infer<typeof insertConversationSchema> & OwnershipInput;
+export type InsertConversation = z.infer<typeof insertConversationSchema>;
 export type Message = typeof messages.$inferSelect;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type MessageRecipient = typeof messageRecipients.$inferSelect;
@@ -2494,10 +2359,6 @@ export type InsertConversationParticipant = z.infer<typeof insertConversationPar
 
 // Relations
 export const conversationsRelations = relations(conversations, ({ one, many }) => ({
-  user: one(users, {
-    fields: [conversations.createdByUserId],
-    references: [users.id],
-  }),
   socialAccount: one(socialAccounts, {
     fields: [conversations.socialAccountId],
     references: [socialAccounts.id],

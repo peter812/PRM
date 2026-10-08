@@ -9,7 +9,6 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Server, Loader2, ImageIcon, Images, TriangleAlert, Database, Trash2, Wrench, CheckCircle2, XCircle, Sparkles, Video, Files } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth } from "@/hooks/use-auth";
 import { formatBytes } from "@/lib/utils";
 
 type ImageStats = {
@@ -54,7 +53,6 @@ type DeleteOrphansResult = {
 
 export default function ImageStorageSettingsPage() {
   const { toast } = useToast();
-  const { isAdmin } = useAuth();
 
   // Dialog state
   const [maintenanceConfirm, setMaintenanceConfirm] = useState<"backfill" | "delete-instagram" | "delete-orphans" | null>(null);
@@ -77,7 +75,6 @@ export default function ImageStorageSettingsPage() {
 
   const { data: prmS3Config } = useQuery<PrmS3ConfigResponse>({
     queryKey: ["/api/image-storage/prm-s3/settings"],
-    enabled: isAdmin,
   });
 
   useEffect(() => {
@@ -220,151 +217,149 @@ export default function ImageStorageSettingsPage() {
         <h1 className="text-2xl font-semibold" data-testid="text-image-storage-title">Image Storage</h1>
         <p className="text-muted-foreground">
           Every image and video the app stores — uploads, profile pictures, posts, stories, message
-          attachments and face crops — lives in PRM-S3. {isAdmin ? "The connection settings apply to all users." : "Only admins can change the connection."}
+          attachments and face crops — lives in PRM-S3.
         </p>
       </div>
 
       <div className="settings-cards-grid">
-        {/* PRM-S3 Server Configuration (admins only; the endpoint is admin-gated) */}
-        {isAdmin && (
+        {/* PRM-S3 Server Configuration */}
         <Card data-testid="card-prm-s3-config">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Server className="h-5 w-5 text-primary" />
-              PRM-S3 Server Configuration
-            </CardTitle>
-            <CardDescription>
-              Connection settings for the PRM-s3 object storage service.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label htmlFor="prm-endpoint">Internal Endpoint URL</Label>
-                <Input
-                  id="prm-endpoint"
-                  value={form.endpoint}
-                  onChange={(e) => setForm((prev) => ({ ...prev, endpoint: e.target.value }))}
-                  placeholder="http://192.168.0.70:9000"
-                  data-testid="input-prm-s3-endpoint"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Internal LAN address for backend uploads.
-                </p>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="prm-public-endpoint">Public Endpoint URL</Label>
-                <Input
-                  id="prm-public-endpoint"
-                  value={form.publicEndpoint}
-                  onChange={(e) => setForm((prev) => ({ ...prev, publicEndpoint: e.target.value }))}
-                  placeholder="https://prm-cdn.example.com"
-                  data-testid="input-prm-s3-public-endpoint"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Public address for browser direct loading. If blank, media is proxied.
-                </p>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="prm-delivery-mode">Delivery Mode</Label>
-                <Select value={form.deliveryMode} onValueChange={(val) => setForm((prev) => ({ ...prev, deliveryMode: val as PrmS3DeliveryMode }))}>
-                  <SelectTrigger id="prm-delivery-mode" className="w-[260px]" data-testid="select-prm-s3-delivery-mode">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="direct" data-testid="option-delivery-direct">Direct (default)</SelectItem>
-                    <SelectItem value="proxy" data-testid="option-delivery-proxy">Proxy</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  {form.deliveryMode === "direct"
-                    ? "Direct: Browser loads signed URLs directly from PRM-S3."
-                    : "Proxy: Media streams securely through the PRM server."}
-                </p>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="prm-bucket">Bucket Name</Label>
-                <Input
-                  id="prm-bucket"
-                  value={form.bucket}
-                  onChange={(e) => setForm((prev) => ({ ...prev, bucket: e.target.value }))}
-                  placeholder="images"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="prm-region">Region</Label>
-                <Input
-                  id="prm-region"
-                  value={form.region}
-                  onChange={(e) => setForm((prev) => ({ ...prev, region: e.target.value }))}
-                  placeholder="us-east-1"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label htmlFor="prm-access-key">Access Key ID</Label>
-                <Input
-                  id="prm-access-key"
-                  value={form.accessKeyId}
-                  onChange={(e) => setForm((prev) => ({ ...prev, accessKeyId: e.target.value }))}
-                  placeholder="PRM0CDED7B21AD5BF229"
-                />
-              </div>
-
-              <div className="space-y-1.5 md:col-span-2">
-                <Label htmlFor="prm-secret-key">Secret Access Key</Label>
-                <Input
-                  id="prm-secret-key"
-                  type="password"
-                  value={form.secretAccessKey}
-                  onChange={(e) => setForm((prev) => ({ ...prev, secretAccessKey: e.target.value }))}
-                  placeholder="••••••••"
-                />
-              </div>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Server className="h-5 w-5 text-primary" />
+            PRM-S3 Server Configuration
+          </CardTitle>
+          <CardDescription>
+            Connection settings for the PRM-s3 object storage service.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="prm-endpoint">Internal Endpoint URL</Label>
+              <Input
+                id="prm-endpoint"
+                value={form.endpoint}
+                onChange={(e) => setForm((prev) => ({ ...prev, endpoint: e.target.value }))}
+                placeholder="http://192.168.0.70:9000"
+                data-testid="input-prm-s3-endpoint"
+              />
+              <p className="text-xs text-muted-foreground">
+                Internal LAN address for backend uploads.
+              </p>
             </div>
 
-            {testResult && (
-              <div
-                className={`p-3 rounded-md flex items-center gap-2 text-sm ${
-                  testResult.ok
-                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
-                    : "bg-destructive/10 text-destructive border border-destructive/20"
-                }`}
-              >
-                {testResult.ok ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />}
-                <span>{testResult.message || (testResult.ok ? "Connected successfully" : "Connection failed")}</span>
-              </div>
-            )}
-
-            <div className="flex items-center gap-3 pt-2">
-              <Button
-                variant="default"
-                onClick={() => savePrmS3ConfigMutation.mutate()}
-                disabled={savePrmS3ConfigMutation.isPending}
-              >
-                {savePrmS3ConfigMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Save Settings
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => testPrmS3Mutation.mutate()}
-                disabled={testPrmS3Mutation.isPending}
-              >
-                {testPrmS3Mutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Server className="h-4 w-4 mr-2" />
-                )}
-                Test Connection
-              </Button>
+            <div className="space-y-1.5">
+              <Label htmlFor="prm-public-endpoint">Public Endpoint URL</Label>
+              <Input
+                id="prm-public-endpoint"
+                value={form.publicEndpoint}
+                onChange={(e) => setForm((prev) => ({ ...prev, publicEndpoint: e.target.value }))}
+                placeholder="https://prm-cdn.example.com"
+                data-testid="input-prm-s3-public-endpoint"
+              />
+              <p className="text-xs text-muted-foreground">
+                Public address for browser direct loading. If blank, media is proxied.
+              </p>
             </div>
-          </CardContent>
-        </Card>
-        )}
+
+            <div className="space-y-1.5">
+              <Label htmlFor="prm-delivery-mode">Delivery Mode</Label>
+              <Select value={form.deliveryMode} onValueChange={(val) => setForm((prev) => ({ ...prev, deliveryMode: val as PrmS3DeliveryMode }))}>
+                <SelectTrigger id="prm-delivery-mode" className="w-[260px]" data-testid="select-prm-s3-delivery-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="direct" data-testid="option-delivery-direct">Direct (default)</SelectItem>
+                  <SelectItem value="proxy" data-testid="option-delivery-proxy">Proxy</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {form.deliveryMode === "direct"
+                  ? "Direct: Browser loads signed URLs directly from PRM-S3."
+                  : "Proxy: Media streams securely through the PRM server."}
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="prm-bucket">Bucket Name</Label>
+              <Input
+                id="prm-bucket"
+                value={form.bucket}
+                onChange={(e) => setForm((prev) => ({ ...prev, bucket: e.target.value }))}
+                placeholder="images"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="prm-region">Region</Label>
+              <Input
+                id="prm-region"
+                value={form.region}
+                onChange={(e) => setForm((prev) => ({ ...prev, region: e.target.value }))}
+                placeholder="us-east-1"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="prm-access-key">Access Key ID</Label>
+              <Input
+                id="prm-access-key"
+                value={form.accessKeyId}
+                onChange={(e) => setForm((prev) => ({ ...prev, accessKeyId: e.target.value }))}
+                placeholder="PRM0CDED7B21AD5BF229"
+              />
+            </div>
+
+            <div className="space-y-1.5 md:col-span-2">
+              <Label htmlFor="prm-secret-key">Secret Access Key</Label>
+              <Input
+                id="prm-secret-key"
+                type="password"
+                value={form.secretAccessKey}
+                onChange={(e) => setForm((prev) => ({ ...prev, secretAccessKey: e.target.value }))}
+                placeholder="••••••••"
+              />
+            </div>
+          </div>
+
+          {testResult && (
+            <div
+              className={`p-3 rounded-md flex items-center gap-2 text-sm ${
+                testResult.ok
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                  : "bg-destructive/10 text-destructive border border-destructive/20"
+              }`}
+            >
+              {testResult.ok ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />}
+              <span>{testResult.message || (testResult.ok ? "Connected successfully" : "Connection failed")}</span>
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 pt-2">
+            <Button
+              variant="default"
+              onClick={() => savePrmS3ConfigMutation.mutate()}
+              disabled={savePrmS3ConfigMutation.isPending}
+            >
+              {savePrmS3ConfigMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save Settings
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => testPrmS3Mutation.mutate()}
+              disabled={testPrmS3Mutation.isPending}
+            >
+              {testPrmS3Mutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Server className="h-4 w-4 mr-2" />
+              )}
+              Test Connection
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
         {/* Stats */}
         <Card data-testid="card-image-stats">
@@ -410,166 +405,164 @@ export default function ImageStorageSettingsPage() {
           </CardContent>
         </Card>
 
-        {/* Storage maintenance (admins only; the endpoints are admin-gated) */}
-        {isAdmin && (
+        {/* Storage maintenance */}
         <Card data-testid="card-storage-maintenance">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Wrench className="h-5 w-5" />
-              Storage Maintenance
-            </CardTitle>
-            <CardDescription>Perform database cleanup and maintenance tasks for your images.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Section 1: Add Photos to DB */}
-            <div className="space-y-3">
-              <h3 className="text-sm font-medium flex items-center gap-2">
-                <Database className="h-4 w-4" />
-                Add Photos to DB
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Register existing image URLs in the photos table.
-              </p>
-              <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-backfill-danger">
-                <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-                <div className="space-y-1">
-                  <p className="text-sm font-medium text-destructive">Caution</p>
-                  <p className="text-xs text-muted-foreground">
-                    Scans database image URLs and registers missing entries in the photos table. Safe to run multiple times.
-                  </p>
-                </div>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Wrench className="h-5 w-5" />
+            Storage Maintenance
+          </CardTitle>
+          <CardDescription>Perform database cleanup and maintenance tasks for your images.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Section 1: Add Photos to DB */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Database className="h-4 w-4" />
+              Add Photos to DB
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Register existing image URLs in the photos table.
+            </p>
+            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-backfill-danger">
+              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-destructive">Caution</p>
+                <p className="text-xs text-muted-foreground">
+                  Scans database image URLs and registers missing entries in the photos table. Safe to run multiple times.
+                </p>
               </div>
-              <Button
-                variant="outline"
-                onClick={() => setMaintenanceConfirm("backfill")}
-                disabled={backfillMutation.isPending}
-                data-testid="button-add-photos-to-db"
-              >
-                {backfillMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Database className="h-4 w-4 mr-2" />
-                )}
-                Scan and Register Photos
-              </Button>
             </div>
+            <Button
+              variant="outline"
+              onClick={() => setMaintenanceConfirm("backfill")}
+              disabled={backfillMutation.isPending}
+              data-testid="button-add-photos-to-db"
+            >
+              {backfillMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Database className="h-4 w-4 mr-2" />
+              )}
+              Scan and Register Photos
+            </Button>
+          </div>
 
-            {/* Section 2: Migrate profile image tiers */}
-            <div className="border-t pt-6 space-y-3">
-              <h3 className="text-sm font-medium flex items-center gap-2">
-                <Images className="h-4 w-4" />
-                Migrate Profile Image Tiers
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Migrates social accounts to canonical image URLs with PRM-S3 size variants. Runs as background task.
-              </p>
-              <Button
-                variant="outline"
-                onClick={() => migrateImageTiersMutation.mutate()}
-                disabled={migrateImageTiersMutation.isPending}
-                data-testid="button-migrate-profile-image-tiers"
-              >
-                {migrateImageTiersMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Images className="h-4 w-4 mr-2" />
-                )}
-                Migrate Profile Image Tiers
-              </Button>
-            </div>
+          {/* Section 2: Migrate profile image tiers */}
+          <div className="border-t pt-6 space-y-3">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Images className="h-4 w-4" />
+              Migrate Profile Image Tiers
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Migrates social accounts to canonical image URLs with PRM-S3 size variants. Runs as background task.
+            </p>
+            <Button
+              variant="outline"
+              onClick={() => migrateImageTiersMutation.mutate()}
+              disabled={migrateImageTiersMutation.isPending}
+              data-testid="button-migrate-profile-image-tiers"
+            >
+              {migrateImageTiersMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Images className="h-4 w-4 mr-2" />
+              )}
+              Migrate Profile Image Tiers
+            </Button>
+          </div>
 
-            {/* Section 2b: Bake Image Variants */}
-            <div className="border-t pt-6 space-y-3">
-              <h3 className="text-sm font-medium flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-primary" />
-                Bake Image Variants
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Pre-bakes WebP size variants (64px, 150px, 1080px) for all images in PRM-S3.
-              </p>
-              <Button
-                variant="outline"
-                onClick={() => bakeImageVariantsMutation.mutate()}
-                disabled={bakeImageVariantsMutation.isPending}
-                data-testid="button-bake-image-variants"
-              >
-                {bakeImageVariantsMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Sparkles className="h-4 w-4 mr-2" />
-                )}
-                Bake Image Variants
-              </Button>
-            </div>
+          {/* Section 2b: Bake Image Variants */}
+          <div className="border-t pt-6 space-y-3">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              Bake Image Variants
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Pre-bakes WebP size variants (64px, 150px, 1080px) for all images in PRM-S3.
+            </p>
+            <Button
+              variant="outline"
+              onClick={() => bakeImageVariantsMutation.mutate()}
+              disabled={bakeImageVariantsMutation.isPending}
+              data-testid="button-bake-image-variants"
+            >
+              {bakeImageVariantsMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4 mr-2" />
+              )}
+              Bake Image Variants
+            </Button>
+          </div>
 
-            {/* Section 3: Delete Instagram & Facebook CDN URLs */}
-            <div className="border-t pt-6 space-y-3">
-              <h3 className="text-sm font-medium flex items-center gap-2">
-                <Trash2 className="h-4 w-4" />
-                Delete Instagram &amp; Facebook CDN Image URLs
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Remove temporary CDN URLs (cdninstagram.com and fbcdn.net) from images and profiles.
-              </p>
-              <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-instagram-danger">
-                <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-                <div className="space-y-1">
-                  <p className="text-sm font-medium text-destructive">Destructive action</p>
-                  <p className="text-xs text-muted-foreground">
-                    Removes all temporary CDN URLs from posts and profile photos.
-                  </p>
-                </div>
+          {/* Section 3: Delete Instagram & Facebook CDN URLs */}
+          <div className="border-t pt-6 space-y-3">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Trash2 className="h-4 w-4" />
+              Delete Instagram &amp; Facebook CDN Image URLs
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Remove temporary CDN URLs (cdninstagram.com and fbcdn.net) from images and profiles.
+            </p>
+            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-instagram-danger">
+              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-destructive">Destructive action</p>
+                <p className="text-xs text-muted-foreground">
+                  Removes all temporary CDN URLs from posts and profile photos.
+                </p>
               </div>
-              <Button
-                variant="outline"
-                onClick={() => setMaintenanceConfirm("delete-instagram")}
-                disabled={deleteInstagramMutation.isPending}
-                data-testid="button-delete-instagram-urls"
-              >
-                {deleteInstagramMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4 mr-2" />
-                )}
-                Delete CDN Image URLs
-              </Button>
             </div>
+            <Button
+              variant="outline"
+              onClick={() => setMaintenanceConfirm("delete-instagram")}
+              disabled={deleteInstagramMutation.isPending}
+              data-testid="button-delete-instagram-urls"
+            >
+              {deleteInstagramMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-2" />
+              )}
+              Delete CDN Image URLs
+            </Button>
+          </div>
 
-            {/* Section 4: Delete Orphan Images */}
-            <div className="border-t pt-6 space-y-3">
-              <h3 className="text-sm font-medium flex items-center gap-2">
-                <Trash2 className="h-4 w-4 text-destructive" />
-                Delete Orphan Images
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Remove unreferenced image files and database records.
-              </p>
-              <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-delete-orphans-danger">
-                <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
-                <div className="space-y-1">
-                  <p className="text-sm font-medium text-destructive">Destructive action</p>
-                  <p className="text-xs text-muted-foreground">
-                    Permanently deletes files from storage and removes unreferenced database entries.
-                  </p>
-                </div>
+          {/* Section 4: Delete Orphan Images */}
+          <div className="border-t pt-6 space-y-3">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-destructive" />
+              Delete Orphan Images
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Remove unreferenced image files and database records.
+            </p>
+            <div className="flex items-start gap-3 rounded-md border border-destructive/50 bg-destructive/10 p-3" data-testid="notice-delete-orphans-danger">
+              <TriangleAlert className="h-4 w-4 text-destructive mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-destructive">Destructive action</p>
+                <p className="text-xs text-muted-foreground">
+                  Permanently deletes files from storage and removes unreferenced database entries.
+                </p>
               </div>
-              <Button
-                variant="outline"
-                onClick={() => setMaintenanceConfirm("delete-orphans")}
-                disabled={deleteOrphansMutation.isPending}
-                data-testid="button-delete-orphan-images"
-              >
-                {deleteOrphansMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4 mr-2" />
-                )}
-                Delete Orphan Images
-              </Button>
             </div>
-          </CardContent>
-        </Card>
-        )}
+            <Button
+              variant="outline"
+              onClick={() => setMaintenanceConfirm("delete-orphans")}
+              disabled={deleteOrphansMutation.isPending}
+              data-testid="button-delete-orphan-images"
+            >
+              {deleteOrphansMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-2" />
+              )}
+              Delete Orphan Images
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
       </div>
 
       {/* Backfill Dialog */}

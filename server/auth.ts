@@ -5,7 +5,7 @@ import session from "express-session";
 import crypto, { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
-import { User as SelectUser, ExtensionSession, isAdminRole } from "@shared/schema";
+import { User as SelectUser, ExtensionSession } from "@shared/schema";
 
 export type User = SelectUser;
 
@@ -16,18 +16,9 @@ declare global {
 }
 
 /** Strip sensitive hash before sending a user object down to the client. */
-export function publicUser(
-  user: SelectUser,
-  session?: { adminView?: boolean },
-): Omit<SelectUser, "password"> & { adminView?: boolean } {
+export function publicUser(user: SelectUser): Omit<SelectUser, "password"> {
   const { password: _, ...safe } = user;
-  const isAdmin = isAdminRole(user.role);
-  const sessionAdminView =
-    session && typeof session === "object" && session.adminView === true;
-  return {
-    ...safe,
-    adminView: isAdmin && sessionAdminView,
-  };
+  return safe;
 }
 
 const scryptAsync = promisify(scrypt);
@@ -108,7 +99,7 @@ export function setupAuth(app: Express) {
   // during first-time setup or after an explicit database reset.
 
   app.post("/api/login", passport.authenticate("local"), (req, res) => {
-    res.status(200).json(publicUser(req.user!, req.session));
+    res.status(200).json(publicUser(req.user!));
   });
 
   app.post("/api/logout", (req, res, next) => {
@@ -120,7 +111,7 @@ export function setupAuth(app: Express) {
 
   app.get("/api/user", (req, res) => {
     if (!req.isAuthenticated() || !req.user) return res.sendStatus(401);
-    res.json(publicUser(req.user, req.session));
+    res.json(publicUser(req.user));
   });
 }
 
@@ -142,20 +133,6 @@ export function requireAuth(
   return res.status(401).json({ error: "Not authenticated" });
 }
 
-/** Express middleware gating admin-only endpoints. */
-export function requireAdmin(
-  req: import("express").Request,
-  res: import("express").Response,
-  next: import("express").NextFunction,
-) {
-  if (!req.isAuthenticated() || !req.user) {
-    return res.status(401).json({ error: "Not authenticated" });
-  }
-  if (!isAdminRole(req.user.role)) {
-    return res.status(403).json({ error: "Admin access required" });
-  }
-  next();
-}
 
 /** Authenticate a Chrome extension token with SHA-256 (O(1)) and legacy scrypt fallback/migration. */
 export async function authenticateExtensionToken(token: string): Promise<ExtensionSession | null> {
@@ -169,7 +146,7 @@ export async function authenticateExtensionToken(token: string): Promise<Extensi
     }
 
     // Fallback and migration for legacy scrypt tokens
-    const allSessions = await storage.getAllExtensionSessionsAllUsers();
+    const allSessions = await storage.getAllExtensionSessions();
     for (const s of allSessions) {
       if (s.sessionToken.includes(".")) {
         try {

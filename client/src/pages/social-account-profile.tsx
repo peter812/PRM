@@ -48,6 +48,7 @@ import { StoriesTab } from "@/components/stories-tab";
 import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
 import { InsightsTab } from "@/components/insights-tab";
 import { AccountOsintCard } from "@/components/osint-results";
+import { AccountSummaryCard, SocialAccountSummaryTab } from "@/components/account-summary";
 import { ConnectionsTab } from "@/components/connections-tab";
 import { SocialAccountRow } from "@/components/social-account-row";
 import { AccountTracking } from "@/components/account-tracking";
@@ -75,7 +76,7 @@ export default function SocialAccountProfile() {
   // The path alone misses a ?postId change on this same page, e.g. from the history tab.
   const search = useSearch();
   const { toast } = useToast();
-  const VALID_TABS = ["account", "follow", "posts", "stories", "messages", "connections", "history", "insights"];
+  const VALID_TABS = ["account", "follow", "posts", "stories", "messages", "connections", "history", "insights", "summary"];
 
   const getTabFromSearch = () => {
     if (typeof window === "undefined") return "account";
@@ -815,6 +816,16 @@ export default function SocialAccountProfile() {
               >
                 Insights
               </TabsTrigger>
+              <TabsTrigger
+                value="summary"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0 flex items-center justify-between"
+                data-testid="tab-summary"
+              >
+                <span>Summary</span>
+                {account.aiSummaryInvalidated && (
+                  <span className="h-2 w-2 rounded-full bg-amber-500" title="Summary out of date" />
+                )}
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -1130,7 +1141,13 @@ export default function SocialAccountProfile() {
                 </Card>
                 </div>
 
-                <AccountOsintCard socialAccountId={account.id} />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+                  <AccountOsintCard socialAccountId={account.id} />
+                  <AccountSummaryCard
+                    socialAccountId={account.id}
+                    onOpenSummaryTab={() => handleTabChange("summary")}
+                  />
+                </div>
 
                 {/* Summaries: Activity & Import Info */}
                 <Card className="p-4 space-y-3 shadow-none">
@@ -1675,11 +1692,16 @@ export default function SocialAccountProfile() {
                 joinedAt: account.joinedAt,
               }}
               canTrack={accountType?.name?.toLowerCase() === "instagram"}
+              skipStories={account.skipStories}
             />
           </TabsContent>
 
           <TabsContent value="insights" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <InsightsTab socialAccountId={account.id} />
+          </TabsContent>
+
+          <TabsContent value="summary" className="mt-0 flex-1 min-h-0 overflow-y-auto data-[state=active]:flex flex-col">
+            <SocialAccountSummaryTab socialAccountId={account.id} />
           </TabsContent>
         </div>
       </Tabs>

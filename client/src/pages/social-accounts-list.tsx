@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown } from "lucide-react";
+import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -42,6 +42,7 @@ import { cn, getInitials, isValidHexColor } from "@/lib/utils";
 import { INSTAGRAM_TYPE_ID, type SocialAccountWithCurrentProfile, type Person, type SocialAccountType } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
 import { RECENT_CHECK_HOURS, TRACKING_KINDS, TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
+import { AccountCreationTimelineDialog } from "@/components/account-creation-timeline-dialog";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
 
@@ -85,6 +86,7 @@ export default function SocialAccountsList() {
   const [, navigate] = useLocation();
   const searchParams = useSearch();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<SocialAccountWithCurrentProfile | null>(null);
   const [accountToEdit, setAccountToEdit] = useState<SocialAccountWithCurrentProfile | null>(null);
   const [accountToExport, setAccountToExport] = useState<SocialAccountWithCurrentProfile | null>(null);
@@ -328,6 +330,10 @@ export default function SocialAccountsList() {
               </SelectContent>
             </Select>
           </div>
+          <Button variant="outline" onClick={() => setIsStatsOpen(true)} className="shrink-0" data-testid="button-stats">
+            <BarChart3 className="h-4 w-4" />
+            Stats
+          </Button>
           <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex shrink-0" data-testid="button-add-account">
             <Plus className="h-4 w-4" />
             Add Account
@@ -386,6 +392,7 @@ export default function SocialAccountsList() {
                       <th className="py-2 px-3 font-medium">Interest</th>
                       <th className="py-2 px-3 font-medium">Followers</th>
                       <th className="py-2 px-3 font-medium">Following</th>
+                      <th className="py-2 px-3 font-medium" title="Captured / reported on Instagram">Posts</th>
                       <th className="py-2 px-3 font-medium w-10">Link</th>
                       <th className="py-2 px-3 font-medium w-10"></th>
                     </tr>
@@ -399,6 +406,7 @@ export default function SocialAccountsList() {
                         <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-14" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
@@ -513,6 +521,7 @@ export default function SocialAccountsList() {
                       <th className="py-2 px-3 font-medium">Interest</th>
                       <th className="py-2 px-3 font-medium">Followers</th>
                       <th className="py-2 px-3 font-medium">Following</th>
+                      <th className="py-2 px-3 font-medium" title="Captured / reported on Instagram">Posts</th>
                       <th className="py-2 px-3 font-medium w-10">Link</th>
                       <th className="py-2 px-3 font-medium w-10"></th>
                     </tr>
@@ -570,6 +579,9 @@ export default function SocialAccountsList() {
                           </td>
                           <td className="py-2 px-3 text-muted-foreground">
                             {account.latestState?.followingCount ?? 0}
+                          </td>
+                          <td className="py-2 px-3 text-muted-foreground whitespace-nowrap">
+                            {account.capturedPostsCount ?? "-"} / {account.reportedPostsCount ?? "-"}
                           </td>
                           <td className="py-2 px-3">
                             {account.currentProfile?.accountUrl && (
@@ -649,6 +661,8 @@ export default function SocialAccountsList() {
                               <AvatarImage
                                 src={withImageSize(account.currentProfile.imageUrl, 64)}
                                 alt={account.username}
+                                loading="lazy"
+                                decoding="async"
                               />
                             )}
                             <AvatarFallback className="text-base font-medium">
@@ -798,6 +812,8 @@ export default function SocialAccountsList() {
                               <AvatarImage
                                 src={withImageSize(account.currentProfile.imageUrl, 150)}
                                 alt={account.username}
+                                loading="lazy"
+                                decoding="async"
                               />
                             )}
                             <AvatarFallback className="text-xl sm:text-2xl">
@@ -1003,7 +1019,12 @@ export default function SocialAccountsList() {
         )}
       </div>
 
-      <SocialAccountDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+      {isAddDialogOpen && (
+        <SocialAccountDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
+      )}
+      {isStatsOpen && (
+        <AccountCreationTimelineDialog open={isStatsOpen} onOpenChange={setIsStatsOpen} />
+      )}
 
       {accountToEdit && (
         <SocialAccountDialog

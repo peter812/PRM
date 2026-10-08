@@ -26,6 +26,8 @@ export default defineConfig({
       "@assets": path.resolve(import.meta.dirname, "attached_assets"),
     },
   },
+  // Keep one copy of maplibre-gl so setWorkerUrl() (map-demo.tsx) reaches the instance the Leaflet plugin uses.
+  optimizeDeps: { exclude: ["maplibre-gl"] },
   root: path.resolve(import.meta.dirname, "client"),
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),

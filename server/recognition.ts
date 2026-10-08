@@ -11,9 +11,9 @@ import { db } from "./db";
 import { storage } from "./storage";
 import { fetchImageBuffer } from "./prm-s3";
 import { facePairDismissals, faces, imageTasks, people, photos, socialAccountPosts, socialAccounts, type Photo } from "@shared/schema";
-import { currentAccess, runAsSystem } from "./access";
 import { log } from "./vite";
 import { triggerImageTaskWorker } from "./task-worker";
+import { onPostAddedForSummary } from "./summary-queue";
 // Only referenced inside functions, so the profile-image -> recognition import
 // cycle never reads it before it's initialised.
 import { HQ_MIN_WIDTH, getImageDimensions } from "./profile-image";
@@ -66,13 +66,13 @@ export async function getComputeConnection(): Promise<{ apiUrl: string; apiKey: 
   return { apiUrl: apiUrl.replace(/\/+$/, ""), apiKey };
 }
 
-async function computeFetch(pathname: string, form: FormData, timeoutMs: number): Promise<Response> {
+async function computeFetch(pathname: string, form: FormData | undefined, timeoutMs: number, method = "POST"): Promise<Response> {
   const conn = await getComputeConnection();
   if (!conn) throw new Error("PRM-Compute is not configured.");
   let response: Response;
   try {
     response = await fetch(`${conn.apiUrl}${pathname}`, {
-      method: "POST",
+      method,
       headers: { "X-API-Key": conn.apiKey },
       body: form,
       signal: AbortSignal.timeout(timeoutMs),
@@ -141,7 +141,7 @@ export async function runFaceRecognition(photoId: string): Promise<FaceRecogniti
   if (!response.ok) {
     const errBody = await response.text();
     if (!(response.status === 400 && /no faces/i.test(errBody))) {
-      throw new Error(`PRM-Face error: ${errBody}`);
+      throw new Error(`PRM Compute error: ${errBody}`);
     }
   } else {
     data = await response.json();
@@ -164,6 +164,37 @@ export async function runFaceRecognition(photoId: string): Promise<FaceRecogniti
   await autoAssignFaces(detectedIds).catch((err) => log(`[FaceAutoAssign] photo ${photoId}: ${err?.message ?? err}`));
 
   return { facesDetected: data.faces_detected ?? detected.length, faces: detected, raw: data, profileLink };
+}
+
+/**
+ * Detect a photo's faces from scratch. Compute hands back the stored faces for
+ * an image it has already seen, so first drop them (rows, S3 crops, index) via
+ * img/delete — names and skips on them go too. Identical images share faces
+ * (photosContainingFaces), so every photo that held them gets the new set.
+ */
+export async function rescanPhotoFaces(photoId: string): Promise<FaceRecognitionResult> {
+  const [photo] = await db.select({ facialIds: photos.facialIds }).from(photos).where(eq(photos.id, photoId));
+  if (!photo) throw new Error("Photo not found.");
+  const oldIds = ((photo.facialIds ?? []) as FacialId[]).map((f) => f.faceUuid).filter((id): id is string => !!id);
+  const sharing = Array.from(new Set([photoId, ...(await photosContainingFaces(oldIds)).map((r) => r.photoId)]));
+
+  // img/delete goes by faces.photo_id, which names only the first photo a shared face came from.
+  const owners = oldIds.length ? await db.selectDistinct({ photoId: faces.photoId }).from(faces).where(inArray(faces.id, oldIds)) : [];
+  for (const owner of new Set([photoId, ...owners.map((o) => o.photoId).filter((id): id is string => !!id)])) {
+    const response = await computeFetch(`/api/img/delete?image_uuid=${encodeURIComponent(owner)}`, undefined, 15000, "DELETE");
+    if (!response.ok) throw new Error(`PRM Compute error: ${await response.text()}`);
+  }
+  // Cleared first so a failed run leaves the photos unscanned (backfill picks them up) rather than pointing at deleted faces.
+  await db.update(photos).set({ facialIds: [], faceIdAt: null }).where(inArray(photos.id, sharing));
+  markFaceIdentitiesDirty();
+
+  const result = await runFaceRecognition(photoId);
+  const others = sharing.filter((id) => id !== photoId);
+  if (others.length) {
+    const [fresh] = await db.select({ facialIds: photos.facialIds, faceIdAt: photos.faceIdAt }).from(photos).where(eq(photos.id, photoId));
+    await db.update(photos).set(fresh).where(inArray(photos.id, others));
+  }
+  return result;
 }
 
 /**
@@ -440,6 +471,25 @@ export type DisassociateFaceResult = { newGroupUuid: string };
  * face_pair_dismissals row so auto-assign and look-alikes never offer that
  * identity for it again (face-review-plan.md §8.4).
  */
+/**
+ * Unlink people/accounts from groups that no longer hold any face (all of
+ * them when `groups` is omitted), so empty identities don't linger.
+ */
+export async function clearEmptyGroups(exec: DbExec = db, groups?: string[]): Promise<number> {
+  let cleared = 0;
+  for (const table of [people, socialAccounts]) {
+    const col = table.personfaceUuid;
+    const rows = await exec.update(table).set({ personfaceUuid: null })
+      .where(and(
+        groups ? inArray(col, groups) : isNotNull(col),
+        sql`NOT EXISTS (SELECT 1 FROM ${faces} WHERE ${faces.personfaceUuid} = ${col})`,
+      ))
+      .returning({ id: table.id });
+    cleared += rows.length;
+  }
+  return cleared;
+}
+
 export async function disassociateFace(faceUuid: string): Promise<DisassociateFaceResult> {
   const [faceRow] = await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(eq(faces.id, faceUuid));
   if (!faceRow) throw new RecognitionRequestError(404, "Face not found.");
@@ -450,12 +500,23 @@ export async function disassociateFace(faceUuid: string): Promise<DisassociateFa
     await tx.update(faces).set({ personfaceUuid: newGroupUuid, autoMatchScore: null }).where(eq(faces.id, faceRow.id));
     if (oldGroup && wasNamed) {
       const [a, b] = oldGroup < newGroupUuid ? [oldGroup, newGroupUuid] : [newGroupUuid, oldGroup];
-      await tx.insert(facePairDismissals).values({ groupAUuid: a, groupBUuid: b, userId: currentAccess()?.userId ?? null }).onConflictDoNothing();
+      await tx.insert(facePairDismissals).values({ groupAUuid: a, groupBUuid: b }).onConflictDoNothing();
     }
     await refreshFacialIdsForGroups([newGroupUuid], tx);
+    if (oldGroup) await clearEmptyGroups(tx, [oldGroup]);
   });
   markFaceIdentitiesDirty();
   return { newGroupUuid };
+}
+
+/** Split every face out of a group into its own new group (bulk "not them"). */
+export async function disassociateGroup(personfaceUuid: string): Promise<{ count: number }> {
+  const rows = await db.select({ id: faces.id }).from(faces).where(eq(faces.personfaceUuid, personfaceUuid));
+  for (const { id } of rows) await disassociateFace(id);
+  // A group that was already empty has no face to trigger the cleanup in disassociateFace.
+  await clearEmptyGroups(db, [personfaceUuid]);
+  markFaceIdentitiesDirty();
+  return { count: rows.length };
 }
 
 // ── Auto-assign confident matches (face-review-plan.md §8.2) ─────────────────
@@ -535,7 +596,7 @@ const AUTO_ASSIGN_INTERVAL_MS = 60 * 60 * 1000;
 
 /** Hourly full auto-assign run: newly named faces make more matches possible over time. */
 export function startFaceAutoAssignScheduler(): void {
-  const tick = () => runAsSystem(() => autoAssignFaces()).catch((err) => log(`[FaceAutoAssign] scheduled run failed: ${err?.message ?? err}`));
+  const tick = () => autoAssignFaces().catch((err) => log(`[FaceAutoAssign] scheduled run failed: ${err?.message ?? err}`));
   setTimeout(tick, 5 * 60 * 1000);
   setInterval(tick, AUTO_ASSIGN_INTERVAL_MS);
 }
@@ -821,7 +882,10 @@ export type VideoTranscript = {
 
 /** Speech-to-text on a post's video (metadata.videoUrl), stored on the post row. */
 export async function transcribeVideo(postId: string): Promise<VideoTranscript> {
-  const [post] = await db.select({ metadata: socialAccountPosts.metadata }).from(socialAccountPosts).where(eq(socialAccountPosts.id, postId));
+  const [post] = await db
+    .select({ metadata: socialAccountPosts.metadata, socialAccountId: socialAccountPosts.socialAccountId })
+    .from(socialAccountPosts)
+    .where(eq(socialAccountPosts.id, postId));
   if (!post) throw new Error("Post not found.");
   const videoUrl = (post.metadata as { videoUrl?: string } | null)?.videoUrl;
   if (!videoUrl) throw new Error("Post has no video.");
@@ -845,6 +909,8 @@ export async function transcribeVideo(postId: string): Promise<VideoTranscript> 
     segments: (result.segments ?? []).map((s) => ({ start: s.start, end: s.end, text: s.text })),
   };
   await store(transcript);
+  // The summary queued on import usually ran before the transcript existed; redo it with the speech as context.
+  if (transcript.text.trim()) await onPostAddedForSummary(postId, post.socialAccountId);
   return transcript;
 }
 
@@ -942,20 +1008,6 @@ export async function setAutoRecognitionSettings(
   if (update.autoAssign?.minScore !== undefined) await setAutoAssignMinScore(Number(update.autoAssign.minScore));
 }
 
-/**
- * Who owns the queued tasks (image_tasks.userId is NOT NULL and the Image Tasks
- * page only lists the caller's own). A signed-in caller (backfill) owns theirs;
- * system callers (ingestion hooks) fall back to the highest-ranked admin.
- */
-async function queueOwnerId(): Promise<number | undefined> {
-  const ctx = currentAccess();
-  if (ctx?.userId) return ctx.userId;
-  const rank: Record<string, number> = { super_admin: 0, admin: 1, user: 2 };
-  const users = await runAsSystem(() => storage.getAllUsers());
-  users.sort((a, b) => (rank[a.role] ?? 9) - (rank[b.role] ?? 9) || a.id - b.id);
-  return users[0]?.id;
-}
-
 /** Ids among `ids` (photoId or payload postId) that already have a live task of `type`. */
 async function alreadyQueued(type: string, ids: string[], key: "photoId" | "postId"): Promise<Set<string>> {
   if (!ids.length) return new Set();
@@ -983,15 +1035,12 @@ export async function enqueueRecognitionTasks(input: {
   videoPostIds?: string[];
   imageTaskGroupId?: string;
 }): Promise<number> {
-  const userId = await queueOwnerId();
-  if (!userId) return 0;
   let queued = 0;
 
   let groupId = input.imageTaskGroupId;
   if (!groupId && ((input.photoIds && input.photoIds.length > 0) || (input.videoPostIds && input.videoPostIds.length > 0))) {
     const count = (input.photoIds?.length ?? 0) + (input.videoPostIds?.length ?? 0);
     const grp = await storage.createImageTaskGroup({
-      userId,
       title: `Recognition Batch (${count} item${count !== 1 ? "s" : ""})`,
       kind: "recognition_batch",
     });
@@ -1005,7 +1054,7 @@ export async function enqueueRecognitionTasks(input: {
       const live = await alreadyQueued(type, ids, "postId");
       for (const postId of ids) {
         if (live.has(postId)) continue;
-        await storage.createImageTask({ userId, type, imageTaskGroupId: groupId || undefined, payload: JSON.stringify({ postId }) });
+        await storage.createImageTask({ type, imageTaskGroupId: groupId || undefined, payload: JSON.stringify({ postId }) });
         queued++;
       }
     } else {
@@ -1013,7 +1062,7 @@ export async function enqueueRecognitionTasks(input: {
       const live = await alreadyQueued(type, ids, "photoId");
       for (const photoId of ids) {
         if (live.has(photoId)) continue;
-        await storage.createImageTask({ userId, type, photoId, imageTaskGroupId: groupId || undefined, payload: JSON.stringify({ photoId }) });
+        await storage.createImageTask({ type, photoId, imageTaskGroupId: groupId || undefined, payload: JSON.stringify({ photoId }) });
         queued++;
       }
     }

@@ -1,7 +1,12 @@
 import type { Express } from "express";
 import { storage } from "../storage";
+import { isAiEnabled, listProviders, testProvider } from "../ai/provider";
 import { checkPrmS3Health } from "../prm-s3";
 import { testVectorConnection, getVectorSetting } from "../vector";
+import { db } from "../db";
+import { sql, eq, or } from "drizzle-orm";
+import { storyImporters } from "@shared/schema";
+import { storiesServiceHeaders, storiesServiceUrl } from "../stories-scheduler";
 
 interface ServiceHealthResult {
   ok: boolean;
@@ -30,132 +35,114 @@ function isSafeServiceUrl(urlStr: string): boolean {
   }
 }
 
+async function checkS3(): Promise<ServiceHealthResult> {
+  try {
+    const s3Health = await checkPrmS3Health();
+    return { ok: s3Health.ok, status: s3Health.ok ? "online" : "offline", message: s3Health.message };
+  } catch (err: any) {
+    return { ok: false, status: "offline", message: `PRM-S3 error: ${err.message}` };
+  }
+}
+
+async function checkCompute(): Promise<ServiceHealthResult> {
+  try {
+    const apiUrl =
+      (await storage.getAppSetting("prm_compute_api_url")) ||
+      (await storage.getAppSetting("prm_face_api_url")) ||
+      "";
+    if (!apiUrl.trim()) {
+      return { ok: false, status: "not_configured", message: "API URL not configured (default: http://localhost:8001)" };
+    }
+    const base = apiUrl.replace(/\/+$/, "");
+    const resp = await fetch(`${base}/api/setup-status`, { signal: AbortSignal.timeout(4000) });
+    if (!resp.ok) return { ok: false, status: "degraded", message: `PRM-Compute returned HTTP ${resp.status}` };
+    const data = (await resp.json()) as { setup_completed?: boolean };
+    return data.setup_completed
+      ? { ok: true, status: "online", message: "PRM-Compute is online and configured" }
+      : { ok: true, status: "degraded", message: "PRM-Compute online, API key setup required" };
+  } catch (err: any) {
+    return { ok: false, status: "offline", message: `Could not reach PRM-Compute: ${err.message}` };
+  }
+}
+
+/**
+ * Every enabled stories importer's service, via its POST /status; the worst one
+ * decides. A service paused after an Instagram rate limit says until when.
+ */
+async function checkStories(): Promise<ServiceHealthResult> {
+  const importers = await db.select().from(storyImporters).where(or(eq(storyImporters.enabled, true), eq(storyImporters.trackingEnabled, true)));
+  if (importers.length === 0) return { ok: false, status: "not_configured", message: "No stories importer enabled" };
+  const checks = await Promise.all(importers.map(async (importer): Promise<ServiceHealthResult> => {
+    const label = importers.length > 1 ? `${importer.label}: ` : "";
+    const apiUrl = storiesServiceUrl(importer);
+    if (!apiUrl) return { ok: false, status: "not_configured", message: `${label}service URL not set` };
+    try {
+      const resp = await fetch(`${apiUrl}/status`, { method: "POST", headers: storiesServiceHeaders(importer), signal: AbortSignal.timeout(3000) });
+      if (!resp.ok) return { ok: false, status: "degraded", message: `${label}service returned HTTP ${resp.status}` };
+      const body = (await resp.json()) as { running?: boolean; pausedUntil?: string | null };
+      if (body.pausedUntil) {
+        return { ok: false, status: "degraded", message: `${label}paused: rate limit backoff until ${new Date(body.pausedUntil).toLocaleString()}` };
+      }
+      return { ok: true, status: "online", message: `${label}${body.running ? "online, running" : "online"}` };
+    } catch (err: any) {
+      return { ok: false, status: "offline", message: `${label}could not reach the service: ${err.message}` };
+    }
+  }));
+  const rank = { offline: 0, degraded: 1, not_configured: 2, online: 3 };
+  const worst = checks.reduce((a, b) => (rank[b.status] < rank[a.status] ? b : a));
+  return { ...worst, message: checks.map((c) => c.message).join(" · ") };
+}
+
 export function registerSetupServicesRoutes(app: Express) {
+  // The header's status dot: PRM itself (its database), S3, Compute, Stories.
+  app.get("/api/status-dot", async (_req, res) => {
+    const prm = db.execute(sql`select 1`).then(
+      (): ServiceHealthResult => ({ ok: true, status: "online", message: "Online" }),
+      (err: any): ServiceHealthResult => ({ ok: false, status: "degraded", message: `Database error: ${err.message}` }),
+    );
+    const stories = checkStories().catch((err: any): ServiceHealthResult => ({ ok: false, status: "offline", message: err.message }));
+    const [p, s3, compute, st] = await Promise.all([prm, checkS3(), checkCompute(), stories]);
+    res.json({ prm: p, s3, compute, stories: st });
+  });
+
   // Aggregated health check for all 5 sub-services
   app.get("/api/setup/services/health", async (req, res) => {
     try {
       const results: Record<string, ServiceHealthResult> = {
         s3: { ok: false, status: "offline", message: "Checking S3..." },
         compute: { ok: false, status: "not_configured", message: "Checking PRM-Compute..." },
-        ollama: { ok: false, status: "not_configured", message: "Checking Ollama..." },
+        ai: { ok: false, status: "not_configured", message: "Checking AI providers..." },
         vector: { ok: false, status: "not_configured", message: "Checking Vector DB..." },
         whisper: { ok: false, status: "not_configured", message: "Checking Whisper..." },
       };
 
-      // 1. PRM-S3
-      const s3Promise = (async () => {
-        try {
-          const s3Health = await checkPrmS3Health();
-          results.s3 = {
-            ok: s3Health.ok,
-            status: s3Health.ok ? "online" : "offline",
-            message: s3Health.message,
-          };
-        } catch (err: any) {
-          results.s3 = {
-            ok: false,
-            status: "offline",
-            message: `PRM-S3 error: ${err.message}`,
-          };
-        }
-      })();
+      // 1. PRM-S3 and 2. PRM Compute
+      const s3Promise = checkS3().then((r) => (results.s3 = r));
+      const computePromise = checkCompute().then((r) => (results.compute = r));
 
-      // 2. PRM-Compute / PRM-Face
-      const computePromise = (async () => {
+      // 3. AI providers (Ollama / OpenAI-compatible)
+      const aiPromise = (async () => {
         try {
-          const apiUrl =
-            (await storage.getAppSetting("prm_compute_api_url")) ||
-            (await storage.getAppSetting("prm_face_api_url")) ||
-            "";
-          if (!apiUrl.trim()) {
-            results.compute = {
+          const providers = await listProviders();
+          if (providers.length === 0) {
+            results.ai = {
               ok: false,
               status: "not_configured",
-              message: "API URL not configured (default: http://localhost:8001)",
+              message: "No AI provider configured (add one under Settings → Intelligence)",
             };
             return;
           }
-          const base = apiUrl.replace(/\/+$/, "");
-          const resp = await fetch(`${base}/api/setup-status`, {
-            signal: AbortSignal.timeout(4000),
-          });
-          if (resp.ok) {
-            const data = (await resp.json()) as { setup_completed?: boolean };
-            const isReady = !!data.setup_completed;
-            results.compute = {
-              ok: true,
-              status: isReady ? "online" : "degraded",
-              message: isReady
-                ? "PRM-Compute is online and configured"
-                : "PRM-Compute online, API key setup required",
-            };
-          } else {
-            results.compute = {
-              ok: false,
-              status: "degraded",
-              message: `PRM-Compute returned HTTP ${resp.status}`,
-            };
-          }
-        } catch (err: any) {
-          results.compute = {
-            ok: false,
-            status: "offline",
-            message: `Could not reach PRM-Compute: ${err.message}`,
+          const checks = await Promise.all(providers.map(async (p) => ({ p, r: await testProvider(p) })));
+          const online = checks.filter((c) => c.r.ok);
+          const enabled = await isAiEnabled();
+          results.ai = {
+            ok: online.length > 0,
+            status: online.length === checks.length ? "online" : online.length > 0 ? "degraded" : "offline",
+            message: checks.map((c) => `${c.p.name}: ${c.r.ok ? `online (${c.r.modelCount} models)` : c.r.message}`).join(" · "),
+            details: { providers: checks.length, online: online.length, enabled },
           };
-        }
-      })();
-
-      // 3. Ollama
-      const ollamaPromise = (async () => {
-        try {
-          const enabled = (await storage.getAppSetting("ollama_enabled")) === "true";
-          const apiUrl = (await storage.getAppSetting("ollama_api_url")) || "";
-          if (!apiUrl.trim()) {
-            results.ollama = {
-              ok: false,
-              status: "not_configured",
-              message: "Ollama URL not configured (default: http://localhost:11434)",
-            };
-            return;
-          }
-          const base = apiUrl.replace(/\/+$/, "");
-          const authRequired = (await storage.getAppSetting("ollama_auth_required")) === "true";
-          const headers: Record<string, string> = {};
-          if (authRequired) {
-            const u = (await storage.getAppSetting("ollama_username")) || "";
-            const p = (await storage.getAppSetting("ollama_password")) || "";
-            headers["Authorization"] = `Basic ${Buffer.from(`${u}:${p}`).toString("base64")}`;
-          }
-
-          const resp = await fetch(`${base}/api/tags`, {
-            headers,
-            signal: AbortSignal.timeout(4000),
-          });
-          if (resp.ok) {
-            const data = (await resp.json()) as { models?: any[] };
-            const modelCount = data.models?.length ?? 0;
-            results.ollama = {
-              ok: true,
-              status: modelCount > 0 ? "online" : "degraded",
-              message: modelCount > 0
-                ? `Ollama online (${modelCount} model${modelCount === 1 ? "" : "s"} installed)`
-                : "Ollama online, but no models installed yet (run: ollama pull llama3)",
-              details: { modelsCount: modelCount, enabled },
-            };
-          } else {
-            results.ollama = {
-              ok: false,
-              status: "degraded",
-              message: `Ollama returned HTTP ${resp.status}`,
-              details: { enabled },
-            };
-          }
         } catch (err: any) {
-          results.ollama = {
-            ok: false,
-            status: "offline",
-            message: `Could not reach Ollama: ${err.message}`,
-          };
+          results.ai = { ok: false, status: "offline", message: `Could not check AI providers: ${err.message}` };
         }
       })();
 
@@ -241,7 +228,7 @@ export function registerSetupServicesRoutes(app: Express) {
         }
       })();
 
-      await Promise.allSettled([s3Promise, computePromise, ollamaPromise, vectorPromise, whisperPromise]);
+      await Promise.allSettled([s3Promise, computePromise, aiPromise, vectorPromise, whisperPromise]);
 
       if (!req.isAuthenticated()) {
         for (const key of Object.keys(results)) {

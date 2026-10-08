@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, ExternalLink, Trash2, Image as ImageIcon } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Image as ImageIcon, Search, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,471 +20,279 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
-import { TRACKING_KIND_LABEL } from "@shared/interest-level";
-import { RUNS_KEY, useStoryRuns, type RunItem, type StoryRun, type TrackItem } from "@/lib/instagram";
+import { useDebounce } from "@/hooks/use-debounce";
+import { TRACKING_KINDS, TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
 import { ImageTaskGroupModal } from "@/components/image-task-group-modal";
 
-const finalOutcome = (i: RunItem) => i.prmOutcome ?? i.outcome;
-
-/** A stories run is "Stories"; a tracking run lists the job kinds it ran. */
-function runKindLabel(run: StoryRun): string {
-  if (run.kind !== "tracking") return "Stories";
-  const kinds = Array.from(new Set((run.items as unknown as TrackItem[]).map((i) => i.kind)));
-  return kinds.length ? kinds.map((k) => TRACKING_KIND_LABEL[k] ?? k).join(", ") : "Tracking";
+/** One row of GET /api/tracking/jobs. */
+interface TaskRow {
+  id: string;
+  socialAccountId: string;
+  username: string;
+  kind: TrackingKind;
+  status: string;
+  result: { reason?: string } | null;
+  error: string | null;
+  createdAt: string;
+  imageTaskGroupId: string | null;
 }
+
+const JOBS_KEY = ["/api/tracking/jobs"];
+const STATUSES = ["queued", "running", "completed", "skipped", "failed"];
 
 const STATUS_VARIANT: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   completed: "default",
-  starting: "secondary",
+  queued: "outline",
   running: "secondary",
   skipped: "secondary",
-  rate_limited: "outline",
-  unreachable: "outline",
-  already_running: "outline",
-  needs_login: "destructive",
-  checkpoint: "destructive",
-  no_username: "destructive",
-  parse_failed: "destructive",
-  error: "destructive",
+  failed: "destructive",
 };
 
-function RunRow({
-  run,
-  isSelected,
-  onToggleSelect,
-  onDelete,
-  isAdmin,
-  onOpenImageTaskGroup,
-}: {
-  run: StoryRun;
-  isSelected: boolean;
-  onToggleSelect: (id: string) => void;
-  onDelete: (run: StoryRun) => void;
-  isAdmin: boolean;
-  onOpenImageTaskGroup?: (groupId: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState("all");
-  const noAccount = run.items.filter((i) => finalOutcome(i) === "no_account").length;
-  const items = filter === "all" ? run.items : run.items.filter((i) => finalOutcome(i) === filter);
-  const outcomes = Array.from(new Set(run.items.map(finalOutcome))).sort();
-  const c = run.counts;
-
+function OutcomeChip({ task }: { task: TaskRow }) {
+  const detail = [task.result?.reason, task.error].filter(Boolean).join(" — ");
+  const chip = <Badge variant={STATUS_VARIANT[task.status] ?? "outline"}>{task.status}</Badge>;
+  if (!detail) return chip;
   return (
-    <>
-      <TableRow className="cursor-pointer" onClick={() => setOpen((o) => !o)} data-testid={`row-run-${run.id}`}>
-        <TableCell className="w-8">{open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</TableCell>
-        {isAdmin && (
-          <TableCell className="w-8" onClick={(e) => e.stopPropagation()}>
-            <Checkbox
-              checked={isSelected}
-              onCheckedChange={() => onToggleSelect(run.id)}
-              aria-label={`Select run ${run.id}`}
-              data-testid={`checkbox-run-${run.id}`}
-            />
-          </TableCell>
-        )}
-        <TableCell>{new Date(run.startedAt).toLocaleString()}</TableCell>
-        <TableCell className="text-muted-foreground">{run.importerLabel ?? "—"}</TableCell>
-        <TableCell className="text-muted-foreground">{runKindLabel(run)}</TableCell>
-        <TableCell><Badge variant={STATUS_VARIANT[run.status] ?? "outline"}>{run.status}</Badge></TableCell>
-        {run.kind === "tracking" ? (
-          <>
-            <TableCell className="text-right">{c.completed ?? 0} / {c.jobs ?? 0}</TableCell>
-            <TableCell className="text-right">{c.skipped ?? 0}</TableCell>
-            <TableCell className="text-right">{c.failed ?? 0}</TableCell>
-            <TableCell className="text-right">
-              {run.imageTaskGroup ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-1.5 text-xs font-semibold text-primary hover:underline gap-1 ml-auto inline-flex items-center"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenImageTaskGroup?.(run.imageTaskGroup!.id);
-                  }}
-                  title="View Image Tasks"
-                >
-                  <ImageIcon className="h-3 w-3" />
-                  Images
-                </Button>
-              ) : (
-                "—"
-              )}
-            </TableCell>
-          </>
-        ) : (
-          <>
-            <TableCell className="text-right">{c.accountsOpened ?? 0} / {c.accountsInTray ?? 0}</TableCell>
-            <TableCell className="text-right">{c.storiesSeen ?? 0}</TableCell>
-            <TableCell className="text-right">
-              {run.imageTaskGroup ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 px-1.5 text-xs font-semibold text-primary hover:underline gap-1 ml-auto inline-flex items-center"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenImageTaskGroup?.(run.imageTaskGroup!.id);
-                  }}
-                  title="View Image Tasks"
-                >
-                  <ImageIcon className="h-3 w-3" />
-                  {c.imagesSaved ?? 0}
-                </Button>
-              ) : (
-                c.imagesSaved ?? 0
-              )}
-            </TableCell>
-            <TableCell className="text-right">{noAccount}</TableCell>
-          </>
-        )}
-        {isAdmin && (
-          <TableCell className="text-right w-12" onClick={(e) => e.stopPropagation()}>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-destructive"
-              onClick={() => onDelete(run)}
-              title="Delete run"
-              data-testid={`button-delete-run-${run.id}`}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </TableCell>
-        )}
-      </TableRow>
-      {open && (
-        <TableRow>
-          <TableCell colSpan={isAdmin ? 11 : 9} className="bg-muted/30 p-4">
-            {run.error && <p className="text-sm text-destructive mb-3">{run.error}</p>}
-            {run.imageTaskGroup && (
-              <div className="mb-3 flex items-center justify-between p-2.5 rounded-md bg-muted/60 border border-border">
-                <div className="flex items-center gap-2 text-sm">
-                  <ImageIcon className="h-4 w-4 text-primary" />
-                  <span className="font-medium">Image Tasks Associated:</span>
-                  <Badge variant="outline" className="text-xs">
-                    {run.imageTaskGroup.status}
-                  </Badge>
-                </div>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="h-7 text-xs gap-1.5"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onOpenImageTaskGroup?.(run.imageTaskGroup!.id);
-                  }}
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  View Image Tasks
-                </Button>
-              </div>
-            )}
-            {run.kind === "tracking" ? (
-              <TrackItems items={run.items as unknown as TrackItem[]} />
-            ) : run.items.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No stories recorded for this run.</p>
-            ) : (
-              <>
-                <Select value={filter} onValueChange={setFilter}>
-                  <SelectTrigger className="w-56 mb-3" data-testid="select-outcome-filter">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All outcomes ({run.items.length})</SelectItem>
-                    {outcomes.map((o) => (
-                      <SelectItem key={o} value={o}>{o} ({run.items.filter((i) => finalOutcome(i) === o).length})</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="max-h-96 overflow-y-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Account</TableHead>
-                        <TableHead>Posted</TableHead>
-                        <TableHead>Outcome</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {items.map((i, idx) => (
-                        <TableRow key={`${i.username}-${i.storyPk ?? idx}`}>
-                          <TableCell>
-                            {i.accountId ? (
-                              <Link
-                                href={`~/social-accounts/${i.accountId}?tab=stories${i.storyPk ? `&storyPk=${i.storyPk}` : ""}`}
-                                className="inline-flex items-center gap-1 font-medium hover:underline text-primary"
-                                data-testid={`link-account-${i.username}`}
-                              >
-                                @{i.username}
-                              </Link>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 text-muted-foreground" data-testid={`text-no-account-${i.username}`}>
-                                @{i.username}
-                                <a
-                                  href={`https://www.instagram.com/${i.username}/`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center text-muted-foreground hover:text-foreground"
-                                  title="Open in Instagram (account not in PRM)"
-                                >
-                                  <ExternalLink className="h-3 w-3" />
-                                </a>
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell>{i.takenAt ? new Date(i.takenAt).toLocaleString() : "—"}</TableCell>
-                          <TableCell>{finalOutcome(i)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              </>
-            )}
-          </TableCell>
-        </TableRow>
-      )}
-    </>
-  );
-}
-
-function TrackItems({ items }: { items: TrackItem[] }) {
-  if (items.length === 0) return <p className="text-sm text-muted-foreground">No jobs recorded for this run.</p>;
-  return (
-    <div className="max-h-96 overflow-y-auto">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Account</TableHead>
-            <TableHead>Job</TableHead>
-            <TableHead>Outcome</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {items.map((i) => (
-            <TableRow key={i.jobId}>
-              <TableCell>
-                {i.accountId ? (
-                  <Link href={`~/social-accounts/${i.accountId}`} className="font-medium hover:underline text-primary">@{i.username}</Link>
-                ) : (
-                  <span className="text-muted-foreground">@{i.username}</span>
-                )}
-              </TableCell>
-              <TableCell>{TRACKING_KIND_LABEL[i.kind] ?? i.kind}</TableCell>
-              <TableCell>
-                {i.outcome}
-                {i.reason ? ` (${i.reason})` : ""}
-                {i.error && <span className="text-destructive"> — {i.error}</span>}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild><span className="cursor-help">{chip}</span></TooltipTrigger>
+      <TooltipContent className="max-w-sm">{detail}</TooltipContent>
+    </Tooltip>
   );
 }
 
 export default function SocialTasksPage() {
-  const { isAdmin } = useAuth();
   const { toast } = useToast();
-  const { data: runs = [], isLoading } = useStoryRuns();
+  const [search, setSearch] = useState("");
+  const [kind, setKind] = useState("all");
+  const [status, setStatus] = useState("all");
+  const q = useDebounce(search.trim(), 300);
+
+  const { data: tasks = [], isLoading } = useQuery<TaskRow[]>({
+    queryKey: [...JOBS_KEY, { q: q || undefined, kind: kind === "all" ? undefined : kind, status: status === "all" ? undefined : status }],
+    refetchInterval: (query) => (query.state.data?.some((t) => t.status === "queued" || t.status === "running") ? 10_000 : false),
+  });
+  const removable = tasks.filter((t) => t.status !== "running");
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [runToDelete, setRunToDelete] = useState<StoryRun | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<TaskRow | null>(null);
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
   const [modalGroupId, setModalGroupId] = useState<string | null>(null);
 
   const handleToggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   };
 
-  const handleSelectAll = () => {
-    if (selectedIds.size === runs.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(runs.map((r) => r.id)));
-    }
-  };
+  const allSelected = removable.length > 0 && removable.every((t) => selectedIds.has(t.id));
+  const handleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(removable.map((t) => t.id)));
 
   const deleteSingleMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/stories/runs/${id}`);
+      await apiRequest("DELETE", `/api/tracking/jobs/${id}`);
+      return id;
     },
-    onSuccess: () => {
-      toast({ title: "Run deleted", description: "The run log has been removed." });
-      setRunToDelete(null);
-      if (runToDelete) {
-        setSelectedIds((prev) => {
-          const next = new Set(prev);
-          next.delete(runToDelete.id);
-          return next;
-        });
-      }
-      queryClient.invalidateQueries({ queryKey: RUNS_KEY });
+    onSuccess: (id) => {
+      toast({ title: "Task removed" });
+      setTaskToDelete(null);
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: JOBS_KEY });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to delete run", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to remove task", description: error.message, variant: "destructive" });
     },
   });
 
   const deleteBulkMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const res = await apiRequest("POST", "/api/stories/runs/bulk-delete", { ids });
+      const res = await apiRequest("POST", "/api/tracking/jobs/bulk-delete", { ids });
       return res.json();
     },
     onSuccess: (data: { deletedCount: number }) => {
-      toast({
-        title: "Runs deleted",
-        description: `Successfully deleted ${data.deletedCount} run ${data.deletedCount === 1 ? "log" : "logs"}.`,
-      });
+      toast({ title: "Tasks removed", description: `Removed ${data.deletedCount} ${data.deletedCount === 1 ? "task" : "tasks"}.` });
       setSelectedIds(new Set());
       setShowBulkDeleteDialog(false);
-      queryClient.invalidateQueries({ queryKey: RUNS_KEY });
+      queryClient.invalidateQueries({ queryKey: JOBS_KEY });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to delete runs", description: error.message, variant: "destructive" });
+      toast({ title: "Failed to remove tasks", description: error.message, variant: "destructive" });
     },
   });
 
   return (
     <div className="container max-w-full md:max-w-5xl py-3 md:py-8 px-4 md:pl-12">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
         <div>
           <h1 className="text-2xl font-semibold" data-testid="text-social-tasks-title">Social Tasks</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Expand a stories run to see every story it saw, including the ones dropped because no social account exists
-            for the poster (<code>no_account</code>); a tracking run lists its jobs.
-          </p>
+          <p className="text-sm text-muted-foreground mt-1">Every tracking job, newest first. A run works a few at a time; the rest stay queued and can be removed until their turn. Hover an outcome to see why it was skipped or failed.</p>
         </div>
-        {isAdmin && selectedIds.size > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">{selectedIds.size} selected</span>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowBulkDeleteDialog(true)}
-              disabled={deleteBulkMutation.isPending}
-              data-testid="button-delete-selected-runs"
-            >
-              <Trash2 className="h-4 w-4 mr-1.5" />
-              Delete selected ({selectedIds.size})
-            </Button>
-          </div>
+        {selectedIds.size > 0 && (
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setShowBulkDeleteDialog(true)}
+            disabled={deleteBulkMutation.isPending}
+            data-testid="button-delete-selected-tasks"
+          >
+            <Trash2 className="h-4 w-4 mr-1.5" />
+            Remove selected ({selectedIds.size})
+          </Button>
         )}
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-2 mb-4">
+        <div className="relative flex-1">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by account name"
+            className="pl-8"
+            data-testid="input-search-tasks"
+          />
+        </div>
+        <Select value={kind} onValueChange={setKind}>
+          <SelectTrigger className="sm:w-48" data-testid="select-task-kind"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All job types</SelectItem>
+            {TRACKING_KINDS.map((k) => <SelectItem key={k} value={k}>{TRACKING_KIND_LABEL[k]}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={status} onValueChange={setStatus}>
+          <SelectTrigger className="sm:w-40" data-testid="select-task-status"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All outcomes</SelectItem>
+            {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+          </SelectContent>
+        </Select>
       </div>
 
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-8" />
-            {isAdmin && (
-              <TableHead className="w-8">
-                <Checkbox
-                  checked={runs.length > 0 && selectedIds.size === runs.length}
-                  onCheckedChange={handleSelectAll}
-                  aria-label="Select all runs"
-                  data-testid="checkbox-select-all-runs"
-                />
-              </TableHead>
-            )}
-            <TableHead>Started</TableHead>
-            <TableHead>Importer</TableHead>
-            <TableHead>Kind</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className="text-right">Accounts / jobs</TableHead>
-            <TableHead className="text-right">Seen / skipped</TableHead>
-            <TableHead className="text-right">Saved / failed</TableHead>
-            <TableHead className="text-right">No account</TableHead>
-            {isAdmin && <TableHead className="w-12 text-right">Actions</TableHead>}
+            <TableHead className="w-8">
+              <Checkbox checked={allSelected} onCheckedChange={handleSelectAll} aria-label="Select all tasks" data-testid="checkbox-select-all-tasks" />
+            </TableHead>
+            <TableHead>Account</TableHead>
+            <TableHead>Job type</TableHead>
+            <TableHead>Outcome</TableHead>
+            <TableHead>Images</TableHead>
+            <TableHead>Date</TableHead>
+            <TableHead className="w-12" />
           </TableRow>
         </TableHeader>
         <TableBody>
           {isLoading ? (
-            <TableRow><TableCell colSpan={isAdmin ? 11 : 9} className="text-center py-8 text-muted-foreground">Loading…</TableCell></TableRow>
-          ) : runs.length === 0 ? (
-            <TableRow><TableCell colSpan={isAdmin ? 11 : 9} className="text-center py-8 text-muted-foreground">No runs delivered yet.</TableCell></TableRow>
+            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Loading…</TableCell></TableRow>
+          ) : tasks.length === 0 ? (
+            <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No tasks found.</TableCell></TableRow>
           ) : (
-            runs.map((run) => (
-              <RunRow
-                key={run.id}
-                run={run}
-                isSelected={selectedIds.has(run.id)}
-                onToggleSelect={handleToggleSelect}
-                onDelete={(r) => setRunToDelete(r)}
-                isAdmin={Boolean(isAdmin)}
-                onOpenImageTaskGroup={setModalGroupId}
-              />
+            tasks.map((t) => (
+              <TableRow key={t.id} data-testid={`row-task-${t.id}`}>
+                <TableCell>
+                  <Checkbox
+                    checked={selectedIds.has(t.id)}
+                    onCheckedChange={() => handleToggleSelect(t.id)}
+                    disabled={t.status === "running"}
+                    aria-label={`Select task ${t.id}`}
+                  />
+                </TableCell>
+                <TableCell>
+                  <Link href={`~/social-accounts/${t.socialAccountId}`} className="font-medium text-primary hover:underline" data-testid={`link-account-${t.username}`}>
+                    @{t.username}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{TRACKING_KIND_LABEL[t.kind] ?? t.kind}</TableCell>
+                <TableCell><OutcomeChip task={t} /></TableCell>
+                <TableCell>
+                  {t.imageTaskGroupId ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-1.5 text-xs font-semibold text-primary gap-1"
+                      onClick={() => setModalGroupId(t.imageTaskGroupId)}
+                      title="View Image Tasks"
+                      data-testid={`button-image-tasks-${t.id}`}
+                    >
+                      <ImageIcon className="h-3 w-3" />
+                      Images
+                    </Button>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-muted-foreground whitespace-nowrap">{new Date(t.createdAt).toLocaleString()}</TableCell>
+                <TableCell className="text-right">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                    onClick={() => setTaskToDelete(t)}
+                    disabled={t.status === "running"}
+                    title={t.status === "running" ? "Can't remove a running task" : "Remove task"}
+                    data-testid={`button-delete-task-${t.id}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </TableCell>
+              </TableRow>
             ))
           )}
         </TableBody>
       </Table>
 
-      {/* Delete Single Run Dialog */}
-      <AlertDialog open={!!runToDelete} onOpenChange={(open) => !open && setRunToDelete(null)}>
-        <AlertDialogContent data-testid="dialog-delete-single-run">
+      <AlertDialog open={!!taskToDelete} onOpenChange={(open) => !open && setTaskToDelete(null)}>
+        <AlertDialogContent data-testid="dialog-delete-task">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete story run?</AlertDialogTitle>
+            <AlertDialogTitle>Remove task?</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete the run from{" "}
-              <strong>{runToDelete ? new Date(runToDelete.startedAt).toLocaleString() : ""}</strong>?
-              This will remove the run log. Any stories and photos that were saved to PRM will not be deleted.
+              Remove the {taskToDelete ? TRACKING_KIND_LABEL[taskToDelete.kind] : ""} task for <strong>@{taskToDelete?.username}</strong>?
+              Anything it saved to PRM stays.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-delete-run">Cancel</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => runToDelete && deleteSingleMutation.mutate(runToDelete.id)}
+              onClick={() => taskToDelete && deleteSingleMutation.mutate(taskToDelete.id)}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={deleteSingleMutation.isPending}
-              data-testid="button-confirm-delete-run"
+              data-testid="button-confirm-delete-task"
             >
-              {deleteSingleMutation.isPending ? "Deleting…" : "Delete run"}
+              {deleteSingleMutation.isPending ? "Removing…" : "Remove"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Bulk Delete Runs Dialog */}
       <AlertDialog open={showBulkDeleteDialog} onOpenChange={setShowBulkDeleteDialog}>
-        <AlertDialogContent data-testid="dialog-delete-bulk-runs">
+        <AlertDialogContent data-testid="dialog-delete-bulk-tasks">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete {selectedIds.size} story {selectedIds.size === 1 ? "run" : "runs"}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete {selectedIds.size} selected run {selectedIds.size === 1 ? "log" : "logs"}?
-              This action cannot be undone. Any stories and photos that were saved to PRM will not be deleted.
-            </AlertDialogDescription>
+            <AlertDialogTitle>Remove {selectedIds.size} {selectedIds.size === 1 ? "task" : "tasks"}?</AlertDialogTitle>
+            <AlertDialogDescription>Anything they saved to PRM stays. Running tasks are skipped.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-bulk-delete">Cancel</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => deleteBulkMutation.mutate(Array.from(selectedIds))}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={deleteBulkMutation.isPending}
               data-testid="button-confirm-bulk-delete"
             >
-              {deleteBulkMutation.isPending ? "Deleting…" : `Delete ${selectedIds.size} ${selectedIds.size === 1 ? "run" : "runs"}`}
+              {deleteBulkMutation.isPending ? "Removing…" : "Remove"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <ImageTaskGroupModal
-        groupId={modalGroupId}
-        open={!!modalGroupId}
-        onOpenChange={(open) => !open && setModalGroupId(null)}
-      />
+      <ImageTaskGroupModal groupId={modalGroupId} open={!!modalGroupId} onOpenChange={(open) => !open && setModalGroupId(null)} />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 **Auditor:** AI, Vector Database, and Computer Vision Systems Specialist  
 **Target Repository:** `PRM (Personal Relationship Manager)`  
-**Scope:** Universal Vector Architecture, Ollama Integration, AI Tools & Agentic Chat, PRM-Face Microservice, Facial Clustering & Identity Linking  
+**Scope:** Universal Vector Architecture, Ollama Integration, AI Tools & Agentic Chat, PRM Compute Microservice, Facial Clustering & Identity Linking  
 **Target File:** `c:\Repos\PRM\good-bad-ugly\07-ai-vector-face-recognition.md`  
 
 ---
@@ -12,7 +12,7 @@
 The PRM application incorporates a multi-tiered artificial intelligence and computer vision stack designed to turn an unstructured personal contact ledger into a context-aware relationship intelligence platform. The subsystem encompasses three primary components:
 1. **Vector Search & Semantic Retrieval:** A dual-engine RAG architecture combining an external **Qdrant** vector database ([`server/vector.ts`](file:///c:/Repos/PRM/server/vector.ts), [`server/vector-universal.ts`](file:///c:/Repos/PRM/server/vector-universal.ts), and [`server/vector-app-knowledge.ts`](file:///c:/Repos/PRM/server/vector-app-knowledge.ts)) with local **Ollama** embeddings across nine core business entity types.
 2. **AI Assistant & Agentic Tool Execution:** An Ollama-powered conversational chat engine ([`server/routes/ai-vector.ts`](file:///c:/Repos/PRM/server/routes/ai-vector.ts) and [`server/ai-tools.ts`](file:///c:/Repos/PRM/server/ai-tools.ts)) featuring 20+ specialized function-calling tools, configurable authorization gating (`off`, `auth`, `open`), and an SSE-driven ThoughtChain visualization interface ([`client/src/pages/ai-chat-demo.tsx`](file:///c:/Repos/PRM/client/src/pages/ai-chat-demo.tsx)).
-3. **Face Recognition & Image Intelligence:** An asynchronous computer vision pipeline integrated with an external Python microservice (**PRM-Face**), featuring face detection, S3 cutout generation, vector clustering via `personface_uuid`, and interactive identity disambiguation ([`client/src/pages/unknown-faces.tsx`](file:///c:/Repos/PRM/client/src/pages/unknown-faces.tsx) and [`client/src/pages/image-detail.tsx`](file:///c:/Repos/PRM/client/src/pages/image-detail.tsx)).
+3. **Face Recognition & Image Intelligence:** An asynchronous computer vision pipeline integrated with an external Python microservice (**PRM Compute**), featuring face detection, S3 cutout generation, vector clustering via `personface_uuid`, and interactive identity disambiguation ([`client/src/pages/unknown-faces.tsx`](file:///c:/Repos/PRM/client/src/pages/unknown-faces.tsx) and [`client/src/pages/image-detail.tsx`](file:///c:/Repos/PRM/client/src/pages/image-detail.tsx)).
 
 While the subsystem demonstrates commendable architectural ambition—notably in its multi-entity universal vectorization and human-in-the-loop tool approval workflows—it is severely undermined by critical database anti-patterns, main-thread event loop blocking, memory bloat, and fragile error management:
 - **Database & Indexing Crisis:** Face recognition embeddings (512-dimensional floating-point vectors) are stored as raw `JSONB` arrays in PostgreSQL without `pgvector`, HNSW, or IVFFlat indexing. Every similarity search degrades into an $O(N)$ sequential table scan and in-memory Euclidean distance calculation.
@@ -46,7 +46,7 @@ flowchart TB
         PG["PostgreSQL Database<br/>(faces: JSONB embedding)<br/>(entities: vector_id, vector_synced_at)"]
         Qdrant["Qdrant Vector DB<br/>(Collections: prm_universal, prm-app-knowledge)"]
         Ollama["Ollama Instance<br/>(/api/chat, /api/embeddings, /api/generate)"]
-        PRMFace["PRM-Face Python Service<br/>(RetinaFace / InsightFace / S3 Cutouts)"]
+        PRMFace["PRM Compute Python Service<br/>(RetinaFace / InsightFace / S3 Cutouts)"]
         S3["AWS S3 / Local Storage<br/>(Original Images & Face Cutouts)"]
     end
 
@@ -121,8 +121,8 @@ The execution mode configured in [`client/src/pages/intelligence-tools-settings.
 - `open`: Write operations proceed autonomously without blocking.
 
 ### 1.4 Face Identity Clustering & Microservice Decoupling
-The facial recognition architecture achieves clean separation of concerns by delegating heavy machine learning inference to a dedicated Python microservice (**PRM-Face**):
-- **Delayed Initialization Pattern:** Documented in [`image-pipeline-upgrade-prm-face.md`](file:///c:/Repos/PRM/image-pipeline-upgrade-prm-face.md#L9-L60), PRM-Face boots up uninitialized (`503 Service Unavailable`) until PRM conducts a setup handshake via `POST /api/get-api-key`, dynamically transmitting PostgreSQL connection strings and S3 credentials.
+The facial recognition architecture achieves clean separation of concerns by delegating heavy machine learning inference to a dedicated Python microservice (**PRM Compute**):
+- **Delayed Initialization Pattern:** Documented in [`image-pipeline-upgrade-prm-face.md`](file:///c:/Repos/PRM/image-pipeline-upgrade-prm-face.md#L9-L60), PRM Compute boots up uninitialized (`503 Service Unavailable`) until PRM conducts a setup handshake via `POST /api/get-api-key`, dynamically transmitting PostgreSQL connection strings and S3 credentials.
 - **Identity Grouping via `personface_uuid`:** Faces detected across disparate photographs share an abstract clustering identifier (`personface_uuid`). In [`client/src/pages/unknown-faces.tsx`](file:///c:/Repos/PRM/client/src/pages/unknown-faces.tsx#L103-L140), users can bulk-associate an entire face cluster with an existing CRM person, link them to a social account, or disassociate a misclustered face into a new standalone identity (`POST /api/prm-face/face/disassociate`).
 
 ---
@@ -223,11 +223,11 @@ export const faces = pgTable("faces", {
 1. **Absence of Vector Extension:** The database does NOT use the `pgvector` extension (`CREATE EXTENSION vector`). The column is defined as generic PostgreSQL `JSONB`.
 2. **Storage Bloat:** Storing an array of 512 single-precision IEEE 754 floating-point numbers as ASCII/JSON text in JSONB consumes ~4.5 KB per face record, compared to 2,048 bytes for a native binary `vector(512)` column.
 3. **No Approximate Nearest Neighbor (ANN) Index:** PostgreSQL cannot create HNSW (Hierarchical Navigable Small World) or IVFFlat indexes over `JSONB` columns. 
-4. **$O(N)$ Sequential Table Scan Bottleneck:** To perform facial matching or clustering against the database, PRM-Face must query all faces (`SELECT id, embedding, personface_uuid FROM faces`), stream gigabytes of JSON text across the network, deserialize every array in Python/Node memory, and execute pairwise brute-force cosine distance calculations. At 50,000 face cutouts, every single face match will freeze system memory and CPU for multiple seconds.
+4. **$O(N)$ Sequential Table Scan Bottleneck:** To perform facial matching or clustering against the database, PRM Compute must query all faces (`SELECT id, embedding, personface_uuid FROM faces`), stream gigabytes of JSON text across the network, deserialize every array in Python/Node memory, and execute pairwise brute-force cosine distance calculations. At 50,000 face cutouts, every single face match will freeze system memory and CPU for multiple seconds.
 
 ```
 +-------------------------------------------------------------------------+
-| PRM-Face Vector Query Degradation                                       |
+| PRM Compute Vector Query Degradation                                       |
 +-------------------------------------------------------------------------+
 | Current (JSONB):                                                        |
 |   1. Query all rows -> SEQ SCAN ON faces (Full Table Scan)              |
@@ -257,7 +257,7 @@ if (isLocalImageUrl(photo.location)) {
 1. **Synchronous Disk Read:** Using `fs.readFileSync` on the main Express thread freezes the Node.js event loop while reading large high-resolution multi-megabyte image files from local disk storage.
 2. **Pseudo-Background Execution:** In [`lines 714-755`](file:///c:/Repos/PRM/server/routes/ai-vector.ts#L714-L755), even when the client explicitly passes `{ background: true }`, the handler does NOT dispatch the task to the worker and return `202 Accepted`. Instead, it synchronously holds the client HTTP socket open:
    - It performs an `await fetch(`${prmBase(apiUrl)}/api/img/add`)` with a 30-second abort signal (`AbortSignal.timeout(30000)`).
-   - It waits for PRM-Face to complete face detection, crop images, and upload to S3.
+   - It waits for PRM Compute to complete face detection, crop images, and upload to S3.
    - It updates PostgreSQL.
    - Only then does it return `res.json({ success: true, background: true, ... })`.
    
@@ -378,7 +378,7 @@ if (match) {
 
 ### Phase 1: Immediate Stability & Security Fixes (Sprint 1)
 1. **Migrate Multer to Disk Storage for Vision Analysis:**
-   Replace `multer.memoryStorage()` with `multer.diskStorage()` in [`server/routes/ai-vector.ts`](file:///c:/Repos/PRM/server/routes/ai-vector.ts#L69). Stream file buffers directly to disk and pipe streams to Ollama and PRM-Face rather than loading full payloads into V8 strings.
+   Replace `multer.memoryStorage()` with `multer.diskStorage()` in [`server/routes/ai-vector.ts`](file:///c:/Repos/PRM/server/routes/ai-vector.ts#L69). Stream file buffers directly to disk and pipe streams to Ollama and PRM Compute rather than loading full payloads into V8 strings.
 2. **Secure Unauthenticated Vector Triggers:**
    In [`server/routes/auth-setup.ts`](file:///c:/Repos/PRM/server/routes/auth-setup.ts#L72-L92), require extension token authentication (`authenticateExtensionToken`) for `/v1/tps/*` and `/posts/instagram/*` to ensure anonymous external actors cannot trigger background vector embedding loops.
 3. **Fix Main-Thread Event Loop Blocking:**
@@ -394,8 +394,8 @@ if (match) {
    ALTER TABLE faces ALTER COLUMN embedding TYPE vector(512) USING (embedding::text::vector);
    CREATE INDEX IF NOT EXISTS faces_embedding_hnsw_idx ON faces USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
    ```
-2. **Update PRM-Face to Query via Native Cosine Operator:**
-   Update PRM-Face SQL queries to leverage the HNSW index:
+2. **Update PRM Compute to Query via Native Cosine Operator:**
+   Update PRM Compute SQL queries to leverage the HNSW index:
    ```sql
    SELECT id, personface_uuid, 1 - (embedding <=> :query_vector) AS similarity
    FROM faces

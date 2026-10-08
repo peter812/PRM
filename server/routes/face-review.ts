@@ -2,12 +2,16 @@
 // ../face-review.ts; assign delegates straight to connectFace (../recognition.ts)
 // so the merge/re-point logic stays in one place.
 import type { Express, Response } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db";
 import { requireAuth } from "../auth";
-import { faces, people, socialAccounts } from "@shared/schema";
-import { autoAssignFaces, connectFace, disassociateFace, photosContainingFaces, RecognitionRequestError, FaceMergeConflictError, type FacialId } from "../recognition";
-import { canReadShared } from "../access";
+import { storage } from "../storage";
+import { triggerImageTaskWorker } from "../task-worker";
+import { faces, imageTasks, people, socialAccounts } from "@shared/schema";
+import {
+  autoAssignFaces, connectFace, disassociateFace, photosContainingFaces, getComputeConnection, JOB_TASK_TYPE,
+  RecognitionRequestError, FaceMergeConflictError, type FacialId,
+} from "../recognition";
 import {
   FACE_REVIEW_KINDS, type FaceReviewKind,
   getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto,
@@ -52,21 +56,21 @@ function parseFaceUuids(body: { faceUuid?: unknown; faceUuids?: unknown }): stri
   return ids.length && ids.every((id) => typeof id === "string") ? (ids as string[]) : null;
 }
 
-/** The assign target (a person or a social account) must be visible to the caller (§3). */
+/** The assign target (a person or a social account) must exist. */
 async function targetReadable(socialAccountId?: string, personId?: string): Promise<boolean> {
   if (socialAccountId) {
     const [row] = await db
-      .select({ visibility: socialAccounts.visibility, createdByUserId: socialAccounts.createdByUserId })
+      .select({ id: socialAccounts.id })
       .from(socialAccounts)
       .where(eq(socialAccounts.id, socialAccountId));
-    if (!row || !canReadShared(row)) return false;
+    if (!row) return false;
   }
   if (personId) {
     const [row] = await db
-      .select({ visibility: people.visibility, createdByUserId: people.createdByUserId })
+      .select({ id: people.id })
       .from(people)
       .where(eq(people.id, personId));
-    if (!row || !canReadShared(row)) return false;
+    if (!row) return false;
   }
   return Boolean(socialAccountId || personId);
 }
@@ -120,6 +124,39 @@ export function registerFaceReview(app: Express) {
       res.json(item);
     } catch (error) {
       fail(res, "assign face", error);
+    }
+  });
+
+  // ?photoId=&kind= — one photo's item, refetched after a re-scan replaces its faces.
+  app.get("/api/face-review/item", requireAuth, async (req, res) => {
+    try {
+      const k = parseKind(req.query.kind);
+      if (typeof req.query.photoId !== "string" || !k) return res.status(400).json({ error: "photoId and kind are required" });
+      const item = await getFaceReviewItem(req.query.photoId, k);
+      if (!item) return res.status(404).json({ error: "Photo not found" });
+      res.json(item);
+    } catch (error) {
+      fail(res, "load face review item", error);
+    }
+  });
+
+  // { photoId } — queue a from-scratch face scan (rescanPhotoFaces); answers { taskId } to follow
+  // via /api/image-tasks/:id. A face task already pending or running for the photo is reused.
+  app.post("/api/face-review/rescan", requireAuth, async (req, res) => {
+    try {
+      const { photoId } = req.body ?? {};
+      if (typeof photoId !== "string") return res.status(400).json({ error: "photoId is required" });
+      if (!(await getReadablePhoto(photoId))) return res.status(404).json({ error: "Photo not found" });
+      if (!(await getComputeConnection())) return res.status(400).json({ error: "PRM Compute service is not configured." });
+      const [live] = await db
+        .select({ id: imageTasks.id })
+        .from(imageTasks)
+        .where(and(eq(imageTasks.photoId, photoId), eq(imageTasks.type, JOB_TASK_TYPE.face), inArray(imageTasks.status, ["pending", "in_progress"])));
+      const task = live ?? (await storage.createImageTask({ type: JOB_TASK_TYPE.face, photoId, payload: JSON.stringify({ photoId, rescan: true }) }));
+      triggerImageTaskWorker();
+      res.json({ taskId: task.id });
+    } catch (error) {
+      fail(res, "queue face re-scan", error);
     }
   });
 

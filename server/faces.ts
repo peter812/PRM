@@ -8,7 +8,6 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import { faces, people, photos, socialAccounts } from "@shared/schema";
-import { visibleShared } from "./access";
 import { resolvePhotoSource, type ResolvedPhotoSource } from "./photo-source";
 import { findLikelySameCandidatePairs, type LikelySameCandidate } from "./face-lookalikes";
 import { photosContainingFaces } from "./recognition";
@@ -46,12 +45,10 @@ const DEFAULT_LIMIT = 60;
 
 /** True when the caller can see the person or social account linked to this face group. */
 export async function identityIsVisible(personfaceUuid: string): Promise<boolean> {
-  const personVis = visibleShared(people.visibility, people.createdByUserId) ?? sql`true`;
-  const acctVis = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId) ?? sql`true`;
   const result = await db.execute(sql`
     SELECT (
-      EXISTS (SELECT 1 FROM people WHERE people.personface_uuid = ${personfaceUuid} AND (${personVis}))
-      OR EXISTS (SELECT 1 FROM social_accounts WHERE social_accounts.personface_uuid = ${personfaceUuid} AND (${acctVis}))
+      EXISTS (SELECT 1 FROM people WHERE people.personface_uuid = ${personfaceUuid})
+      OR EXISTS (SELECT 1 FROM social_accounts WHERE social_accounts.personface_uuid = ${personfaceUuid})
     ) AS visible
   `);
   const rows = (result as unknown as { rows: { visible: boolean }[] }).rows;
@@ -81,20 +78,18 @@ async function queryIdentities(opts: {
   onlyGroup?: string;
   onlyGroups?: string[];
 }): Promise<KnownFaceListItem[]> {
-  const personVis = visibleShared(people.visibility, people.createdByUserId) ?? sql`true`;
-  const acctVis = visibleShared(socialAccounts.visibility, socialAccounts.createdByUserId) ?? sql`true`;
   const term = opts.search?.trim();
   const like = term ? `%${term.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
 
   const searchClause = like
     ? sql`AND (
         EXISTS (
-          SELECT 1 FROM people WHERE people.personface_uuid = g.group_uuid AND (${personVis})
+          SELECT 1 FROM people WHERE people.personface_uuid = g.group_uuid
             AND (people.first_name ILIKE ${like} OR people.last_name ILIKE ${like}
               OR (people.first_name || ' ' || people.last_name) ILIKE ${like})
         )
         OR EXISTS (
-          SELECT 1 FROM social_accounts WHERE social_accounts.personface_uuid = g.group_uuid AND (${acctVis})
+          SELECT 1 FROM social_accounts WHERE social_accounts.personface_uuid = g.group_uuid
             AND (social_accounts.username ILIKE ${like} OR social_accounts.nickname ILIKE ${like})
         )
       )`
@@ -109,9 +104,9 @@ async function queryIdentities(opts: {
 
   const result = await db.execute(sql`
     WITH groups AS (
-      SELECT DISTINCT personface_uuid AS group_uuid FROM people WHERE personface_uuid IS NOT NULL AND (${personVis})
+      SELECT DISTINCT personface_uuid AS group_uuid FROM people WHERE personface_uuid IS NOT NULL
       UNION
-      SELECT DISTINCT personface_uuid AS group_uuid FROM social_accounts WHERE personface_uuid IS NOT NULL AND (${acctVis})
+      SELECT DISTINCT personface_uuid AS group_uuid FROM social_accounts WHERE personface_uuid IS NOT NULL
     ),
     people_agg AS (
       SELECT personface_uuid AS group_uuid,
@@ -120,14 +115,14 @@ async function queryIdentities(opts: {
           'name', NULLIF(trim(both from concat_ws(' ', first_name, last_name)), '')
         ) ORDER BY created_at ASC) AS people
       FROM people
-      WHERE personface_uuid IS NOT NULL AND (${personVis})
+      WHERE personface_uuid IS NOT NULL
       GROUP BY personface_uuid
     ),
     account_agg AS (
       SELECT personface_uuid AS group_uuid,
         json_agg(json_build_object('id', id, 'username', username, 'nickname', nickname, 'imageUrl', image_url) ORDER BY created_at ASC) AS accounts
       FROM social_accounts
-      WHERE personface_uuid IS NOT NULL AND (${acctVis})
+      WHERE personface_uuid IS NOT NULL
       GROUP BY personface_uuid
     ),
     face_agg AS (
