@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown, BarChart3 } from "lucide-react";
+import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown, BarChart3, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -82,6 +82,43 @@ function AccountCheckbox({ account, checked, onToggle, className }: {
   );
 }
 
+/** Star toggle beside a username; flips the cached list at once and keeps the row's click from opening the account. */
+function StarToggle({ account }: { account: SocialAccountWithCurrentProfile }) {
+  const { toast } = useToast();
+  const setStarred = (isStarred: boolean) =>
+    queryClient.setQueriesData<{ pages: SocialAccountWithCurrentProfile[][] }>({ queryKey: ["/api/social-accounts/paginated"] }, (old) =>
+      old?.pages ? { ...old, pages: old.pages.map((page) => page.map((a) => (a.id === account.id ? { ...a, isStarred } : a))) } : old,
+    );
+  const star = useMutation({
+    mutationFn: (isStarred: boolean) => apiRequest("PATCH", `/api/social-accounts/${account.id}`, { isStarred }),
+    onMutate: async (isStarred: boolean) => {
+      await queryClient.cancelQueries({ queryKey: ["/api/social-accounts/paginated"] });
+      setStarred(isStarred);
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", account.id] }),
+    onError: (_err, isStarred) => {
+      setStarred(!isStarred);
+      toast({ title: "Error", description: "Failed to update star", variant: "destructive" });
+    },
+  });
+
+  return (
+    <button
+      type="button"
+      className="inline-flex align-[-2px] ml-1 text-yellow-500 hover:text-yellow-600"
+      onClick={(e) => {
+        e.stopPropagation();
+        star.mutate(!account.isStarred);
+      }}
+      title={account.isStarred ? "Unstar" : "Star"}
+      aria-label={account.isStarred ? `Unstar ${account.username}` : `Star ${account.username}`}
+      data-testid={`button-star-${account.id}`}
+    >
+      <Star className={cn("h-3.5 w-3.5", account.isStarred && "fill-current")} />
+    </button>
+  );
+}
+
 export default function SocialAccountsList() {
   const [, navigate] = useLocation();
   const searchParams = useSearch();
@@ -94,6 +131,7 @@ export default function SocialAccountsList() {
   const prevSearchRef = useRef("");
   const debouncedSearch = useDebounce(searchQuery, 300);
   const [showFollowsYou, setShowFollowsYou] = useState(true);
+  const [starredOnly, setStarredOnly] = useState(false);
 
   const handleSearchChange = (val: string) => {
     const wasEmpty = !prevSearchRef.current.trim();
@@ -140,7 +178,7 @@ export default function SocialAccountsList() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery<SocialAccountWithCurrentProfile[]>({
-    queryKey: ["/api/social-accounts/paginated", { search: debouncedSearch, typeId: selectedTypeId, followsYou: showFollowsYou, interestLevel }],
+    queryKey: ["/api/social-accounts/paginated", { search: debouncedSearch, typeId: selectedTypeId, followsYou: showFollowsYou, interestLevel, starredOnly }],
     queryFn: async ({ pageParam = 0 }) => {
       const params = new URLSearchParams();
       params.set("offset", String(pageParam));
@@ -150,6 +188,7 @@ export default function SocialAccountsList() {
       if (selectedTypeId && selectedTypeId !== "all") params.set("typeId", selectedTypeId);
       if (showFollowsYou) params.set("followsYou", "true");
       if (interestLevel !== "all") params.set("interestLevel", interestLevel);
+      if (starredOnly) params.set("starred", "true");
       const response = await fetch(`/api/social-accounts/paginated?${params.toString()}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch social accounts");
       return response.json();
@@ -306,6 +345,16 @@ export default function SocialAccountsList() {
               Follows you
             </Label>
           </div>
+          <Button
+            variant={starredOnly ? "secondary" : "ghost"}
+            size="icon"
+            className="shrink-0 text-yellow-500 hover:text-yellow-600"
+            onClick={() => setStarredOnly((v) => !v)}
+            title={starredOnly ? "Show all accounts" : "Show starred only"}
+            data-testid="button-filter-starred"
+          >
+            <Star className={`h-4 w-4 ${starredOnly ? "fill-current" : ""}`} />
+          </Button>
           <div className="flex items-center gap-2 shrink-0">
             <Select
               value={viewMode}
@@ -393,7 +442,6 @@ export default function SocialAccountsList() {
                       <th className="py-2 px-3 font-medium">Followers</th>
                       <th className="py-2 px-3 font-medium">Following</th>
                       <th className="py-2 px-3 font-medium" title="Captured / reported on Instagram">Posts</th>
-                      <th className="py-2 px-3 font-medium w-10">Link</th>
                       <th className="py-2 px-3 font-medium w-10"></th>
                     </tr>
                   </thead>
@@ -409,7 +457,6 @@ export default function SocialAccountsList() {
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
-                        <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
                         <td className="py-2 px-3">
                           <div className="flex gap-1">
                             <Skeleton className="h-4 w-4" />
@@ -522,7 +569,6 @@ export default function SocialAccountsList() {
                       <th className="py-2 px-3 font-medium">Followers</th>
                       <th className="py-2 px-3 font-medium">Following</th>
                       <th className="py-2 px-3 font-medium" title="Captured / reported on Instagram">Posts</th>
-                      <th className="py-2 px-3 font-medium w-10">Link</th>
                       <th className="py-2 px-3 font-medium w-10"></th>
                     </tr>
                   </thead>
@@ -544,6 +590,7 @@ export default function SocialAccountsList() {
                           </td>
                           <td className="py-2 px-3 font-medium">
                             {account.username}
+                            <StarToggle account={account} />
                           </td>
                           <td className="py-2 px-3 text-muted-foreground">
                             {account.currentProfile?.nickname || "-"}
@@ -582,22 +629,6 @@ export default function SocialAccountsList() {
                           </td>
                           <td className="py-2 px-3 text-muted-foreground whitespace-nowrap">
                             {account.capturedPostsCount ?? "-"} / {account.reportedPostsCount ?? "-"}
-                          </td>
-                          <td className="py-2 px-3">
-                            {account.currentProfile?.accountUrl && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  window.open(account.currentProfile?.accountUrl ?? undefined, "_blank");
-                                }}
-                              >
-                                <ExternalLink className="h-3 w-3" />
-                              </Button>
-                            )}
                           </td>
                           <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
                             <div className="flex gap-1">
@@ -674,6 +705,7 @@ export default function SocialAccountsList() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <h3 className="font-bold md:truncate break-words" data-testid={`text-username-${account.id}`}>
                                 {account.username}
+                                <StarToggle account={account} />
                               </h3>
                               {accountType && (
                                 <>
@@ -825,6 +857,7 @@ export default function SocialAccountsList() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <h3 className="text-lg font-bold md:truncate break-words" data-testid={`text-username-${account.id}`}>
                                 {account.username}
+                                <StarToggle account={account} />
                               </h3>
                               {accountType && (
                                 <Badge 
@@ -942,7 +975,7 @@ export default function SocialAccountsList() {
                             <td className="py-2 px-3"><Skeleton className="h-4 w-14" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                             <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
-                            <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
+                            <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
                             <td className="py-2 px-3">
                               <div className="flex gap-1">
                                 <Skeleton className="h-4 w-4" />

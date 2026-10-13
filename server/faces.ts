@@ -25,7 +25,7 @@ export type KnownFaceListItem = {
   lastSeenAt: string | null;
 };
 
-export type ListKnownFacesResult = { items: KnownFaceListItem[]; nextCursor: string | null };
+export type ListKnownFacesResult = { items: KnownFaceListItem[]; nextCursor: string | null; total: number };
 
 export type FaceBox = { x: number; y: number; w: number; h: number };
 
@@ -70,18 +70,10 @@ type IdentityRow = {
   cropUrl: string | null;
 };
 
-async function queryIdentities(opts: {
-  search?: string;
-  sort: "recent" | "count";
-  offset: number;
-  limit: number;
-  onlyGroup?: string;
-  onlyGroups?: string[];
-}): Promise<KnownFaceListItem[]> {
-  const term = opts.search?.trim();
+function buildSearchClause(search?: string) {
+  const term = search?.trim();
   const like = term ? `%${term.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
-
-  const searchClause = like
+  return like
     ? sql`AND (
         EXISTS (
           SELECT 1 FROM people WHERE people.personface_uuid = g.group_uuid
@@ -94,6 +86,32 @@ async function queryIdentities(opts: {
         )
       )`
     : sql``;
+}
+
+async function countIdentities(search?: string): Promise<number> {
+  const result = await db.execute(sql`
+    WITH groups AS (
+      SELECT DISTINCT personface_uuid AS group_uuid FROM people WHERE personface_uuid IS NOT NULL
+      UNION
+      SELECT DISTINCT personface_uuid AS group_uuid FROM social_accounts WHERE personface_uuid IS NOT NULL
+    )
+    SELECT COUNT(*)::int AS total FROM groups g
+    WHERE true
+      ${buildSearchClause(search)}
+  `);
+  const rows = (result as unknown as { rows: { total: number | string }[] }).rows;
+  return Number(rows[0]?.total ?? 0);
+}
+
+async function queryIdentities(opts: {
+  search?: string;
+  sort: "recent" | "count";
+  offset: number;
+  limit: number;
+  onlyGroup?: string;
+  onlyGroups?: string[];
+}): Promise<KnownFaceListItem[]> {
+  const searchClause = buildSearchClause(opts.search);
 
   const groupFilterClause = opts.onlyGroups?.length
     ? sql`AND g.group_uuid IN ${opts.onlyGroups}`
@@ -193,13 +211,16 @@ export async function listKnownFaces(opts: {
 }): Promise<ListKnownFacesResult> {
   const limit = Math.min(Math.max(opts.limit ?? DEFAULT_LIMIT, 1), 200);
   const offset = opts.cursor ? Math.max(parseInt(opts.cursor, 10) || 0, 0) : 0;
-  const items = await queryIdentities({ search: opts.search, sort: opts.sort, offset, limit });
+  const [items, total] = await Promise.all([
+    queryIdentities({ search: opts.search, sort: opts.sort, offset, limit }),
+    countIdentities(opts.search),
+  ]);
   const nextCursor = items.length === limit ? String(offset + limit) : null;
-  return { items, nextCursor };
+  return { items, nextCursor, total };
 }
 
 /** Coordinates are stored as `{ x, y, w, h }`, but tolerate a corner-pair shape too. */
-function normalizeBox(raw: unknown): FaceBox | null {
+export function normalizeBox(raw: unknown): FaceBox | null {
   if (!raw || typeof raw !== "object") return null;
   const b = raw as Record<string, unknown>;
   const x = Number(b.x ?? b.left ?? b.x1);

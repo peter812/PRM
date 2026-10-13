@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChat, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChat, type AiChatContextEntity, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
 import { describePhoto } from "../ai/describe";
 import { asData, DATA_TAGS_NOTE, resolveModel, chat as aiChat, adapterFor, isAiEnabled, AiConfigError, type ResolvedModel, type AiMessage, type AiToolCall } from "../ai/provider";
@@ -34,7 +34,7 @@ import {
 import multer from "multer";
 import { fetchImageBuffer, uploadImage, syncFaceCropStorage } from "../prm-s3";
 import {
-  runFaceRecognition, runOcr, runOcrOnBuffer, transcribeBuffer, ComputeUnreachableError, getComputeConnection,
+  runFaceRecognition, runOcr, transcribeBuffer, ComputeUnreachableError, getComputeConnection,
   getAutoRecognitionSettings, setAutoRecognitionSettings, backfillCounts, runBackfill, associateProfileFaces,
   getComputeLanes, COMPUTE_LANE_KEYS, COMPUTE_LANE_MAX,
   connectFace, disassociateFace, RecognitionRequestError, FaceMergeConflictError,
@@ -1012,121 +1012,6 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    app.post("/api/prm-face/pickout-temp", upload.single("image"), async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-  
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
-  
-      const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured. Generate one in Settings → Recognition." });
-  
-      try {
-        const formData = new FormData();
-        const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
-        formData.append("image", blob, req.file.originalname || "image.jpg");
-  
-        const response = await fetch(`${prmBase(apiUrl)}/api/img/temp-lookup`, {
-          method: "POST",
-          headers: { "X-API-Key": apiKey },
-          body: formData,
-          signal: AbortSignal.timeout(30000),
-        });
-
-        if (!response.ok) {
-          const errBody = await response.text();
-          return res.status(response.status).json({ error: `PRM Compute error: ${errBody}` });
-        }
-
-        const data = await response.json() as { faces_detected?: number; results?: any[]; faces?: any[] };
-        // PRM Compute returns detected faces under `results`; the demo UI reads `faces`.
-        const detectedFaces = data.results ?? data.faces ?? [];
-        res.json({ faces_detected: data.faces_detected ?? detectedFaces.length, faces: detectedFaces });
-      } catch (error: any) {
-        console.error("Error calling PRM Compute pickout-temp:", error);
-        res.status(500).json({ error: `Failed to contact PRM Compute server: ${error.message}` });
-      }
-    });
-  
-    app.post("/api/prm-face/save-with-assignments", upload.single("image"), async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      if (!req.file) return res.status(400).json({ error: "No image provided." });
-  
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
-      const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
-  
-      let assignments: Array<{ face_index: number; person_uuid?: string; social_account_id?: string; is_social_account: boolean; label?: string }> = [];
-      if (req.body.assignments) {
-        try {
-          assignments = JSON.parse(req.body.assignments);
-        } catch {
-          return res.status(400).json({ error: "Invalid assignments JSON." });
-        }
-      }
-  
-      try {
-        // Step 1: Upload image to PRM Compute
-        const formData = new FormData();
-        formData.append("image", new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname || "image.jpg");
-        const response = await fetch(`${prmBase(apiUrl)}/api/img/add`, {
-          method: "POST",
-          headers: { "x-api-key": apiKey },
-          body: formData,
-          signal: AbortSignal.timeout(30000),
-        });
-        if (!response.ok) {
-          if (response.status === 404 || response.status === 405) {
-            return res.status(401).json({ error: "API_KEY_INVALID" });
-          }
-          const body = await response.text();
-          return res.status(response.status).json({ error: `PRM Compute error: ${body}` });
-        }
-        const prmData = await response.json() as { image_uuid?: string; faces?: Array<{ face_uuid: string; face_index?: number }> };
-  
-        // Step 2: Map face_index → face_uuid from the img/add response
-        const faces: Array<{ face_uuid: string; face_index?: number }> = prmData.faces ?? [];
-        const faceByIndex = new Map<number, string>();
-        faces.forEach((f, arrayIdx) => {
-          const idx = f.face_index ?? arrayIdx;
-          faceByIndex.set(idx, f.face_uuid);
-        });
-  
-        // Step 3: Build bulk assign payload — person assignments only (not social accounts)
-        const bulkAssignments = assignments
-          .filter((a) => !a.is_social_account && a.person_uuid && faceByIndex.has(a.face_index))
-          .map((a) => ({
-            face_uuid: faceByIndex.get(a.face_index)!,
-            person_uuid: a.person_uuid!,
-            name: a.label ?? undefined,
-          }));
-  
-        // Step 4: Persist the face-to-person links (non-fatal if it fails)
-        if (bulkAssignments.length > 0) {
-          try {
-            const assignRes = await fetch(`${prmBase(apiUrl)}/api/face/assign-bulk`, {
-              method: "POST",
-              headers: { "x-api-key": apiKey, "Content-Type": "application/json" },
-              body: JSON.stringify({ assignments: bulkAssignments }),
-              signal: AbortSignal.timeout(15000),
-            });
-            if (!assignRes.ok) {
-              const assignBody = await assignRes.text();
-              console.warn("[PRM Compute] face/assign-bulk failed:", assignBody);
-            }
-          } catch (assignErr: any) {
-            console.warn("[PRM Compute] face/assign-bulk error:", assignErr.message);
-          }
-        }
-  
-        res.json({ ...prmData, assignments });
-      } catch (error: any) {
-        res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
-      }
-    });
-  
     // "Delete Face Data" on Recognition Settings: wipe faces, crops and pending
     // questions on PRM-compute, then every local face association. Photos stay.
     app.post("/api/prm-face/delete-face-data", async (req, res) => {
@@ -1383,10 +1268,11 @@ export function registerRoutes(app: Express) {
       "- Images: \"/image/UUID\"{Image Description} " +
       "- Groups: \"/group/UUID\"{Group Name} " +
       "- Daily Notes: \"/daily-notes/UUID\"{Date} " +
-      "- Settings: \"/settings/user\"{User Settings}, \"/settings/data-types\"{Data Types}, \"/settings/experimental\"{Experimental Settings}, \"/settings/import-export/application\"{Import/Export Application}. " +
+      "- Settings: \"/settings/user\"{User Settings}, \"/settings/data-types\"{Data Types}, \"/settings/app\"{App Options}, \"/settings/import-export/application\"{Import/Export Application}. " +
       "Examples of external links you can use: \"https://example.com\"{Example website}. " +
       "Always include these links when discussing specific people, social accounts, images, or configuration pages so that the user can navigate to them directly.";
     const MAX_CHAT_TITLE_LENGTH = 60;
+    const MAX_CONTEXT_ENTITIES = 10;
     const DEFAULT_EVENTS_SYSTEM_PROMPT = [
       "You extract a list of distinct events from a daily journal entry.",
       "An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations.",
@@ -1401,8 +1287,35 @@ export function registerRoutes(app: Express) {
     }
 
     /** System prompt + replayable history + the new user turn. */
+    /** Pinned people/accounts are passed by reference; the model pulls the profile itself with its tools. */
+    function renderContextEntities(entities: AiChatContextEntity[]): string {
+      if (!entities.length) return "";
+      const lines = entities.map((e) =>
+        e.type === "person" ? `- Person: ${e.label} (uuid: ${e.id})` : `- Social account: ${e.label} (uuid: ${e.id})`);
+      return "\n\nThis conversation is about the PRM records below. Before answering, fetch each profile with your tools " +
+        "(person → person_pull, social account → get_social_account). Only pull posts, messages or relationships when the question needs them. " +
+        `If those tools are unavailable, say so instead of guessing. ${DATA_TAGS_NOTE}\n${asData("pinned_records", lines.join("\n"))}`;
+    }
+
+    /** Resolve client-supplied { type, id } pins against the DB; unknown ids are dropped and labels come from the record. */
+    async function resolveContextEntities(input: unknown): Promise<AiChatContextEntity[]> {
+      if (!Array.isArray(input)) return [];
+      const out: AiChatContextEntity[] = [];
+      for (const e of input.slice(0, MAX_CONTEXT_ENTITIES)) {
+        if (typeof e?.id !== "string" || out.some((o) => o.type === e.type && o.id === e.id)) continue;
+        if (e.type === "person") {
+          const p = await storage.getPersonById(e.id);
+          if (p) out.push({ type: "person", id: p.id, label: `${p.firstName ?? ""} ${p.lastName ?? ""}`.trim() || "Unnamed person" });
+        } else if (e.type === "social_account") {
+          const a = await storage.getSocialAccountById(e.id);
+          if (a) out.push({ type: "social_account", id: a.id, label: `@${a.username}` });
+        }
+      }
+      return out;
+    }
+
     function buildChatMessages(chat: AiChat, history: any[], userMessage: AiChatMessage): AiMessage[] {
-      const baseSysMsg = chat.systemMessage?.trim() || DEFAULT_PRM_SYSTEM_MESSAGE;
+      const baseSysMsg = (chat.systemMessage?.trim() || DEFAULT_PRM_SYSTEM_MESSAGE) + renderContextEntities(chat.contextEntities ?? []);
       const out: AiMessage[] = [{ role: "system", content: chat.agentMode ? `${baseSysMsg}${AGENTIC_SYSTEM_INSTRUCTIONS}` : baseSysMsg }];
       for (const m of history) {
         if (m.role === "tool") {
@@ -2004,6 +1917,7 @@ export function registerRoutes(app: Express) {
         const model = typeof req.body.model === "string" ? req.body.model : "";
         const providerId = typeof req.body.providerId === "string" ? req.body.providerId : "";
         const agentMode = req.body.agentMode === true;
+        const contextEntities = await resolveContextEntities(req.body.contextEntities);
         const [row] = await db.insert(aiChats).values({
           title,
           systemMessage,
@@ -2011,6 +1925,7 @@ export function registerRoutes(app: Express) {
           providerId,
           messages: [],
           agentMode,
+          contextEntities,
         }).returning();
         syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
@@ -2034,6 +1949,10 @@ export function registerRoutes(app: Express) {
         if (typeof req.body.providerId === "string") patch.providerId = req.body.providerId;
         if (req.body.agentMode !== undefined) patch.agentMode = req.body.agentMode === true;
         if (req.body.messages !== undefined) patch.messages = sanitizeChatMessages(req.body.messages);
+        if (req.body.contextEntities !== undefined) {
+          if ((existing.messages as unknown[]).length > 0) return res.status(409).json({ error: "Context is locked after the first message" });
+          patch.contextEntities = await resolveContextEntities(req.body.contextEntities);
+        }
         const [row] = await db.update(aiChats).set(patch).where(eq(aiChats.id, req.params.id)).returning();
         syncEntityInBackground("ai_chat", req.params.id);
         res.json(row);
@@ -2361,6 +2280,7 @@ export function registerRoutes(app: Express) {
           providerId: newProviderId,
           messages: sanitizeChatMessages(source.messages),
           agentMode: source.agentMode,
+          contextEntities: source.contextEntities,
         }).returning();
         syncEntityInBackground("ai_chat", row.id);
         res.status(201).json(row);
@@ -3563,43 +3483,6 @@ Respond with ONLY a JSON array, no other text.`;
       }
     });
 
-    // Temp lookup (alias/duplicate of pickout-temp)
-    app.post("/api/prm-face/img/temp-lookup", upload.single("image"), async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-  
-      const apiUrl = await getPrmFaceSetting("prm_face_api_url");
-      if (!apiUrl) return res.status(400).json({ error: "PRM Compute API URL is not configured." });
-  
-      const apiKey = await getPrmFaceSetting("prm_face_api_key");
-      if (!apiKey) return res.status(400).json({ error: "PRM Compute API key is not configured." });
-  
-      try {
-        const formData = new FormData();
-        const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
-        formData.append("image", blob, req.file.originalname || "image.jpg");
-        if (req.body.max_faces) formData.append("max_faces", String(req.body.max_faces));
-        if (req.body.limit) formData.append("limit", String(req.body.limit));
-  
-        const response = await fetch(`${prmBase(apiUrl)}/api/img/temp-lookup`, {
-          method: "POST",
-          headers: { "X-API-Key": apiKey },
-          body: formData,
-          signal: AbortSignal.timeout(30000),
-        });
-  
-        if (!response.ok) {
-          const errBody = await response.text();
-          return res.status(response.status).json({ error: `PRM Compute error: ${errBody}` });
-        }
-  
-        res.json(await response.json());
-      } catch (error: any) {
-        console.error("Error calling PRM Compute temp-lookup:", error);
-        res.status(500).json({ error: `Failed to contact PRM Compute server: ${error.message}` });
-      }
-    });
-
     // Match image
     app.post("/api/prm-face/img/match", upload.single("image"), async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
@@ -3834,32 +3717,6 @@ Respond with ONLY a JSON array, no other text.`;
         res.status(500).json({ error: `Failed to contact PRM Compute: ${error.message}` });
       }
     });
-
-    // OCR: Extract text from image via PRM-Compute
-    async function runPrmComputeOcr(
-      buffer: Buffer,
-      mimeType: string,
-      fileName: string,
-      opts: { min_score?: unknown; model?: unknown; photo_id?: string },
-    ): Promise<{ status: number; body: any }> {
-      if (!(await getComputeConnection())) return { status: 400, body: { error: "PRM-Compute is not configured." } };
-      try {
-        return { status: 200, body: await runOcrOnBuffer(buffer, mimeType, fileName, opts) };
-      } catch (error: any) {
-        if (error instanceof ComputeUnreachableError) return { status: 503, body: { error: error.message } };
-        return { status: 502, body: { error: error.message } };
-      }
-    }
-
-    const handleOcr = async (req: any, res: any) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      if (!req.file) return res.status(400).json({ error: "No image provided" });
-      const { status, body } = await runPrmComputeOcr(req.file.buffer, req.file.mimetype, req.file.originalname, req.body);
-      res.status(status).json(body);
-    };
-
-    app.post("/api/prm-face/ocr", upload.single("image"), handleOcr);
-    app.post("/api/ocr", upload.single("image"), handleOcr);
 
     // OCR on an existing photo. PRM-Compute persists the result on the photos
     // row (ocr_data / ocr_at); this route only supplies the bytes and photo_id.

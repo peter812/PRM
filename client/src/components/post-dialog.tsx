@@ -125,6 +125,7 @@ export function PostDialog({ open, onOpenChange, socialAccountId, post }: PostDi
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", socialAccountId, "posts?includeDeleted=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", socialAccountId, "posts?postType=story&includeDeleted=true"] });
       toast({
         title: "Success",
         description: isEdit ? "Post updated successfully" : "Post created successfully",

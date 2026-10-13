@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase, ChevronDown, Home, Calendar } from "lucide-react";
+import { Link, useParams, useLocation } from "wouter";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase, ChevronDown, MessageSquare, Home, Calendar } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useRef, lazy, Suspense } from "react";
 import { Button } from "@/components/ui/button";
@@ -41,7 +41,9 @@ import { getInitials } from "@/lib/utils";
 import { MessagesTab } from "@/components/messages-tab";
 import { InsightsTab } from "@/components/insights-tab";
 import { TrueDbTab } from "@/components/true-db-tab";
+import { OUTDATED_TEXT, OutdatedBadge, PersonAddresses } from "@/components/person-addresses";
 import { PoliticalLeaningCard } from "@/components/political-leaning-card";
+import { mapHref } from "@/lib/map-shared";
 
 function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit?: number }) {
   const { data, isLoading } = useQuery<any>({
@@ -111,13 +113,7 @@ export default function PersonProfile() {
   const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
     queryKey: ["/api/prm-face/facial-intelligence"],
   });
-  const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
-
-  const { data: settings } = useQuery<Record<string, string>>({
-    queryKey: ["/api/settings"],
-  });
-  const imagesTabEnabled = settings?.images_tab_enabled !== "false";
-  const showPhotosTab = facialIntelligenceEnabled && imagesTabEnabled;
+  const showPhotosTab = facialIntelligenceData?.enabled ?? false;
 
   const params = new URLSearchParams(window.location.search);
   const from = params.get('from');
@@ -128,6 +124,8 @@ export default function PersonProfile() {
       navigate('/graph');
     } else if (from === 'graph-3d' || from === 'social-graph-3d') {
       navigate('/social-graph-3d?view=person');
+    } else if (from === 'map') {
+      navigate('/demos/map');
     } else if (from === 'group' && groupId) {
       navigate(`/group/${groupId}`);
     } else {
@@ -182,6 +180,15 @@ export default function PersonProfile() {
         variant: "destructive",
       });
     },
+  });
+
+  const lowValueMutation = useMutation({
+    mutationFn: async (isLowValue: number) => apiRequest("PATCH", `/api/people/${id}`, { isLowValue }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/people", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
+    },
+    onError: () => toast({ title: "Error", description: "Failed to update low-value status", variant: "destructive" }),
   });
 
   if (isLoading) {
@@ -268,6 +275,9 @@ export default function PersonProfile() {
                   (née {person.maidenName})
                 </span>
               )}
+              {person.isLowValue === 1 && (
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-normal" data-testid="badge-low-value">Low value</Badge>
+              )}
             </h1>
             {(person.title || person.company) && (
               <p className="text-xs text-muted-foreground truncate leading-none mt-1">
@@ -279,6 +289,10 @@ export default function PersonProfile() {
 
         {/* Consolidated Actions Dropdown Menu */}
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-1" onClick={() => navigate(`/ai-chat-demo?person=${person.id}`)} data-testid="button-chat-about-person">
+            <MessageSquare className="h-3.5 w-3.5" />
+            Chat about person
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="gap-1" data-testid="button-actions-menu">
@@ -578,13 +592,18 @@ export default function PersonProfile() {
                         </a>
                       </div>
                     )}
-                    {person.address && (
-                      <div className="flex items-start gap-2">
-                        <Home className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                        <span className="break-words">{person.address}</span>
+                    {person.primaryAddress && (
+                      <div className={`flex items-start gap-2 ${person.primaryAddress.outdated ? OUTDATED_TEXT : ""}`}>
+                        <Home className="h-4 w-4 shrink-0 mt-0.5" />
+                        <span className="break-words">
+                          <Link href={mapHref(person.id, person.primaryAddress.address)} className="hover:underline" title="Show on map">
+                            {person.primaryAddress.address}
+                          </Link>
+                          {person.primaryAddress.outdated && <OutdatedBadge />}
+                        </span>
                       </div>
                     )}
-                    {!person.email && !person.phone && !person.address && !person.birthday && (
+                    {!person.email && !person.phone && !person.primaryAddress && !person.birthday && (
                       <span className="text-muted-foreground italic">No details set</span>
                     )}
 
@@ -763,6 +782,8 @@ export default function PersonProfile() {
                 )}
               </div>
 
+              <PersonAddresses personId={person.id} />
+
               {/* Career / Jobs Section */}
               <div className="space-y-4">
                 <h3 className="text-lg font-semibold flex items-center gap-2 border-b pb-2 text-foreground/80">
@@ -801,7 +822,7 @@ export default function PersonProfile() {
           </TabsContent>
 
           {showPhotosTab && (
-            <TabsContent value="photos" className="mt-0 flex-1 min-h-0">
+            <TabsContent value="photos" className="mt-0 flex-1 min-h-0 overflow-y-auto">
               <PersonPhotosTab personId={person.id} />
             </TabsContent>
           )}
@@ -904,6 +925,19 @@ export default function PersonProfile() {
                 >
                   {person?.eloRankable === 1 ? "Rankable" : "Not Rankable"}
                 </Badge>
+              </div>
+              <div className="flex justify-between items-center gap-4">
+                <span className="text-muted-foreground shrink-0">Low value</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 text-xs"
+                  disabled={lowValueMutation.isPending}
+                  onClick={() => lowValueMutation.mutate(person?.isLowValue === 1 ? 0 : 1)}
+                  data-testid="button-toggle-low-value"
+                >
+                  {person?.isLowValue === 1 ? "Yes · promote" : "No · mark low value"}
+                </Button>
               </div>
               <div className="flex justify-between gap-4">
                 <span className="text-muted-foreground shrink-0">Sex</span>

@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
 import { computeFamilyLabels } from "../family-relations-helper";
+import { getPrimaryAddress } from "../person-addresses";
 import {
   insertPersonSchema,
   insertSchoolingSchema,
@@ -256,7 +257,7 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Person not found" });
         }
   
-        res.json(person);
+        res.json({ ...person, primaryAddress: await getPrimaryAddress(id) });
       } catch (error) {
         console.error("Error fetching person:", error);
         res.status(500).json({ error: "Failed to fetch person" });

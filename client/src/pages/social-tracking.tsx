@@ -23,7 +23,7 @@ import { IMPORTERS_KEY, RUNS_KEY, useImporters, type Importer } from "@/lib/inst
 import { INSTAGRAM_TYPE_ID, type SocialAccount, type TrackingJob } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { RECENT_CHECK_HOURS, TRACKING_KIND_LABEL, trackingBlocker, type TrackingKind } from "@shared/interest-level";
+import { RECENT_CHECK_HOURS, TRACKING_KIND_LABEL, TRACKING_MENTIONS_CREATE_KEY, TRACKING_MENTIONS_QUEUE_INFO_KEY, trackingBlocker, type TrackingKind } from "@shared/interest-level";
 import { OSINT_TOOLS } from "@shared/osint-tools";
 
 interface Batch {
@@ -200,7 +200,7 @@ function QueueCheckButtons({ account }: { account: SocialAccount }) {
 
   return (
     <div className="flex flex-wrap gap-2 border-t pt-4" data-testid="section-queue-checks">
-      {(["info", "posts", "follows"] as const).map((kind) => {
+      {(["info", "posts", "highlights", "follows"] as const).map((kind) => {
         const blocker = trackingBlocker(account, kind);
         return (
           <Button
@@ -583,6 +583,54 @@ function ScheduleCard({ title, description, testId, render }: {
   );
 }
 
+/** Accounts tagged on imported posts and stories: create them, and optionally queue their profile info. */
+function MentionedAccountsCard() {
+  const { toast } = useToast();
+  const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
+  const create = settings?.[TRACKING_MENTIONS_CREATE_KEY] === "true";
+  const save = useMutation({
+    mutationFn: (s: { key: string; value: string }) => apiRequest("POST", "/api/settings", s),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/settings"] }),
+    onError: (error: Error) => toast({ title: "Not saved", description: error.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card data-testid="card-mentioned-accounts">
+      <CardHeader>
+        <CardTitle className="text-base">Mentioned accounts</CardTitle>
+        <CardDescription>Handles tagged on imported posts and stories. As accounts, they show up in Face Review as suggestions for the faces on that slide.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="flex items-center justify-between gap-4">
+          <Label htmlFor="mentions-create" className="flex-1 cursor-pointer">
+            Create accounts for mentioned handles
+            <span className="block text-xs text-muted-foreground font-normal">A tagged handle PRM hasn't met becomes an Instagram account when its post or story is imported.</span>
+          </Label>
+          <Switch
+            id="mentions-create"
+            checked={create}
+            onCheckedChange={(on) => save.mutate({ key: TRACKING_MENTIONS_CREATE_KEY, value: on ? "true" : "false" })}
+            data-testid="switch-mentions-create"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-4">
+          <Label htmlFor="mentions-queue-info" className={`flex-1 cursor-pointer ${create ? "" : "opacity-50"}`}>
+            Queue profile info for them
+            <span className="block text-xs text-muted-foreground font-normal">Each account created this way gets a profile check: name, bio, picture, counts.</span>
+          </Label>
+          <Switch
+            id="mentions-queue-info"
+            checked={create && settings?.[TRACKING_MENTIONS_QUEUE_INFO_KEY] === "true"}
+            disabled={!create}
+            onCheckedChange={(on) => save.mutate({ key: TRACKING_MENTIONS_QUEUE_INFO_KEY, value: on ? "true" : "false" })}
+            data-testid="switch-mentions-queue-info"
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 const USERNAME_TOOLS = OSINT_TOOLS.filter((t) => t.supportedTargetTypes.includes("username"));
 
 /** The scanners every account scan uses, the yearly sweep, and a bulk queue by tracking level. */
@@ -719,6 +767,7 @@ export default function SocialTrackingPage() {
       />
       <UpcomingCard />
       <AccountTrackingCard />
+      <MentionedAccountsCard />
       <OsintTrackingCard />
       <Card>
         <CardHeader>

@@ -29,13 +29,14 @@ import {
   formatPhoneNumberForDisplay,
   getTruePeopleSearchUrl,
 } from "@shared/schema";
+import { formatDateRange } from "@shared/partial-date";
 
 interface TrueDbTabProps {
   person: PersonWithRelations;
 }
 
 interface RecommendationItem {
-  type: "birthday" | "address" | "email" | "phone";
+  type: "birthday" | "email" | "phone";
   value: string;
   label: string;
 }
@@ -121,8 +122,6 @@ function RecommendationRow({ rec, person }: { rec: RecommendationItem; person: P
     const patch: any = {};
     if (rec.type === "birthday") {
       patch.birthday = rec.value;
-    } else if (rec.type === "address") {
-      patch.address = rec.value;
     } else if (rec.type === "email") {
       if (!person.email) {
         patch.email = rec.value;
@@ -149,8 +148,6 @@ function RecommendationRow({ rec, person }: { rec: RecommendationItem; person: P
     const patch: any = {};
     if (rec.type === "birthday") {
       patch.birthday = editValue;
-    } else if (rec.type === "address") {
-      patch.address = editValue;
     } else if (rec.type === "email") {
       if (!person.email) {
         patch.email = editValue;
@@ -314,36 +311,6 @@ export function TrueDbTab({ person }: TrueDbTabProps) {
       });
     }
 
-    // Current address suggestion
-    if (
-      latestRecord.currentAddress &&
-      latestRecord.currentAddress !== person.address &&
-      !denied.includes(latestRecord.currentAddress)
-    ) {
-      recommendations.push({
-        type: "address",
-        value: latestRecord.currentAddress,
-        label: `Current Address: ${latestRecord.currentAddress}`,
-      });
-    }
-
-    // Additional addresses suggestions
-    const extraAddresses = (latestRecord.addresses as TpsAddress[]) || [];
-    for (const addr of extraAddresses) {
-      if (
-        addr.address &&
-        addr.address !== person.address &&
-        addr.address !== latestRecord.currentAddress &&
-        !denied.includes(addr.address)
-      ) {
-        recommendations.push({
-          type: "address",
-          value: addr.address,
-          label: `Previous Address: ${addr.address}`,
-        });
-      }
-    }
-
     // Phone suggestions
     const phoneList = (latestRecord.phoneNumbers as string[]) || [];
     for (const ph of phoneList) {
@@ -490,6 +457,9 @@ export function TrueDbTab({ person }: TrueDbTabProps) {
                 <ul className="space-y-1">
                   {addresses.map((a, i) => (
                     <li key={`${a.address}-${i}`} className="text-sm">
+                      {formatDateRange(a.startDate, a.endDate) && (
+                        <span className="mr-2 text-xs text-muted-foreground">{formatDateRange(a.startDate, a.endDate)}</span>
+                      )}
                       {a.propertyUrl ? (
                         <a
                           href={a.propertyUrl}

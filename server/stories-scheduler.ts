@@ -383,10 +383,10 @@ export function startStoriesScheduler(): void {
 }
 
 /** The run whose live token matches, or null. Used by the /api/v1/stories routes. */
-export async function runForToken(token: string | undefined): Promise<{ id: string } | null> {
+export async function runForToken(token: string | undefined): Promise<{ id: string; importerId: string | null } | null> {
   if (!token) return null;
   const [row] = await db
-    .select({ id: storyScrapeRuns.id })
+    .select({ id: storyScrapeRuns.id, importerId: storyScrapeRuns.importerId })
     .from(storyScrapeRuns)
     .where(and(eq(storyScrapeRuns.tokenHash, hashToken(token)), gt(storyScrapeRuns.tokenExpiresAt, new Date())))
     .limit(1);

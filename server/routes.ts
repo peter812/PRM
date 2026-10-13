@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { registerRoutes as registerAuthSetup } from "./routes/auth-setup";
 import { registerRoutes as registerPeopleGroups } from "./routes/people-groups";
+import { registerRoutes as registerAddresses } from "./routes/addresses";
 import { registerRoutes as registerSocialMedia } from "./routes/social-media";
 import { registerRoutes as registerAiVector } from "./routes/ai-vector";
 import { registerRoutes as registerAiProviders } from "./routes/ai-providers";
@@ -9,6 +10,7 @@ import { registerRoutes as registerFamily } from "./routes/family";
 import { registerRoutes as registerMessages } from "./routes/messages";
 import { registerRoutes as registerOsint } from "./routes/osint";
 import { registerRoutes as registerInsights } from "./routes/insights";
+import { registerRoutes as registerEvents } from "./routes/events";
 import { registerRoutes as registerTps } from "./routes/tps";
 import { registerPendingImportsRoutes } from "./routes/pending-imports";
 import { registerStories } from "./routes/stories";
@@ -21,6 +23,7 @@ import { registerRoutes as registerBackups } from "./routes/backups";
 import { registerRoutes as registerDescribeMe } from "./routes/describe-me";
 import { registerRoutes as registerDemosMap } from "./routes/demos-map";
 import { registerRoutes as registerDemosWordCloud } from "./routes/demos-word-cloud";
+import { registerRoutes as registerRosterImport } from "./routes/roster-import";
 import { registerSetupServicesRoutes } from "./routes/setup-services";
 import { registerSummaryRoutes } from "./routes/summaries";
 
@@ -32,6 +35,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerAuthSetup(app);
   registerFamily(app);
   registerPeopleGroups(app);
+  registerAddresses(app);
   registerSocialMedia(app);
   // TPS and pending-imports use extension-token auth (no browser session), so they MUST be registered
   // before registerMessages — that module mounts a catch-all router at
@@ -51,10 +55,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerMessages(app);
   registerOsint(app);
   registerInsights(app);
+  registerEvents(app);
   registerBackups(app);
   registerDescribeMe(app);
   registerDemosMap(app);
   registerDemosWordCloud(app);
+  registerRosterImport(app);
   registerSetupServicesRoutes(app);
 
   const httpServer = createServer(app);

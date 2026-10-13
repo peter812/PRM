@@ -9,7 +9,7 @@
 import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import multer from "multer";
-import { and, desc, eq, gt, gte, ilike, inArray, ne, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNull, ne, notInArray, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import { postedBy, storage } from "../storage";
@@ -17,10 +17,10 @@ import { requireAuth } from "../auth";
 import { sseManager } from "../middleware/sse";
 import { uploadImage, uploadMedia, uploadPostImage } from "../prm-s3";
 import { syncEntityInBackground } from "../vector-universal";
-import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, imageTaskGroups, type SocialAccount, type TrackingJob } from "@shared/schema";
+import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, imageTaskGroups, instagramHighlights, instagramHighlightMemberships, nextHighlightColor, type SocialAccount, type TrackingJob, type HighlightWithStints } from "@shared/schema";
 import { TRACKING_KINDS, type TrackingKind } from "@shared/interest-level";
 import { generateDeterministicUuid } from "./social-media";
-import { authedRun } from "./stories";
+import { authedRun, existingStoryPks, runImageTaskGroup, storeStoryItem, storyPostId, storyUpload } from "./stories";
 import { kickManualTrackingJobs, manualImporter, rateLimitedUntil } from "../stories-scheduler";
 import { applySnapshot, recordPostsCapture, type CaptureScope } from "../social-account-history";
 import { profileImageFromBuffer, classifyProfileImage, applyProfileImageVerdict, getImageDimensions, type ProfileImageOutcome } from "../profile-image";
@@ -38,11 +38,13 @@ import {
   queueFollowingRefresh,
   queueManualJob,
   requeueJob,
+  resolveMentionedAccounts,
   startTrackingJob,
   upcomingChecks,
 } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { raiseIssue, resolveIssues } from "../account-issues";
+import { recordPostsDeletedEvents } from "../events";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -132,7 +134,81 @@ const resultSchema = z.object({
   complete: z.boolean().optional(),
   /** takenAt of the last node scanned: an incomplete scan is authoritative only for posts newer than this. */
   oldestSeenAt: z.string().datetime().optional(),
+  /** highlights: every set the profile showed; with `complete`, the missing ones were deleted. */
+  seenHighlightIds: z.array(z.string()).optional(),
 });
+
+/** One highlight set as the profile shows it now. The cover fields the scraper also sends aren't kept. */
+const highlightMetaSchema = z.object({
+  highlightId: z.string().min(1),
+  title: z.string().nullable().optional(),
+  itemPks: z.array(z.string()),
+});
+
+type HighlightOutcome = "created" | "updated" | "unchanged";
+
+/**
+ * Record what a set holds now (pinned-stories-plan.md): the set itself (back
+ * from deleted if it reappeared), a new stint per story that joined, the
+ * position and confirmation of those still there, and a closed stint per story
+ * that left. Timestamps are when PRM learned it, not when it happened.
+ */
+async function upsertHighlight(accountId: string, meta: z.infer<typeof highlightMetaSchema>): Promise<HighlightOutcome> {
+  const now = new Date();
+  const title = meta.title ?? null;
+  const position = new Map<string, number>();
+  for (const pk of meta.itemPks.map((p) => p.trim()).filter(Boolean)) if (!position.has(pk)) position.set(pk, position.size);
+
+  return db.transaction(async (tx) => {
+    let [set] = await tx
+      .select()
+      .from(instagramHighlights)
+      .where(and(eq(instagramHighlights.socialAccountId, accountId), eq(instagramHighlights.instagramId, meta.highlightId)))
+      .limit(1);
+    let outcome: HighlightOutcome = "unchanged";
+    if (!set) {
+      const live = await tx
+        .select({ color: instagramHighlights.color })
+        .from(instagramHighlights)
+        .where(and(eq(instagramHighlights.socialAccountId, accountId), isNull(instagramHighlights.deletedSeenAt)));
+      [set] = await tx
+        .insert(instagramHighlights)
+        .values({ socialAccountId: accountId, instagramId: meta.highlightId, title, color: nextHighlightColor(live.map((l) => l.color)), firstSeenAt: now, lastSeenAt: now })
+        .returning();
+      outcome = "created";
+    } else {
+      if (set.title !== title || set.deletedSeenAt) outcome = "updated";
+      await tx.update(instagramHighlights).set({ title, lastSeenAt: now, deletedSeenAt: null }).where(eq(instagramHighlights.id, set.id));
+    }
+
+    const open = await tx
+      .select()
+      .from(instagramHighlightMemberships)
+      .where(and(eq(instagramHighlightMemberships.highlightId, set.id), isNull(instagramHighlightMemberships.leftSeenAt)));
+    const openPks = new Set(open.map((m) => m.storyPk));
+    const joined = [...position].filter(([pk]) => !openPks.has(pk));
+    const left = open.filter((m) => !position.has(m.storyPk));
+    const kept = open.filter((m) => position.has(m.storyPk));
+    if (joined.length) {
+      await tx.insert(instagramHighlightMemberships).values(joined.map(([storyPk, pos]) => ({ highlightId: set.id, storyPk, position: pos, placedSeenAt: now, lastConfirmedAt: now })));
+    }
+    if (left.length) {
+      await tx
+        .update(instagramHighlightMemberships)
+        .set({ leftSeenAt: now, leftReason: "removed" })
+        .where(inArray(instagramHighlightMemberships.id, left.map((m) => m.id)));
+    }
+    if (kept.length) {
+      await tx.update(instagramHighlightMemberships).set({ lastConfirmedAt: now }).where(inArray(instagramHighlightMemberships.id, kept.map((m) => m.id)));
+    }
+    const moved = kept.filter((m) => m.position !== position.get(m.storyPk));
+    for (const m of moved) {
+      await tx.update(instagramHighlightMemberships).set({ position: position.get(m.storyPk)! }).where(eq(instagramHighlightMemberships.id, m.id));
+    }
+    if (outcome === "unchanged" && (joined.length || left.length || moved.length)) outcome = "updated";
+    return outcome;
+  });
+}
 
 /**
  * The running job for `:id` under the request's run, with its account, or null
@@ -148,7 +224,7 @@ async function jobFor(req: Request, res: Response, opts: { waiting?: boolean } =
     .innerJoin(socialAccounts, eq(socialAccounts.id, trackingJobs.socialAccountId))
     .where(eq(trackingJobs.id, req.params.id))
     .limit(1);
-  if (!row || (run.id !== "admin-session" && row.job.runId !== run.id)) {
+  if (!row || row.job.runId !== run.id) {
     res.status(404).json({ error: "Job not found in this run" });
     return null;
   }
@@ -180,6 +256,15 @@ function parseMeta<T extends z.ZodTypeAny>(req: Request, res: Response, schema: 
   return parsed.data;
 }
 
+/** Tagged handles to accounts per the Tracking page's mention settings; never fails the import that found them. */
+export async function queueMentioned(handles: string[]): Promise<void> {
+  try {
+    if ((await resolveMentionedAccounts(handles))?.batch) kickManualTrackingJobs();
+  } catch (err) {
+    console.error("Tracking: mentioned accounts not resolved:", err);
+  }
+}
+
 const fail = (res: Response, what: string, error: unknown) => {
   console.error(`Tracking: ${what}:`, error);
   res.status(500).json({ error: `Failed to ${what}` });
@@ -194,7 +279,7 @@ export function registerTracking(app: Express) {
     try {
       const run = await authedRun(req, res);
       if (!run) return;
-      const job = await startTrackingJob(req.params.id, run.id === "admin-session" ? null : run.id);
+      const job = await startTrackingJob(req.params.id, run.id);
       if (!job) return res.status(409).json({ error: "Job is not waiting in this run" });
       res.json({ ok: true });
     } catch (error) {
@@ -332,6 +417,7 @@ export function registerTracking(app: Express) {
       if (primaryId !== ctx.account.id && !coauthorAccountIds.includes(ctx.account.id)) {
         return res.status(409).json({ error: `Post belongs to @${author}, not the tracked account` });
       }
+      await queueMentioned(meta.slides.flatMap((s) => s.usertags));
 
       const metadata: Record<string, unknown> = {
         ...((existing?.metadata as Record<string, unknown> | null) ?? {}),
@@ -419,30 +505,44 @@ export function registerTracking(app: Express) {
       if (!photoIds) return res.json({ outcome: "duplicate", postId: id });
       await upsertComments(id, meta.comments ?? []);
       for (const photoId of photoIds) syncEntityInBackground("image", photoId);
-      let imageTaskGroupId: string | undefined;
-      if (ctx.job.runId) {
-        const [existingGroup] = await db
-          .select({ id: imageTaskGroups.id })
-          .from(imageTaskGroups)
-          .where(and(eq(imageTaskGroups.socialRunId, ctx.job.runId), eq(imageTaskGroups.socialAccountId, ctx.account.id)))
-          .limit(1);
-        if (existingGroup) {
-          imageTaskGroupId = existingGroup.id;
-        } else {
-          const grp = await storage.createImageTaskGroup({
-            title: `Tracking - @${ctx.account.username}`,
-            kind: "tracking_job",
-            socialRunId: ctx.job.runId,
-            socialAccountId: ctx.account.id,
-          });
-          imageTaskGroupId = grp.id;
-        }
-      }
-      void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined, imageTaskGroupId });
+      const imageTaskGroupId = ctx.job.runId ? await runImageTaskGroup(ctx.job.runId, ctx.account.id, ctx.account.username ?? "", "tracking_job") : undefined;
+      void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined, imageTaskGroupId, socialAccountId: primaryId });
       void onPostAddedForSummary(id, primaryId);
       res.status(201).json({ outcome: "stored", postId: id });
     } catch (error) {
       fail(res, "store post", error);
+    }
+  });
+
+  // Highlights: which of these stories PRM already holds; the scraper downloads only the rest.
+  app.post("/api/v1/tracking/jobs/:id/highlights/check", async (req, res) => {
+    try {
+      const ctx = await jobFor(req, res);
+      if (!ctx) return;
+      const pks: string[] = Array.isArray(req.body?.pks) ? req.body.pks.map((pk: unknown) => String(pk).trim()).filter(Boolean) : [];
+      // A skipped account's stories are never stored, so all of them read as held and none download.
+      res.json({ existing: ctx.account.skipStories ? pks : await existingStoryPks(pks) });
+    } catch (error) {
+      fail(res, "check highlight stories", error);
+    }
+  });
+
+  // A highlighted story PRM didn't have: stored exactly as a story run's item.
+  app.post("/api/v1/tracking/jobs/:id/highlights/items", storyUpload, async (req, res) => {
+    const ctx = await jobFor(req, res);
+    if (ctx) await storeStoryItem(req, res, { runId: ctx.job.runId, groupKind: "tracking_job" });
+  });
+
+  // One set as the profile shows it now: multipart `meta` (+ a `cover` file, ignored).
+  app.post("/api/v1/tracking/jobs/:id/highlights", upload.any(), async (req, res) => {
+    try {
+      const ctx = await jobFor(req, res);
+      if (!ctx) return;
+      const meta = parseMeta(req, res, highlightMetaSchema);
+      if (!meta) return;
+      res.json({ outcome: await upsertHighlight(ctx.account.id, meta) });
+    } catch (error) {
+      fail(res, "store highlight", error);
     }
   });
 
@@ -504,6 +604,28 @@ export function registerTracking(app: Express) {
         ).map((p) => p.id);
         result.imported = added.length;
         await recordPostsCapture(account.id, { added, deleted }, "prm-stories");
+        await recordPostsDeletedEvents(account, deleted);
+      }
+
+      if (r.status === "completed" && job.kind === "highlights" && r.complete && r.seenHighlightIds) {
+        // A live set the profile no longer shows was deleted; its stories leave it with it.
+        const now = new Date();
+        const gone = await db
+          .update(instagramHighlights)
+          .set({ deletedSeenAt: now })
+          .where(and(
+            eq(instagramHighlights.socialAccountId, account.id),
+            isNull(instagramHighlights.deletedSeenAt),
+            r.seenHighlightIds.length ? notInArray(instagramHighlights.instagramId, r.seenHighlightIds) : undefined,
+          ))
+          .returning({ id: instagramHighlights.id });
+        if (gone.length) {
+          await db
+            .update(instagramHighlightMemberships)
+            .set({ leftSeenAt: now, leftReason: "set_deleted" })
+            .where(and(inArray(instagramHighlightMemberships.highlightId, gone.map((g) => g.id)), isNull(instagramHighlightMemberships.leftSeenAt)));
+        }
+        result.setsDeleted = gone.length;
       }
 
       if (isDeferral(r.status, reason) && canRetry(job)) {
@@ -533,6 +655,47 @@ export function registerTracking(app: Express) {
   });
 
   // ── Session side ──
+
+  // The account's highlight sets, deleted ones too, each with every stint and the story row it points at.
+  app.get("/api/social-accounts/:id/highlights", requireAuth, async (req, res) => {
+    try {
+      const sets = await db
+        .select()
+        .from(instagramHighlights)
+        .where(eq(instagramHighlights.socialAccountId, req.params.id))
+        .orderBy(asc(instagramHighlights.firstSeenAt));
+      const stints = sets.length
+        ? await db
+            .select()
+            .from(instagramHighlightMemberships)
+            .where(inArray(instagramHighlightMemberships.highlightId, sets.map((s) => s.id)))
+            .orderBy(asc(instagramHighlightMemberships.placedSeenAt))
+        : [];
+      const out: HighlightWithStints[] = sets.map((set) => ({
+        ...set,
+        stints: stints.filter((m) => m.highlightId === set.id).map((m) => ({ ...m, postId: storyPostId(m.storyPk) })),
+      }));
+      res.json(out);
+    } catch (error) {
+      fail(res, "load highlights", error);
+    }
+  });
+
+  app.patch("/api/instagram-highlights/:id", requireAuth, async (req, res) => {
+    try {
+      const parsed = z.object({ color: z.string().regex(/^#[0-9a-f]{6}$/i) }).strict().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "color must be a #rrggbb hex color" });
+      const [row] = await db
+        .update(instagramHighlights)
+        .set({ color: parsed.data.color.toLowerCase() })
+        .where(eq(instagramHighlights.id, req.params.id))
+        .returning();
+      if (!row) return res.status(404).json({ error: "Highlight not found" });
+      res.json(row);
+    } catch (error) {
+      fail(res, "update highlight", error);
+    }
+  });
 
   app.post("/api/social-accounts/:id/tracking-jobs", requireAuth, async (req, res) => {
     try {

@@ -61,19 +61,17 @@ const SettingsLayout = lazy(() => import("@/pages/settings-layout"));
 const EloRanking = lazy(() => import("@/pages/elo-ranking"));
 const GuessTheSex = lazy(() => import("@/pages/guess-the-sex"));
 const AccountMatching = lazy(() => import("@/pages/account-matching"));
-const PrmFaceDemo = lazy(() => import("@/pages/prm-face-demo"));
-const PrmFaceSaveDemo = lazy(() => import("@/pages/prm-face-save-demo"));
-const FacePoseDemo = lazy(() => import("@/pages/face-pose-demo"));
 const FaceReview = lazy(() => import("@/pages/face-review"));
 const Faces = lazy(() => import("@/pages/faces"));
-const AiDescDemo = lazy(() => import("@/pages/ai-desc-demo"));
-const OcrDemo = lazy(() => import("@/pages/ocr-demo"));
 const WhisperDemo = lazy(() => import("@/pages/whisper-demo"));
 const MapDemo = lazy(() => import("@/pages/map-demo"));
+const GoogleMapPage = lazy(() => import("@/pages/google-map"));
 const WordCloudDemo = lazy(() => import("@/pages/word-cloud-demo"));
 const BioWordCloudDemo = lazy(() => import("@/pages/bio-word-cloud-demo"));
 const OllamaParamsDemo = lazy(() => import("@/pages/ollama-params-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
+const EventLogDemo = lazy(() => import("@/pages/event-log-demo"));
+const RosterImportDemo = lazy(() => import("@/pages/roster-import-demo"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const GamesPage = lazy(() => import("@/pages/games"));
 const DescribeMePage = lazy(() => import("@/pages/describe-me"));
@@ -235,20 +233,17 @@ function Router() {
         <ProtectedRoute path="/describe-me" component={DescribeMePage} />
         <ProtectedRoute path="/games/political-leaning" component={PoliticalLeaningGamePage} />
         <ProtectedRoute path="/political-leaning-game" component={PoliticalLeaningGamePage} />
-        <ProtectedRoute path="/prm-face-demo" component={PrmFaceDemo} />
-        <ProtectedRoute path="/prm-face-save-demo" component={PrmFaceSaveDemo} />
-        <ProtectedRoute path="/demos/face-pose" component={FacePoseDemo} />
         <ProtectedRoute path="/face-review" component={FaceReview} />
         <ProtectedRoute path="/unknown-faces" component={FaceReview} />
         <ProtectedRoute path="/faces" component={Faces} />
-        <ProtectedRoute path="/ai-desc-demo" component={AiDescDemo} />
-        <ProtectedRoute path="/ocr-demo" component={OcrDemo} />
-        <ProtectedRoute path="/demos/ocr" component={OcrDemo} />
         <ProtectedRoute path="/demos/whisper" component={WhisperDemo} />
         <ProtectedRoute path="/demos/map" component={MapDemo} />
+        <ProtectedRoute path="/demos/google-map" component={GoogleMapPage} />
         <ProtectedRoute path="/demos/word-cloud" component={WordCloudDemo} />
         <ProtectedRoute path="/demos/bio-word-cloud" component={BioWordCloudDemo} />
         <ProtectedRoute path="/demos/ollama-params" component={OllamaParamsDemo} />
+        <ProtectedRoute path="/demos/event-log" component={EventLogDemo} />
+        <ProtectedRoute path="/demos/roster-import" component={RosterImportDemo} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />

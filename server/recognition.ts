@@ -14,6 +14,7 @@ import { facePairDismissals, faces, imageTasks, people, photos, socialAccountPos
 import { log } from "./vite";
 import { triggerImageTaskWorker } from "./task-worker";
 import { onPostAddedForSummary } from "./summary-queue";
+import { BAN_FOR_JOB, accountBans, bannedActions } from "./banned-actions";
 // Only referenced inside functions, so the profile-image -> recognition import
 // cycle never reads it before it's initialised.
 import { HQ_MIN_WIDTH, getImageDimensions } from "./profile-image";
@@ -167,12 +168,11 @@ export async function runFaceRecognition(photoId: string): Promise<FaceRecogniti
 }
 
 /**
- * Detect a photo's faces from scratch. Compute hands back the stored faces for
- * an image it has already seen, so first drop them (rows, S3 crops, index) via
- * img/delete — names and skips on them go too. Identical images share faces
- * (photosContainingFaces), so every photo that held them gets the new set.
+ * Drop a photo's faces (rows, S3 crops, index) via img/delete — names and skips
+ * on them go too. Identical images share faces (photosContainingFaces), so every
+ * photo that held them is left unscanned; returns those photos.
  */
-export async function rescanPhotoFaces(photoId: string): Promise<FaceRecognitionResult> {
+export async function dropPhotoFaces(photoId: string): Promise<string[]> {
   const [photo] = await db.select({ facialIds: photos.facialIds }).from(photos).where(eq(photos.id, photoId));
   if (!photo) throw new Error("Photo not found.");
   const oldIds = ((photo.facialIds ?? []) as FacialId[]).map((f) => f.faceUuid).filter((id): id is string => !!id);
@@ -187,7 +187,16 @@ export async function rescanPhotoFaces(photoId: string): Promise<FaceRecognition
   // Cleared first so a failed run leaves the photos unscanned (backfill picks them up) rather than pointing at deleted faces.
   await db.update(photos).set({ facialIds: [], faceIdAt: null }).where(inArray(photos.id, sharing));
   markFaceIdentitiesDirty();
+  return sharing;
+}
 
+/**
+ * Detect a photo's faces from scratch. Compute hands back the stored faces for
+ * an image it has already seen, so they're dropped first, and every photo that
+ * shared them gets the new set.
+ */
+export async function rescanPhotoFaces(photoId: string): Promise<FaceRecognitionResult> {
+  const sharing = await dropPhotoFaces(photoId);
   const result = await runFaceRecognition(photoId);
   const others = sharing.filter((id) => id !== photoId);
   if (others.length) {
@@ -1081,10 +1090,13 @@ export async function enqueueAutoRecognition(input: {
   /** The post whose metadata.videoUrl should be transcribed, when it has one. */
   videoPostId?: string;
   imageTaskGroupId?: string;
+  /** The account the content belongs to; its banned actions are skipped. */
+  socialAccountId?: string;
 }): Promise<void> {
   try {
     const settings = (await getAutoRecognitionSettings())[input.kind] as Partial<Record<AutoRecognitionJob, boolean>>;
-    const jobs = (Object.keys(settings) as AutoRecognitionJob[]).filter((job) => settings[job]);
+    const banned = input.socialAccountId ? await bannedActions(input.socialAccountId) : [];
+    const jobs = (Object.keys(settings) as AutoRecognitionJob[]).filter((job) => settings[job] && !banned.includes(BAN_FOR_JOB[job]));
     if (!jobs.length) return;
     const queued = await enqueueRecognitionTasks({
       jobs,
@@ -1115,15 +1127,18 @@ async function unprocessedPhotoIds(kind: AutoRecognitionKind, job: "face" | "ocr
     )),
   );
   const conditions = [isNull(stampColumn), eq(photos.isSubImage, false), noLiveTask];
+  const ban = BAN_FOR_JOB[job];
   if (STORY_KINDS[kind] === "profile") {
     // Never the 150px tier: too small to embed, and its 1080 sibling gets the run.
     conditions.push(sql`${photos.prmLocation} LIKE 'profile_image:%'`, gte(photos.widthPx, HQ_MIN_WIDTH));
+    conditions.push(sql`NOT ${accountBans(sql`substring(${photos.prmLocation} from 15)`, ban)}`);
   } else if (STORY_KINDS[kind] === "message") {
     conditions.push(sql`${photos.prmLocation} LIKE 'message:%'`);
   } else {
     const isStory = STORY_KINDS[kind] === "story";
     conditions.push(sql`${photos.prmLocation} LIKE 'post:%'`);
-    conditions.push(sql`EXISTS (SELECT 1 FROM ${socialAccountPosts} WHERE ${socialAccountPosts.id} = substring(${photos.prmLocation} from 6) AND ${socialAccountPosts.postType} ${sql.raw(isStory ? "=" : "<>")} 'story')`);
+    conditions.push(sql`EXISTS (SELECT 1 FROM ${socialAccountPosts} WHERE ${socialAccountPosts.id} = substring(${photos.prmLocation} from 6) AND ${socialAccountPosts.postType} ${sql.raw(isStory ? "=" : "<>")} 'story'
+      AND NOT ${accountBans(sql`${socialAccountPosts.socialAccountId}`, ban)})`);
   }
   const rows = await db.select({ id: photos.id }).from(photos).where(and(...conditions)).orderBy(photos.uploadedAt);
   return rows.map((r) => r.id);
@@ -1137,6 +1152,7 @@ async function untranscribedPostIds(kind: "post" | "story"): Promise<string[]> {
     .where(and(
       isNull(socialAccountPosts.videoTranscriptAt),
       sql`${socialAccountPosts.metadata}->>'videoUrl' IS NOT NULL`,
+      sql`NOT ${accountBans(sql`${socialAccountPosts.socialAccountId}`, "transcribe")}`,
       kind === "story" ? eq(socialAccountPosts.postType, "story") : sql`${socialAccountPosts.postType} <> 'story'`,
     ))
     .orderBy(socialAccountPosts.createdAt);

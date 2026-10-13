@@ -21,6 +21,7 @@ import {
 import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
 import { fetchImageBuffer } from "./prm-s3";
 import { describeImage } from "./ai/describe";
+import { bannedActions } from "./banned-actions";
 import { asData, chat, DATA_TAGS_NOTE, isAiEnabled, resolveModel } from "./ai/provider";
 
 export const SUMMARY_POST_ENABLED_KEY = "summary_post_enabled";
@@ -178,6 +179,7 @@ export async function onPostAddedForSummary(postId: string, socialAccountId: str
   try {
     const settings = await loadSummarySettings();
     if (!settings.postEnabled || !settings.postAutoEnabled || !(await isAiEnabled())) return;
+    if ((await bannedActions(socialAccountId)).includes("summary")) return;
     await enqueueSummaryJob("post", postId, socialAccountId);
   } catch (err) {
     log(`[SummaryQueue] Failed to handle post added ${postId}: ${errorMessage(err)}`);
@@ -189,7 +191,8 @@ async function enqueuePostsWhere(filter: SQL): Promise<number> {
   const result = await db.execute(sql`
     INSERT INTO summary_jobs (kind, target_id, social_account_id)
     SELECT 'post', p.id, p.social_account_id FROM social_account_posts p
-    WHERE ${filter}
+    JOIN social_accounts a ON a.id = p.social_account_id
+    WHERE ${filter} AND NOT 'summary' = ANY(a.banned_actions)
     ON CONFLICT DO NOTHING
   `);
   return result.rowCount ?? 0;
@@ -240,7 +243,7 @@ export async function enqueueAllHistoricalPosts(includeSummarized = false): Prom
 export async function enqueueAccountSummariesForLevel(minLevel: InterestLevel): Promise<{ accountsQueued: number; postsQueued: number }> {
   const levels = INTEREST_LEVELS.slice(INTEREST_LEVELS.indexOf(minLevel));
   const levelList = sql`string_to_array(${levels.join(",")}, ',')`;
-  return enqueueAccountChains(sql`a.interest_level = ANY(${levelList})`);
+  return enqueueAccountChains(sql`a.interest_level = ANY(${levelList}) AND NOT 'summary' = ANY(a.banned_actions)`);
 }
 
 /**
@@ -500,7 +503,7 @@ async function savePostSummary(
       // An account that was never summarized has nothing to go out of date.
       .where(and(eq(socialAccounts.id, post.socialAccountId), isNotNull(socialAccounts.aiSummary)));
 
-    if (settings.accountAutoEnabled) {
+    if (settings.accountAutoEnabled && !(await bannedActions(post.socialAccountId)).includes("summary")) {
       await enqueueSummaryJob("account", post.socialAccountId, post.socialAccountId);
     }
   }

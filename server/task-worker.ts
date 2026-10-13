@@ -101,6 +101,7 @@ import {
   messageRecipients,
   conversationParticipants,
   geocodes,
+  personAddresses,
   type SocialAccountHistoryDelta,
   type ImageTask,
   cleanPhoneNumberForStorage,
@@ -538,6 +539,7 @@ export async function generateExportXml(options: {
     allMessageRecipients,
     allConversationParticipants,
     allGeocodes,
+    allPersonAddresses,
   ] = await Promise.all([
     db.select().from(storyImporters),
     db.select().from(storyScrapeRuns),
@@ -548,6 +550,7 @@ export async function generateExportXml(options: {
     db.select().from(messageRecipients),
     db.select().from(conversationParticipants),
     db.select().from(geocodes),
+    db.select().from(personAddresses),
   ]);
 
   const user = allUsers[0];
@@ -668,7 +671,6 @@ export async function generateExportXml(options: {
     chunks.push(`      ${xmlJsonTag("jobs", person.jobs)}\n`);
     chunks.push(`      ${xmlTag("tps_id", person.tpsId || "")}\n`);
     chunks.push(`      ${xmlTag("birthday", person.birthday || "")}\n`);
-    chunks.push(`      ${xmlTag("address", person.address || "")}\n`);
     chunks.push(`      ${xmlJsonTag("additional_emails", person.additionalEmails)}\n`);
     chunks.push(`      ${xmlJsonTag("additional_phones", person.additionalPhones)}\n`);
     chunks.push(`      ${xmlJsonTag("osint_runs", person.osintRuns)}\n`);
@@ -772,6 +774,25 @@ export async function generateExportXml(options: {
   }
   chunks.push("  </notes>\n");
 
+  // ── Person addresses ──
+  chunks.push("  <person_addresses>\n");
+  for (const a of allPersonAddresses) {
+    if (a.personId === mePersonId) continue;
+    chunks.push("    <person_address>\n");
+    chunks.push(`      ${xmlTag("id", a.id)}\n`);
+    chunks.push(`      ${xmlTag("person_id", a.personId)}\n`);
+    chunks.push(`      ${xmlTag("address", a.address)}\n`);
+    chunks.push(`      ${xmlTag("label", a.label || "")}\n`);
+    chunks.push(`      ${xmlTag("start_date", a.startDate || "")}\n`);
+    chunks.push(`      ${xmlTag("end_date", a.endDate || "")}\n`);
+    chunks.push(`      ${xmlTag("is_primary", a.isPrimary)}\n`);
+    chunks.push(`      ${xmlTag("source", a.source)}\n`);
+    chunks.push(`      ${xmlTag("property_url", a.propertyUrl || "")}\n`);
+    chunks.push(`      ${xmlTag("created_at", a.createdAt)}\n`);
+    chunks.push("    </person_address>\n");
+  }
+  chunks.push("  </person_addresses>\n");
+
   // ── Group notes ──
   chunks.push("  <group_notes>\n");
   for (const note of allGroupNotes) {
@@ -843,7 +864,9 @@ export async function generateExportXml(options: {
     chunks.push(`      ${xmlTag("is_private", account.isPrivate)}\n`);
     chunks.push(`      ${xmlTag("personface_uuid", account.personfaceUuid || "")}\n`);
     chunks.push(`      ${xmlTag("no_face", account.noFace)}\n`);
+    chunks.push(`      ${xmlJsonTag("banned_actions", account.bannedActions)}\n`);
     chunks.push(`      ${xmlTag("skip_stories", account.skipStories)}\n`);
+    chunks.push(`      ${xmlTag("is_starred", account.isStarred)}\n`);
     chunks.push(`      ${xmlJsonTag("ai_summary", account.aiSummary)}\n`);
     chunks.push(`      ${xmlTag("ai_summary_generated_at", account.aiSummaryGeneratedAt)}\n`);
     chunks.push(`      ${xmlTag("ai_summary_invalidated", account.aiSummaryInvalidated)}\n`);
@@ -1632,6 +1655,7 @@ export async function executeImportXml(
     trackingJobs: 0,
     socialAccountIssues: 0,
     geocodes: 0,
+    personAddresses: 0,
     ssoConfig: 0,
   };
   const skippedCounts: Record<string, number> = {
@@ -1903,6 +1927,8 @@ export async function executeImportXml(
   }
   const peopleSection = extractSection(xmlText, "people");
   const peopleBatch: (typeof people.$inferInsert)[] = [];
+  // Backups made before address history keep the primary in <person><address>.
+  const legacyAddresses: (typeof personAddresses.$inferInsert)[] = [];
   for (const block of parseAllTags("person", peopleSection)) {
     const id = unescapeXml(parseXmlTag("id", block));
     const firstName = unescapeXml(parseXmlTag("first_name", block));
@@ -1940,7 +1966,6 @@ export async function executeImportXml(
       jobs: parseOptJson<any[]>(block, "jobs", []),
       tpsId: parseOptStr(block, "tps_id"),
       birthday: parseOptStr(block, "birthday"),
-      address: parseOptStr(block, "address"),
       additionalEmails: parseOptJson<any[]>(block, "additional_emails", []),
       additionalPhones: parseOptJson<any[]>(block, "additional_phones", []),
       osintRuns: parseOptJson<any>(block, "osint_runs", null),
@@ -1951,6 +1976,8 @@ export async function executeImportXml(
       politicalUpdatedAt: parseOptDate(block, "political_updated_at"),
       createdAt: parseOptDate(block, "created_at") ?? new Date(),
     });
+    const legacyAddress = parseOptStr(block, "address")?.trim();
+    if (legacyAddress) legacyAddresses.push({ personId: id, address: legacyAddress, isPrimary: 1, source: "legacy" });
     existingPeopleMap.set(lookupKey, true);
     existingPersonIds.add(id);
   }
@@ -2105,7 +2132,9 @@ export async function executeImportXml(
       isPrivate: parseXmlTag("is_private", block) !== "" ? parseOptBool(block, "is_private", false) : null,
       personfaceUuid: parseOptStr(block, "personface_uuid"),
       noFace: parseOptBool(block, "no_face", false),
+      bannedActions: parseOptJson<string[]>(block, "banned_actions", []),
       skipStories: parseOptBool(block, "skip_stories", false),
+      isStarred: parseOptBool(block, "is_starred", false),
       aiSummary: parseOptJson<any>(block, "ai_summary", null),
       aiSummaryGeneratedAt: parseOptDate(block, "ai_summary_generated_at"),
       aiSummaryInvalidated: parseOptBool(block, "ai_summary_invalidated", false),
@@ -2254,6 +2283,29 @@ export async function executeImportXml(
     });
   }
   importedCounts.notes += await insertBatchWithFallback(notes, notesBatch, "notes");
+
+  // ── Person addresses ──
+  const personAddressesSection = extractSection(xmlText, "person_addresses");
+  const personAddressesBatch: (typeof personAddresses.$inferInsert)[] = xmlText.includes("<person_addresses>") ? [] : legacyAddresses;
+  for (const block of parseAllTags("person_address", personAddressesSection)) {
+    const id = unescapeXml(parseXmlTag("id", block));
+    const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
+    const address = unescapeXml(parseXmlTag("address", block));
+    if (!id || !personId || !address || !existingPersonIds.has(personId)) continue;
+    personAddressesBatch.push({
+      id,
+      personId,
+      address,
+      label: parseOptStr(block, "label"),
+      startDate: parseOptStr(block, "start_date"),
+      endDate: parseOptStr(block, "end_date"),
+      isPrimary: parseOptInt(block, "is_primary") ?? 0,
+      source: parseOptStr(block, "source") || "manual",
+      propertyUrl: parseOptStr(block, "property_url"),
+      createdAt: parseOptDate(block, "created_at") ?? new Date(),
+    });
+  }
+  importedCounts.personAddresses += await insertBatchWithFallback(personAddresses, personAddressesBatch, "person_addresses");
 
   // ── Group notes ──
   const groupNotesSection = extractSection(xmlText, "group_notes");

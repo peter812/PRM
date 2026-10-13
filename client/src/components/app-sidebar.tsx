@@ -11,11 +11,10 @@ import {
   LogOut,
   Moon,
   Sun,
-  Monitor,
-  Scan,
-  ScanText,
+  Monitor,
   Mic,
   Map as MapIcon,
+  Globe,
   Sparkles,
   MessagesSquare,
   MessageSquareText,
@@ -167,31 +166,6 @@ const menuItems = [
       },
 
       {
-        title: "PRM Compute Demo",
-        url: "/prm-face-demo",
-        icon: Scan,
-      },
-      {
-        title: "PRM Compute Save Demo",
-        url: "/prm-face-save-demo",
-        icon: Scan,
-      },
-      {
-        title: "Face Pose Demo",
-        url: "/demos/face-pose",
-        icon: Scan,
-      },
-      {
-        title: "AI Description Demo",
-        url: "/ai-desc-demo",
-        icon: Sparkles,
-      },
-      {
-        title: "OCR",
-        url: "/ocr-demo",
-        icon: ScanText,
-      },
-      {
         title: "Whisper",
         url: "/demos/whisper",
         icon: Mic,
@@ -200,6 +174,11 @@ const menuItems = [
         title: "Map",
         url: "/demos/map",
         icon: MapIcon,
+      },
+      {
+        title: "Google Map",
+        url: "/demos/google-map",
+        icon: Globe,
       },
     ],
   },

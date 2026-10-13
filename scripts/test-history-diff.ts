@@ -128,6 +128,14 @@ async function run() {
   check("no edges reported added", third.followersAdded + third.followingAdded, 0);
   check("no edges reported lost", third.followersLost + third.followingLost, 0);
   check("reported count captured", third.reportedFollowersAfter, 12400);
+  check("listed change journaled", third.profileFieldsChanged.includes("listedFollowers"), true);
+  const repeat = await applySnapshot({
+    socialAccountId: main,
+    scope: "profile",
+    profile: { reportedFollowersCount: 12400 },
+    source: "extension",
+  });
+  check("unchanged listed count not journaled", repeat.profileFieldsChanged, []);
 
   // ── 4. Authoritative deletion regardless of source ──────────────────────────
   console.log("\n4. A manually entered edge is still authoritative-deleted");

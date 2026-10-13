@@ -4,7 +4,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Plus, Search, X, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Search, X, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban } from "lucide-react";
+import { useBannedActionToggle } from "@/components/banned-action-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -156,6 +157,7 @@ function RescanStatus({ rescan, visible, onSettled }: { rescan: Rescan; visible:
 export default function FaceReviewPage() {
   const { toast } = useToast();
   const noFace = useNoFaceToggle();
+  const bans = useBannedActionToggle();
   const search = useSearch();
   const [, navigate] = useLocation();
   const params = useMemo(() => new URLSearchParams(search), [search]);
@@ -483,15 +485,15 @@ export default function FaceReviewPage() {
     toast({ title: `Re-scan found ${updated.faces.length} face${updated.faces.length === 1 ? "" : "s"}` });
   }
 
-  // Search-as-you-type: people + social accounts (1+ chars, debounced).
+  // Search-as-you-type: people + social accounts (3+ chars, debounced).
   const [debouncedQuery, setDebouncedQuery] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 250);
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  const searchActive = debouncedQuery.length >= 1;
-  const { data: peopleResults = [] } = useQuery<(Person & { uuid?: string; name?: string })[]>({
+  const searchActive = debouncedQuery.length >= 3;
+  const { data: peopleResults = [], isFetching: isSearchingPeople } = useQuery<(Person & { uuid?: string; name?: string })[]>({
     queryKey: ["/api/people/search", { q: debouncedQuery }],
     queryFn: async () => {
       if (!debouncedQuery) return [];
@@ -501,7 +503,7 @@ export default function FaceReviewPage() {
     },
     enabled: searchActive,
   });
-  const { data: accountResults = [] } = useQuery<SocialAccount[]>({
+  const { data: accountResults = [], isFetching: isSearchingAccounts } = useQuery<SocialAccount[]>({
     queryKey: ["/api/social-accounts", { search: debouncedQuery }],
     queryFn: async () => {
       if (!debouncedQuery) return [];
@@ -511,6 +513,7 @@ export default function FaceReviewPage() {
     },
     enabled: searchActive,
   });
+  const isSearchingEntities = isSearchingPeople || isSearchingAccounts;
 
   // Keyboard shortcuts (§4.1): 1-9 focuses a face row, arrows prev/next image, D dismisses the focused face, Space skips all.
   const actionableFaces = useMemo(
@@ -695,6 +698,10 @@ export default function FaceReviewPage() {
                         <ScanFace className="h-4 w-4 mr-2" />
                         {item.account.noFace ? "Match faces to this account again" : "This account doesn't have a face"}
                       </DropdownMenuItem>
+                      <DropdownMenuItem disabled={bans.isPending} onClick={() => bans.set(item.account!, "facial_scan", true)} data-testid="button-ban-facial-scan">
+                        <Ban className="h-4 w-4 mr-2" />
+                        Don't scan this account's photos for faces
+                      </DropdownMenuItem>
                       <DropdownMenuItem
                         disabled={rescanMutation.isPending || (!!rescans[item.photoId] && !rescans[item.photoId].settled)}
                         onClick={() => rescanMutation.mutate(item.photoId)}
@@ -853,7 +860,7 @@ export default function FaceReviewPage() {
                         <div className="relative">
                           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                           <Input
-                            placeholder="Search people or accounts…"
+                            placeholder="Search people or accounts (3+ chars)…"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
                             onKeyDown={(e) => {
@@ -872,8 +879,19 @@ export default function FaceReviewPage() {
                             </button>
                           )}
                         </div>
+                        {searchQuery.trim().length > 0 && searchQuery.trim().length < 3 && (
+                          <div className="border rounded-md p-2 text-xs text-muted-foreground text-center">
+                            Type {3 - searchQuery.trim().length} more character{3 - searchQuery.trim().length > 1 ? "s" : ""} to search…
+                          </div>
+                        )}
                         {searchActive && (
                           <div className="max-h-56 overflow-auto space-y-2 border rounded-md p-1.5">
+                            {isSearchingEntities && (
+                              <div className="p-2 text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Searching…
+                              </div>
+                            )}
+
                             {visiblePeopleResults.length > 0 && (
                               <div className="space-y-0.5">
                                 <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-2 py-0.5">
@@ -926,7 +944,7 @@ export default function FaceReviewPage() {
                               </div>
                             )}
 
-                            {!visibleAccountResults.length && !visiblePeopleResults.length && (
+                            {!isSearchingEntities && !visibleAccountResults.length && !visiblePeopleResults.length && (
                               <div className="px-2 py-1.5 space-y-1.5">
                                 <p className="text-xs text-muted-foreground">No matches for "{debouncedQuery}"</p>
                                 <div className="flex gap-1.5">
@@ -957,6 +975,7 @@ export default function FaceReviewPage() {
         </div>
       )}
       {noFace.dialog}
+      {bans.dialog}
       <SocialAccountDialog
         open={createFor?.kind === "account"}
         onOpenChange={(open) => !open && setCreateFor(null)}

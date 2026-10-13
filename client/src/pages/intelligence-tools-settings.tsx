@@ -29,6 +29,8 @@ import {
   ShieldCheck,
   ShieldOff,
   ShieldAlert,
+  Image as ImageIcon,
+  Film,
   type LucideIcon,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -60,6 +62,8 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   "user-pen": UserPen,
   "at-sign": AtSign,
   "at-sign-search": AtSign,
+  image: ImageIcon,
+  film: Film,
   book: Book,
   "book-plus": BookPlus,
   notebook: NotebookPen,

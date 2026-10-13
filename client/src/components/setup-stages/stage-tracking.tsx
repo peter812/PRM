@@ -109,21 +109,21 @@ export function StageTracking() {
       setCadences(DEFAULT_LEVEL_CADENCES);
     } else if (preset === "aggressive") {
       setCadences({
-        none: { info: null, follows: null, posts: null },
-        low: { info: 14, follows: 14, posts: 30 },
-        medium: { info: 3, follows: 14, posts: 14 },
-        high: { info: 2, follows: 7, posts: 7 },
-        very_high: { info: 1, follows: 3, posts: 3 },
-        extreme: { info: 1, follows: 1, posts: 1 },
+        none: { info: null, follows: null, posts: null, highlights: null },
+        low: { info: 14, follows: 14, posts: 30, highlights: 30 },
+        medium: { info: 3, follows: 14, posts: 14, highlights: 14 },
+        high: { info: 2, follows: 7, posts: 7, highlights: 7 },
+        very_high: { info: 1, follows: 3, posts: 3, highlights: 3 },
+        extreme: { info: 1, follows: 1, posts: 1, highlights: 1 },
       });
     } else if (preset === "light") {
       setCadences({
-        none: { info: null, follows: null, posts: null },
-        low: { info: 60, follows: 60, posts: 90 },
-        medium: { info: 30, follows: 60, posts: 60 },
-        high: { info: 14, follows: 30, posts: 30 },
-        very_high: { info: 7, follows: 14, posts: 14 },
-        extreme: { info: 3, follows: 7, posts: 7 },
+        none: { info: null, follows: null, posts: null, highlights: null },
+        low: { info: 60, follows: 60, posts: 90, highlights: 90 },
+        medium: { info: 30, follows: 60, posts: 60, highlights: 60 },
+        high: { info: 14, follows: 30, posts: 30, highlights: 30 },
+        very_high: { info: 7, follows: 14, posts: 14, highlights: 14 },
+        extreme: { info: 3, follows: 7, posts: 7, highlights: 7 },
       });
     }
     toast({ title: `Applied ${preset} cadence preset` });

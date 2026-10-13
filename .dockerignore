@@ -48,9 +48,6 @@ tests/
 *.spec.ts
 
 # Development files
-.replit
-replit.nix
-replit.md
 *.md
 README.md
 LICENSE

@@ -1,12 +1,12 @@
 /**
- * Map demo (map-page-plan.md §5, §12): people pinned on OpenStreetMap at every
- * address PRM knows for them — the Address field plus TruePeopleSearch current
- * and past addresses. Opening the page starts a server-side geocoding pass for
- * any addresses not located yet; pins appear as it progresses.
+ * Map demo (map-page-plan.md §5, §12): people pinned on a Leaflet map at every
+ * address in their history — primary, other current and past addresses. Opening the page starts a server-side geocoding pass for
+ * any addresses not located yet; pins appear as it progresses. With a Google
+ * Maps key (Settings → Maps) the style picker also offers Google's map types.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
+import { Link, useLocation } from "wouter";
 import L from "leaflet";
 import { MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
@@ -14,75 +14,42 @@ import "leaflet/dist/leaflet.css";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./map-demo.css";
 import { applyVectorTheme, VECTOR_THEMES } from "./map-vector-themes";
-import { AlertCircle, ChevronLeft, ChevronRight, Loader2, MapPin, RotateCcw, Star, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Globe, Loader2, MapPin as MapPinIcon, RotateCcw, Star, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { withImageSize } from "@shared/image-size";
-
-const PEOPLE_URL = "/api/demos/map/people";
-
-/** One (person, address) pair. A person with several addresses has several pins. */
-interface MapPin {
-  id: string; // person id
-  firstName: string;
-  lastName: string;
-  imageUrl: string | null;
-  isStarred: number;
-  tags: string[] | null;
-  address: string;
-  query: string; // the server's cache key for this address; echoed back, never built here
-  source: "profile" | "tps_current" | "tps_past";
-  status: "ok" | "not_found" | "manual" | null;
-  latitude: number | null;
-  longitude: number | null;
-  displayName: string | null;
-}
-
-interface MapData {
-  located: MapPin[];
-  notFound: MapPin[];
-  pending: number;
-  geocoder: { running: boolean; done: number; total: number; error: string | null };
-  tileUrl: string;
-  cartoKey: string | null;
-  attribution: string;
-}
-
-const SOURCE_LABELS: Record<MapPin["source"], string> = {
-  profile: "Address field",
-  tps_current: "TruePeopleSearch — current",
-  tps_past: "TruePeopleSearch — past",
-};
-
-const pinKey = (p: MapPin) => `${p.id}:${p.query}`;
-const fullName = (p: MapPin) => `${p.firstName} ${p.lastName}`.trim();
-
-const escapeHtml = (s: string) =>
-  s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+import {
+  escapeHtml,
+  fullName,
+  PEOPLE_URL,
+  pinHtml,
+  pinKey,
+  SOURCE_LABELS,
+  targetFromUrl,
+  usePrimaryOnly,
+  viewFromUrl,
+  writeViewToUrl,
+  type MapPin,
+  type MapData,
+} from "@/lib/map-shared";
 
 function personIcon(p: MapPin, moving: boolean): L.DivIcon {
-  const initials = `${p.firstName[0] ?? ""}${p.lastName[0] ?? ""}`.toUpperCase();
-  const inner = p.imageUrl
-    ? `<img src="${escapeHtml(withImageSize(p.imageUrl, 64))}" alt="" />`
-    : escapeHtml(initials);
-  const cls = ["map-demo-pin", p.isStarred ? "starred" : "", moving ? "moving" : ""].filter(Boolean).join(" ");
-  return L.divIcon({ className: "", html: `<div class="${cls}">${inner}</div>`, iconSize: [36, 36], iconAnchor: [18, 18], popupAnchor: [0, -18] });
-}
-
-/** Initial view from ?lat=&lng=&z=, if the URL has one. */
-function viewFromUrl(): { center: [number, number]; zoom: number } | null {
-  const params = new URLSearchParams(window.location.search);
-  const lat = Number(params.get("lat"));
-  const lng = Number(params.get("lng"));
-  const zoom = Number(params.get("z"));
-  if (!params.has("lat") || !Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(zoom)) return null;
-  return { center: [lat, lng], zoom };
+  return L.divIcon({ className: "", html: pinHtml(p, moving ? "moving" : ""), iconSize: [36, 36], iconAnchor: [18, 18], popupAnchor: [0, -18] });
 }
 
 /** Keeps ?lat=&lng=&z= in sync with the view, and forwards map clicks. */
@@ -91,8 +58,7 @@ function MapEvents({ onClick }: { onClick: (latlng: L.LatLng) => void }) {
     moveend(e) {
       const map = e.target as L.Map;
       const c = map.getCenter();
-      const params = new URLSearchParams({ lat: c.lat.toFixed(5), lng: c.lng.toFixed(5), z: String(map.getZoom()) });
-      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+      writeViewToUrl(c.lat, c.lng, map.getZoom());
     },
     click(e) {
       onClick(e.latlng);
@@ -130,17 +96,99 @@ const CARTO_ATTRIBUTION =
 const cartoUrl = (style: string, key: string | null) =>
   `https://basemaps.cartocdn.com/${style}/{z}/{x}/{y}.png${key ? `?key=${key}` : ""}`;
 
-/** Color schemes. "standard" uses the server-configured tiles (data.tileUrl). */
+/** Color schemes. "standard" uses the server-configured tiles (data.tileUrl); google_* need a Google key. */
 const MAP_STYLES = {
   standard: { label: "Standard" },
   light: { label: "Light", style: "rastertiles/light_all" },
   voyager: { label: "Voyager", style: "rastertiles/voyager" },
   dark: { label: "Dark", style: "rastertiles/dark_all" },
+  google_roadmap: { label: "Google Roadmap", google: "roadmap" },
+  google_satellite: { label: "Google Satellite", google: "satellite" },
+  google_hybrid: { label: "Google Hybrid", google: "hybrid" },
+  google_terrain: { label: "Google Terrain", google: "terrain", maxNativeZoom: 15 },
 } as const;
 type MapStyleKey = keyof typeof MAP_STYLES;
 
 /** How many zoom levels coarser the raster backdrop is (each level doubles the area it covers). */
 const BACKDROP_LEVELS = 3;
+
+/** Adds attribution while mounted; TileLayer only reads its `attribution` prop once, on add. */
+function Attribution({ html }: { html: string }) {
+  const map = useMap();
+  useEffect(() => {
+    map.attributionControl.addAttribution(html);
+    return () => {
+      map.attributionControl.removeAttribution(html);
+    };
+  }, [map, html]);
+  return null;
+}
+
+function RasterLayers({ url, attribution, className, maxNativeZoom }: {
+  url: string;
+  attribution: string;
+  className?: string;
+  maxNativeZoom?: number;
+}) {
+  return (
+    <>
+      {/* Low-res backdrop: tiles BACKDROP_LEVELS zooms coarser, stretched to fit. Each covers a big
+          area around the view, so zooming out shows blurry map (sharpened as tiles load) instead of gaps. */}
+      <TileLayer
+        key={`${url}-backdrop`}
+        url={url}
+        className={className}
+        tileSize={256 << BACKDROP_LEVELS}
+        zoomOffset={-BACKDROP_LEVELS}
+        minNativeZoom={BACKDROP_LEVELS}
+        zIndex={0}
+        noWrap
+      />
+      <TileLayer key={url} url={url} className={className} maxNativeZoom={maxNativeZoom} zIndex={1} noWrap />
+      <Attribution html={attribution} />
+    </>
+  );
+}
+
+const clamp = (v: number, limit: number) => Math.max(-limit, Math.min(limit, v));
+
+/** Google Map Tiles: the server holds the session; the copyright follows the viewport, as Google requires. */
+function GoogleLayers({ type, apiKey, maxNativeZoom, onError }: {
+  type: string;
+  apiKey: string;
+  maxNativeZoom?: number;
+  onError: (message: string) => void;
+}) {
+  const map = useMap();
+  const viewParams = () => {
+    const b = map.getBounds();
+    return new URLSearchParams({
+      zoom: String(Math.round(map.getZoom())),
+      north: String(clamp(b.getNorth(), 89.999)),
+      south: String(clamp(b.getSouth(), 89.999)),
+      east: String(clamp(b.getEast(), 179.999)),
+      west: String(clamp(b.getWest(), 179.999)),
+    }).toString();
+  };
+  const [view, setView] = useState(viewParams);
+  useMapEvents({ moveend: () => setView(viewParams()) });
+  const { data, error } = useQuery<{ session: string; copyright: string }>({
+    queryKey: [`/api/demos/map/google/${type}?${view}`],
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+  useEffect(() => {
+    if (error) onError(error.message);
+  }, [error]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!data) return null;
+  return (
+    <RasterLayers
+      url={`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${data.session}&key=${apiKey}`}
+      attribution={`Google Maps${data.copyright ? ` &middot; ${escapeHtml(data.copyright)}` : ""}`}
+      maxNativeZoom={maxNativeZoom}
+    />
+  );
+}
 
 const POSITRON_STYLE_URL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const withCartoKey = (url: string, key: string | null) =>
@@ -230,10 +278,14 @@ function FitOnce({ points, skip, growing, panelOpen }: { points: [number, number
 
 export default function MapDemo() {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const [initialView] = useState(viewFromUrl);
+  const [target] = useState(targetFromUrl); // opened from a person's address
+  const targetShown = useRef(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [search, setSearch] = useState("");
   const [starredOnly, setStarredOnly] = useState(false);
+  const [primaryOnly, setPrimaryOnly] = usePrimaryOnly();
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [placingKey, setPlacingKey] = useState<string | null>(null); // not-found pin awaiting a map click
   const [movingKey, setMovingKey] = useState<string | null>(null); // located pin that is draggable
@@ -242,7 +294,7 @@ export default function MapDemo() {
   const markers = useRef(new Map<string, L.Marker>());
   const cluster = useRef<L.MarkerClusterGroup>(null);
 
-  const { data, isLoading } = useQuery<MapData>({
+  const { data, isLoading, isFetching } = useQuery<MapData>({
     queryKey: [PEOPLE_URL],
     refetchInterval: (query) => (query.state.data?.geocoder.running ? 5000 : false),
   });
@@ -257,8 +309,11 @@ export default function MapDemo() {
       /* storage unavailable */
     }
   };
-  const rasterStyle = MAP_STYLES[prefs.raster];
-  const tileStyle = "style" in rasterStyle ? { url: cartoUrl(rasterStyle.style, data?.cartoKey ?? null) } : null;
+  const googleKey = data?.googleKey ?? null;
+  // A saved Google style falls back to Standard once the key is removed.
+  const rasterKey: MapStyleKey = "google" in MAP_STYLES[prefs.raster] && !googleKey ? "standard" : prefs.raster;
+  const rasterStyle = MAP_STYLES[rasterKey];
+  const styleOptions = Object.entries(MAP_STYLES).filter(([, st]) => googleKey || !("google" in st));
 
   const locate = useMutation({
     mutationFn: () => apiRequest("POST", "/api/demos/map/geocode"),
@@ -280,35 +335,44 @@ export default function MapDemo() {
     onError: (e: Error) => toast({ title: "Couldn't save pin", description: e.message, variant: "destructive" }),
   });
 
+  const [removingPin, setRemovingPin] = useState<MapPin | null>(null);
+  const remove = useMutation({
+    mutationFn: (p: MapPin) => apiRequest("DELETE", "/api/demos/map/pins", { personId: p.id, query: p.query }),
+    onSuccess: () => {
+      setRemovingPin(null);
+      refresh();
+    },
+    onError: (e: Error) => toast({ title: "Couldn't remove pin", description: e.message, variant: "destructive" }),
+  });
+
   const retry = useMutation({
     mutationFn: (query?: string) => apiRequest("POST", "/api/demos/map/geocodes/retry", query ? { query } : {}),
     onSettled: refresh,
   });
 
-  const allTags = useMemo(
-    () => Array.from(new Set(data?.located.flatMap((p) => p.tags ?? []) ?? [])).sort(),
-    [data],
+  // Every pin the address-type toggle allows; the other filters narrow this further.
+  const located = useMemo(
+    () => (data?.located ?? []).filter((p) => !primaryOnly || p.source === "primary"),
+    [data, primaryOnly],
   );
-  const points = useMemo(
-    () => data?.located.map((p) => [p.latitude!, p.longitude!] as [number, number]) ?? [],
-    [data],
-  );
+  const allTags = useMemo(() => Array.from(new Set(located.flatMap((p) => p.tags ?? []))).sort(), [located]);
+  const points = useMemo(() => located.map((p) => [p.latitude!, p.longitude!] as [number, number]), [located]);
   const q = search.trim().toLowerCase();
   const visible = useMemo(
     () =>
-      (data?.located ?? []).filter(
+      located.filter(
         (p) =>
           (!starredOnly || p.isStarred) &&
           (selectedTags.size === 0 || (p.tags ?? []).some((t) => selectedTags.has(t))) &&
           (!q || fullName(p).toLowerCase().includes(q)),
       ),
-    [data, starredOnly, selectedTags, q],
+    [located, starredOnly, selectedTags, q],
   );
   const pinsByPerson = useMemo(() => {
     const byPerson = new Map<string, MapPin[]>();
-    for (const p of data?.located ?? []) byPerson.set(p.id, [...(byPerson.get(p.id) ?? []), p]);
+    for (const p of located) byPerson.set(p.id, [...(byPerson.get(p.id) ?? []), p]);
     return byPerson;
-  }, [data]);
+  }, [located]);
   const visiblePeople = useMemo(() => Array.from(new Map(visible.map((p) => [p.id, p])).values()), [visible]);
 
   // One pin: open it. Several: fit them all.
@@ -322,6 +386,25 @@ export default function MapDemo() {
       map?.fitBounds(L.latLngBounds(pins.map((p) => [p.latitude!, p.longitude!])), fitOptions(panelOpen));
     }
   };
+
+  // Opened from a person's address: zoom in on that pin once it is on the map. An address still being
+  // geocoded waits for the pass; one that can't be located falls back to the person's other pins.
+  useEffect(() => {
+    if (!target || targetShown.current || !data || !map || !cluster.current) return;
+    const pin = data.located.find((p) => p.id === target.personId && (!target.address || p.address === target.address));
+    const marker = pin && markers.current.get(pinKey(pin));
+    if (pin && marker) {
+      targetShown.current = true;
+      map.setView([pin.latitude!, pin.longitude!], 17, { animate: false });
+      cluster.current.zoomToShowLayer(marker, () => marker.openPopup());
+    } else if (!data.geocoder.running && !locate.isIdle && !locate.isPending && !isFetching) {
+      targetShown.current = true;
+      if (target.address) toast({ title: "Address not on the map", description: target.address });
+      focus(target.personId);
+    }
+  }, [data, map, minZoom, locate.isPending, isFetching]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const targetPerson = target && [...(data?.located ?? []), ...(data?.notFound ?? [])].find((p) => p.id === target.personId);
 
   const toggleTag = (tag: string) =>
     setSelectedTags((prev) => {
@@ -339,7 +422,8 @@ export default function MapDemo() {
   const geocoder = data?.geocoder;
 
   return (
-    <div className={`relative h-full w-full ${placingPin ? "map-demo-placing" : ""}`}>
+    // isolate: keeps the map's z-[1000] overlays below portaled dialogs
+    <div className={`relative isolate h-full w-full ${placingPin ? "map-demo-placing" : ""}`}>
       <MapContainer
         center={initialView?.center ?? [20, 0]}
         zoom={initialView?.zoom ?? 2}
@@ -351,32 +435,25 @@ export default function MapDemo() {
       >
         {data && prefs.mode === "vector" && <VectorLayer themeKey={prefs.vector} cartoKey={data.cartoKey} />}
         {data && prefs.mode === "raster" && (
-          <>
-            {/* Low-res backdrop: tiles BACKDROP_LEVELS zooms coarser, stretched to fit. Each covers a big
-                area around the view, so zooming out shows blurry map (sharpened as tiles load) instead of gaps. */}
-            <TileLayer
-              key={`${prefs.raster}-backdrop`}
-              url={tileStyle ? tileStyle.url : data.tileUrl}
-              className={tileStyle ? "" : "map-demo-tiles"}
-              tileSize={256 << BACKDROP_LEVELS}
-              zoomOffset={-BACKDROP_LEVELS}
-              minNativeZoom={BACKDROP_LEVELS}
-              zIndex={0}
-              noWrap
+          "google" in rasterStyle && googleKey ? (
+            <GoogleLayers
+              type={rasterStyle.google}
+              apiKey={googleKey}
+              maxNativeZoom={"maxNativeZoom" in rasterStyle ? rasterStyle.maxNativeZoom : undefined}
+              onError={(message) => {
+                toast({ title: "Google tiles unavailable", description: message, variant: "destructive" });
+                updatePrefs({ raster: "standard" });
+              }}
             />
-            <TileLayer
-              key={prefs.raster}
-              url={tileStyle ? tileStyle.url : data.tileUrl}
-              attribution={tileStyle ? CARTO_ATTRIBUTION : data.attribution}
-              className={tileStyle ? "" : "map-demo-tiles"}
-              zIndex={1}
-              noWrap
-            />
-          </>
+          ) : "style" in rasterStyle ? (
+            <RasterLayers url={cartoUrl(rasterStyle.style, data.cartoKey)} attribution={CARTO_ATTRIBUTION} />
+          ) : (
+            <RasterLayers url={data.tileUrl} attribution={data.attribution} className="map-demo-tiles" />
+          )
         )}
         <WorldMinZoom onChange={setMinZoom} />
         <MapEvents onClick={handleMapClick} />
-        <FitOnce points={points} skip={!!initialView} growing={!!data?.geocoder.running} panelOpen={panelOpen} />
+        <FitOnce points={points} skip={!!initialView || !!target} growing={!!data?.geocoder.running} panelOpen={panelOpen} />
         {minZoom !== null && (
         <MarkerClusterGroup key={minZoom} ref={cluster} chunkedLoading>
           {visible.map((p) => {
@@ -415,7 +492,7 @@ export default function MapDemo() {
                     </button>
                   )}
                   <div className="flex gap-3 pt-1 text-xs">
-                    <Link href={`/person/${p.id}`}>Open profile</Link>
+                    <Link href={`/person/${p.id}?from=map`}>Open profile</Link>
                     <button
                       type="button"
                       className="text-[#0078A8] hover:underline"
@@ -425,6 +502,16 @@ export default function MapDemo() {
                       }}
                     >
                       Move pin
+                    </button>
+                    <button
+                      type="button"
+                      className="text-red-600 hover:underline"
+                      onClick={() => {
+                        setRemovingPin(p);
+                        markers.current.get(key)?.closePopup();
+                      }}
+                    >
+                      Remove
                     </button>
                   </div>
                 </div>
@@ -451,12 +538,12 @@ export default function MapDemo() {
           ))}
         </div>
         {prefs.mode === "raster" ? (
-          <Select value={prefs.raster} onValueChange={(v) => updatePrefs({ raster: v as MapStyleKey })}>
-            <SelectTrigger className="h-8 w-36 bg-background" aria-label="Map color scheme">
+          <Select value={rasterKey} onValueChange={(v) => updatePrefs({ raster: v as MapStyleKey })}>
+            <SelectTrigger className="h-8 w-44 bg-background" aria-label="Map color scheme">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {Object.entries(MAP_STYLES).map(([key, st]) => (
+              {styleOptions.map(([key, st]) => (
                 <SelectItem key={key} value={key}>{st.label}</SelectItem>
               ))}
             </SelectContent>
@@ -486,16 +573,39 @@ export default function MapDemo() {
           <div className="flex items-start justify-between gap-2">
             <div>
               <h1 className="font-semibold flex items-center gap-2">
-                <MapPin className="h-4 w-4" /> Map
+                <MapPinIcon className="h-4 w-4" /> Map
               </h1>
               <p className="text-xs text-muted-foreground">
-                {isLoading ? "Loading…" : `${pinsByPerson.size} people · ${data?.located.length ?? 0} addresses · showing ${visible.length}`}
+                {isLoading ? "Loading…" : `${pinsByPerson.size} people · ${located.length} addresses · showing ${visible.length}`}
               </p>
             </div>
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setPanelOpen(false)}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
+            <div className="flex gap-1">
+              {googleKey && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  title="Open in Google Map (Street View)"
+                  onClick={() => navigate(`/demos/google-map${window.location.search}`)}
+                >
+                  <Globe className="h-4 w-4" />
+                </Button>
+              )}
+              <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setPanelOpen(false)}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
+
+          {targetPerson && (
+            <Link
+              href={`/person/${targetPerson.id}`}
+              className="flex items-center gap-1 text-sm text-primary hover:underline"
+              data-testid="link-back-to-person"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" /> Back to {fullName(targetPerson)}
+            </Link>
+          )}
 
           {geocoder?.running && geocoder.total > 0 && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -554,6 +664,12 @@ export default function MapDemo() {
                 <Star className="h-3 w-3" /> Starred only
               </Label>
             </div>
+            <div className="flex items-center gap-2">
+              <Switch id="map-primary" checked={primaryOnly} onCheckedChange={setPrimaryOnly} />
+              <Label htmlFor="map-primary" className="text-sm flex items-center gap-1">
+                <MapPinIcon className="h-3 w-3" /> Primary addresses only
+              </Label>
+            </div>
             {allTags.length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {allTags.map((tag) => (
@@ -599,6 +715,31 @@ export default function MapDemo() {
           )}
         </div>
       )}
+
+      <AlertDialog open={!!removingPin} onOpenChange={(open) => !open && setRemovingPin(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove this location?</AlertDialogTitle>
+            <AlertDialogDescription>
+              "{removingPin?.address}" will be removed from {removingPin && fullName(removingPin)} in the database — from
+              the Address field and TruePeopleSearch data, wherever it appears. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={remove.isPending}
+              onClick={(e) => {
+                e.preventDefault(); // stay open until the delete finishes
+                if (removingPin) remove.mutate(removingPin);
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

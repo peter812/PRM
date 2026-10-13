@@ -8,7 +8,7 @@ This guide documents the external REST API endpoints available for integrating w
 
 All API requests should be made to:
 ```
-https://your-app-domain.replit.app/api
+https://your-app-domain.com/api
 ```
 
 ## Authentication
@@ -39,7 +39,7 @@ Include the API key in the `X-API-Key` header with each request:
 
 ```bash
 curl -H "X-API-Key: your-api-key-here" \
-  https://your-app-domain.replit.app/api/people
+  https://your-app-domain.com/api/people
 ```
 
 **Note**: API keys are hashed in the database and never exposed in data exports for security.
@@ -188,6 +188,7 @@ GET /api/people/:id
   "imageUrl": "https://...",
   "socialAccountUuids": ["uuid1"],
   "noSocialMedia": 0,
+  "primaryAddress": { "address": "5418 N Simpson Rd, Otis Orchards, WA 99027", "outdated": false },
   "notes": [...],
   "interactions": [...],
   "groups": [...],
@@ -299,6 +300,77 @@ DELETE /api/people/:id
 **Response:** `200 OK` — `{ "success": true }`
 
 **Note**: Cascade deletes associated notes, removes the person from groups, and cleans up relationships.
+
+---
+
+### Addresses
+
+A person has an address history: any number of **current** addresses (no `endDate`), exactly one of which can be **primary**, plus **past** addresses. Dates are partial: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. An `endDate` of `"0000"` means the address ended on an unknown date. A primary that gets an end date stays primary and is reported as `outdated` until another address is made primary.
+
+`GET /api/people/:id` includes `primaryAddress` (`{ address, outdated }` or `null`).
+
+#### List a Person's Addresses
+
+```http
+GET /api/people/:id/addresses
+```
+
+**Response:** primary first, then current, then past (latest first).
+```json
+[
+  {
+    "id": "uuid",
+    "personId": "uuid",
+    "address": "5418 N Simpson Rd, Otis Orchards, WA 99027",
+    "label": "Home",
+    "startDate": "2017-07",
+    "endDate": null,
+    "isPrimary": 1,
+    "source": "manual",
+    "propertyUrl": null,
+    "createdAt": "...",
+    "updatedAt": "..."
+  }
+]
+```
+
+`source` is `manual`, `tps` (TruePeopleSearch import) or `legacy` (the old single address field).
+
+#### Add an Address
+
+```http
+POST /api/people/:id/addresses
+Content-Type: application/json
+
+{
+  "address": "123 Campus Dr, Dorm 4B",
+  "label": "Dorm",
+  "startDate": "2024-09",
+  "endDate": null,
+  "isPrimary": true
+}
+```
+
+**Response:** `201 Created` with the address. A person's first current address becomes primary automatically. Only a current address (no `endDate`) can be primary. Errors: `400` (bad date, end before start, primary with an end date), `404` (no such person), `409` (the person already has that address).
+
+#### Update an Address
+
+```http
+PATCH /api/addresses/:id
+Content-Type: application/json
+
+{ "endDate": "2025-05" }
+```
+
+Any field from Add. `{ "isPrimary": true }` makes the address primary (and clears the previous one). **Response:** `200 OK` with the address.
+
+#### Delete an Address
+
+```http
+DELETE /api/addresses/:id
+```
+
+**Response:** `200 OK` — `{ "ok": true }`. Deleting the primary does not promote another address.
 
 ---
 
@@ -2318,6 +2390,56 @@ GET /api/social-accounts/:id/stories?activeOnly=true
 
 ---
 
+### Get Account Highlights (Pinned Stories)
+
+Every highlight set on an Instagram account (its pinned stories), deleted sets included, oldest first. Each set lists its **stints**: one per time a story was in the set. Open stints (`leftSeenAt: null`) are the current membership, in `position` order. Timestamps record when PRM learned each fact, not when it happened on Instagram. A stint's `postId` is the story's row in `GET /api/social-accounts/:id/posts`. If PRM hasn't downloaded that story yet, the row doesn't exist.
+
+```http
+GET /api/social-accounts/:id/highlights
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "highlight-uuid",
+    "socialAccountId": "account-uuid",
+    "instagramId": "18042422108256753",
+    "title": "Travel",
+    "color": "#e11d48",
+    "firstSeenAt": "2026-10-01T08:12:00.000Z",
+    "lastSeenAt": "2026-10-12T08:05:00.000Z",
+    "deletedSeenAt": null,
+    "stints": [
+      {
+        "id": "stint-uuid",
+        "highlightId": "highlight-uuid",
+        "storyPk": "3456789012345678901",
+        "postId": "post-uuid",
+        "position": 0,
+        "placedSeenAt": "2026-10-01T08:12:00.000Z",
+        "lastConfirmedAt": "2026-10-12T08:05:00.000Z",
+        "leftSeenAt": null,
+        "leftReason": null
+      }
+    ]
+  }
+]
+```
+
+`leftReason` is `"removed"` (the story was taken out of the set) or `"set_deleted"`. Sets are refreshed by `highlights` tracking jobs. To refresh one account now, call `POST /api/social-accounts/:id/tracking-jobs` with `{ "kind": "highlights" }`.
+
+### Recolor a Highlight
+
+```http
+PATCH /api/instagram-highlights/:id
+Content-Type: application/json
+
+{ "color": "#2563eb" }
+```
+
+---
+
 ### Get Social Profile Version History
 
 Retrieve historical snapshot changes of bio, nickname, follower count, and avatar URLs over time.
@@ -2540,7 +2662,7 @@ No rate limiting is currently enforced. For production integrations, implement a
 ### JavaScript/Node.js Example
 
 ```javascript
-const API_BASE = 'https://your-app.replit.app/api';
+const API_BASE = 'https://your-app-domain.com/api';
 const API_KEY = 'your-api-key';
 
 // Helper function for API calls
@@ -2643,7 +2765,7 @@ async function getSocialAccounts({ search, typeId, offset = 0, limit = 30 } = {}
 import requests
 from datetime import datetime, timedelta
 
-API_BASE = 'https://your-app.replit.app/api'
+API_BASE = 'https://your-app-domain.com/api'
 API_KEY = 'your-api-key'
 
 headers = {

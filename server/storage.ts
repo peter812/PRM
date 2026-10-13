@@ -430,6 +430,7 @@ export interface IStorage {
     typeId?: string;
     followsAccountIds?: string[];
     interestLevel?: string;
+    starredOnly?: boolean;
     sortBy?: string;
   }): Promise<SocialAccountWithCurrentProfile[]>;
   getSocialAccountById(id: string): Promise<SocialAccountWithCurrentProfile | undefined>;
@@ -492,7 +493,7 @@ export interface IStorage {
   deleteSocialAccountType(id: string): Promise<void>;
 
   // Social account post operations
-  getPostsBySocialAccountId(socialAccountId: string, includeDeleted?: boolean): Promise<SocialAccountPost[]>;
+  getPostsBySocialAccountId(socialAccountId: string, includeDeleted?: boolean, postType?: string): Promise<SocialAccountPost[]>;
   getAllPosts(): Promise<SocialAccountPost[]>;
   getPostById(id: string): Promise<SocialAccountPost | undefined>;
   createPost(post: InsertSocialAccountPost): Promise<SocialAccountPost>;
@@ -939,50 +940,57 @@ export class DatabaseStorage implements IStorage {
   // People operations
   async getAllPeople(searchQuery?: string): Promise<Person[]> {
     if (searchQuery) {
-      const query = `%${searchQuery}%`;
-      const startQuery = `${searchQuery}%`;
-      
-      return await db
-        .select()
-        .from(people)
-        .where(
-          and(
-            sql`(
-              ${people.firstName} ILIKE ${query} OR
-              ${people.lastName} ILIKE ${query} OR
-              CONCAT(${people.firstName}, ' ', ${people.lastName}) ILIKE ${query} OR
-              CONCAT(${people.lastName}, ' ', ${people.firstName}) ILIKE ${query} OR
-              ${people.email} ILIKE ${query} OR
-              ${people.company} ILIKE ${query} OR
-              EXISTS (
-                SELECT 1 FROM unnest(${people.tags}) AS tag
-                WHERE tag ILIKE ${query}
-              )
-            )`,
-          )
-        )
-        .orderBy(
-          sql`CASE
-            WHEN ${people.firstName} ILIKE ${startQuery} THEN 0
-            WHEN ${people.lastName} ILIKE ${startQuery} THEN 1
-            ELSE 2
-          END`,
-          sql`CASE
-            WHEN ${people.firstName} ILIKE ${startQuery} THEN ${people.firstName}
-            WHEN ${people.lastName} ILIKE ${startQuery} THEN ${people.lastName}
-            ELSE ${people.firstName}
-          END`,
-          sql`CASE
-            WHEN ${people.firstName} ILIKE ${startQuery} THEN ${people.lastName}
-            WHEN ${people.lastName} ILIKE ${startQuery} THEN ${people.firstName}
-            ELSE ${people.lastName}
-          END`
-        );
+      // Low-value (bulk-imported) people are only searched when nobody else matches.
+      const standard = await this.searchPeople(searchQuery, false);
+      return standard.length > 0 ? standard : this.searchPeople(searchQuery, true);
     }
     return await db
       .select()
       .from(people)
       ;
+  }
+
+  private async searchPeople(searchQuery: string, lowValue: boolean): Promise<Person[]> {
+    const query = `%${searchQuery}%`;
+    const startQuery = `${searchQuery}%`;
+    
+    return await db
+      .select()
+      .from(people)
+      .where(
+        and(
+          eq(people.isLowValue, lowValue ? 1 : 0),
+          sql`(
+            ${people.firstName} ILIKE ${query} OR
+            ${people.lastName} ILIKE ${query} OR
+            CONCAT(${people.firstName}, ' ', ${people.lastName}) ILIKE ${query} OR
+            CONCAT(${people.lastName}, ' ', ${people.firstName}) ILIKE ${query} OR
+            ${people.email} ILIKE ${query} OR
+            ${people.company} ILIKE ${query} OR
+            EXISTS (
+              SELECT 1 FROM unnest(${people.tags}) AS tag
+              WHERE tag ILIKE ${query}
+            )
+          )`,
+        )
+      )
+      .orderBy(
+        sql`CASE
+          WHEN ${people.firstName} ILIKE ${startQuery} THEN 0
+          WHEN ${people.lastName} ILIKE ${startQuery} THEN 1
+          ELSE 2
+        END`,
+        sql`CASE
+          WHEN ${people.firstName} ILIKE ${startQuery} THEN ${people.firstName}
+          WHEN ${people.lastName} ILIKE ${startQuery} THEN ${people.lastName}
+          ELSE ${people.firstName}
+        END`,
+        sql`CASE
+          WHEN ${people.firstName} ILIKE ${startQuery} THEN ${people.lastName}
+          WHEN ${people.lastName} ILIKE ${startQuery} THEN ${people.firstName}
+          ELSE ${people.lastName}
+        END`
+      );
   }
 
   async getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>> {
@@ -1157,7 +1165,7 @@ export class DatabaseStorage implements IStorage {
         })
         .from(people)
         .leftJoin(meRel, eq(meRel.otherId, people.id))
-        .where(ne(people.id, mePersonId))
+        .where(and(ne(people.id, mePersonId), eq(people.isLowValue, 0)))
         .orderBy(
           ...(sortBy === 'elo_high'
             ? [sql`${people.eloScore} DESC`, people.firstName, people.lastName]
@@ -1226,10 +1234,11 @@ export class DatabaseStorage implements IStorage {
             )
       )
       .leftJoin(relationshipTypes, eq(relationships.typeId, relationshipTypes.id))
-      // Hide the "Me" row.
+      // Hide the "Me" row and low-value (bulk-imported) people.
       .where(
         and(
           mePersonId ? sql`${people.id} <> ${mePersonId}` : undefined,
+          eq(people.isLowValue, 0),
         )
       )
       .groupBy(people.id)
@@ -3403,10 +3412,15 @@ export class DatabaseStorage implements IStorage {
     typeId?: string;
     followsAccountIds?: string[];
     interestLevel?: string;
+    starredOnly?: boolean;
     sortBy?: string;
   }): Promise<SocialAccountWithCurrentProfile[]> {
-    const { offset, limit, searchQuery, typeId, followsAccountIds, interestLevel, sortBy } = options;
+    const { offset, limit, searchQuery, typeId, followsAccountIds, interestLevel, starredOnly, sortBy } = options;
     const conditions = [];
+
+    if (starredOnly) {
+      conditions.push(eq(socialAccounts.isStarred, true));
+    }
 
     if (interestLevel) {
       conditions.push(eq(socialAccounts.interestLevel, interestLevel));
@@ -3562,7 +3576,7 @@ export class DatabaseStorage implements IStorage {
     "username", "ownerUuid", "groupId", "typeId", "internalAccountCreationType",
     "lastScrapedAt", "isSimple",
     "nickname", "bio", "accountUrl", "imageUrl", "externalImageUrl", "location",
-    "skipStories",
+    "skipStories", "isStarred",
   ] as const;
 
   async updateSocialAccount(
@@ -4913,10 +4927,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Social account post operations
-  async getPostsBySocialAccountId(socialAccountId: string, includeDeleted: boolean = false): Promise<SocialAccountPost[]> {
+  async getPostsBySocialAccountId(socialAccountId: string, includeDeleted: boolean = false, postType?: string): Promise<SocialAccountPost[]> {
     const conditions = [postedBy(socialAccountId)];
     if (!includeDeleted) {
       conditions.push(eq(socialAccountPosts.isDeleted, false));
+    }
+    if (postType) {
+      conditions.push(eq(socialAccountPosts.postType, postType));
     }
     return await db
       .select()
@@ -5042,13 +5059,11 @@ export class DatabaseStorage implements IStorage {
       ? and(...conditions)
       : undefined;
 
+    // id tiebreaker: photos imported in bulk share uploadedAt, and without a total order
+    // offset pages can overlap (duplicate rows across pages).
     const [items, countResult] = await Promise.all([
-      whereCondition
-        ? db.select().from(photos).where(whereCondition).orderBy(desc(photos.uploadedAt)).limit(limit).offset(offset)
-        : db.select().from(photos).orderBy(desc(photos.uploadedAt)).limit(limit).offset(offset),
-      whereCondition
-        ? db.select({ count: sql<number>`count(*)::int` }).from(photos).where(whereCondition)
-        : db.select({ count: sql<number>`count(*)::int` }).from(photos),
+      db.select().from(photos).where(whereCondition).orderBy(desc(photos.uploadedAt), desc(photos.id)).limit(limit).offset(offset),
+      db.select({ count: sql<number>`count(*)::int` }).from(photos).where(whereCondition),
     ]);
 
     return { items, total: countResult[0]?.count ?? 0 };

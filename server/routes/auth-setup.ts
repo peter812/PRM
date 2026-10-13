@@ -5,7 +5,7 @@ import { storage } from "../storage";
 import { isAiEnabled } from "../ai/provider";
 import { describePhotoInBackground } from "../ai/describe";
 import { applyBigAccountRule } from "../tracking";
-import { TRACKING_BIG_ACCOUNTS_NONE_KEY } from "@shared/interest-level";
+import { TRACKING_BIG_ACCOUNTS_NONE_KEY, TRACKING_MENTIONS_CREATE_KEY, TRACKING_MENTIONS_QUEUE_INFO_KEY } from "@shared/interest-level";
 import { db } from "../db";
 import { users, interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, lineage, partnerships, photos, dailyNoteEvents, dailyNoteInvolvedParties, dailyNoteAuditLogs, sexGuessQueue, appSettings, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
@@ -1654,7 +1654,6 @@ export function registerRoutes(app: Express) {
         }
         const keys = [
           "experimental_demos_enabled",
-          "images_tab_enabled",
           "chrome_extension_id",
           "chrome_extension_max_records",
           "osint_auto_scan_enabled",
@@ -1669,11 +1668,16 @@ export function registerRoutes(app: Express) {
           "tracking_level_defaults",
           "tracking_skip_recent",
           TRACKING_BIG_ACCOUNTS_NONE_KEY,
+          TRACKING_MENTIONS_CREATE_KEY,
+          TRACKING_MENTIONS_QUEUE_INFO_KEY,
           "posts_import_comments",
           "posts_comment_limit",
           "posts_scan_limit",
           "posts_download_videos",
           "connection_strength",
+          "google_maps_api_key",
+          "google_maps_map_id",
+          "carto_api_key",
         ];
         const settings: Record<string, string | null> = {};
         for (const key of keys) {

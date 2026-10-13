@@ -4,8 +4,13 @@ import { Link } from "wouter";
 import { Loader2, ImageIcon, ImageOff } from "lucide-react";
 import { imageDetailHref } from "@/lib/image-link";
 import { Skeleton } from "@/components/ui/skeleton";
+import { withImageSize } from "@shared/image-size";
 
 const PAGE_SIZE = 60;
+
+// PRM-S3 only bakes certain sizes per folder (profiles: 64/150, posts/stories: 360);
+// any other size serves the full original.
+const gridThumbSize = (url: string) => (url.includes("/profiles/") ? 150 : 360);
 
 type PhotoListItem = {
   id: string;
@@ -119,7 +124,7 @@ export default function ImagesListPage() {
               >
                 {photo.location ? (
                   <img
-                    src={photo.location}
+                    src={withImageSize(photo.location, gridThumbSize(photo.location))}
                     alt=""
                     className="h-full w-full object-cover"
                     loading="lazy"

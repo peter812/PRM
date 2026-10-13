@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive,  MessageSquare, Radar, Instagram, Server, History } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive,  MessageSquare, Radar, Instagram, Server, History, Globe } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -27,7 +27,6 @@ const UnifiedSetupPage = lazy(() => import("@/pages/unified-setup-page"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
-const ExperimentalFeaturesPage = lazy(() => import("@/pages/experimental-features"));
 const DataTypesPage = lazy(() => import("@/pages/data-types"));
 const ApiSettingsPage = lazy(() => import("@/pages/api-settings"));
 const ChromeExtensionSettingsPage = lazy(() => import("@/pages/chrome-extension-settings"));
@@ -57,6 +56,7 @@ const IntelligenceExternalToolsSettingsPage = lazy(() => import("@/pages/intelli
 const IntelligenceImagesSettingsPage = lazy(() => import("@/pages/intelligence-images-settings"));
 const VectorSettingsPage = lazy(() => import("@/pages/vector-settings"));
 const OsintSettingsPage = lazy(() => import("@/pages/osint-settings"));
+const MapsSettingsPage = lazy(() => import("@/pages/maps-settings"));
 const TaskDetailPage = lazy(() => import("@/pages/task-detail"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -96,7 +96,7 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Social Graph", url: "/settings/social-graph", icon: Network },
       { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
       { title: "Search Options", url: "/settings/search", icon: Search },
-      { title: "Experimental Features", url: "/settings/experimental", icon: Sparkles },
+      { title: "Maps", url: "/settings/maps", icon: Globe },
       { title: "Data Types", url: "/settings/data-types", icon: Layers },
       { title: "Delete Options", url: "/settings/delete", icon: Trash2 },
     ],
@@ -179,7 +179,6 @@ export function SettingsSidebar() {
     location.startsWith("/settings/app") ||
     location.startsWith("/settings/social-graph") ||
     location.startsWith("/settings/chrome-extension") ||
-    location.startsWith("/settings/experimental") ||
     location.startsWith("/settings/search") ||
     location.startsWith("/settings/data-types") ||
     location.startsWith("/settings/delete");
@@ -293,7 +292,7 @@ export default function SettingsLayout() {
           <Route path="/user" component={UserOptionsPage} />
           <Route path="/app" component={AppOptionsPage} />
           <Route path="/search" component={SearchSettingsPage} />
-          <Route path="/experimental" component={ExperimentalFeaturesPage} />
+          <Route path="/maps" component={MapsSettingsPage} />
           <Route path="/data-types" component={DataTypesPage} />
           <Route path="/image-tasks" component={ImageTasksSettingsPage} />
           <Route path="/image-storage/tasks" component={ImageTasksSettingsPage} />

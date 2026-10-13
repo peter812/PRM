@@ -1,4 +1,9 @@
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import { Network, Chrome, Key, Search, Sparkles, Layers, Trash2, ChevronRight } from "lucide-react";
 
@@ -32,13 +37,6 @@ const APP_OPTIONS = [
     testId: "card-search-options-link",
   },
   {
-    href: "/settings/experimental",
-    icon: Sparkles,
-    title: "Experimental Features",
-    description: "Enable and test experimental tools and integrations",
-    testId: "card-experimental-features-link",
-  },
-  {
     href: "/settings/data-types",
     icon: Layers,
     title: "Data Types",
@@ -55,6 +53,31 @@ const APP_OPTIONS = [
 ];
 
 export default function AppOptionsPage() {
+  const { toast } = useToast();
+
+  const { data: settings } = useQuery<Record<string, string | null>>({
+    queryKey: ["/api/settings"],
+  });
+
+  const updateSettingMutation = useMutation({
+    mutationFn: async ({ key, value }: { key: string; value: string }) => {
+      const res = await apiRequest("POST", "/api/settings", { key, value });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to update setting",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const demosEnabled = settings?.experimental_demos_enabled === "true";
+
   return (
     <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="space-y-2 mb-6 max-w-3xl">
@@ -83,6 +106,51 @@ export default function AppOptionsPage() {
             </Card>
           </Link>
         ))}
+      </div>
+
+      <div className="mt-10 mb-6 max-w-3xl">
+        <h2 className="text-xl font-semibold" data-testid="text-experimental-features-title">
+          Experimental Features
+        </h2>
+        <p className="text-muted-foreground mt-1">
+          Enable or disable preview capabilities and experimental layouts.
+        </p>
+      </div>
+
+      <div className="settings-cards-grid">
+        {/* Switch for Demos section */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="h-5 w-5 text-muted-foreground" />
+              Demos Sidebar Menu
+            </CardTitle>
+            <CardDescription>
+              Show a link to the Demos page in the sidebar menu to explore upcoming features.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex items-center justify-between">
+            <Label htmlFor="demos-switch" className="flex-1 cursor-pointer pr-4">
+              Enable Demos Sidebar Link
+            </Label>
+            <Switch
+              id="demos-switch"
+              checked={demosEnabled}
+              disabled={!settings}
+              onCheckedChange={(checked) => {
+                updateSettingMutation.mutate({
+                  key: "experimental_demos_enabled",
+                  value: checked ? "true" : "false",
+                });
+                toast({
+                  title: checked ? "Demos sidebar link enabled" : "Demos sidebar link disabled",
+                  description: "Changes will reflect in the sidebar menu.",
+                });
+              }}
+              data-testid="switch-experimental-demos"
+            />
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

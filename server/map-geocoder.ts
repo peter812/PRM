@@ -1,18 +1,31 @@
 /**
  * Map demo geocoder (map-page-plan.md §3, §12). On demand only: the demo page
  * starts a pass, which drains every pinned address with no `geocodes` row
- * through Nominatim at ≤ 1 request/second. Nothing else in the app calls this.
+ * through Google's Geocoding API when a Google Maps key is set (Settings → Maps),
+ * otherwise Nominatim at ≤ 1 request/second. Nothing else in the app calls this.
  */
 import { sql, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { geocodes } from "@shared/schema";
 import { db } from "./db";
+import { storage } from "./storage";
 import { log } from "./vite";
 
 const GEOCODER_URL = (process.env.GEOCODER_URL || "https://nominatim.openstreetmap.org").replace(/\/+$/, "");
 const NOMINATIM_EMAIL = process.env.NOMINATIM_EMAIL || "";
 /** Nominatim's usage policy: an absolute maximum of 1 request per second. */
 const MIN_INTERVAL_MS = 1100;
+/** Google allows 50 QPS; 10/s keeps a 10k-address backfill under 20 minutes. */
+const GOOGLE_INTERVAL_MS = 100;
+
+/** Map keys from Settings → Maps, falling back to env. */
+export async function mapKeys() {
+  return {
+    googleKey: (await storage.getAppSetting("google_maps_api_key")) || process.env.GOOGLE_MAPS_API_KEY || null,
+    mapId: (await storage.getAppSetting("google_maps_map_id")) || null,
+    cartoKey: (await storage.getAppSetting("carto_api_key")) || process.env.CARTO_API_KEY || null,
+  };
+}
 
 /** The one definition of the cache key for an address (plan §1). */
 export function normAddress(column: PgColumn | SQL): SQL<string> {
@@ -20,24 +33,14 @@ export function normAddress(column: PgColumn | SQL): SQL<string> {
 }
 
 /**
- * Every address the map pins (plan §12.1), one row per (person, address key):
- * `person_id`, `address`, `query` (the cache key) and `source`. When one person
- * has the same address from several sources, the best source wins:
- * profile → tps_current → tps_past. Not access-filtered; callers join `people`.
+ * Every address the map pins (plan §12.1): one row per person_addresses row with
+ * `person_id`, `address`, `query` (the cache key) and `source` (primary, current
+ * or past). Not access-filtered; callers join `people`.
  */
 export const pinAddresses = sql`
-  SELECT DISTINCT ON (person_id, ${normAddress(sql`address`)})
-         person_id, address, ${normAddress(sql`address`)} AS query, source
-  FROM (
-    SELECT id AS person_id, address, 'profile' AS source, 0 AS rank FROM people
-    UNION ALL
-    SELECT person_id, current_address, 'tps_current', 1 FROM true_person_search
-    UNION ALL
-    SELECT t.person_id, a->>'address', 'tps_past', 2
-    FROM true_person_search t, jsonb_array_elements(coalesce(t.addresses, '[]'::jsonb)) a
-  ) all_addresses
-  WHERE person_id IS NOT NULL AND address IS NOT NULL AND trim(address) <> ''
-  ORDER BY person_id, ${normAddress(sql`address`)}, rank
+  SELECT person_id, address, ${normAddress(sql`address`)} AS query,
+         CASE WHEN is_primary = 1 THEN 'primary' WHEN end_date IS NULL THEN 'current' ELSE 'past' END AS source
+  FROM person_addresses
 `;
 
 export interface GeocoderProgress {
@@ -76,12 +79,14 @@ async function runPass(): Promise<void> {
   const queries = pending.rows.map((r) => r.query);
   progress.total = queries.length;
   if (queries.length === 0) return;
-  log(`Map geocoder: ${queries.length} address(es) to locate`);
+  const { googleKey } = await mapKeys();
+  const find = googleKey ? (q: string) => googleSearch(q, googleKey) : lookup;
+  log(`Map geocoder: ${queries.length} address(es) to locate via ${googleKey ? "Google" : "Nominatim"}`);
 
   for (const query of queries) {
     // Throws on network / HTTP errors, which ends the pass without writing a
     // row — the address stays pending and the next pass retries it.
-    const hit = await lookup(query);
+    const hit = await find(query);
     await db
       .insert(geocodes)
       .values(
@@ -116,10 +121,14 @@ async function lookup(query: string): Promise<Hit | null> {
 
 let lastCall = 0;
 
-async function search(query: string): Promise<Hit | null> {
-  const wait = lastCall + MIN_INTERVAL_MS - Date.now();
+async function throttle(intervalMs: number): Promise<void> {
+  const wait = lastCall + intervalMs - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastCall = Date.now();
+}
+
+async function search(query: string): Promise<Hit | null> {
+  await throttle(MIN_INTERVAL_MS);
 
   const url = new URL(`${GEOCODER_URL}/search`);
   url.searchParams.set("q", query);
@@ -135,4 +144,24 @@ async function search(query: string): Promise<Hit | null> {
   const hits = (await res.json()) as { lat: string; lon: string; display_name: string }[];
   if (!hits.length) return null;
   return { lat: Number(hits[0].lat), lng: Number(hits[0].lon), displayName: hits[0].display_name };
+}
+
+/** Google handles unit numbers itself, so one request per address. Throws on key/quota errors. */
+export async function googleSearch(query: string, key: string): Promise<Hit | null> {
+  await throttle(GOOGLE_INTERVAL_MS);
+  const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+  url.searchParams.set("address", query);
+  url.searchParams.set("key", key);
+
+  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Google geocoder HTTP ${res.status}`);
+  const body = (await res.json()) as {
+    status: string;
+    error_message?: string;
+    results: { formatted_address: string; geometry: { location: { lat: number; lng: number } } }[];
+  };
+  if (body.status === "ZERO_RESULTS") return null;
+  if (body.status !== "OK") throw new Error(`Google geocoder: ${body.error_message || body.status}`);
+  const { formatted_address, geometry } = body.results[0];
+  return { lat: geometry.location.lat, lng: geometry.location.lng, displayName: formatted_address };
 }

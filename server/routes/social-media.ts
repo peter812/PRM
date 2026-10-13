@@ -44,7 +44,9 @@ import { sendApiError, ErrorCodes } from "../middleware/error-handler";
 import { resolvePhotoSource } from "../photo-source";
 import { recordAccountProfileChanges } from "../social-account-history";
 import { ingestManualProfileImage } from "../profile-image";
-import { profilePhotos, recognizeProfilePhotos, noFaceImpact, setAccountNoFace, RecognitionRequestError } from "../recognition";
+import { profilePhotos, recognizeProfilePhotos, noFaceImpact, setAccountNoFace, RecognitionRequestError, ComputeUnreachableError } from "../recognition";
+import { banImpact, setAccountBan } from "../banned-actions";
+import { isBannedAction } from "@shared/banned-actions";
 import { updateTracking, type TrackingPatch } from "../tracking";
 import { sseManager } from "../middleware/sse";
 import {
@@ -169,6 +171,7 @@ export function registerRoutes(app: Express) {
           typeId: typeId || undefined,
           followsAccountIds,
           interestLevel: (req.query.interestLevel as string) || undefined,
+          starredOnly: req.query.starred === "true",
           sortBy,
         });
 
@@ -604,6 +607,7 @@ export function registerRoutes(app: Express) {
         if (body.accountUrl !== undefined) registryFields.accountUrl = body.accountUrl;
         if (body.bio !== undefined) registryFields.bio = body.bio;
         if (typeof body.skipStories === "boolean") registryFields.skipStories = body.skipStories;
+        if (typeof body.isStarred === "boolean") registryFields.isStarred = body.isStarred;
         // A hand-picked picture goes through the same tiering as a scraped one.
         const changes: Parameters<typeof recordAccountProfileChanges>[1] = registryFields;
         if (body.imageUrl === null) {
@@ -631,7 +635,7 @@ export function registerRoutes(app: Express) {
         // Tracking fields re-spread the due dates, so they go through their own writer.
         const tracking: TrackingPatch = {};
         if (body.interestLevel !== undefined) tracking.interestLevel = body.interestLevel;
-        for (const k of ["infoEveryDays", "followsEveryDays", "postsEveryDays"] as const) {
+        for (const k of ["infoEveryDays", "followsEveryDays", "postsEveryDays", "highlightsEveryDays"] as const) {
           if (body[k] === undefined) continue;
           const days = body[k] === null ? null : Number(body[k]);
           if (days !== null && (!Number.isInteger(days) || days < 1)) {
@@ -871,6 +875,33 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    // Processing bans (face scan / OCR / summaries / transcription): see server/banned-actions.ts.
+    app.get("/api/social-accounts/:id/ban-impact", async (req, res) => {
+      try {
+        if (!isBannedAction(req.query.action)) return res.status(400).json({ error: "Unknown action" });
+        if (!(await storage.getSocialAccountById(req.params.id))) return res.status(404).json({ error: "Social account not found" });
+        res.json({ count: await banImpact(req.params.id, req.query.action) });
+      } catch (error) {
+        console.error("Error fetching ban impact:", error);
+        res.status(500).json({ error: "Failed to fetch ban impact" });
+      }
+    });
+
+    app.patch("/api/social-accounts/:id/banned-actions", async (req, res) => {
+      try {
+        const { action, banned, purge } = req.body ?? {};
+        if (!isBannedAction(action)) return res.status(400).json({ error: "Unknown action" });
+        if (typeof banned !== "boolean") return res.status(400).json({ error: "banned must be a boolean" });
+        if (!(await storage.getSocialAccountById(req.params.id))) return res.status(404).json({ error: "Social account not found" });
+        await setAccountBan(req.params.id, action, banned, purge === true);
+        res.json({ ok: true });
+      } catch (error) {
+        if (error instanceof ComputeUnreachableError) return res.status(503).json({ error: error.message });
+        console.error("Error setting banned action:", error);
+        res.status(500).json({ error: "Failed to update account" });
+      }
+    });
+
     app.post("/api/social-accounts/:id/profile-photo/recognize", async (req, res) => {
       try {
         const { id } = req.params;
@@ -1020,7 +1051,8 @@ export function registerRoutes(app: Express) {
       try {
         if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
         const includeDeleted = req.query.includeDeleted === "true";
-        const posts = await storage.getPostsBySocialAccountId(req.params.id, includeDeleted);
+        const postType = typeof req.query.postType === "string" ? req.query.postType : undefined;
+        const posts = await storage.getPostsBySocialAccountId(req.params.id, includeDeleted, postType);
         res.json(posts);
       } catch (error) {
         console.error("Error fetching posts:", error);

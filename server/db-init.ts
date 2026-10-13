@@ -1,5 +1,8 @@
 import { execSync } from "child_process";
-import { pool } from "./db";
+import { desc, isNotNull, sql } from "drizzle-orm";
+import { truePersonSearch } from "@shared/schema";
+import { db, pool } from "./db";
+import { tpsEntries, upsertTpsAddresses } from "./person-addresses";
 import { log } from "./vite";
 import { applyBigAccountRule, applyMeRule } from "./tracking";
 import { isExternalUrl } from "./ai/http";
@@ -689,19 +692,24 @@ async function validateAndSyncSchema(): Promise<void> {
         info_every_days: "INTEGER",
         follows_every_days: "INTEGER",
         posts_every_days: "INTEGER",
+        highlights_every_days: "INTEGER",
         info_checked_at: "TIMESTAMP",
         info_due_at: "TIMESTAMP",
         follows_checked_at: "TIMESTAMP",
         follows_due_at: "TIMESTAMP",
         posts_checked_at: "TIMESTAMP",
         posts_due_at: "TIMESTAMP",
+        highlights_checked_at: "TIMESTAMP",
+        highlights_due_at: "TIMESTAMP",
         joined_at: "TIMESTAMP",
         reported_posts_count: "INTEGER",
         is_private: "BOOLEAN",
         is_hq_image: "BOOLEAN NOT NULL DEFAULT FALSE",
         personface_uuid: "VARCHAR",
         no_face: "BOOLEAN NOT NULL DEFAULT FALSE",
+        banned_actions: "TEXT[] NOT NULL DEFAULT '{}'",
         skip_stories: "BOOLEAN NOT NULL DEFAULT FALSE",
+        is_starred: "BOOLEAN NOT NULL DEFAULT FALSE",
         ai_summary: "JSONB",
         ai_summary_generated_at: "TIMESTAMP",
         ai_summary_invalidated: "BOOLEAN NOT NULL DEFAULT FALSE",
@@ -712,6 +720,7 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         agent_mode: "BOOLEAN NOT NULL DEFAULT FALSE",
+        context_entities: "JSONB NOT NULL DEFAULT '[]'::jsonb",
       },
       daily_notes: {
         vector_id: "TEXT",
@@ -760,6 +769,7 @@ async function validateAndSyncSchema(): Promise<void> {
         ai_summary: "JSONB",
         ai_summary_at: "TIMESTAMP",
         ai_summary_model: "TEXT",
+        seen_by: "JSONB",
       },
       story_scrape_runs: {
         token_hash: "TEXT",
@@ -817,6 +827,30 @@ async function validateAndSyncSchema(): Promise<void> {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_pending_imports_already_added
       ON pending_social_account_imports (already_added)
+    `);
+
+    // Same reason: events post-date every existing database.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS events (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        sub_title TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        updated_at TIMESTAMP NOT NULL DEFAULT now(),
+        log JSONB NOT NULL DEFAULT '[]'::jsonb,
+        seen_at TIMESTAMP,
+        acknowledged_at TIMESTAMP,
+        ai_seen_at TIMESTAMP,
+        parent_event_id VARCHAR REFERENCES events(id) ON DELETE CASCADE,
+        person_ids TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
+        social_account_ids TEXT[] NOT NULL DEFAULT ARRAY[]::text[]
+      );
+      CREATE INDEX IF NOT EXISTS events_created_at_idx ON events (created_at);
+      CREATE INDEX IF NOT EXISTS events_parent_idx ON events (parent_event_id);
+      CREATE INDEX IF NOT EXISTS events_people_gin ON events USING gin (person_ids);
+      CREATE INDEX IF NOT EXISTS events_social_accounts_gin ON events USING gin (social_account_ids);
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS next_steps TEXT;
     `);
 
     // Same reason as above: these two tables post-date most databases.
@@ -885,6 +919,7 @@ async function validateAndSyncSchema(): Promise<void> {
       );
       ALTER TABLE story_scrape_runs DROP COLUMN IF EXISTS user_id;
       CREATE INDEX IF NOT EXISTS story_scrape_runs_started_idx ON story_scrape_runs (started_at);
+      CREATE INDEX IF NOT EXISTS story_scrape_runs_token_idx ON story_scrape_runs (token_hash);
       CREATE TABLE IF NOT EXISTS story_importers (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         label TEXT NOT NULL,
@@ -1035,6 +1070,15 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_account_posts_coauthor_account_ids_idx ON social_account_posts USING gin (coauthor_account_ids);
       CREATE INDEX IF NOT EXISTS tracking_jobs_batch_idx ON tracking_jobs (batch_id);
     `);
+    // Stories stored before instagram_pk was recorded for them: their photo kept the pk.
+    await pool.query(`
+      UPDATE social_account_posts sap SET instagram_pk = p.og_metadata->>'storyPk'
+      FROM photos p
+      WHERE p.prm_location = 'post:' || sap.id
+        AND sap.post_type = 'story'
+        AND sap.instagram_pk IS NULL
+        AND p.og_metadata->>'storyPk' IS NOT NULL
+    `);
     await migrateStorySettingsToImporter();
     await dropLegacyImageStorageMode();
 
@@ -1046,6 +1090,7 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_accounts_info_due_idx ON social_accounts (info_due_at) WHERE info_due_at IS NOT NULL;
       CREATE INDEX IF NOT EXISTS social_accounts_follows_due_idx ON social_accounts (follows_due_at) WHERE follows_due_at IS NOT NULL;
       CREATE INDEX IF NOT EXISTS social_accounts_posts_due_idx ON social_accounts (posts_due_at) WHERE posts_due_at IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS social_accounts_highlights_due_idx ON social_accounts (highlights_due_at) WHERE highlights_due_at IS NOT NULL;
     `);
     await applyMeRule();
     await applyBigAccountRule();
@@ -1181,6 +1226,7 @@ async function validateAndSyncSchema(): Promise<void> {
           model TEXT NOT NULL DEFAULT '',
           messages JSONB NOT NULL DEFAULT '[]'::jsonb,
           agent_mode BOOLEAN NOT NULL DEFAULT FALSE,
+          context_entities JSONB NOT NULL DEFAULT '[]'::jsonb,
           created_at TIMESTAMP NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
@@ -1516,11 +1562,12 @@ async function validateAndSyncSchema(): Promise<void> {
     // Ensure people.tps_id exists (TruePeopleSearch person link)
     await addColumnIfNotExists("people", "tps_id", "TEXT");
     await addColumnIfNotExists("people", "birthday", "TEXT");
-    await addColumnIfNotExists("people", "address", "TEXT");
     await addColumnIfNotExists("people", "additional_emails", "JSONB NOT NULL DEFAULT '[]'::jsonb");
     await addColumnIfNotExists("people", "additional_phones", "JSONB NOT NULL DEFAULT '[]'::jsonb");
     await addColumnIfNotExists("people", "osint_runs", `JSONB NOT NULL DEFAULT '{"emails":[],"phones":[],"usernames":[]}'::jsonb`);
     await addColumnIfNotExists("people", "denied_recommendations", "JSONB NOT NULL DEFAULT '[]'::jsonb");
+    await addColumnIfNotExists("people", "is_low_value", "INTEGER NOT NULL DEFAULT 0");
+    await pool.query(`CREATE INDEX IF NOT EXISTS people_is_low_value_idx ON people (is_low_value)`);
 
     // Ensure true_person_search table exists (TruePeopleSearch scraped records)
     const truePersonSearchExists = await tableExists("true_person_search");
@@ -1570,6 +1617,52 @@ async function validateAndSyncSchema(): Promise<void> {
         display_name TEXT,
         geocoded_at TIMESTAMP NOT NULL DEFAULT NOW()
       )
+    `);
+
+    // Address history (address-history-plan.md §2); same as personAddresses in shared/schema.ts
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS person_addresses (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        person_id VARCHAR NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        address TEXT NOT NULL,
+        label TEXT,
+        start_date TEXT,
+        end_date TEXT,
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'manual',
+        property_url TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS person_addresses_person_id_idx ON person_addresses(person_id)`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS person_addresses_one_primary ON person_addresses(person_id) WHERE is_primary = 1`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS person_addresses_person_query ON person_addresses(person_id, lower(regexp_replace(trim(address), '[[:space:]]+', ' ', 'g')))`);
+
+    // Instagram highlights (pinned-stories-plan.md); same as instagramHighlights / instagramHighlightMemberships in shared/schema.ts
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS instagram_highlights (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+        instagram_id TEXT NOT NULL,
+        title TEXT,
+        color TEXT NOT NULL,
+        first_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        deleted_seen_at TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS instagram_highlights_account_ig_idx ON instagram_highlights(social_account_id, instagram_id);
+      CREATE TABLE IF NOT EXISTS instagram_highlight_memberships (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        highlight_id VARCHAR NOT NULL REFERENCES instagram_highlights(id) ON DELETE CASCADE,
+        story_pk TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        placed_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_confirmed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        left_seen_at TIMESTAMP,
+        left_reason TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS instagram_highlight_memberships_open_idx ON instagram_highlight_memberships(highlight_id, story_pk) WHERE left_seen_at IS NULL;
     `);
 
     log("Schema validation completed");
@@ -1771,6 +1864,35 @@ export async function resetDatabase(
 }
 
 /**
+ * people.address becomes each person's primary address row, then every person's
+ * latest TPS record is merged in (address-history-plan.md §2.4). Runs once: the
+ * column is dropped in the same transaction.
+ */
+async function migrateAddressHistory(): Promise<void> {
+  if (!(await columnExists("people", "address"))) return;
+  try {
+    log("Migrating people.address and TPS records to person_addresses...");
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        INSERT INTO person_addresses (person_id, address, is_primary, source)
+        SELECT id, trim(address), 1, 'legacy' FROM people WHERE trim(coalesce(address, '')) <> ''
+        ON CONFLICT DO NOTHING
+      `);
+      const latest = await tx.selectDistinctOn([truePersonSearch.personId]).from(truePersonSearch)
+        .where(isNotNull(truePersonSearch.personId))
+        .orderBy(truePersonSearch.personId, desc(truePersonSearch.importDate));
+      for (const record of latest) {
+        await upsertTpsAddresses(tx, record.personId!, tpsEntries(record), undefined);
+      }
+      await tx.execute(sql`ALTER TABLE people DROP COLUMN address`);
+    });
+    log("Address history migration complete");
+  } catch (error) {
+    log(`Address history migration failed: ${error}`);
+  }
+}
+
+/**
  * Initializes the database:
  * - If no users exist, drops all tables and recreates them
  * - Seeds default data (relationship types)
@@ -1824,6 +1946,9 @@ export async function initializeDatabase(): Promise<void> {
 
     // Single Ollama connection → ai_providers table + (provider, model) settings
     await migrateOllamaToAiProviders();
+
+    // people.address + TPS records → person_addresses
+    await migrateAddressHistory();
   } catch (error) {
     log(`Database initialization failed: ${error}`);
     throw error;

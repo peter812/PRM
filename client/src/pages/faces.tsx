@@ -65,7 +65,7 @@ type KnownFaceListItem = {
   photoCount: number;
   lastSeenAt: string | null;
 };
-type ListKnownFacesResult = { items: KnownFaceListItem[]; nextCursor: string | null };
+type ListKnownFacesResult = { items: KnownFaceListItem[]; nextCursor: string | null; total?: number };
 type LikelySamePair = {
   groupA: KnownFaceListItem;
   groupB: KnownFaceListItem;
@@ -200,12 +200,18 @@ export default function FacesPage() {
   }, [handleObserver]);
 
   const items = data?.pages.flatMap((p) => p.items) ?? [];
+  const totalFaces = data?.pages[0]?.total;
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b sticky top-0 backdrop-blur-xl bg-background/70 z-20">
         <Users className="h-4 w-4 text-muted-foreground shrink-0" />
         <h1 className="text-lg font-semibold leading-none mr-2">Faces</h1>
+        {totalFaces !== undefined && (
+          <span className="text-sm text-muted-foreground mr-2" data-testid="text-total-faces">
+            {totalFaces.toLocaleString()} total
+          </span>
+        )}
         <div className="relative flex-1 min-w-[160px] max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input

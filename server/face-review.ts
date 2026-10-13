@@ -122,6 +122,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
         WHERE ${socialAccounts.id} = substring(${photos.prmLocation} from 15)
           AND ${socialAccounts.imageUrl} = ${photos.location}
           AND NOT ${socialAccounts.noFace}
+          AND NOT ('facial_scan' = ANY(${socialAccounts.bannedActions}))
          
           AND (
             ${socialAccounts.personfaceUuid} IS NULL
@@ -139,6 +140,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
           WHERE ${socialAccounts.id} = substring(${photos.prmLocation} from 15)
             AND ${socialAccounts.imageUrl} = ${photos.location}
             AND NOT ${socialAccounts.noFace}
+            AND NOT ('facial_scan' = ANY(${socialAccounts.bannedActions}))
            
         )`,
         faceQualifies(true),
@@ -168,6 +170,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
       JOIN ${socialAccounts} ON ${socialAccounts.id} = ${socialAccountPosts.socialAccountId}
       WHERE ${socialAccountPosts.id} = substring(${photos.prmLocation} from 6)
         AND ${socialAccountPosts.postType} ${sql.raw(isStory ? "=" : "<>")} 'story'
+        AND NOT ('facial_scan' = ANY(${socialAccounts.bannedActions}))
        
     )`,
     sql`${photos.faceIdAt} IS NOT NULL`,

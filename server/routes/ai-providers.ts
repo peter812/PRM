@@ -253,21 +253,5 @@ export function registerRoutes(app: Express): void {
     }
   });
 
-  // ── One-off image description (OCR demo / API) ────────────────────────────
 
-  app.post("/api/ai/describe", upload.single("image"), async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: "No image provided." });
-      const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
-      const description = await describeImage(req.file.buffer, {
-        prompt: str(req.body.prompt),
-        system: str(req.body.system),
-        override: { providerId: str(req.body.providerId), model: str(req.body.model) },
-      });
-      res.json({ description });
-    } catch (error: any) {
-      if (error instanceof AiConfigError) return res.status(400).json({ error: error.message });
-      res.status(502).json({ error: error?.message ?? String(error) });
-    }
-  });
 }

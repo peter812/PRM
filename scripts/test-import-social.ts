@@ -112,7 +112,7 @@ async function run() {
   check("followers -0", r2.followersLost, 0);
   check("following -2", r2.followingLost, 2);
   check("no longer initial", r2.initialCapture, false);
-  check("only bio changed", r2.profileFieldsChanged, ["bio"]);
+  check("bio and listed totals changed", r2.profileFieldsChanged, ["bio", "listedFollowers", "listedFollowing"]);
 
   const a2 = await account();
   check("account now 10 followers", a2.followersCount, 10);
@@ -157,6 +157,7 @@ async function run() {
   check("followers untouched", a3.followersCount, 10);
   check("following untouched", a3.followingCount, 6);
   check("reported count updated", a3.reportedFollowersCount, 12400);
+  check("listed change journaled", (await latestEntry()).profileFieldsChanged.includes("listedFollowers"), true);
 
   // ── 4. A followers-only pull must not touch following ───────────────────────
   console.log("\n4. Followers-only pull leaves following alone");

@@ -99,6 +99,11 @@ function describeEntry(entry: SocialAccountHistoryEntry): Part[] {
   if (entry.postsDeleted > 0) parts.push({ text: `${n(entry.postsDeleted)} ${entry.postsDeleted === 1 ? "post" : "posts"} deleted`, tone: "loss" });
 
   for (const field of entry.profileFieldsChanged) {
+    const listed = field === "listedFollowers" ? entry.reportedFollowersAfter : field === "listedFollowing" ? entry.reportedFollowingAfter : undefined;
+    if (listed != null) {
+      parts.push({ text: `listed ${field === "listedFollowers" ? "followers" : "following"} → ${n(listed)}`, tone: "neutral" });
+      continue;
+    }
     // Image entries carry the tier transition; rows from before that column existed keep the generic label.
     const label =
       field === "image" && entry.imageChange

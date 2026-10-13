@@ -19,6 +19,8 @@ import {
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { authenticateExtensionToken } from "../auth";
+import { partialDate } from "@shared/partial-date";
+import { getPrimaryAddress, tpsEntries, upsertTpsAddresses } from "../person-addresses";
 
 /**
  * Express helper: pull + verify the extension token, updating last-accessed.
@@ -131,6 +133,7 @@ export function registerRoutes(app: Express) {
         personUuid: match?.id ?? null,
         extracted: !!record,
         tpsRecordId: record?.id ?? null,
+        primaryAddress: match ? await getPrimaryAddress(match.id) : null,
       });
     } catch (error) {
       console.error("Error in TPS person-status:", error);
@@ -183,6 +186,8 @@ export function registerRoutes(app: Express) {
   const tpsAddressSchema = z.object({
     address: z.string(),
     propertyUrl: z.string().nullable().optional(),
+    startDate: partialDate.nullable().optional(),
+    endDate: partialDate.nullable().optional(),
   });
   const tpsRelationSchema = z.object({
     name: z.string(),
@@ -198,12 +203,18 @@ export function registerRoutes(app: Express) {
     currentAddress: z.string().nullable().optional(),
     currentAddressPropertyDetails: z.string().nullable().optional(),
     currentAddressPropertyUrl: z.string().nullable().optional(),
+    currentAddressStartDate: partialDate.nullable().optional(),
     addresses: z.array(tpsAddressSchema).optional(),
     phoneNumbers: z.array(z.string()).optional(),
     emails: z.array(z.string()).optional(),
     relatives: z.array(tpsRelationSchema).optional(),
     associates: z.array(tpsRelationSchema).optional(),
     backgroundProfile: z.string().nullable().optional(),
+    // The primary the user confirmed in PRM-chrome; absent from extensions older than 1.1.0.
+    primaryAddress: z.discriminatedUnion("choice", [
+      z.object({ choice: z.literal("keep") }),
+      z.object({ choice: z.literal("tps"), address: z.string().min(1) }),
+    ]).optional(),
   });
 
   app.post("/api/v1/tps/extract", async (req, res) => {
@@ -214,24 +225,31 @@ export function registerRoutes(app: Express) {
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid payload", details: parsed.error.errors });
     }
-    const data = parsed.data;
+    const { currentAddressStartDate, primaryAddress, ...data } = parsed.data;
 
     try {
       const now = new Date();
-      const [record] = await db
-        .insert(truePersonSearch)
-        .values({ ...data, importDate: now, updatedAt: now })
-        .returning();
+      const result = await db.transaction(async (tx) => {
+        const [record] = await tx
+          .insert(truePersonSearch)
+          .values({ ...data, importDate: now, updatedAt: now })
+          .returning();
+        if (!data.personId) return { record, addressesAdded: 0, primaryAddress: null };
 
-      // Backfill the contact's tps_id link when we extracted for a Found person.
-      if (data.personId) {
-        await db
-          .update(people)
-          .set({ tpsId: data.tpsId })
-          .where(eq(people.id, data.personId));
-      }
+        // Backfill the contact's tps_id link and merge the addresses into their history.
+        await tx.update(people).set({ tpsId: data.tpsId }).where(eq(people.id, data.personId));
+        const { added, primaryAddress: primary } = await upsertTpsAddresses(
+          tx, data.personId, tpsEntries({ ...data, currentAddressStartDate }), primaryAddress,
+        );
+        return { record, addressesAdded: added, primaryAddress: primary };
+      });
 
-      res.status(201).json({ tpsRecordId: record.id, status: "extracted" });
+      res.status(201).json({
+        tpsRecordId: result.record.id,
+        status: "extracted",
+        addressesAdded: result.addressesAdded,
+        primaryAddress: result.primaryAddress,
+      });
     } catch (error) {
       console.error("Error extracting TPS record:", error);
       res.status(500).json({ error: "Failed to extract record" });

@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { Scan, Sparkles, ScanText, Mic, Map as MapIcon, Cloud, SlidersHorizontal } from "lucide-react";
+import { Mic, Map as MapIcon, Cloud, SlidersHorizontal, Bell, Globe, BookUser } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function DemosPage() {
@@ -33,76 +33,6 @@ export default function DemosPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Link href="/prm-face-demo">
-          <Card className="hover:bg-accent cursor-pointer transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Scan className="h-5 w-5" />
-                PRM Compute Demo
-              </CardTitle>
-              <CardDescription>
-                Test facial recognition capabilities with real-time detection.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
-
-        <Link href="/prm-face-save-demo">
-          <Card className="hover:bg-accent cursor-pointer transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Scan className="h-5 w-5" />
-                PRM Compute Save Demo
-              </CardTitle>
-              <CardDescription>
-                Save and manage recognized faces for future identification.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
-
-        <Link href="/demos/face-pose">
-          <Card className="hover:bg-accent cursor-pointer transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Scan className="h-5 w-5" />
-                Face Pose Demo
-              </CardTitle>
-              <CardDescription>
-                Face recognition with head-pose (yaw) estimation; side-on faces are flagged.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
-
-        <Link href="/ai-desc-demo">
-          <Card className="hover:bg-accent cursor-pointer transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Sparkles className="h-5 w-5" />
-                AI Description Demo
-              </CardTitle>
-              <CardDescription>
-                Generate AI-powered descriptions from images and context.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
-
-        <Link href="/ocr-demo">
-          <Card className="hover:bg-accent cursor-pointer transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ScanText className="h-5 w-5" />
-                OCR Demo
-              </CardTitle>
-              <CardDescription>
-                Extract and locate text from images with bounded line detection.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-        </Link>
-
         <Link href="/demos/whisper">
           <Card className="hover:bg-accent cursor-pointer transition-colors">
             <CardHeader>
@@ -125,7 +55,21 @@ export default function DemosPage() {
                 Map
               </CardTitle>
               <CardDescription>
-                People pinned on an OpenStreetMap map by their address.
+                People pinned on a map by their address.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/google-map">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Globe className="h-5 w-5" />
+                Google Map
+              </CardTitle>
+              <CardDescription>
+                The same pins on Google Maps, with satellite imagery and Street View.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -168,6 +112,34 @@ export default function DemosPage() {
               </CardTitle>
               <CardDescription>
                 Inspect a model's capabilities, thinking support, and default parameters.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/event-log">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Bell className="h-5 w-5" />
+                Event Log
+              </CardTitle>
+              <CardDescription>
+                Generate generic events and mark them seen or acknowledged.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/roster-import">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <BookUser className="h-5 w-5" />
+                Yearbook &amp; Playbill Import
+              </CardTitle>
+              <CardDescription>
+                Create people from a yearbook or CYT playbill page: faces, names and bios.
               </CardDescription>
             </CardHeader>
           </Card>

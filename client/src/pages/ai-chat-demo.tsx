@@ -31,7 +31,8 @@ import { useToast } from "@/hooks/use-toast";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { ToolApprovalPopup, type ToolApprovalRequest } from "@/components/tool-approval-popup";
 import { UserQuestionCard, type UserQuestionRequest } from "@/components/user-question-card";
-import type { AiUserAnswer } from "@shared/schema";
+import type { AiChatContextEntity, AiUserAnswer } from "@shared/schema";
+import { ChatContextPicker } from "@/components/chat-context-picker";
 import {
   Loader2,
   Square,
@@ -59,6 +60,8 @@ import {
   XCircle,
   Link2,
   MessageCircleQuestion,
+  Image as ImageIcon,
+  Film,
   type LucideIcon,
 } from "lucide-react";
 
@@ -98,6 +101,8 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   "user-search": UserIcon,
   "at-sign": AtSign,
   "at-sign-search": AtSign,
+  image: ImageIcon,
+  film: Film,
   book: Book,
   notebook: NotebookPen,
   "message-square": MessageSquare,
@@ -220,6 +225,7 @@ type ChatDetail = {
   model?: string;
   providerId?: string;
   agentMode?: boolean;
+  contextEntities?: AiChatContextEntity[];
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
@@ -331,6 +337,7 @@ export default function AiChatDemoPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
   const autoSentRef = useRef(false);
 
@@ -372,18 +379,50 @@ export default function AiChatDemoPage() {
   }, [streamingContent, isStreaming]);
 
   const createChatMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/ai-chats", {});
+    mutationFn: async (body: { contextEntities: Pick<AiChatContextEntity, "type" | "id">[] } | void) => {
+      const res = await apiRequest("POST", "/api/ai-chats", body || {});
       return res.json() as Promise<ChatDetail>;
     },
     onSuccess: (chat) => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai-chats"] });
       selectChat(chat.id);
+      composerRef.current?.focus();
     },
     onError: (error: Error) => {
       toast({ title: "Failed to create chat", description: error.message, variant: "destructive" });
     },
   });
+
+  // People / social accounts pinned to the chat. Editable only until the first message is sent.
+  const contextEntities = activeChat?.contextEntities ?? [];
+  const contextLocked = (activeChat?.messages.length ?? 0) > 0 || isStreaming;
+
+  /** Save the chat's pins; with no chat open yet, the first pin creates one. */
+  const updateContextEntities = async (next: AiChatContextEntity[]) => {
+    if (!activeChatId) {
+      createChatMutation.mutate({ contextEntities: next });
+      return;
+    }
+    try {
+      const updated = await apiRequest("PATCH", `/api/ai-chats/${activeChatId}`, { contextEntities: next }).then((r) => r.json());
+      queryClient.setQueryData<ChatDetail>(["/api/ai-chats", activeChatId], (prev) =>
+        prev ? { ...prev, contextEntities: updated.contextEntities } : prev);
+    } catch (err: any) {
+      toast({ title: "Failed to update chat context", description: err.message, variant: "destructive" });
+    }
+  };
+
+  // "Chat about" deep link from a person / social account page: ?person=<id> or ?socialAccount=<id>.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const personId = params.get("person");
+    const accountId = params.get("socialAccount");
+    if (!personId && !accountId) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    createChatMutation.mutate({
+      contextEntities: [personId ? { type: "person", id: personId } : { type: "social_account", id: accountId! }],
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live tool-call traces emitted by the server during the in-progress assistant
   // turn. Drives the icon-box row above the "Thinking" indicator.
@@ -1017,6 +1056,32 @@ export default function AiChatDemoPage() {
         <div className="border-t p-3">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
             <UserQuestionCard request={pendingQuestion} onSubmit={respondToQuestion} />
+            {contextEntities.length > 0 && (
+              <div className="flex flex-wrap gap-1" data-testid="chat-context-entities">
+                {contextEntities.map((e) => {
+                  const Icon = e.type === "person" ? UserIcon : AtSign;
+                  return (
+                    <span key={`${e.type}-${e.id}`} className="inline-flex items-center gap-1 rounded-md border bg-primary/5 px-2 py-1 text-xs">
+                      <Icon className="h-3 w-3" />
+                      <Link to={e.type === "person" ? `/person/${e.id}` : `/social-accounts/${e.id}`} className="max-w-[200px] truncate hover:underline">
+                        {e.label}
+                      </Link>
+                      {!contextLocked && (
+                        <button
+                          type="button"
+                          onClick={() => void updateContextEntities(contextEntities.filter((x) => x !== e))}
+                          className="text-muted-foreground hover:text-destructive"
+                          aria-label={`Remove ${e.label}`}
+                          data-testid={`button-remove-context-${e.id}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
             {pendingAttachments.length > 0 && (
               <div className="flex flex-wrap gap-1" data-testid="pending-attachments">
                 {pendingAttachments.map((a, idx) => (
@@ -1053,6 +1118,13 @@ export default function AiChatDemoPage() {
                 }}
                 data-testid="input-file-attachment"
               />
+              {!contextLocked && (
+                <ChatContextPicker
+                  selected={contextEntities}
+                  onAdd={(e) => void updateContextEntities([...contextEntities, e])}
+                  disabled={createChatMutation.isPending}
+                />
+              )}
               <Button
                 type="button"
                 variant="ghost"
@@ -1091,6 +1163,7 @@ export default function AiChatDemoPage() {
                 )}
               </Button>
               <Textarea
+                ref={composerRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {

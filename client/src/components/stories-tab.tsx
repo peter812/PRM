@@ -1,11 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, ChevronRight, ExternalLink, ImageIcon, Info, Layers, Video } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, ChevronRight, ExternalLink, ImageIcon, Info, Layers, Loader2, Sparkles, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { safeJsonParse } from "@/lib/utils";
-import type { SocialAccountPost } from "@shared/schema";
+import { HIGHLIGHT_PALETTE, type HighlightWithStints, type SocialAccountPost, type StorySeenBy, type TrackingJob } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
 import { PostSummarySection } from "@/components/account-summary";
 import { VideoTranscript } from "@/components/video-transcript";
@@ -38,6 +42,71 @@ const isVideo = (post: SocialAccountPost) => (post.metadata as StoryMetadata | n
 const mentionsOf = (post: SocialAccountPost) =>
   safeJsonParse<{ accounts?: string[] }[]>(post.mentionedAccounts, []).flatMap((m) => m.accounts ?? []);
 
+/** A thin border in the sets' colors: solid for one, equal segments for several. */
+function ringBackground(colors: string[]): string | undefined {
+  if (colors.length <= 1) return colors[0];
+  const step = 100 / colors.length;
+  return `conic-gradient(${colors.map((c, i) => `${c} ${i * step}% ${(i + 1) * step}%`).join(", ")})`;
+}
+
+const when = (d: Date | string) => new Date(d).toLocaleString();
+
+/** Every set this story has been in, deleted sets too, with when PRM learned it joined and left. */
+function HighlightHistory({ postId, highlights }: { postId: string; highlights: HighlightWithStints[] }) {
+  const rows = highlights.flatMap((set) => set.stints.filter((m) => m.postId === postId).map((m) => ({ set, m })));
+  if (!rows.length) return null;
+  return (
+    <Row label="Highlights">
+      <ul className="space-y-1.5">
+        {rows.map(({ set, m }) => (
+          <li key={m.id} className="flex items-start gap-2">
+            <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: set.color }} />
+            <span>
+              <span className="font-medium">{set.title || "Untitled"}</span>
+              {set.deletedSeenAt && <span className="text-muted-foreground"> (set deleted)</span>}
+              <span className="block text-xs text-muted-foreground">
+                {new Date(m.placedSeenAt).getTime() === new Date(set.firstSeenAt).getTime()
+                  ? `Already in the set when first seen ${when(m.placedSeenAt)}`
+                  : `Placed in set, seen ${when(m.placedSeenAt)}`}
+                {" · "}
+                {m.leftSeenAt
+                  ? `${m.leftReason === "set_deleted" ? "set deleted" : "left set"}, seen ${when(m.leftSeenAt)}`
+                  : `still in set, last seen ${when(m.lastConfirmedAt)}`}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Row>
+  );
+}
+
+/** Who viewed an own story, liked or replied ones first. Nothing at all until the scraper has read a list. */
+function SeenBy({ seenBy, igLink }: { seenBy: StorySeenBy | null; igLink: (username: string) => React.ReactNode }) {
+  if (!seenBy?.viewers.length) return null;
+  const viewers = [...seenBy.viewers].sort((a, b) => Number(Boolean(b.reply) || b.liked) - Number(Boolean(a.reply) || a.liked));
+  return (
+    <Row label={`Seen by ${seenBy.viewerCount}`}>
+      <div className="text-xs text-muted-foreground mb-2">
+        Captured {when(seenBy.capturedAt)}
+        {viewers.length < seenBy.viewerCount && ` · ${viewers.length} listed`}
+      </div>
+      <ul className="space-y-1 max-h-72 overflow-y-auto" data-testid="list-story-seen-by">
+        {viewers.map((v) => (
+          <li key={v.pk}>
+            <span className="inline-flex items-center gap-1.5">
+              {igLink(v.username)}
+              {v.fullName && <span className="text-muted-foreground">{v.fullName}</span>}
+              {v.liked && <span title="Liked">❤️</span>}
+            </span>
+            {v.reply && <div className="ml-4 text-muted-foreground">“{v.reply}”</div>}
+          </li>
+        ))}
+      </ul>
+    </Row>
+  );
+}
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -48,7 +117,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /** One story, or a day's worth of them with arrows to step through. */
-function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClose: () => void }) {
+function StoryDialog({ stories, highlights, onClose }: { stories: SocialAccountPost[]; highlights: HighlightWithStints[]; onClose: () => void }) {
   const [index, setIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const story = stories[index];
@@ -144,6 +213,7 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
                 Video{meta.videoDuration ? ` · ${Math.round(meta.videoDuration)}s` : ""}{meta.videoUrl ? "" : " — cover frame shown"}
               </Badge>
             )}
+            <HighlightHistory postId={story.id} highlights={highlights} />
             {story.description && <Row label="Description">{story.description}</Row>}
             <VideoTranscript
               key={story.id}
@@ -203,6 +273,7 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
               <Row label="Music">{[meta.music.title, meta.music.artist].filter(Boolean).join(" — ")}</Row>
             )}
             {meta.isAd && <Badge variant="outline">Paid partnership</Badge>}
+            <SeenBy seenBy={story.seenBy} igLink={igLink} />
           </div>
         </div>
       </DialogContent>
@@ -210,22 +281,55 @@ function StoryDialog({ stories, onClose }: { stories: SocialAccountPost[]; onClo
   );
 }
 
-export function StoriesTab({ stories }: { stories: SocialAccountPost[] }) {
+export function StoriesTab({ accountId, stories }: { accountId: string; stories: SocialAccountPost[] }) {
   const [newestFirst, setNewestFirst] = useState(true);
   const [combineDaily, setCombineDaily] = useState(false);
   const [selected, setSelected] = useState<SocialAccountPost[] | null>(null);
+  const [setFilter, setSetFilter] = useState<string | null>(null);
+
+  const highlightsKey = [`/api/social-accounts/${accountId}/highlights`];
+  const { data: highlights = [] } = useQuery<HighlightWithStints[]>({ queryKey: highlightsKey });
+  const recolor = useMutation({
+    mutationFn: ({ id, color }: { id: string; color: string }) => apiRequest("PATCH", `/api/instagram-highlights/${id}`, { color }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: highlightsKey }),
+  });
+
+  // Same key as the profile page, which polls it fast while a job is open.
+  const { toast } = useToast();
+  const jobsKey = [`/api/social-accounts/${accountId}/tracking-jobs`];
+  const { data: jobs } = useQuery<TrackingJob[]>({ queryKey: jobsKey });
+  const highlightsQueued = !!jobs?.some((j) => j.kind === "highlights" && (j.status === "queued" || j.status === "running"));
+  const getHighlights = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/social-accounts/${accountId}/tracking-jobs`, { kind: "highlights" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: jobsKey });
+      toast({ title: "Queued", description: "A highlights check will run on the next tracking run." });
+    },
+    onError: (e: Error) => toast({ title: "Could not get highlights", description: e.message, variant: "destructive" }),
+  });
+  // When the job finishes, pull in the sets and any stories it downloaded.
+  const wasQueued = useRef(false);
+  useEffect(() => {
+    if (wasQueued.current && !highlightsQueued) {
+      queryClient.invalidateQueries({ queryKey: highlightsKey });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", accountId, "posts?postType=story&includeDeleted=true"] });
+    }
+    wasQueued.current = highlightsQueued;
+  }, [highlightsQueued, accountId]);
+  // The grid shows current membership only; the dialog has the history.
+  const live = highlights.filter((h) => !h.deletedSeenAt);
+  const setsOf = new Map<string, HighlightWithStints[]>();
+  for (const set of live) {
+    for (const m of set.stints) if (!m.leftSeenAt) setsOf.set(m.postId, [...(setsOf.get(m.postId) ?? []), set]);
+  }
+  const activeSet = live.find((h) => h.id === setFilter) ?? null;
 
   useEffect(() => {
     if (typeof window === "undefined" || !stories.length) return;
     const params = new URLSearchParams(window.location.search);
     const storyPk = params.get("storyPk");
     if (!storyPk) return;
-    const targetPost = stories.find((s) => {
-      const meta = (s.metadata ?? {}) as any;
-      if (meta.storyPk === storyPk) return true;
-      if (s.id && s.id.includes(storyPk)) return true;
-      return false;
-    });
+    const targetPost = stories.find((s) => s.instagramPk === storyPk);
     if (targetPost) {
       setSelected([targetPost]);
     }
@@ -237,7 +341,15 @@ export function StoriesTab({ stories }: { stories: SocialAccountPost[] }) {
   // A card is one story, or — combined — every story from the same local day.
   // Within a day the stories stay in posting order so the arrows read like Instagram did.
   let cards: SocialAccountPost[][];
-  if (combineDaily) {
+  let notDownloaded = 0;
+  if (activeSet) {
+    // A set reads in its own order (the sort button flips it); its stories aren't combined by day.
+    const byId = new Map(stories.map((s) => [s.id, s]));
+    const inSet = activeSet.stints.filter((m) => !m.leftSeenAt).sort((a, b) => a.position - b.position).map((m) => byId.get(m.postId));
+    const held = inSet.filter((s): s is SocialAccountPost => Boolean(s));
+    notDownloaded = inSet.length - held.length;
+    cards = (newestFirst ? held : held.reverse()).map((s) => [s]);
+  } else if (combineDaily) {
     const byDay = new Map<string, SocialAccountPost[]>();
     for (const s of sorted) {
       const day = new Date(time(s)).toDateString();
@@ -253,16 +365,71 @@ export function StoriesTab({ stories }: { stories: SocialAccountPost[] }) {
       <div className="flex flex-wrap items-center justify-between gap-2 mb-6">
         <h2 className="text-lg font-semibold">Stories ({stories.length})</h2>
         <div className="flex items-center gap-2">
-          <Button variant={combineDaily ? "default" : "outline"} size="sm" onClick={() => setCombineDaily((v) => !v)} data-testid="button-combine-daily">
-            <Layers className="h-4 w-4" />
-            Combine daily stories
+          <Button variant="outline" size="sm" onClick={() => getHighlights.mutate()} disabled={getHighlights.isPending || highlightsQueued} data-testid="button-get-highlights">
+            {getHighlights.isPending || highlightsQueued ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            {highlightsQueued ? "Getting highlights…" : "Get highlights"}
           </Button>
+          {!activeSet && (
+            <Button variant={combineDaily ? "default" : "outline"} size="sm" onClick={() => setCombineDaily((v) => !v)} data-testid="button-combine-daily">
+              <Layers className="h-4 w-4" />
+              Combine daily stories
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => setNewestFirst((v) => !v)} data-testid="button-sort-stories">
             {newestFirst ? <ArrowDownWideNarrow className="h-4 w-4" /> : <ArrowUpNarrowWide className="h-4 w-4" />}
-            {newestFirst ? "Newest first" : "Oldest first"}
+            {activeSet ? (newestFirst ? "Set order" : "Reversed") : newestFirst ? "Newest first" : "Oldest first"}
           </Button>
         </div>
       </div>
+
+      {live.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 mb-4" data-testid="highlight-chips">
+          <button
+            type="button"
+            onClick={() => setSetFilter(null)}
+            className={`h-7 rounded-full border px-3 text-xs ${!activeSet ? "bg-primary text-primary-foreground border-primary" : "hover:bg-muted"}`}
+            data-testid="chip-highlight-all"
+          >
+            All
+          </button>
+          {live.map((set) => {
+            const on = set.id === activeSet?.id;
+            return (
+              <div
+                key={set.id}
+                className="flex h-7 items-center rounded-full border pl-1.5 text-xs"
+                style={on ? { borderColor: set.color, background: `${set.color}22` } : undefined}
+              >
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="h-4 w-4 rounded-full ring-offset-background hover:ring-2 hover:ring-ring" style={{ background: set.color }} aria-label={`Change color of ${set.title || "set"}`} data-testid={`button-highlight-color-${set.id}`} />
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-2">
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {HIGHLIGHT_PALETTE.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          className={`h-6 w-6 rounded-full ${c === set.color ? "ring-2 ring-ring ring-offset-2 ring-offset-background" : ""}`}
+                          style={{ background: c }}
+                          onClick={() => recolor.mutate({ id: set.id, color: c })}
+                          aria-label={c}
+                        />
+                      ))}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+                <button type="button" onClick={() => setSetFilter(on ? null : set.id)} className="h-full pl-1.5 pr-3" data-testid={`chip-highlight-${set.id}`}>
+                  {set.title || "Untitled"} <span className="text-muted-foreground">{set.stints.filter((m) => !m.leftSeenAt).length}</span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {notDownloaded > 0 && (
+        <p className="mb-4 text-xs text-muted-foreground">{notDownloaded} {notDownloaded === 1 ? "story" : "stories"} in this set not downloaded yet</p>
+      )}
 
       {cards.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground">
@@ -274,12 +441,14 @@ export function StoriesTab({ stories }: { stories: SocialAccountPost[] }) {
           {cards.map((group) => {
             const cover = group[0];
             const image = firstImage(cover);
+            // Every set any story on the card is in, once each.
+            const sets = [...new Map(group.flatMap((s) => setsOf.get(s.id) ?? []).map((h) => [h.id, h])).values()];
             return (
+              <div key={cover.id} className="rounded-lg" style={sets.length ? { background: ringBackground(sets.map((h) => h.color)), padding: 2 } : undefined}>
               <button
-                key={cover.id}
                 type="button"
                 onClick={() => setSelected(group)}
-                className="group relative aspect-[9/16] overflow-hidden rounded-md bg-muted text-left focus:outline-none focus:ring-2 focus:ring-ring"
+                className="group relative block w-full aspect-[9/16] overflow-hidden rounded-md bg-muted text-left focus:outline-none focus:ring-2 focus:ring-ring"
                 data-testid={`card-story-${cover.id}`}
               >
                 {image ? (
@@ -295,14 +464,16 @@ export function StoriesTab({ stories }: { stories: SocialAccountPost[] }) {
                 {isVideo(cover) && <Video className="absolute top-2 left-2 h-4 w-4 text-white drop-shadow" />}
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-6 text-[11px] text-white">
                   {cover.postedAt ? new Date(cover.postedAt).toLocaleDateString() : ""}
+                  {sets.length > 0 && <div className="truncate opacity-90">{sets.map((h) => h.title || "Untitled").join(" · ")}</div>}
                 </div>
               </button>
+              </div>
             );
           })}
         </div>
       )}
 
-      {selected && <StoryDialog key={selected[0].id} stories={selected} onClose={() => setSelected(null)} />}
+      {selected && <StoryDialog key={selected[0].id} stories={selected} highlights={highlights} onClose={() => setSelected(null)} />}
     </div>
   );
 }

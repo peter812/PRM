@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { db } from "./db";
 import { sseManager } from "./middleware/sse";
+import { resolveScrapedAccounts } from "./task-worker";
 import { appSettings, socialAccounts, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
 import {
   INTEREST_LEVELS,
@@ -21,6 +22,8 @@ import {
   TRACKING_LEVEL_DEFAULTS_KEY,
   TRACKING_SKIP_RECENT_KEY,
   TRACKING_BIG_ACCOUNTS_NONE_KEY,
+  TRACKING_MENTIONS_CREATE_KEY,
+  TRACKING_MENTIONS_QUEUE_INFO_KEY,
   BIG_ACCOUNT_FOLLOWERS,
   bigAccountsNoneEnabled,
   parseLevelCadences,
@@ -80,7 +83,7 @@ export async function applyBigAccountRule(ids?: string[]): Promise<void> {
   if (ids) conditions.push(inArray(socialAccounts.id, ids));
   await db
     .update(socialAccounts)
-    .set({ interestLevel: "none", infoEveryDays: null, followsEveryDays: null, postsEveryDays: null, infoDueAt: null, followsDueAt: null, postsDueAt: null })
+    .set({ interestLevel: "none", infoEveryDays: null, followsEveryDays: null, postsEveryDays: null, highlightsEveryDays: null, infoDueAt: null, followsDueAt: null, postsDueAt: null, highlightsDueAt: null })
     .where(and(...conditions));
 }
 
@@ -100,11 +103,11 @@ function jitteredDue(days: number | null): Date | null {
   return days == null ? null : new Date(Date.now() + days * (0.9 + Math.random() * 0.2) * DAY_MS);
 }
 
-const DUE_COLUMN = { info: "infoDueAt", follows: "followsDueAt", posts: "postsDueAt" } as const;
-const CHECKED_COLUMN = { info: "infoCheckedAt", follows: "followsCheckedAt", posts: "postsCheckedAt" } as const;
-const OVERRIDE_COLUMN = { info: "infoEveryDays", follows: "followsEveryDays", posts: "postsEveryDays" } as const;
+const DUE_COLUMN = { info: "infoDueAt", follows: "followsDueAt", posts: "postsDueAt", highlights: "highlightsDueAt" } as const;
+const CHECKED_COLUMN = { info: "infoCheckedAt", follows: "followsCheckedAt", posts: "postsCheckedAt", highlights: "highlightsCheckedAt" } as const;
+const OVERRIDE_COLUMN = { info: "infoEveryDays", follows: "followsEveryDays", posts: "postsEveryDays", highlights: "highlightsEveryDays" } as const;
 
-export type TrackingPatch = Partial<Pick<SocialAccount, "interestLevel" | "infoEveryDays" | "followsEveryDays" | "postsEveryDays">>;
+export type TrackingPatch = Partial<Pick<SocialAccount, "interestLevel" | "infoEveryDays" | "followsEveryDays" | "postsEveryDays" | "highlightsEveryDays">>;
 
 /**
  * Change an account's level and/or cadence overrides. A level change clears the
@@ -152,8 +155,8 @@ export async function markChecked(accountId: string, kind: TrackingKind): Promis
     .where(eq(socialAccounts.id, accountId));
 }
 
-const DUE_SQL_COLUMN = { info: "info_due_at", follows: "follows_due_at", posts: "posts_due_at" } as const;
-const OVERRIDE_SQL_COLUMN = { info: "info_every_days", follows: "follows_every_days", posts: "posts_every_days" } as const;
+const DUE_SQL_COLUMN = { info: "info_due_at", follows: "follows_due_at", posts: "posts_due_at", highlights: "highlights_due_at" } as const;
+const OVERRIDE_SQL_COLUMN = { info: "info_every_days", follows: "follows_every_days", posts: "posts_every_days", highlights: "highlights_every_days" } as const;
 
 /**
  * While nothing is auto-tracking, a lapsed due date is moved forward by whole
@@ -210,6 +213,7 @@ export async function applyMeRule(candidateIds?: string[]): Promise<void> {
       infoDueAt: spreadDue(medium.info),
       followsDueAt: spreadDue(medium.follows),
       postsDueAt: spreadDue(medium.posts),
+      highlightsDueAt: spreadDue(medium.highlights),
     })
     .where(and(...conditions));
 }
@@ -249,13 +253,15 @@ function dueAt(at: SQL, skipRecent: boolean): SQL {
     CROSS JOIN LATERAL (VALUES
       ('info', sa.info_due_at, sa.info_checked_at),
       ('follows', sa.follows_due_at, sa.follows_checked_at),
-      ('posts', sa.posts_due_at, sa.posts_checked_at)
+      ('posts', sa.posts_due_at, sa.posts_checked_at),
+      ('highlights', sa.highlights_due_at, sa.highlights_checked_at)
     ) AS k(kind, due, checked)
     WHERE sa.type_id = ${INSTAGRAM_TYPE_ID}
       AND k.due <= ${at}
       ${notRecent}
       AND (k.kind = 'info' OR (
         sa.is_private IS NOT TRUE
+        AND (k.kind <> 'highlights' OR NOT sa.skip_stories)
         AND (k.kind <> 'follows' OR GREATEST(COALESCE(sa.reported_followers_count, 0), COALESCE(sa.reported_following_count, 0)) <= ${MAX_FOLLOWS})
       ))
       AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
@@ -446,11 +452,33 @@ export async function queueManualJob(accountId: string, kind: TrackingKind): Pro
   return job;
 }
 
+/**
+ * With the setting on, turn handles tagged on an imported post or story into
+ * Instagram accounts, so Face Review can offer them for the faces on that
+ * slide. With the second setting on too, the accounts this call created get a
+ * profile info check queued; the caller kicks the queue when a batch comes back.
+ */
+export async function resolveMentionedAccounts(handles: string[]): Promise<QueuedBatch | null> {
+  const wanted = [...new Set(handles.map((h) => h.trim().replace(/^@/, "").toLowerCase()).filter(Boolean))];
+  if (!wanted.length) return null;
+  const rows = await db.select().from(appSettings).where(inArray(appSettings.key, [TRACKING_MENTIONS_CREATE_KEY, TRACKING_MENTIONS_QUEUE_INFO_KEY]));
+  const on = (key: string) => rows.some((r) => r.key === key && r.value === "true");
+  if (!on(TRACKING_MENTIONS_CREATE_KEY)) return null;
+
+  const known = new Set(
+    (await db.select({ username: socialAccounts.username }).from(socialAccounts).where(inArray(socialAccounts.username, wanted))).map((a) => a.username),
+  );
+  const resolved = await resolveScrapedAccounts(wanted.map((username) => ({ username })), INSTAGRAM_TYPE_ID, "post mention");
+  if (!on(TRACKING_MENTIONS_QUEUE_INFO_KEY)) return null;
+  const created = wanted.filter((h) => !known.has(h)).map((h) => resolved.get(h)).filter((id): id is string => Boolean(id));
+  return created.length ? queueAccountsRefresh("info", created) : null;
+}
+
 // ── Batches: the Tracking page (account-tracking-plan.md §2.4) ──
 
 /** The Instagram accounts Me's accounts follow — ones with a username, the only ones a job can open. */
 const FOLLOWED_BY_ME = sql`
-  SELECT DISTINCT f.followed_id AS id, sa.info_checked_at, sa.follows_checked_at, sa.posts_checked_at
+  SELECT DISTINCT f.followed_id AS id, sa.info_checked_at, sa.follows_checked_at, sa.posts_checked_at, sa.highlights_checked_at
   FROM social_follows f
   JOIN social_accounts sa ON sa.id = f.followed_id
   WHERE f.follower_id IN (${ME_ACCOUNTS})
@@ -474,7 +502,7 @@ const hasOpenJob = (kind: TrackingKind) => sql`EXISTS (
   WHERE j.social_account_id = d.id AND j.kind = ${kind} AND j.status IN ('queued', 'running')
 )`;
 
-const CHECKED_SQL_COLUMN = { info: sql`d.info_checked_at`, follows: sql`d.follows_checked_at`, posts: sql`d.posts_checked_at` } as const;
+const CHECKED_SQL_COLUMN = { info: sql`d.info_checked_at`, follows: sql`d.follows_checked_at`, posts: sql`d.posts_checked_at`, highlights: sql`d.highlights_checked_at` } as const;
 
 export type QueuedBatch = { batch: BatchSummary | null; skippedRecent: number };
 
@@ -521,7 +549,7 @@ export function queueFollowingRefresh(kind: TrackingKind): Promise<QueuedBatch> 
 export function queueAccountsRefresh(kind: TrackingKind, accountIds: string[]): Promise<QueuedBatch> {
   if (!accountIds.length) return Promise.resolve({ batch: null, skippedRecent: 0 });
   const source = sql`
-    SELECT ${socialAccounts.id} AS id, info_checked_at, follows_checked_at, posts_checked_at FROM social_accounts
+    SELECT ${socialAccounts.id} AS id, info_checked_at, follows_checked_at, posts_checked_at, highlights_checked_at FROM social_accounts
     WHERE ${inArray(socialAccounts.id, accountIds)}
       AND ${socialAccounts.typeId} = ${INSTAGRAM_TYPE_ID}
       AND ${socialAccounts.username} IS NOT NULL AND ${socialAccounts.username} <> ''`;

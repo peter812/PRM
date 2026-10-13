@@ -465,7 +465,7 @@ export async function applyProfileImageVerdict(
         ...facts,
       });
     }
-    void enqueueAutoRecognition({ kind: "profile", photoIds: [photo.id], imageTaskGroupId });
+    void enqueueAutoRecognition({ kind: "profile", photoIds: [photo.id], imageTaskGroupId, socialAccountId });
     return {
       imageUrl: current.imageUrl,
       isHqImage: true,
@@ -478,7 +478,7 @@ export async function applyProfileImageVerdict(
   const { cdnUrl, photoId } = stored ?? (await storeProfileImage(fetched, socialAccountId));
   const isHq = fetched.tier === "hq";
   if (isHq) {
-    void enqueueAutoRecognition({ kind: "profile", photoIds: [photoId], imageTaskGroupId });
+    void enqueueAutoRecognition({ kind: "profile", photoIds: [photoId], imageTaskGroupId, socialAccountId });
   }
   return {
     imageUrl: cdnUrl,

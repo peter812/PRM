@@ -3,6 +3,7 @@ import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, rea
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { partialDate } from "./partial-date";
 
 // Career and Education interfaces for database JSONB columns
 export interface JobExperience {
@@ -30,6 +31,8 @@ export interface AdditionalSchoolingExperience {
 export interface TpsAddress {
   address: string;
   propertyUrl?: string | null;
+  startDate?: string | null; // partial date (shared/partial-date.ts); absent on records scraped before address history
+  endDate?: string | null;
 }
 
 export interface TpsRelation {
@@ -104,7 +107,6 @@ export const people = pgTable("people", {
   jobs: jsonb("jobs").$type<JobExperience[]>().default(sql`'[]'::jsonb`),
   tpsId: text("tps_id"), // TruePeopleSearch person id (/find/person/{id} slug) this contact was created from, if any
   birthday: text("birthday"),
-  address: text("address"),
   additionalEmails: jsonb("additional_emails").$type<string[]>().default(sql`'[]'::jsonb`),
   additionalPhones: jsonb("additional_phones").$type<string[]>().default(sql`'[]'::jsonb`),
   // Targets the user chose to OSINT-scan for this person; results live in osint_scans.
@@ -114,13 +116,36 @@ export const people = pgTable("people", {
   politicalLeftRight: real("political_left_right"), // Left (-10) to Right (+10)
   politicalLibAuth: real("political_lib_auth"), // Libertarian (-10) to Authoritarian (+10)
   politicalUpdatedAt: timestamp("political_updated_at"), // Timestamp of political leaning last update
+  isLowValue: integer("is_low_value").notNull().default(0), // 1 = bulk-imported (yearbook/playbill); hidden from people lists/search unless nothing else matches
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("people_last_name_idx").on(t.lastName),
+  index("people_is_low_value_idx").on(t.isLowValue),
   index("people_elo_score_idx").on(t.eloScore),
   index("people_created_at_idx").on(t.createdAt),
   index("people_is_starred_idx").on(t.isStarred),
   index("people_personface_uuid_idx").on(t.personfaceUuid),
+]);
+
+// Address history (address-history-plan.md §2). end_date NULL = current;
+// at most one primary per person, which stays primary (shown "Outdated") if it ends.
+export const personAddresses = pgTable("person_addresses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  personId: varchar("person_id").notNull().references(() => people.id, { onDelete: "cascade" }),
+  address: text("address").notNull(),
+  label: text("label"), // optional: "Home", "Dorm"…
+  startDate: text("start_date"), // partial date: YYYY | YYYY-MM | YYYY-MM-DD
+  endDate: text("end_date"), // same format; NULL = current, '0000' = ended on an unknown date
+  isPrimary: integer("is_primary").notNull().default(0),
+  source: text("source").notNull().default("manual"), // 'manual' | 'tps' | 'legacy'
+  propertyUrl: text("property_url"), // TPS /find/address/... link
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("person_addresses_person_id_idx").on(t.personId),
+  uniqueIndex("person_addresses_one_primary").on(t.personId).where(sql`is_primary = 1`),
+  // same expression as normAddress() in server/map-geocoder.ts
+  uniqueIndex("person_addresses_person_query").on(t.personId, sql`lower(regexp_replace(trim(address), '[[:space:]]+', ' ', 'g'))`),
 ]);
 
 // Notes table
@@ -328,6 +353,7 @@ export const socialAccounts = pgTable("social_accounts", {
   infoEveryDays: integer("info_every_days"),
   followsEveryDays: integer("follows_every_days"),
   postsEveryDays: integer("posts_every_days"),
+  highlightsEveryDays: integer("highlights_every_days"),
   // *_due_at is the scheduler's only per-account state; null when the level is none.
   infoCheckedAt: timestamp("info_checked_at"),
   infoDueAt: timestamp("info_due_at"),
@@ -335,6 +361,8 @@ export const socialAccounts = pgTable("social_accounts", {
   followsDueAt: timestamp("follows_due_at"),
   postsCheckedAt: timestamp("posts_checked_at"),
   postsDueAt: timestamp("posts_due_at"),
+  highlightsCheckedAt: timestamp("highlights_checked_at"),
+  highlightsDueAt: timestamp("highlights_due_at"),
   joinedAt: timestamp("joined_at"), // first of the month Instagram's About dialog reports
   reportedPostsCount: integer("reported_posts_count"),
   isPrivate: boolean("is_private"),
@@ -345,8 +373,12 @@ export const socialAccounts = pgTable("social_accounts", {
   // An organisation/brand account with no single owner: face review and the
   // profile auto-link never try to match a face to it.
   noFace: boolean("no_face").notNull().default(false),
+  // Processing this account's content is never queued automatically or in bulk
+  // (see shared/banned-actions.ts); manual runs still work.
+  bannedActions: text("banned_actions").array().notNull().default(sql`'{}'::text[]`),
   // Unimportant account: PRM Stories never collects its stories (already-stored ones stay).
   skipStories: boolean("skip_stories").notNull().default(false),
+  isStarred: boolean("is_starred").notNull().default(false),
   // ── Account Summary & Invalidation Tracking ──
   aiSummary: jsonb("ai_summary"),
   aiSummaryGeneratedAt: timestamp("ai_summary_generated_at"),
@@ -364,6 +396,7 @@ export const socialAccounts = pgTable("social_accounts", {
   index("social_accounts_info_due_idx").on(t.infoDueAt).where(sql`info_due_at IS NOT NULL`),
   index("social_accounts_follows_due_idx").on(t.followsDueAt).where(sql`follows_due_at IS NOT NULL`),
   index("social_accounts_posts_due_idx").on(t.postsDueAt).where(sql`posts_due_at IS NOT NULL`),
+  index("social_accounts_highlights_due_idx").on(t.highlightsDueAt).where(sql`highlights_due_at IS NOT NULL`),
 ]);
 
 export interface PostImageSummary {
@@ -556,13 +589,27 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
   index("social_network_changes_social_account_id_idx").on(t.socialAccountId),
 ]);
 
+/** An own story's viewer list as the stories scraper read it from the archive (story-seen-by-plan.md). */
+export interface StorySeenBy {
+  capturedAt: string;
+  viewerCount: number; // Instagram's count; viewers.length may be lower if the sheet didn't page out
+  viewers: SeenByViewer[];
+}
+export interface SeenByViewer {
+  pk: string;
+  username: string;
+  fullName: string | null;
+  liked: boolean;
+  reply: string | null; // text or emoji sent from the story
+}
+
 // Social account posts table
 export const socialAccountPosts = pgTable("social_account_posts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }), // the primary poster: Instagram's listed author
   coauthorAccountIds: jsonb("coauthor_account_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // secondary posters on a collab post, social account ids
   postType: text("post_type").notNull().default("post"), // 'post', 'story', 'reel', etc.
-  instagramPk: text("instagram_pk"), // Instagram's media id for posts scraped by prm-stories; null for stories and older rows
+  instagramPk: text("instagram_pk"), // Instagram's media id (posts and stories) scraped by prm-stories; null for older rows
   content: text("content"), // JSON-stringified array of CDN image URLs, e.g. '["https://cdn.example.com/img1.jpg"]', or null
   description: text("description"),
   likeCount: integer("like_count").notNull().default(0), // 0 while likesHidden
@@ -579,6 +626,7 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   aiSummary: jsonb("ai_summary"),
   aiSummaryAt: timestamp("ai_summary_at"),
   aiSummaryModel: text("ai_summary_model"),
+  seenBy: jsonb("seen_by").$type<StorySeenBy>(), // own stories only: who viewed / liked / replied, kept past Instagram's 48 h
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
@@ -587,6 +635,42 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   index("social_account_posts_scraped_from_idx").on(t.scrapedFrom),
   index("social_account_posts_instagram_pk_idx").on(t.instagramPk),
   index("social_account_posts_coauthor_account_ids_idx").using("gin", t.coauthorAccountIds),
+]);
+
+// Instagram highlights (pinned story sets) a highlights tracking job read
+// (pinned-stories-plan.md). Every timestamp is when PRM learned the fact, not
+// when it happened on Instagram.
+/** Colors a new highlight set is given, in order; the user can pick any other. */
+export const HIGHLIGHT_PALETTE = ["#e11d48", "#2563eb", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#db2777", "#65a30d", "#ea580c", "#4f46e5"];
+export const nextHighlightColor = (used: string[]): string =>
+  HIGHLIGHT_PALETTE.find((c) => !used.includes(c)) ?? HIGHLIGHT_PALETTE[used.length % HIGHLIGHT_PALETTE.length];
+
+export const instagramHighlights = pgTable("instagram_highlights", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
+  instagramId: text("instagram_id").notNull(),
+  title: text("title"),
+  color: text("color").notNull(), // hex; auto-assigned, the user can change it
+  firstSeenAt: timestamp("first_seen_at").notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at").notNull().defaultNow(),
+  deletedSeenAt: timestamp("deleted_seen_at"), // null while the set is live
+}, (t) => [
+  uniqueIndex("instagram_highlights_account_ig_idx").on(t.socialAccountId, t.instagramId),
+]);
+
+// One stint of a story in a highlight. A story taken out and put back gets a
+// second row; open stints (left_seen_at null) are the current membership.
+export const instagramHighlightMemberships = pgTable("instagram_highlight_memberships", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  highlightId: varchar("highlight_id").notNull().references(() => instagramHighlights.id, { onDelete: "cascade" }),
+  storyPk: text("story_pk").notNull(), // a pk, not a post id: an item whose upload failed is still listed
+  position: integer("position").notNull(),
+  placedSeenAt: timestamp("placed_seen_at").notNull().defaultNow(),
+  lastConfirmedAt: timestamp("last_confirmed_at").notNull().defaultNow(),
+  leftSeenAt: timestamp("left_seen_at"),
+  leftReason: text("left_reason"), // 'removed' | 'set_deleted'
+}, (t) => [
+  uniqueIndex("instagram_highlight_memberships_open_idx").on(t.highlightId, t.storyPk).where(sql`left_seen_at IS NULL`),
 ]);
 
 // Comments under a social account post. Text-only (a gif or sticker arrives as
@@ -862,6 +946,7 @@ export const aiChats = pgTable("ai_chats", {
   vectorId: text("vector_id"),
   vectorSyncedAt: timestamp("vector_synced_at"),
   agentMode: boolean("agent_mode").notNull().default(false),
+  contextEntities: jsonb("context_entities").$type<AiChatContextEntity[]>().notNull().default(sql`'[]'::jsonb`), // People / social accounts the chat is about; locked after the first message
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -972,6 +1057,39 @@ export const insights = pgTable("insights", {
   index("insights_social_accounts_gin").using("gin", t.applicableSocialAccountIds),
 ]);
 
+// Events: things that changed (a post deleted, an unfollow, ...) that the user
+// and external agents should know about. `log` is an append-only array of
+// EventLogEntry; it also carries any event-specific data (e.g. the deleted post).
+// A sub-event points at its parent; a parent's sub-events are found by query.
+export interface EventLogEntry {
+  at: string;           // ISO timestamp
+  action: string;       // e.g. 'created', 'seen', 'acknowledged'
+  note?: string;
+  data?: unknown;
+}
+
+export const events = pgTable("events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: text("type").notNull(),
+  title: text("title").notNull(),
+  subTitle: text("sub_title"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  log: jsonb("log").$type<EventLogEntry[]>().notNull().default(sql`'[]'::jsonb`),
+  seenAt: timestamp("seen_at"),
+  acknowledgedAt: timestamp("acknowledged_at"),
+  aiSeenAt: timestamp("ai_seen_at"),
+  parentEventId: varchar("parent_event_id").references((): AnyPgColumn => events.id, { onDelete: "cascade" }),
+  personIds: text("person_ids").array().notNull().default(sql`ARRAY[]::text[]`),
+  socialAccountIds: text("social_account_ids").array().notNull().default(sql`ARRAY[]::text[]`),
+  nextSteps: text("next_steps"),     // XML document describing what to do about the event
+}, (t) => [
+  index("events_created_at_idx").on(t.createdAt),
+  index("events_parent_idx").on(t.parentEventId),
+  index("events_people_gin").using("gin", t.personIds),
+  index("events_social_accounts_gin").using("gin", t.socialAccountIds),
+]);
+
 // OSINT scans: every scan PRM sends to PRM-compute, queued here first. The
 // runner keeps a few in flight on PRM-compute and submits the next pending row
 // as each one finishes, so a burst of hundreds is fed through without flooding
@@ -1048,6 +1166,7 @@ export const storyScrapeRuns = pgTable("story_scrape_runs", {
   tokenExpiresAt: timestamp("token_expires_at"),
 }, (t) => [
   index("story_scrape_runs_started_idx").on(t.startedAt),
+  index("story_scrape_runs_token_idx").on(t.tokenHash),
 ]);
 
 // One account check for prm-stories to run: the queue and the log in one table.
@@ -1325,7 +1444,6 @@ export const insertPersonSchema = createInsertSchema(people)
   .extend({
     jobs: z.array(jobExperienceZodSchema).optional(),
     birthday: z.string().optional().nullable(),
-    address: z.string().optional().nullable(),
     additionalEmails: z.array(z.string()).optional(),
     additionalPhones: z.array(z.string()).optional(),
     osintRuns: z.object({ emails: osintEmailTargetList, phones: osintTargetList, usernames: osintTargetList }).optional(),
@@ -1334,6 +1452,15 @@ export const insertPersonSchema = createInsertSchema(people)
     politicalLibAuth: z.number().min(-10).max(10).optional().nullable(),
     politicalUpdatedAt: z.coerce.date().optional().nullable(),
   });
+
+export const insertPersonAddressSchema = z.object({
+  address: z.string().trim().min(1, "Address is required"),
+  label: z.string().trim().nullable().optional(),
+  startDate: partialDate.nullable().optional(),
+  endDate: partialDate.nullable().optional(),
+  isPrimary: z.boolean().optional(),
+});
+export type InsertPersonAddress = z.infer<typeof insertPersonAddressSchema>;
 
 export const insertSchoolingSchema = createInsertSchema(schooling)
   .omit({
@@ -1667,6 +1794,7 @@ export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPos
     id: true,
     createdAt: true,
     updatedAt: true,
+    seenBy: true, // written only by the stories scraper's seen-by route
   })
   .extend({
     coauthorAccountIds: z.array(z.string()).optional(),
@@ -1766,6 +1894,8 @@ export type InsertPendingSocialAccountImport = z.infer<typeof insertPendingSocia
 
 export type Insight = typeof insights.$inferSelect;
 export type InsertInsight = typeof insights.$inferInsert;
+export type Event = typeof events.$inferSelect;
+export type InsertEvent = typeof events.$inferInsert;
 export type OsintScan = typeof osintScans.$inferSelect;
 export type HistoricalAccountSummary = typeof historicalAccountSummaries.$inferSelect;
 export type SummaryJob = typeof summaryJobs.$inferSelect;
@@ -1783,6 +1913,9 @@ export type SsoConfig = typeof ssoConfig.$inferSelect;
 export type InsertSsoConfig = z.infer<typeof insertSsoConfigSchema>;
 export type Person = typeof people.$inferSelect;
 export type InsertPerson = z.infer<typeof insertPersonSchema>;
+export type PersonAddress = typeof personAddresses.$inferSelect;
+/** What GET /api/people/:id adds: the primary address, outdated when it has an end date. */
+export type PrimaryAddress = { address: string; outdated: boolean } | null;
 
 export const insertAppKnowledgeSchema = createInsertSchema(appKnowledge).omit({
   id: true,
@@ -1961,6 +2094,10 @@ export type SocialNetworkChange = typeof socialNetworkChanges.$inferSelect;
 export type InsertSocialNetworkChange = z.infer<typeof insertSocialNetworkChangeSchema>;
 
 export type SocialAccountPost = typeof socialAccountPosts.$inferSelect;
+export type InstagramHighlight = typeof instagramHighlights.$inferSelect;
+export type InstagramHighlightMembership = typeof instagramHighlightMemberships.$inferSelect;
+/** GET /api/social-accounts/:id/highlights: every set, deleted ones too, with every stint and the story row it resolves to. */
+export type HighlightWithStints = InstagramHighlight & { stints: (InstagramHighlightMembership & { postId: string })[] };
 export type InsertSocialAccountPost = z.infer<typeof insertSocialAccountPostSchema>;
 
 export type SocialPostComment = typeof socialPostComments.$inferSelect;
@@ -2004,6 +2141,13 @@ export type AiChatAttachment = {
   type: string;
   /** Raw text content of the attachment. Files are read as text on the client. */
   content: string;
+};
+/** A person or social account pinned to an AI chat; the model fetches details with its tools. */
+export type AiChatContextEntity = {
+  type: "person" | "social_account";
+  id: string;
+  /** Display name or @handle, resolved server-side when pinned. */
+  label: string;
 };
 /**
  * Trace of a tool/skill invocation made by the LLM while answering an assistant
@@ -2127,6 +2271,7 @@ export type PersonWithRelations = Person & {
   relationships: RelationshipWithPerson[];
   schooling?: Schooling | null;
   socialAccounts?: SocialAccountWithCurrentProfile[];
+  primaryAddress?: PrimaryAddress;
 };
 
 export type GroupWithNotes = Group & {

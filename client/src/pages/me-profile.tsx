@@ -101,13 +101,7 @@ export default function MeProfile() {
   const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
     queryKey: ["/api/prm-face/facial-intelligence"],
   });
-  const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
-
-  const { data: settings } = useQuery<Record<string, string>>({
-    queryKey: ["/api/settings"],
-  });
-  const imagesTabEnabled = settings?.images_tab_enabled !== "false";
-  const showPhotosTab = facialIntelligenceEnabled && imagesTabEnabled;
+  const showPhotosTab = facialIntelligenceData?.enabled ?? false;
 
   const addPhotoMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -668,7 +662,7 @@ export default function MeProfile() {
           </TabsContent>
 
           {showPhotosTab && (
-            <TabsContent value="photos" className="mt-0 flex-1 min-h-0">
+            <TabsContent value="photos" className="mt-0 flex-1 min-h-0 overflow-y-auto">
               <PersonPhotosTab personId={person.id} />
             </TabsContent>
           )}

@@ -24,8 +24,8 @@ export const INTEREST_LEVEL_COLOR: Record<InterestLevel, string> = {
   extreme: "bg-red-600",
 };
 
-/** The three things a scheduled check can refresh. */
-export const TRACKING_KINDS = ["info", "follows", "posts"] as const;
+/** The things a scheduled check can refresh. */
+export const TRACKING_KINDS = ["info", "follows", "posts", "highlights"] as const;
 export type TrackingKind = (typeof TRACKING_KINDS)[number];
 
 /** Days between checks, per kind. Null means "never" (level none). */
@@ -35,12 +35,12 @@ export type Cadence = Record<TrackingKind, number | null>;
 export const TRACKING_LEVEL_DEFAULTS_KEY = "tracking_level_defaults";
 
 export const DEFAULT_LEVEL_CADENCES: Record<InterestLevel, Cadence> = {
-  none: { info: null, follows: null, posts: null },
-  low: { info: 30, follows: 30, posts: 60 },
-  medium: { info: 7, follows: 30, posts: 30 },
-  high: { info: 7, follows: 30, posts: 30 },
-  very_high: { info: 7, follows: 30, posts: 30 },
-  extreme: { info: 7, follows: 30, posts: 30 },
+  none: { info: null, follows: null, posts: null, highlights: null },
+  low: { info: 30, follows: 30, posts: 60, highlights: 90 },
+  medium: { info: 7, follows: 30, posts: 30, highlights: 30 },
+  high: { info: 7, follows: 30, posts: 30, highlights: 30 },
+  very_high: { info: 7, follows: 30, posts: 30, highlights: 30 },
+  extreme: { info: 7, follows: 30, posts: 30, highlights: 30 },
 };
 
 /**
@@ -63,10 +63,19 @@ export const TRACKING_BIG_ACCOUNTS_NONE_KEY = "tracking_big_accounts_none";
 export const BIG_ACCOUNT_FOLLOWERS = 3_000;
 export const bigAccountsNoneEnabled = (raw: string | null | undefined): boolean => raw !== "false";
 
+/**
+ * app_settings keys, both off unless "true": a handle tagged on an imported post
+ * or story becomes an account (so its face can be connected to it), and each
+ * account made that way gets a profile info check queued.
+ */
+export const TRACKING_MENTIONS_CREATE_KEY = "tracking_mentions_create_accounts";
+export const TRACKING_MENTIONS_QUEUE_INFO_KEY = "tracking_mentions_queue_info";
+
 export const TRACKING_KIND_LABEL: Record<TrackingKind, string> = {
   info: "Profile info",
   follows: "Followers & following",
   posts: "Posts",
+  highlights: "Highlights",
 };
 
 // ── Post import settings (app_settings; the Posts tab on /instagram) ──
@@ -103,11 +112,8 @@ export function parseLevelCadences(raw: string | null | undefined): Record<Inter
   const out = {} as Record<InterestLevel, Cadence>;
   for (const level of INTEREST_LEVELS) {
     const c = parsed[level] ?? {};
-    out[level] = {
-      info: days(c.info, DEFAULT_LEVEL_CADENCES[level].info),
-      follows: days(c.follows, DEFAULT_LEVEL_CADENCES[level].follows),
-      posts: days(c.posts, DEFAULT_LEVEL_CADENCES[level].posts),
-    };
+    out[level] = {} as Cadence;
+    for (const kind of TRACKING_KINDS) out[level][kind] = days(c[kind], DEFAULT_LEVEL_CADENCES[level][kind]);
   }
   return out;
 }
@@ -118,7 +124,7 @@ function days(v: unknown, fallback: number | null): number | null {
 
 /** The account's effective cadence: its own override when set, else its level's default. */
 export function resolveCadence(
-  account: { interestLevel: string; infoEveryDays: number | null; followsEveryDays: number | null; postsEveryDays: number | null },
+  account: { interestLevel: string; infoEveryDays: number | null; followsEveryDays: number | null; postsEveryDays: number | null; highlightsEveryDays: number | null },
   defaults: Record<InterestLevel, Cadence>,
 ): Cadence {
   const level = (INTEREST_LEVELS as readonly string[]).includes(account.interestLevel) ? (account.interestLevel as InterestLevel) : "none";
@@ -128,6 +134,7 @@ export function resolveCadence(
     info: account.infoEveryDays ?? d.info,
     follows: account.followsEveryDays ?? d.follows,
     posts: account.postsEveryDays ?? d.posts,
+    highlights: account.highlightsEveryDays ?? d.highlights,
   };
 }
 

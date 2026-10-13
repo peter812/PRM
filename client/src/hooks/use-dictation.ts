@@ -10,7 +10,8 @@ export interface UseDictationOptions {
 
 /**
  * Microphone dictation: records with MediaRecorder, sends the clip to the
- * Whisper proxy (/api/daily-notes/transcribe) and hands back the text.
+ * Whisper proxy (/api/daily-notes/transcribe) and hands back the text
+ * (only when non-empty; an empty result toasts "Nothing heard").
  * Errors are surfaced as toasts; the mic is released on stop and on unmount.
  */
 export function useDictation(
@@ -55,7 +56,9 @@ export function useDictation(
         throw new Error(data.error || `Transcription failed (${res.status})`);
       }
       const data = await res.json() as { text?: string };
-      onTranscriptRef.current((data.text || "").trim());
+      const text = (data.text || "").trim();
+      if (text) onTranscriptRef.current(text);
+      else toast({ title: "Nothing heard", description: "The recording came back empty. Check the selected microphone and try again.", variant: "destructive" });
     } catch (err: any) {
       toast({ title: "Dictation failed", description: err.message || "Could not transcribe audio.", variant: "destructive" });
     } finally {

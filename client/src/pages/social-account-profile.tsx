@@ -1,6 +1,6 @@
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation, useSearch } from "wouter";
-import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe, ScanFace } from "lucide-react";
+import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, MessageSquare, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe, ScanFace, Star, Ban } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useNoFaceToggle } from "@/components/no-face-account";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from "@/components/ui/dropdown-menu";
+import { useBannedActionToggle } from "@/components/banned-action-toggle";
+import { BANNED_ACTION_LABELS, type BannedAction } from "@shared/banned-actions";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import {
@@ -31,9 +33,10 @@ import {
 import { isValidHexColor, getInitials } from "@/lib/utils";
 import { postPosters } from "@/lib/instagram";
 import { useMutation } from "@tanstack/react-query";
-import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry, TrackingJob } from "@shared/schema";
+import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry, TrackingJob, PrimaryAddress } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
 import { Link } from "wouter";
+import { OUTDATED_TEXT, OutdatedBadge } from "@/components/person-addresses";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ChangeUsernameDialog } from "@/components/change-username-dialog";
 import { LinkFollowingAccountsDialog } from "@/components/link-following-accounts-dialog";
@@ -151,12 +154,13 @@ export default function SocialAccountProfile() {
   const [profileImgSrc, setProfileImgSrc] = useState<string | null | undefined>(undefined);
   const [profilePhotoOpen, setProfilePhotoOpen] = useState(false);
   const noFace = useNoFaceToggle();
+  const bans = useBannedActionToggle();
 
   useEffect(() => {
     setProfileImgSrc(account?.currentProfile?.imageUrl ?? null);
   }, [account?.currentProfile?.imageUrl]);
 
-  const { data: owner } = useQuery<Person>({
+  const { data: owner } = useQuery<Person & { primaryAddress?: PrimaryAddress }>({
     queryKey: account?.ownerUuid ? [`/api/people/${account.ownerUuid}`] : [],
     enabled: !!account?.ownerUuid,
   });
@@ -271,10 +275,15 @@ export default function SocialAccountProfile() {
   const followingList = followingData?.pages.flatMap((p) => p.items) ?? [];
   const followingTotal = followingData?.pages[0]?.total ?? 0;
 
-  // Query posts for this social account lazily when posts or stories tab is active
+  // Query posts for this social account lazily when the posts tab is active
   const { data: allPosts, isLoading: isPostsLoading } = useQuery<SocialAccountPost[]>({
     queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"],
-    enabled: !!uuid && (activeTab === "posts" || activeTab === "stories" || isPostDetailOpen),
+    enabled: !!uuid && (activeTab === "posts" || isPostDetailOpen),
+  });
+  // Stories come on their own, for the stories tab and the overview card.
+  const { data: storyPosts } = useQuery<SocialAccountPost[]>({
+    queryKey: ["/api/social-accounts", uuid, "posts?postType=story&includeDeleted=true"],
+    enabled: !!uuid && (activeTab === "account" || activeTab === "stories"),
   });
   type PostSortOption = "newest" | "oldest" | "popular";
   const [postSort, setPostSort] = useState<PostSortOption>(() => {
@@ -339,7 +348,7 @@ export default function SocialAccountProfile() {
     });
   }, [posts, postSort]);
 
-  const stories = allPosts?.filter((p) => p.postType === "story") ?? [];
+  const stories = storyPosts ?? [];
 
   // Tracking jobs query to detect when a posts check is queued or running
   const jobsKey = [`/api/social-accounts/${uuid}/tracking-jobs`];
@@ -423,6 +432,23 @@ export default function SocialAccountProfile() {
     },
   });
 
+  // By the account's id, not the route param: the page also opens by username, which PATCH doesn't resolve.
+  // A refetch already in flight would land the old value over the optimistic one, so it's cancelled first.
+  const starMutation = useMutation({
+    mutationFn: (isStarred: boolean) =>
+      apiRequest("PATCH", `/api/social-accounts/${account!.id}`, { isStarred }),
+    onMutate: async (isStarred: boolean) => {
+      await queryClient.cancelQueries({ queryKey: ["/api/social-accounts", uuid], exact: true });
+      queryClient.setQueryData(["/api/social-accounts", uuid], (old: any) => old && { ...old, isStarred });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"], exact: false });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to update star", variant: "destructive" });
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async () => {
       return await apiRequest("DELETE", `/api/social-accounts/${uuid}`);
@@ -452,6 +478,7 @@ export default function SocialAccountProfile() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?postType=story&includeDeleted=true"] });
       toast({
         title: "Success",
         description: "Post deleted successfully",
@@ -639,6 +666,16 @@ export default function SocialAccountProfile() {
               <Button
                 variant="ghost"
                 size="icon"
+                className="h-5 w-5 text-yellow-500 hover:text-yellow-600 shrink-0"
+                onClick={() => starMutation.mutate(!account.isStarred)}
+                title={account.isStarred ? "Unstar" : "Star"}
+                data-testid="button-star-account"
+              >
+                <Star className={`h-3.5 w-3.5 ${account.isStarred ? "fill-current" : ""}`} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
                 className="h-5 w-5 text-muted-foreground hover:text-foreground shrink-0"
                 asChild
                 data-testid="button-external-instagram"
@@ -682,6 +719,10 @@ export default function SocialAccountProfile() {
 
         {/* Consolidated Actions Dropdown Menu */}
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-1" onClick={() => navigate(`/ai-chat-demo?socialAccount=${account.id}`)} data-testid="button-chat-about-account">
+            <MessageSquare className="h-3.5 w-3.5" />
+            Chat about account
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="gap-1" data-testid="button-actions-menu">
@@ -716,6 +757,28 @@ export default function SocialAccountProfile() {
                 <ScanFace className="h-4 w-4 mr-2" />
                 {account.noFace ? "Match faces again" : "Has no face"}
               </DropdownMenuItem>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger data-testid="button-bans-menu">
+                  <Ban className="h-4 w-4 mr-2" />
+                  Processing bans
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-52">
+                  {(Object.keys(BANNED_ACTION_LABELS) as BannedAction[]).map((action) => {
+                    const banned = account.bannedActions.includes(action);
+                    return (
+                      <DropdownMenuCheckboxItem
+                        key={action}
+                        checked={banned}
+                        disabled={bans.isPending}
+                        onSelect={() => bans.set(account, action, !banned)}
+                        data-testid={`button-ban-${action}`}
+                      >
+                        {BANNED_ACTION_LABELS[action]}
+                      </DropdownMenuCheckboxItem>
+                    );
+                  })}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
               {accountType?.name?.toLowerCase() === "instagram" && (
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger data-testid="button-extract-menu">
@@ -751,6 +814,7 @@ export default function SocialAccountProfile() {
             </DropdownMenuContent>
           </DropdownMenu>
           {noFace.dialog}
+          {bans.dialog}
         </div>
       </div>
 
@@ -890,6 +954,32 @@ export default function SocialAccountProfile() {
                 </div>
               </div>
             )}
+
+            <div className="space-y-1 text-muted-foreground" data-testid="section-listed-counts">
+              <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Listed on Profile</span>
+              <p className="text-[10px] italic">The totals the profile page itself shows.</p>
+              {account.reportedFollowersCount == null && account.reportedFollowingCount == null ? (
+                <p className="italic text-xs">Not scraped yet</p>
+              ) : (
+                <>
+                  <div>Followers: {account.reportedFollowersCount?.toLocaleString() ?? "—"}</div>
+                  <div>Following: {account.reportedFollowingCount?.toLocaleString() ?? "—"}</div>
+                </>
+              )}
+            </div>
+
+            <div className="space-y-1 text-muted-foreground" data-testid="section-actual-counts">
+              <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Captured in PRM</span>
+              <p className="text-[10px] italic">Accounts PRM actually holds in each list.</p>
+              <div>
+                Followers: {account.followersCount.toLocaleString()}
+                {account.reportedFollowersCount != null && account.followersCount < account.reportedFollowersCount && ` of ${account.reportedFollowersCount.toLocaleString()}`}
+              </div>
+              <div>
+                Following: {account.followingCount.toLocaleString()}
+                {account.reportedFollowingCount != null && account.followingCount < account.reportedFollowingCount && ` of ${account.reportedFollowingCount.toLocaleString()}`}
+              </div>
+            </div>
 
             <div className="space-y-1 text-muted-foreground">
               <span className="font-semibold text-[9px] text-muted-foreground uppercase tracking-wider block">Import Status</span>
@@ -1292,6 +1382,16 @@ export default function SocialAccountProfile() {
                       </div>
                     )}
 
+                    {account.bannedActions.length > 0 && (
+                      <div>
+                        <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Processing bans</span>
+                        <div className="flex items-center gap-1.5 mt-0.5" data-testid="text-details-banned-actions">
+                          <Ban className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="text-foreground">{account.bannedActions.map((a) => BANNED_ACTION_LABELS[a as BannedAction] ?? a).join(", ")}</span>
+                        </div>
+                      </div>
+                    )}
+
                     {/* External Profile Link */}
                     {account.currentProfile?.accountUrl && (
                       <div>
@@ -1312,12 +1412,15 @@ export default function SocialAccountProfile() {
                     )}
 
                     {/* Location */}
-                    {owner?.address && (
+                    {owner?.primaryAddress && (
                       <div>
                         <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Location</span>
-                        <div className="flex items-start gap-1.5 mt-0.5">
-                          <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                          <span className="break-words text-foreground">{owner.address}</span>
+                        <div className={`flex items-start gap-1.5 mt-0.5 ${owner.primaryAddress.outdated ? OUTDATED_TEXT : "text-foreground"}`}>
+                          <MapPin className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                          <span className="break-words">
+                            {owner.primaryAddress.address}
+                            {owner.primaryAddress.outdated && <OutdatedBadge />}
+                          </span>
                         </div>
                       </div>
                     )}
@@ -1668,7 +1771,7 @@ export default function SocialAccountProfile() {
           {/* Messages Tab */}
           {/* Messages Tab */}
           <TabsContent value="stories" className="mt-0 flex-1 min-h-0 overflow-y-auto">
-            <StoriesTab stories={stories} />
+            <StoriesTab accountId={account.id} stories={stories} />
           </TabsContent>
 
           <TabsContent value="messages" className="mt-0 flex-1 min-h-0">

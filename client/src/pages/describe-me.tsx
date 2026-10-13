@@ -27,13 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { MicSelect } from "@/components/mic-select";
 import type {
   Person,
   PotentialInteraction,
@@ -166,13 +160,6 @@ export default function DescribeMePage() {
 
   const dictation = useDictation(
     (text) => {
-      if (!text) {
-        return toast({
-          title: "Nothing heard",
-          description: "The recording came back empty. Try again.",
-          variant: "destructive",
-        });
-      }
       setTranscript(text);
       extract.mutate(text);
     },
@@ -724,29 +711,12 @@ export default function DescribeMePage() {
                 <Mic className="h-3.5 w-3.5" />
                 Microphone
               </label>
-              <Select
+              <MicSelect
+                devices={devices}
                 value={selectedDeviceId}
                 onValueChange={setSelectedDeviceId}
                 disabled={busy}
-              >
-                <SelectTrigger
-                  className="w-full text-xs h-9"
-                  aria-label="Select audio input device"
-                >
-                  <SelectValue placeholder="Select microphone" />
-                </SelectTrigger>
-                <SelectContent>
-                  {devices.map((device) => (
-                    <SelectItem
-                      key={device.deviceId}
-                      value={device.deviceId}
-                      className="text-xs"
-                    >
-                      {device.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              />
             </div>
 
             <div className="relative w-full">

@@ -26,10 +26,11 @@ import {
 } from "@shared/interest-level";
 import { InterestLevelSelect, asLevel } from "@/components/interest-level-badge";
 
-const ROW: Record<TrackingKind, { override: "infoEveryDays" | "followsEveryDays" | "postsEveryDays"; checked: "infoCheckedAt" | "followsCheckedAt" | "postsCheckedAt"; due: "infoDueAt" | "followsDueAt" | "postsDueAt" }> = {
+const ROW: Record<TrackingKind, { override: `${TrackingKind}EveryDays`; checked: `${TrackingKind}CheckedAt`; due: `${TrackingKind}DueAt` }> = {
   info: { override: "infoEveryDays", checked: "infoCheckedAt", due: "infoDueAt" },
   follows: { override: "followsEveryDays", checked: "followsCheckedAt", due: "followsDueAt" },
   posts: { override: "postsEveryDays", checked: "postsCheckedAt", due: "postsDueAt" },
+  highlights: { override: "highlightsEveryDays", checked: "highlightsCheckedAt", due: "highlightsDueAt" },
 };
 
 const BLOCKER_TEXT = { private: "private account", too_many_follows: "over 10,000 follows — header count only" } as const;

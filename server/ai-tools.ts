@@ -15,14 +15,15 @@
  */
 
 import { db } from "./db";
-import { storage } from "./storage";
-import { interactions, interactionTypes, FAMILY_RELATIONSHIP_TYPES, FAMILY_RELATIONSHIP_LABELS, FAMILY_RELATIONSHIP_CATEGORIES, FAMILY_RELATIONSHIP_INVERSES, messages, people, socialAccounts, conversations } from "@shared/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { storage, postedBy } from "./storage";
+import { interactions, interactionTypes, FAMILY_RELATIONSHIP_TYPES, FAMILY_RELATIONSHIP_LABELS, FAMILY_RELATIONSHIP_CATEGORIES, FAMILY_RELATIONSHIP_INVERSES, messages, people, socialAccounts, socialAccountPosts, conversations } from "@shared/schema";
+import { eq, and, ne, desc, sql, gte } from "drizzle-orm";
 import { searchUniversal } from "./vector-universal";
 import { searchAppKnowledge } from "./vector-app-knowledge";
 import { computeFamilyLabels } from "./family-relations-helper";
 import { chat as aiChat, resolveModel, type AiMessage, type ResolvedModel } from "./ai/provider";
 import type { AiUserAnswer, AiUserQuestion } from "@shared/schema";
+import { INTEREST_LEVEL_LABEL, type InterestLevel } from "@shared/interest-level";
 
 
 export type AiToolIcon =
@@ -33,6 +34,8 @@ export type AiToolIcon =
   | "user-pen"
   | "at-sign"
   | "at-sign-search"
+  | "image"
+  | "film"
   | "book"
   | "book-plus"
   | "notebook"
@@ -133,6 +136,10 @@ function trimPerson(p: any) {
 function trimSocialAccount(a: any) {
   const profile = a.currentProfile ?? {};
   const state = a.latestState ?? {};
+  const summaryProfile = a.aiSummary?.profile ?? (typeof a.aiSummary === "string" ? a.aiSummary : null);
+  const interestLevel = (a.interestLevel ?? "none") as InterestLevel;
+  const interestLabel = (INTEREST_LEVEL_LABEL as Record<string, string>)[interestLevel] ?? interestLevel;
+
   return {
     uuid: a.id,
     handle: profile.handle ?? a.username ?? null,
@@ -141,10 +148,53 @@ function trimSocialAccount(a: any) {
     typeId: a.typeId ?? null,
     bio: profile.bio ? String(profile.bio).slice(0, 280) : null,
     accountUrl: profile.accountUrl ?? null,
-    followerCount: state.followerCount ?? null,
-    followingCount: state.followingCount ?? null,
+    followerCount: state.followerCount ?? a.followersCount ?? null,
+    followingCount: state.followingCount ?? a.followingCount ?? null,
+    reportedPostsCount: a.reportedPostsCount ?? null,
     accountCreatedAt: a.internalAccountCreationDate ?? a.createdAt ?? null,
+    summary: summaryProfile,
+    summaryGeneratedAt: a.aiSummaryGeneratedAt ?? null,
+    summaryModel: a.aiSummaryModel ?? null,
+    summaryInvalidated: Boolean(a.aiSummaryInvalidated),
+    trackingLevel: interestLevel,
+    trackingLevelLabel: interestLabel,
+    trackingConfig: {
+      manual: Boolean(a.interestLevelManual),
+      skipStories: Boolean(a.skipStories),
+      infoEveryDays: a.infoEveryDays ?? null,
+      followsEveryDays: a.followsEveryDays ?? null,
+      postsEveryDays: a.postsEveryDays ?? null,
+      postsCheckedAt: a.postsCheckedAt ?? null,
+      postsDueAt: a.postsDueAt ?? null,
+    },
   };
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function resolveSocialAccount(identifier: string) {
+  const raw = asString(identifier).trim();
+  if (!raw) return null;
+
+  if (UUID_REGEX.test(raw)) {
+    const acc = await storage.getSocialAccountById(raw);
+    if (acc) return acc;
+  }
+
+  const cleanHandle = raw.replace(/^@+/, "").trim();
+  if (!cleanHandle) return null;
+
+  const matches = await storage.getAllSocialAccounts(cleanHandle);
+  const exact = matches.find(
+    (a) =>
+      a.username?.toLowerCase() === cleanHandle.toLowerCase() ||
+      a.id === raw
+  );
+  if (exact) return exact;
+
+  if (matches.length === 1) return matches[0];
+
+  return null;
 }
 
 function trimNote(n: any) {
@@ -152,7 +202,7 @@ function trimNote(n: any) {
     uuid: n.id,
     personId: n.personId ?? null,
     title: n.title ?? null,
-    content: n.content ? String(n.content).slice(0, 500) : null,
+    content: n.content ? String(n.content).slice(0, 3000) : null,
     createdAt: n.createdAt ?? null,
   };
 }
@@ -413,31 +463,265 @@ export const AI_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: "get_social_account",
+    label: "Get social account",
+    icon: "at-sign",
+    category: "social-accounts",
+    description:
+      "Fetch a single social account in full by UUID or username/handle (e.g. '@username' or 'username'). Returns handle, display name, bio, account URL, follower/following counts, account creation date, owner person (if any), AI summary (if available), and tracking level with check schedules.",
+    parameters: {
+      type: "object",
+      properties: {
+        account: {
+          type: "string",
+          description: "UUID or username/handle (e.g. '@username' or 'username') of the social account to get.",
+        },
+        uuid: {
+          type: "string",
+          description: "Optional UUID of the social account (supported for backwards compatibility).",
+        },
+      },
+    },
+    handler: async (args) => {
+      const identifier = asString(args.account || args.uuid).trim();
+      if (!identifier) return { summary: "Missing account identifier", data: { error: "account or uuid is required" } };
+      const account = await resolveSocialAccount(identifier);
+      if (!account) return { summary: `Social account '${identifier}' not found`, data: { error: "not_found" } };
+      const trimmed = trimSocialAccount(account);
+      const owner = account.ownerUuid ? await storage.getPersonById(account.ownerUuid) : null;
+      return {
+        summary: `Retrieved ${trimmed.handle ? `@${trimmed.handle}` : (trimmed.displayName ?? "social account")}`,
+        data: {
+          ...trimmed,
+          owner: owner ? trimPerson(owner) : null,
+        },
+      };
+    },
+  },
+  {
     name: "social_account_pull",
     label: "Pull social account",
     icon: "at-sign",
     category: "social-accounts",
     description:
-      "Fetch a single social account in full by UUID. Returns handle, display name, bio, account URL, follower/following counts, account creation date, and the owner person (if any). Call this after social_account_search if you need the full record.",
+      "Fetch a single social account in full by UUID or handle. Returns handle, display name, bio, follower/following counts, AI summary, and tracking level. (Alias of get_social_account).",
     parameters: {
       type: "object",
       properties: {
         uuid: { type: "string", description: "UUID of the social account to pull." },
+        account: { type: "string", description: "UUID or username/handle of the social account." },
       },
-      required: ["uuid"],
     },
     handler: async (args) => {
-      const uuid = asString(args.uuid).trim();
-      if (!uuid) return { summary: "Missing UUID", data: { error: "uuid is required" } };
-      const account = await storage.getSocialAccountById(uuid);
-      if (!account) return { summary: "Social account not found", data: { error: "not_found" } };
+      const identifier = asString(args.account || args.uuid).trim();
+      if (!identifier) return { summary: "Missing account identifier", data: { error: "account or uuid is required" } };
+      const account = await resolveSocialAccount(identifier);
+      if (!account) return { summary: `Social account '${identifier}' not found`, data: { error: "not_found" } };
       const trimmed = trimSocialAccount(account);
       const owner = account.ownerUuid ? await storage.getPersonById(account.ownerUuid) : null;
       return {
-        summary: `Pulled ${trimmed.handle ?? trimmed.displayName ?? "social account"}`,
+        summary: `Pulled ${trimmed.handle ? `@${trimmed.handle}` : (trimmed.displayName ?? "social account")}`,
         data: {
           ...trimmed,
           owner: owner ? trimPerson(owner) : null,
+        },
+      };
+    },
+  },
+  {
+    name: "get_social_account_posts",
+    label: "Get social account posts",
+    icon: "image",
+    category: "social-accounts",
+    description:
+      "Fetch feed/grid posts (excluding stories) for a social account by UUID or username/handle (e.g. '@username'). Returns captions, dates, like and comment counts, media URLs, and AI summaries.",
+    parameters: {
+      type: "object",
+      properties: {
+        account: {
+          type: "string",
+          description: "UUID or username/handle (e.g. '@username' or 'username') of the social account.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of posts to return (default 10, max 30).",
+        },
+        includeSummary: {
+          type: "boolean",
+          description: "Whether to include post AI summaries when available (default true).",
+        },
+      },
+      required: ["account"],
+    },
+    handler: async (args) => {
+      const accountQuery = asString(args.account || args.uuid).trim();
+      if (!accountQuery) return { summary: "Missing account identifier", data: { error: "account is required" } };
+      const account = await resolveSocialAccount(accountQuery);
+      if (!account) return { summary: `Social account '${accountQuery}' not found`, data: { error: "not_found" } };
+
+      const limit = Math.min(Math.max(1, typeof args.limit === "number" ? args.limit : 10), 30);
+      const includeSummary = args.includeSummary !== false;
+
+      const rows = await db
+        .select()
+        .from(socialAccountPosts)
+        .where(
+          and(
+            postedBy(account.id),
+            eq(socialAccountPosts.isDeleted, false),
+            ne(socialAccountPosts.postType, "story")
+          )
+        )
+        .orderBy(desc(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt})`))
+        .limit(limit);
+
+      const posts = rows.map((p) => {
+        let mediaUrls: string[] = [];
+        try {
+          if (p.content) {
+            const parsed = JSON.parse(p.content);
+            if (Array.isArray(parsed)) mediaUrls = parsed.filter((u) => typeof u === "string");
+            else if (typeof parsed === "string") mediaUrls = [parsed];
+          }
+        } catch {
+          if (p.content) mediaUrls = [p.content];
+        }
+
+        let mentioned: unknown = null;
+        try {
+          if (p.mentionedAccounts) mentioned = JSON.parse(p.mentionedAccounts);
+        } catch { /* ignore */ }
+
+        const summaryData = p.aiSummary as any;
+        return {
+          id: p.id,
+          postType: p.postType,
+          postedAt: p.postedAt ?? p.createdAt,
+          caption: p.description ?? null,
+          likeCount: p.likesHidden ? null : p.likeCount,
+          commentCount: p.commentCount,
+          mediaUrls: mediaUrls.slice(0, 3),
+          mediaCount: mediaUrls.length,
+          summary: includeSummary ? (summaryData?.overview ?? null) : undefined,
+          summaryTags: includeSummary ? (summaryData?.tags ?? []) : undefined,
+          mentionedAccounts: mentioned,
+        };
+      });
+
+      const handle = account.username ?? account.id;
+      return {
+        summary: `Retrieved ${posts.length} post${posts.length === 1 ? "" : "s"} for @${handle}`,
+        data: {
+          account: trimSocialAccount(account),
+          count: posts.length,
+          posts,
+        },
+      };
+    },
+  },
+  {
+    name: "get_social_account_stories",
+    label: "Get social account stories",
+    icon: "film",
+    category: "social-accounts",
+    description:
+      "Fetch Instagram stories for a social account by UUID or username/handle (e.g. '@username'). Returns story takenAt dates, captions, expiration status, Whisper transcripts, media URLs, and AI summaries.",
+    parameters: {
+      type: "object",
+      properties: {
+        account: {
+          type: "string",
+          description: "UUID or username/handle (e.g. '@username' or 'username') of the social account.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of stories to return (default 10, max 30).",
+        },
+        activeOnly: {
+          type: "boolean",
+          description: "If true, only returns active unexpired stories (within the last 24 hours).",
+        },
+      },
+      required: ["account"],
+    },
+    handler: async (args) => {
+      const accountQuery = asString(args.account || args.uuid).trim();
+      if (!accountQuery) return { summary: "Missing account identifier", data: { error: "account is required" } };
+      const account = await resolveSocialAccount(accountQuery);
+      if (!account) return { summary: `Social account '${accountQuery}' not found`, data: { error: "not_found" } };
+
+      const limit = Math.min(Math.max(1, typeof args.limit === "number" ? args.limit : 10), 30);
+      const activeOnly = Boolean(args.activeOnly);
+
+      const conditions = [
+        postedBy(account.id),
+        eq(socialAccountPosts.isDeleted, false),
+        eq(socialAccountPosts.postType, "story"),
+      ];
+
+      if (activeOnly) {
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        conditions.push(gte(socialAccountPosts.postedAt, twentyFourHoursAgo));
+      }
+
+      const rows = await db
+        .select()
+        .from(socialAccountPosts)
+        .where(and(...conditions))
+        .orderBy(desc(sql`COALESCE(${socialAccountPosts.postedAt}, ${socialAccountPosts.createdAt})`))
+        .limit(limit);
+
+      const now = Date.now();
+      const stories = rows.map((s) => {
+        let mediaUrl: string | null = null;
+        try {
+          if (s.content) {
+            const parsed = JSON.parse(s.content);
+            if (Array.isArray(parsed) && parsed.length > 0) mediaUrl = parsed[0];
+            else if (typeof parsed === "string") mediaUrl = parsed;
+          }
+        } catch {
+          if (s.content) mediaUrl = s.content;
+        }
+
+        const meta = (s.metadata ?? {}) as any;
+        if (!mediaUrl && meta.videoUrl) mediaUrl = meta.videoUrl;
+
+        const takenAt = s.postedAt ?? s.createdAt;
+        let expiresAt: Date | null = null;
+        if (meta.expiresAt) {
+          expiresAt = new Date(meta.expiresAt);
+        } else if (takenAt) {
+          expiresAt = new Date(new Date(takenAt).getTime() + 24 * 60 * 60 * 1000);
+        }
+
+        const isExpired = expiresAt ? expiresAt.getTime() < now : false;
+        const transcriptText = (s.videoTranscript as any)?.text ?? null;
+        const summaryOverview = (s.aiSummary as any)?.overview ?? null;
+
+        return {
+          id: s.id,
+          takenAt,
+          caption: s.description ?? null,
+          mediaUrl,
+          expiresAt,
+          isExpired,
+          videoTranscript: transcriptText,
+          summary: summaryOverview,
+          mentions: meta.mentions ?? [],
+          scrapedFrom: s.scrapedFrom ?? null,
+        };
+      });
+
+      const handle = account.username ?? account.id;
+      const activeCount = stories.filter((s) => !s.isExpired).length;
+      return {
+        summary: `Retrieved ${stories.length} stor${stories.length === 1 ? "y" : "ies"} (${activeCount} active) for @${handle}`,
+        data: {
+          account: trimSocialAccount(account),
+          total: stories.length,
+          activeCount,
+          stories,
         },
       };
     },

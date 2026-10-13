@@ -26,6 +26,8 @@ import {
 } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
 import { useDictation } from "@/hooks/use-dictation";
+import { useAudioDevices } from "@/hooks/use-audio-devices";
+import { MicSelect } from "@/components/mic-select";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import type { DailyNoteWithDetails } from "@shared/schema";
 import { Plus, Trash2, Eye, Edit2, ChevronDown, X, Lock, Sparkles, Loader2, Check, CloudOff, Mic, Square } from "lucide-react";
@@ -254,9 +256,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
 
   // ── Dictation helpers ─────────────────────────────────────────────────────
   // Insert transcribed text into the body at the caret (or append if no focus).
-  const insertTranscript = (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+  const insertTranscript = (trimmed: string) => {
     setBody(prev => {
       const el = bodyRef.current;
       if (el && el.selectionStart != null) {
@@ -281,7 +281,11 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     scheduleAutosave();
   };
 
-  const { status: recording, toggle: toggleRecording } = useDictation(insertTranscript);
+  const { devices: micDevices, selectedDeviceId: micDeviceId, setSelectedDeviceId: setMicDeviceId, refreshDevices: refreshMics } = useAudioDevices();
+  const { status: recording, toggle: toggleRecording } = useDictation(insertTranscript, {
+    deviceId: micDeviceId,
+    onPermissionGranted: refreshMics,
+  });
 
   // Best-effort save if the tab/page is closing mid-edit.
   useEffect(() => {
@@ -476,6 +480,13 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
               <Label>Body</Label>
               {!isReadOnly && (
                 <div className="flex items-center gap-1">
+                  <MicSelect
+                    devices={micDevices}
+                    value={micDeviceId}
+                    onValueChange={setMicDeviceId}
+                    disabled={showPreview || recording !== "idle"}
+                    className="h-8 w-44 text-xs"
+                  />
                   <Button
                     type="button"
                     variant={recording === "recording" ? "destructive" : "ghost"}

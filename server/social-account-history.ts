@@ -152,6 +152,9 @@ const TRACKED_FIELDS = [
   { field: "location", column: "previousLocation" },
   { field: "image", column: "previousImageUrl" },
   { field: "joined", column: null },
+  // The totals the profile page lists. The entry's reported*After columns hold the new value.
+  { field: "listedFollowers", column: null },
+  { field: "listedFollowing", column: null },
 ] as const;
 
 /**
@@ -291,6 +294,8 @@ export async function applySnapshot(snap: IngestSnapshot): Promise<SocialAccount
       location: { next: p.location, prev: before.location },
       image: { next: p.image?.imageUrl, prev: before.imageUrl },
       joined: { next: p.joinedAt?.getTime(), prev: before.joinedAt?.getTime() },
+      listedFollowers: { next: p.reportedFollowersCount, prev: before.reportedFollowersCount },
+      listedFollowing: { next: p.reportedFollowingCount, prev: before.reportedFollowingCount },
     };
 
     const profileFieldsChanged: string[] = [];
