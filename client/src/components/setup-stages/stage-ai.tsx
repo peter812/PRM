@@ -1,11 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useLoadOnce } from "@/hooks/use-load-once";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { AiProvidersCard } from "@/components/ai-providers-card";
 import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/components/provider-model-picker";
 import { apiRequest } from "@/lib/queryClient";
@@ -13,7 +12,6 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Brain,
   Database,
-  ScanFace,
   Mic,
   Save,
   Loader2,
@@ -40,16 +38,11 @@ export function StageAi() {
     queryKey: ["/api/vector/settings"],
   });
 
-  const { data: facialData } = useQuery<{ enabled: boolean }>({
-    queryKey: ["/api/prm-face/facial-intelligence"],
-  });
-
   const [text, setText] = useState<ModelSelection>(EMPTY);
   const [vision, setVision] = useState<ModelSelection>(EMPTY);
   const [events, setEvents] = useState<ModelSelection>(EMPTY);
   const [embedding, setEmbedding] = useState<ModelSelection>(EMPTY);
   const [whisperModel, setWhisperModel] = useState("");
-  const [facialIntelligence, setFacialIntelligence] = useState(false);
 
   useLoadOnce(aiSettings, (s) => {
     setText(s.text);
@@ -61,12 +54,6 @@ export function StageAi() {
   useLoadOnce(vectorSettings, (s) => {
     setEmbedding({ providerId: s.embeddingProviderId ?? "", model: s.embeddingModel || "" });
   });
-
-  useEffect(() => {
-    if (facialData) {
-      setFacialIntelligence(facialData.enabled);
-    }
-  }, [facialData]);
 
   const saveAiMutation = useMutation({
     mutationFn: async () => {
@@ -83,15 +70,10 @@ export function StageAi() {
           embeddingProviderId: embedding.providerId,
         });
       }
-
-      await apiRequest("POST", "/api/prm-face/facial-intelligence", {
-        enabled: facialIntelligence,
-      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/ai/settings"] });
       queryClient.invalidateQueries({ queryKey: ["/api/vector/settings"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/facial-intelligence"] });
       toast({ title: "AI & Intelligence configuration saved" });
     },
     onError: (err: Error) => {
@@ -156,27 +138,7 @@ export function StageAi() {
           </CardContent>
         </Card>
 
-        {/* 3. Facial Intelligence */}
-        <Card className="border-border">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <ScanFace className="h-4 w-4 text-purple-500" /> Automatic Face Recognition
-                </CardTitle>
-                <CardDescription className="text-xs mt-0.5">
-                  Automatically cluster and label faces detected in newly uploaded photos.
-                </CardDescription>
-              </div>
-              <Switch
-                checked={facialIntelligence}
-                onCheckedChange={setFacialIntelligence}
-              />
-            </div>
-          </CardHeader>
-        </Card>
-
-        {/* 4. Speech-to-Text (Whisper) */}
+        {/* 3. Speech-to-Text (Whisper) */}
         <Card className="border-border">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">

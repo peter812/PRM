@@ -1,6 +1,7 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, GraduationCap, Briefcase, ChevronDown } from "lucide-react";
+import { useLocation, Link } from "wouter";
+import { Mail, Phone, Home, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, GraduationCap, Briefcase, ChevronDown } from "lucide-react";
 import { useState, useRef, lazy, Suspense } from "react";
 import { MessagesTab } from "@/components/messages-tab";
 import { Button } from "@/components/ui/button";
@@ -21,11 +22,13 @@ import { RelationshipDialog } from "@/components/relationship-dialog";
 import { RelationshipsTab } from "@/components/relationships-tab";
 import { PersonGroupsTab } from "@/components/person-groups-tab";
 import { AdditionalInfoDialog } from "@/components/additional-info-dialog";
+import { ChoosePersonImageDialog } from "@/components/choose-person-image-dialog";
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
-import { getInitials } from "@/lib/utils";
+import { OUTDATED_TEXT, OutdatedBadge, PersonAddresses } from "@/components/person-addresses";
+import { mapHref } from "@/lib/map-shared";
 
 const FamilyTreeTab = lazy(() =>
   import("@/components/family-tree-tab").then((module) => ({
@@ -92,16 +95,12 @@ export default function MeProfile() {
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
   const [isEditAdditionalOpen, setIsEditAdditionalOpen] = useState(false);
+  const [isChooseImageOpen, setIsChooseImageOpen] = useState(false);
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: person, isLoading, isError, error } = useQuery<PersonWithRelations>({
     queryKey: ["/api/me"],
   });
-
-  const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
-    queryKey: ["/api/prm-face/facial-intelligence"],
-  });
-  const showPhotosTab = facialIntelligenceData?.enabled ?? false;
 
   const addPhotoMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -191,17 +190,17 @@ export default function MeProfile() {
           {activeTab !== "home" && (
             <Avatar className="w-9 h-9 shrink-0">
               {person.imageUrl && (
-                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                <AvatarImage src={person.imageUrl} alt={formatPersonName(person)} />
               )}
               <AvatarFallback className="text-xs">
-                {getInitials(person.firstName, person.lastName)}
+                {personInitials(person)}
               </AvatarFallback>
             </Avatar>
           )}
 
           <div className="min-w-0">
             <h1 className="text-sm font-bold truncate leading-none" data-testid="text-person-name">
-              {person.firstName} {person.lastName}
+              {formatPersonName(person)}
             </h1>
             {(person.title || person.company) && (
               <p className="text-xs text-muted-foreground truncate leading-none mt-1">
@@ -238,12 +237,10 @@ export default function MeProfile() {
                 <CalendarDays className="h-4 w-4 mr-2" />
                 Add Interaction
               </DropdownMenuItem>
-              {showPhotosTab && (
-                <DropdownMenuItem onClick={() => photoFileInputRef.current?.click()} data-testid="menu-item-add-photo">
-                  <ImageIcon className="h-4 w-4 mr-2" />
-                  Add Photo
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem onClick={() => photoFileInputRef.current?.click()} data-testid="menu-item-add-photo">
+                <ImageIcon className="h-4 w-4 mr-2" />
+                Add Photo
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -304,15 +301,20 @@ export default function MeProfile() {
               >
                 Education & Career
               </TabsTrigger>
-              {showPhotosTab && (
-                <TabsTrigger
-                  value="photos"
-                  className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
-                  data-testid="tab-photos"
-                >
-                  Photos
-                </TabsTrigger>
-              )}
+              <TabsTrigger
+                value="location"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-location"
+              >
+                Location
+              </TabsTrigger>
+              <TabsTrigger
+                value="photos"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-photos"
+              >
+                Photos
+              </TabsTrigger>
             </TabsList>
           </div>
         </div>
@@ -326,7 +328,10 @@ export default function MeProfile() {
               <div className="flex-1 space-y-6 w-full min-w-0">
                 {/* Profile Brief */}
                 <div className="space-y-1">
-                  <h2 className="text-2xl font-bold">{person.firstName} {person.lastName}</h2>
+                  <h2 className="text-2xl font-bold">{formatPersonName(person)}</h2>
+                  {person.nickname && (
+                    <p className="text-sm text-muted-foreground">Nickname: {person.nickname}</p>
+                  )}
                   {person.maidenName && (
                     <p className="text-sm text-muted-foreground">Maiden Name: {person.maidenName}</p>
                   )}
@@ -370,7 +375,7 @@ export default function MeProfile() {
                         {person.relationships.slice(0, 3).map((r: any, idx: number) => (
                           <div key={idx} className="flex justify-between border-b pb-1 last:border-0 last:pb-0">
                             <span className="font-medium text-foreground">
-                              {r.relatedPerson?.firstName} {r.relatedPerson?.lastName}
+                              {formatPersonName(r.relatedPerson)}
                             </span>
                             <span className="text-muted-foreground">{r.type?.name || "Relation"}</span>
                           </div>
@@ -434,34 +439,30 @@ export default function MeProfile() {
                 </Card>
 
                 {/* Summaries: Photos */}
-                {showPhotosTab && (
-                  <Card className="p-4 space-y-3 shadow-none">
-                    <h3 className="font-semibold text-sm flex items-center justify-between">
-                      <span>Photos</span>
-                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("photos")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
-                    </h3>
-                    <PersonPhotosOverview personId={person.id} limit={4} />
-                  </Card>
-                )}
+                <Card className="p-4 space-y-3 shadow-none">
+                  <h3 className="font-semibold text-sm flex items-center justify-between">
+                    <span>Photos</span>
+                    <Button variant="ghost" size="sm" onClick={() => setActiveTab("photos")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                  </h3>
+                  <PersonPhotosOverview personId={person.id} limit={4} />
+                </Card>
               </div>
 
               {/* Right Column: Large Profile Picture & Contact details */}
               <div className="w-full lg:w-80 shrink-0 space-y-4">
                 {/* Large Profile Image */}
-                <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden group shadow-sm">
+                <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden shadow-sm">
                   {person.imageUrl ? (
-                    <img src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} className="w-full h-full object-cover" />
+                    <img src={person.imageUrl} alt={formatPersonName(person)} className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-4xl font-bold bg-primary/10 text-primary">
-                      {getInitials(person.firstName, person.lastName)}
+                      {personInitials(person)}
                     </div>
                   )}
-                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                    <Button variant="secondary" size="sm" onClick={() => setIsEditPersonOpen(true)}>
-                      Change Image
-                    </Button>
-                  </div>
                 </div>
+                <Button variant="outline" size="sm" className="w-full" onClick={() => setIsChooseImageOpen(true)} data-testid="button-choose-image">
+                  Choose image
+                </Button>
 
                 {/* Contact Details Card */}
                 <Card className="p-4 space-y-3 text-xs shadow-none">
@@ -479,7 +480,18 @@ export default function MeProfile() {
                         <span className="text-[11px]">{formatPhoneNumberForDisplay(person.phone)}</span>
                       </div>
                     )}
-                    {!person.email && !person.phone && <span className="text-muted-foreground italic">No email or phone set</span>}
+                    {person.primaryAddress && (
+                      <div className={`flex items-start gap-2 ${person.primaryAddress.outdated ? OUTDATED_TEXT : ""}`}>
+                        <Home className="h-4 w-4 shrink-0 mt-0.5" />
+                        <span className="break-words">
+                          <Link href={mapHref(person.id, person.primaryAddress.address)} className="hover:underline" title="Show on map">
+                            {person.primaryAddress.address}
+                          </Link>
+                          {person.primaryAddress.outdated && <OutdatedBadge />}
+                        </span>
+                      </div>
+                    )}
+                    {!person.email && !person.phone && !person.primaryAddress && <span className="text-muted-foreground italic">No contact details set</span>}
                   </div>
 
                   <div className="border-t pt-3 space-y-2">
@@ -534,7 +546,7 @@ export default function MeProfile() {
             <Suspense fallback={<Skeleton className="w-full h-[400px]" />}>
               <FamilyTreeTab
                 personId={person.id}
-                personName={`${person.firstName} ${person.lastName}`.trim()}
+                personName={formatPersonName(person)}
               />
             </Suspense>
           </TabsContent>
@@ -661,11 +673,13 @@ export default function MeProfile() {
             <MessagesTab personId={person.id} />
           </TabsContent>
 
-          {showPhotosTab && (
-            <TabsContent value="photos" className="mt-0 flex-1 min-h-0 overflow-y-auto">
-              <PersonPhotosTab personId={person.id} />
-            </TabsContent>
-          )}
+          <TabsContent value="location" className="mt-0 flex-1 min-h-0 p-6 overflow-y-auto">
+            <PersonAddresses personId={person.id} />
+          </TabsContent>
+
+          <TabsContent value="photos" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <PersonPhotosTab personId={person.id} />
+          </TabsContent>
         </div>
       </Tabs>
 
@@ -694,6 +708,11 @@ export default function MeProfile() {
         open={isEditAdditionalOpen}
         onOpenChange={setIsEditAdditionalOpen}
         person={person}
+      />
+      <ChoosePersonImageDialog
+        person={person}
+        open={isChooseImageOpen}
+        onOpenChange={setIsChooseImageOpen}
       />
       <input
         ref={photoFileInputRef}

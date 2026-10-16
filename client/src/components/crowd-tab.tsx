@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -454,12 +455,12 @@ export function CrowdTab({
                         <Avatar className="w-10 h-10">
                           {pMember.imageUrl && <AvatarImage src={pMember.imageUrl} />}
                           <AvatarFallback className="bg-primary/5 text-sm">
-                            {getInitials(`${pMember.firstName} ${pMember.lastName}`)}
+                            {personInitials(pMember)}
                           </AvatarFallback>
                         </Avatar>
                         <div className="min-w-0">
                           <h4 className="font-semibold text-sm truncate">
-                            {pMember.firstName} {pMember.lastName}
+                            {formatPersonName(pMember)}
                           </h4>
                           <p className="text-xs text-muted-foreground truncate">
                             {pMember.title ? `${pMember.title} at ` : ""}{pMember.company || "No company"}

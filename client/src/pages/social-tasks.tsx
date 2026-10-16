@@ -77,6 +77,7 @@ export default function SocialTasksPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [taskToDelete, setTaskToDelete] = useState<TaskRow | null>(null);
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
+  const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
   const [modalGroupId, setModalGroupId] = useState<string | null>(null);
 
   const handleToggleSelect = (id: string) => {
@@ -111,15 +112,19 @@ export default function SocialTasksPage() {
     },
   });
 
+  // No ids removes every task, not just the ones listed.
   const deleteBulkMutation = useMutation({
-    mutationFn: async (ids: string[]) => {
-      const res = await apiRequest("POST", "/api/tracking/jobs/bulk-delete", { ids });
+    mutationFn: async (ids?: string[]) => {
+      const res = ids
+        ? await apiRequest("POST", "/api/tracking/jobs/bulk-delete", { ids })
+        : await apiRequest("DELETE", "/api/tracking/jobs");
       return res.json();
     },
     onSuccess: (data: { deletedCount: number }) => {
       toast({ title: "Tasks removed", description: `Removed ${data.deletedCount} ${data.deletedCount === 1 ? "task" : "tasks"}.` });
       setSelectedIds(new Set());
       setShowBulkDeleteDialog(false);
+      setShowDeleteAllDialog(false);
       queryClient.invalidateQueries({ queryKey: JOBS_KEY });
     },
     onError: (error: Error) => {
@@ -134,18 +139,30 @@ export default function SocialTasksPage() {
           <h1 className="text-2xl font-semibold" data-testid="text-social-tasks-title">Social Tasks</h1>
           <p className="text-sm text-muted-foreground mt-1">Every tracking job, newest first. A run works a few at a time; the rest stay queued and can be removed until their turn. Hover an outcome to see why it was skipped or failed.</p>
         </div>
-        {selectedIds.size > 0 && (
+        <div className="flex gap-2">
+          {selectedIds.size > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowBulkDeleteDialog(true)}
+              disabled={deleteBulkMutation.isPending}
+              data-testid="button-delete-selected-tasks"
+            >
+              <Trash2 className="h-4 w-4 mr-1.5" />
+              Remove selected ({selectedIds.size})
+            </Button>
+          )}
           <Button
-            variant="destructive"
+            variant="outline"
             size="sm"
-            onClick={() => setShowBulkDeleteDialog(true)}
-            disabled={deleteBulkMutation.isPending}
-            data-testid="button-delete-selected-tasks"
+            onClick={() => setShowDeleteAllDialog(true)}
+            disabled={deleteBulkMutation.isPending || removable.length === 0}
+            data-testid="button-delete-all-tasks"
           >
             <Trash2 className="h-4 w-4 mr-1.5" />
-            Remove selected ({selectedIds.size})
+            Remove all
           </Button>
-        )}
+        </div>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-2 mb-4">
@@ -287,6 +304,28 @@ export default function SocialTasksPage() {
               data-testid="button-confirm-bulk-delete"
             >
               {deleteBulkMutation.isPending ? "Removing…" : "Remove"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showDeleteAllDialog} onOpenChange={setShowDeleteAllDialog}>
+        <AlertDialogContent data-testid="dialog-delete-all-tasks">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove all social tasks?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Removes every task, including ones hidden by the current filters. Anything they saved to PRM stays. Running tasks are skipped.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteBulkMutation.mutate(undefined)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteBulkMutation.isPending}
+              data-testid="button-confirm-delete-all"
+            >
+              {deleteBulkMutation.isPending ? "Removing…" : "Remove all"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

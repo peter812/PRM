@@ -1,13 +1,13 @@
 // Face review queue (face-review-plan.md §4). Replaces the old /unknown-faces
 // grid: one photo at a time, boxes drawn over unidentified faces, suggestion
 // and look-alike chips to assign them, or "not someone I track" to dismiss.
+// The Clusters tab (face-clustering-plan.md §5) names whole clusters at once.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Plus, Search, X, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban, Users, EyeOff } from "lucide-react";
 import { useBannedActionToggle } from "@/components/banned-action-toggle";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -20,9 +20,9 @@ import { withImageSize } from "@shared/image-size";
 import { FaceBoxOverlay, type OverlayFace } from "@/components/face-box-overlay";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useNoFaceToggle } from "@/components/no-face-account";
-import { SocialAccountDialog } from "@/components/social-account-dialog";
-import { PersonDialog } from "@/components/person-dialog";
-import type { ImageTask, Person, SocialAccount } from "@shared/schema";
+import { IdentitySearch } from "@/components/identity-search";
+import { FaceClustersTab } from "@/components/face-clusters-tab";
+import type { ImageTask } from "@shared/schema";
 
 type FaceReviewKind = "story" | "profile" | "post" | "message";
 const KINDS: FaceReviewKind[] = ["story", "profile", "post", "message"];
@@ -30,14 +30,14 @@ const KIND_LABEL: Record<FaceReviewKind, string> = { story: "Stories", profile: 
 
 type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number; dismissed: number };
 
-type FaceReviewSuggestion = {
+export type FaceReviewSuggestion = {
   socialAccountId?: string;
   personId?: string;
   username?: string;
   imageUrl?: string | null;
   ownerName?: string | null;
   label: string;
-  reason: "owner" | "coauthor" | "mentioned" | "profile_account" | "sender" | "participant";
+  reason: "owner" | "coauthor" | "mentioned" | "profile_account" | "sender" | "participant" | "lookalike";
 };
 
 type FaceReviewFaceLookAlike = {
@@ -59,6 +59,9 @@ type FaceReviewFace = {
   dismissed: boolean;
   /** Set when PRM auto-assigned this face and nobody has confirmed it. */
   autoMatchScore: number | null;
+  /** A quality-noise face (too small, low confidence or blurry); hidden unless "Show noise" is on. */
+  noise: boolean;
+  cluster: { id: string; size: number } | null;
   lookAlikes: FaceReviewFaceLookAlike[];
 };
 
@@ -89,13 +92,14 @@ type AutoRecognitionSettings = {
   message: { face: boolean };
 };
 
-const SUGGESTION_COPY: Record<string, string> = {
+export const SUGGESTION_COPY: Record<string, string> = {
   owner: "(posted this)",
   coauthor: "(coauthor)",
   mentioned: "(mentioned)",
   profile_account: "",
   sender: "(sent this)",
   participant: "(in this conversation)",
+  lookalike: "(looks like them)",
 };
 
 function suggestionLabel(kind: FaceReviewKind, s: FaceReviewSuggestion): string {
@@ -161,8 +165,12 @@ export default function FaceReviewPage() {
   const search = useSearch();
   const [, navigate] = useLocation();
   const params = useMemo(() => new URLSearchParams(search), [search]);
-  const kind = (KINDS.includes(params.get("tab") as FaceReviewKind) ? params.get("tab") : "story") as FaceReviewKind;
+  // The Clusters tab is the default; `kind` is the per-photo queue the other tabs show.
+  const clustersTab = !KINDS.includes(params.get("tab") as FaceReviewKind);
+  const kind = (clustersTab ? "story" : params.get("tab")) as FaceReviewKind;
   const dismissedFilter = params.get("dismissed") === "1";
+  const showNoise = params.get("noise") === "1";
+  const queueKey = ["/api/face-review", kind, dismissedFilter, showNoise];
 
   const setParam = (patch: Record<string, string | null>) => {
     const next = new URLSearchParams(search);
@@ -174,16 +182,18 @@ export default function FaceReviewPage() {
   };
 
   const { data: counts } = useQuery<FaceReviewCounts>({
-    queryKey: ["/api/face-review/counts"],
+    queryKey: ["/api/face-review/counts", { noise: showNoise ? "1" : undefined }],
     refetchInterval: 15_000,
   });
   const { data: autoSettings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
 
   const queueQuery = useInfiniteQuery<FaceReviewPage>({
-    queryKey: ["/api/face-review", kind, dismissedFilter],
+    queryKey: queueKey,
+    enabled: !clustersTab,
     queryFn: async ({ pageParam }) => {
       const p = new URLSearchParams({ kind, limit: "20" });
       if (dismissedFilter) p.set("dismissed", "1");
+      if (showNoise) p.set("noise", "1");
       if (pageParam) p.set("cursor", pageParam as string);
       const res = await fetch(`/api/face-review?${p.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load face review queue");
@@ -200,7 +210,7 @@ export default function FaceReviewPage() {
 
   const items = useMemo(() => queueQuery.data?.pages.flatMap((p) => p.items) ?? [], [queueQuery.data]);
   const [index, setIndex] = useState(0);
-  useEffect(() => setIndex(0), [kind, dismissedFilter]);
+  useEffect(() => setIndex(0), [kind, dismissedFilter, showNoise]);
 
   // Keep index within bounds whenever items change (e.g. on filter change, queue refresh or page fetch)
   useEffect(() => {
@@ -261,14 +271,6 @@ export default function FaceReviewPage() {
     if (focusedFace) document.querySelector(`[data-testid="row-face-${focusedFace}"]`)?.scrollIntoView({ block: "nearest" });
   }, [focusedFace]);
   const [searchFace, setSearchFace] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
-  // A search that found nobody: create the account/person, then assign it to this face.
-  const [createFor, setCreateFor] = useState<{ kind: "account" | "person"; photoId: string; faceUuid: string; query: string } | null>(null);
-  const newPersonName = useMemo(() => {
-    const [firstName = "", ...rest] = createFor?.kind === "person" ? createFor.query.split(/\s+/) : [];
-    return { firstName, lastName: rest.join(" ") };
-  }, [createFor]);
-
   const currentPhotoId = useRef<string | undefined>(undefined);
   currentPhotoId.current = item?.photoId;
 
@@ -281,7 +283,7 @@ export default function FaceReviewPage() {
         ? { ...it, faces: it.faces.map((f) => (faceState.has(f.faceUuid) ? { ...f, ...faceState.get(f.faceUuid) } : f)) }
         : it;
     queryClient.setQueryData<{ pages: FaceReviewPage[]; pageParams: unknown[] } | undefined>(
-      ["/api/face-review", kind, dismissedFilter],
+      queueKey,
       (old) => old && {
         ...old,
         pages: old.pages.map((page) => ({ ...page, items: page.items.map((it) => (it.photoId === updated.photoId ? updated : sync(it))) })),
@@ -289,12 +291,14 @@ export default function FaceReviewPage() {
     );
   }
 
+  // Quality-noise faces don't hold a photo in the queue unless "Show noise" is on (matches faceQualifies).
+  const actionable = (f: FaceReviewFace) => (dismissedFilter ? f.dismissed : !f.identified && !f.dismissed && (showNoise || !f.noise));
   function remainingActionable(it: FaceReviewItem): boolean {
-    return it.faces.some((f) => (dismissedFilter ? f.dismissed : !f.identified && !f.dismissed));
+    return it.faces.some(actionable);
   }
 
   const advanceTimerRef = useRef<number | undefined>();
-  useEffect(() => () => window.clearTimeout(advanceTimerRef.current), [kind, dismissedFilter]);
+  useEffect(() => () => window.clearTimeout(advanceTimerRef.current), [kind, dismissedFilter, showNoise]);
 
   function advanceIfDone(updated: FaceReviewItem) {
     patchItem(updated);
@@ -333,12 +337,13 @@ export default function FaceReviewPage() {
         try {
           const p = new URLSearchParams({ kind, limit: "20" });
           if (dismissedFilter) p.set("dismissed", "1");
+          if (showNoise) p.set("noise", "1");
           const r = await fetch(`/api/face-review?${p.toString()}`, { credentials: "include" });
           if (r.ok) {
             const freshPage = (await r.json()) as FaceReviewPage;
             if (freshPage.items.length > 0) {
               // Fresh items found! Replace query data and jump to index 0.
-              queryClient.setQueryData(["/api/face-review", kind, dismissedFilter], {
+              queryClient.setQueryData(queueKey, {
                 pages: [freshPage],
                 pageParams: [undefined],
               });
@@ -353,7 +358,7 @@ export default function FaceReviewPage() {
         // 5. Entire queue is genuinely empty!
         popConfetti();
         toast({ title: "Congratulations!", description: `You've cleared the ${KIND_LABEL[kind]} queue. All caught up.` });
-        queryClient.invalidateQueries({ queryKey: ["/api/face-review", kind, dismissedFilter] });
+        queryClient.invalidateQueries({ queryKey: queueKey });
       }, 300);
     }
   }
@@ -366,7 +371,6 @@ export default function FaceReviewPage() {
     onSuccess: (updated) => {
       advanceIfDone(updated);
       queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
-      setSearchQuery("");
       setSearchFace(null);
       setFocusedFace(null);
     },
@@ -438,7 +442,6 @@ export default function FaceReviewPage() {
     onSuccess: async ({ scanned, assigned }) => {
       // The refetch drops photos auto-assign finished, shifting positions: stay on the same photo
       // (or, if it left the queue, the one that followed it) rather than the same index.
-      const queueKey = ["/api/face-review", kind, dismissedFilter];
       const ids = (d?: { pages: FaceReviewPage[] }) => d?.pages.flatMap((p) => p.items.map((it) => it.photoId)) ?? [];
       const before = ids(queryClient.getQueryData(queueKey));
       const from = currentPhotoId.current ? Math.max(before.indexOf(currentPhotoId.current), 0) : 0;
@@ -485,40 +488,10 @@ export default function FaceReviewPage() {
     toast({ title: `Re-scan found ${updated.faces.length} face${updated.faces.length === 1 ? "" : "s"}` });
   }
 
-  // Search-as-you-type: people + social accounts (3+ chars, debounced).
-  const [debouncedQuery, setDebouncedQuery] = useState("");
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 250);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
-
-  const searchActive = debouncedQuery.length >= 3;
-  const { data: peopleResults = [], isFetching: isSearchingPeople } = useQuery<(Person & { uuid?: string; name?: string })[]>({
-    queryKey: ["/api/people/search", { q: debouncedQuery }],
-    queryFn: async () => {
-      if (!debouncedQuery) return [];
-      const res = await fetch(`/api/people/search?q=${encodeURIComponent(debouncedQuery)}`, { credentials: "include" });
-      if (!res.ok) return [];
-      return res.json();
-    },
-    enabled: searchActive,
-  });
-  const { data: accountResults = [], isFetching: isSearchingAccounts } = useQuery<SocialAccount[]>({
-    queryKey: ["/api/social-accounts", { search: debouncedQuery }],
-    queryFn: async () => {
-      if (!debouncedQuery) return [];
-      const res = await fetch(`/api/social-accounts?search=${encodeURIComponent(debouncedQuery)}`, { credentials: "include" });
-      if (!res.ok) return [];
-      return res.json();
-    },
-    enabled: searchActive,
-  });
-  const isSearchingEntities = isSearchingPeople || isSearchingAccounts;
-
   // Keyboard shortcuts (§4.1): 1-9 focuses a face row, arrows prev/next image, D dismisses the focused face, Space skips all.
   const actionableFaces = useMemo(
-    () => item?.faces.filter((f) => (dismissedFilter ? f.dismissed : !f.identified && !f.dismissed)) ?? [],
-    [item, dismissedFilter],
+    () => item?.faces.filter(actionable) ?? [],
+    [item, dismissedFilter, showNoise],
   );
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -559,22 +532,21 @@ export default function FaceReviewPage() {
   const isPlaced = (s: { socialAccountId?: string; personId?: string }) =>
     (!!s.socialAccountId && placedIds.has(s.socialAccountId)) || (!!s.personId && placedIds.has(s.personId));
   const placedLast = <T,>(list: T[], placed: (x: T) => boolean) => [...list.filter((x) => !placed(x)), ...list.filter(placed)];
-  const getPersonId = (p: Person & { uuid?: string }) => p.id || p.uuid || "";
-  const getPersonName = (p: Person & { name?: string }) => `${p.firstName ?? ""} ${p.lastName ?? ""}`.trim() || p.name || "Unknown";
-  const visibleAccountResults = placedLast(accountResults, (a) => placedIds.has(a.id));
-  const visiblePeopleResults = placedLast(peopleResults, (p) => placedIds.has(getPersonId(p)));
   const ALSO_HERE = " (also in this photo)";
 
   return (
-    <div className="container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
+    <div className="h-full overflow-y-auto container max-w-full py-3 md:py-8 px-4 md:pl-12 mx-auto md:mx-0">
       <div className="space-y-2 mb-4 max-w-3xl">
         <h1 className="text-2xl font-semibold">Face review</h1>
         <p className="text-muted-foreground text-sm">Confirm who's who in faces PRM has detected but couldn't identify.</p>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-        <Tabs value={kind} onValueChange={(v) => setParam({ tab: v })}>
+        <Tabs value={clustersTab ? "clusters" : kind} onValueChange={(v) => setParam({ tab: v === "clusters" ? null : v, cluster: null })}>
           <TabsList>
+            <TabsTrigger value="clusters" data-testid="tab-clusters">
+              <Users className="h-4 w-4 mr-1.5" /> Clusters
+            </TabsTrigger>
             {KINDS.map((k) => (
               <TabsTrigger key={k} value={k} data-testid={`tab-${k}`}>
                 {KIND_LABEL[k]}
@@ -584,6 +556,16 @@ export default function FaceReviewPage() {
           </TabsList>
         </Tabs>
         <div className="flex items-center gap-2">
+          <Button
+            variant={showNoise ? "default" : "outline"}
+            size="sm"
+            onClick={() => setParam({ noise: showNoise ? null : "1" })}
+            title="Include faces too small, blurry or low-confidence to be worth asking about"
+            data-testid="button-toggle-noise"
+          >
+            <EyeOff className="h-4 w-4 mr-1.5" />
+            {showNoise ? "Hide noise" : "Show noise"}
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -607,7 +589,9 @@ export default function FaceReviewPage() {
         </div>
       </div>
 
-      {queueQuery.isLoading ? (
+      {clustersTab ? (
+        <FaceClustersTab clusterId={params.get("cluster")} onOpenCluster={(id) => setParam({ cluster: id })} />
+      ) : queueQuery.isLoading ? (
         <div className="text-center py-16 text-muted-foreground">Loading…</div>
       ) : queueQuery.isError ? (
         <div className="text-center py-16 text-sm text-destructive">Couldn't load the review queue. Please refresh.</div>
@@ -785,6 +769,18 @@ export default function FaceReviewPage() {
                         <img src={withImageSize(face.cropUrl, 128)} alt="" className="h-full w-full object-cover" />
                       </div>
                       <span className="text-xs text-muted-foreground">Face {face.number}</span>
+                      {face.noise && <Badge variant="outline" className="text-[10px]">low quality</Badge>}
+                      {face.cluster && (
+                        <button
+                          type="button"
+                          className="ml-auto text-xs px-2 py-0.5 rounded-full border hover:bg-accent flex items-center gap-1"
+                          onClick={(e) => { e.stopPropagation(); setParam({ tab: null, cluster: face.cluster!.id }); }}
+                          title="Name every face in this cluster at once"
+                          data-testid={`chip-cluster-${face.faceUuid}`}
+                        >
+                          <Users className="h-3 w-3" /> in a cluster of {face.cluster.size}
+                        </button>
+                      )}
                     </div>
 
                     {item.kind === "profile" && item.account && !dismissedFilter && !profileAccountPlaced && (
@@ -829,7 +825,7 @@ export default function FaceReviewPage() {
                       <button
                         type="button"
                         className={cn("text-xs px-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1", isSearching && "bg-accent")}
-                        onClick={(e) => { e.stopPropagation(); setSearchQuery(""); setSearchFace(isSearching ? null : face.faceUuid); }}
+                        onClick={(e) => { e.stopPropagation(); setSearchFace(isSearching ? null : face.faceUuid); }}
                         data-testid={`chip-search-${face.faceUuid}`}
                       >
                         <Search className="h-3 w-3" /> Someone else…
@@ -856,116 +852,11 @@ export default function FaceReviewPage() {
                     </div>
 
                     {isSearching && (
-                      <div className="pt-1 space-y-1" onClick={(e) => e.stopPropagation()}>
-                        <div className="relative">
-                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                          <Input
-                            placeholder="Search people or accounts (3+ chars)…"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Escape") {
-                                setSearchFace(null);
-                                setSearchQuery("");
-                              }
-                            }}
-                            className="pl-8 h-8 text-sm"
-                            autoFocus
-                            data-testid="input-face-search"
-                          />
-                          {searchQuery && (
-                            <button className="absolute right-2 top-1/2 -translate-y-1/2" onClick={() => setSearchQuery("")}>
-                              <X className="h-3.5 w-3.5 text-muted-foreground" />
-                            </button>
-                          )}
-                        </div>
-                        {searchQuery.trim().length > 0 && searchQuery.trim().length < 3 && (
-                          <div className="border rounded-md p-2 text-xs text-muted-foreground text-center">
-                            Type {3 - searchQuery.trim().length} more character{3 - searchQuery.trim().length > 1 ? "s" : ""} to search…
-                          </div>
-                        )}
-                        {searchActive && (
-                          <div className="max-h-56 overflow-auto space-y-2 border rounded-md p-1.5">
-                            {isSearchingEntities && (
-                              <div className="p-2 text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5">
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Searching…
-                              </div>
-                            )}
-
-                            {visiblePeopleResults.length > 0 && (
-                              <div className="space-y-0.5">
-                                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-2 py-0.5">
-                                  Person Profiles
-                                </div>
-                                {visiblePeopleResults.map((p) => {
-                                  const pid = getPersonId(p);
-                                  const name = getPersonName(p);
-                                  return (
-                                    <button
-                                      key={pid}
-                                      type="button"
-                                      className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2"
-                                      onClick={() => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, personId: pid })}
-                                      data-testid={`result-person-${pid}`}
-                                    >
-                                      <Avatar className="h-5 w-5 shrink-0">
-                                        {p.imageUrl && <AvatarImage src={withImageSize(p.imageUrl, 64)} alt={name} />}
-                                        <AvatarFallback className="text-[10px]">{getInitials(p.firstName || name, p.lastName || "")}</AvatarFallback>
-                                      </Avatar>
-                                      <span className="truncate font-medium">{name}</span>
-                                      {placedIds.has(pid) && <span className="text-xs text-muted-foreground shrink-0">{ALSO_HERE}</span>}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-
-                            {visibleAccountResults.length > 0 && (
-                              <div className="space-y-0.5">
-                                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-2 py-0.5">
-                                  Social Accounts
-                                </div>
-                                {visibleAccountResults.map((a) => (
-                                  <button
-                                    key={a.id}
-                                    type="button"
-                                    className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2"
-                                    onClick={() => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, socialAccountId: a.id })}
-                                    data-testid={`result-account-${a.id}`}
-                                  >
-                                    <Avatar className="h-5 w-5 shrink-0">
-                                      {a.imageUrl && <AvatarImage src={withImageSize(a.imageUrl, 64)} alt={a.username} />}
-                                      <AvatarFallback className="text-[10px]">@{a.username.slice(0, 2).toUpperCase()}</AvatarFallback>
-                                    </Avatar>
-                                    <span className="truncate">@{a.username}</span>
-                                    {placedIds.has(a.id) && <span className="text-xs text-muted-foreground shrink-0">{ALSO_HERE}</span>}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-
-                            {!isSearchingEntities && !visibleAccountResults.length && !visiblePeopleResults.length && (
-                              <div className="px-2 py-1.5 space-y-1.5">
-                                <p className="text-xs text-muted-foreground">No matches for "{debouncedQuery}"</p>
-                                <div className="flex gap-1.5">
-                                  {(["account", "person"] as const).map((k) => (
-                                    <Button
-                                      key={k}
-                                      size="sm"
-                                      variant="outline"
-                                      className="h-7 text-xs"
-                                      onClick={() => setCreateFor({ kind: k, photoId: item.photoId, faceUuid: face.faceUuid, query: debouncedQuery })}
-                                      data-testid={`button-create-${k}`}
-                                    >
-                                      <Plus className="h-3 w-3 mr-1" /> {k === "account" ? "Social account" : "Person"}
-                                    </Button>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                      <IdentitySearch
+                        placedIds={placedIds}
+                        onPick={(target) => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, ...target })}
+                        onCancel={() => setSearchFace(null)}
+                      />
                     )}
                   </div>
                 );
@@ -976,19 +867,6 @@ export default function FaceReviewPage() {
       )}
       {noFace.dialog}
       {bans.dialog}
-      <SocialAccountDialog
-        open={createFor?.kind === "account"}
-        onOpenChange={(open) => !open && setCreateFor(null)}
-        initialUsername={createFor?.query.replace(/^@/, "")}
-        queueTrackingByDefault={false}
-        onAccountCreated={(a) => createFor && assignMutation.mutate({ photoId: createFor.photoId, faceUuid: createFor.faceUuid, socialAccountId: a.id })}
-      />
-      <PersonDialog
-        open={createFor?.kind === "person"}
-        onOpenChange={(open) => !open && setCreateFor(null)}
-        initialValues={newPersonName}
-        onPersonCreated={(p) => createFor && assignMutation.mutate({ photoId: createFor.photoId, faceUuid: createFor.faceUuid, personId: p.id })}
-      />
     </div>
   );
 }

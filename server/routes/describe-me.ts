@@ -10,7 +10,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { syncEntityInBackground } from "../vector-universal";
 import { extractJsonObject } from "../json-extract";
-import { AiConfigError, asData, chat, DATA_TAGS_NOTE, isAiEnabled, resolveModel } from "../ai/provider";
+import { AiConfigError, asData, chat, DATA_TAGS_NOTE, resolveModel } from "../ai/provider";
 import {
   applyDescribeMeSchema,
 
@@ -310,9 +310,6 @@ export function registerRoutes(app: Express) {
       const person = await storage.getPersonById(personId);
       if (!person) return res.status(404).json({ error: "Person not found" });
 
-      if (!(await isAiEnabled())) {
-        return res.status(400).json({ error: "AI is disabled in settings" });
-      }
       const resolved = await resolveModel("text");
 
       const { content, toolCalls } = await chat(resolved, {

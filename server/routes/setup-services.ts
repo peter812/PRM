@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { storage } from "../storage";
-import { isAiEnabled, listProviders, testProvider } from "../ai/provider";
+import { listProviders, testProvider } from "../ai/provider";
 import { checkPrmS3Health } from "../prm-s3";
 import { testVectorConnection, getVectorSetting } from "../vector";
 import { db } from "../db";
@@ -134,12 +134,11 @@ export function registerSetupServicesRoutes(app: Express) {
           }
           const checks = await Promise.all(providers.map(async (p) => ({ p, r: await testProvider(p) })));
           const online = checks.filter((c) => c.r.ok);
-          const enabled = await isAiEnabled();
           results.ai = {
             ok: online.length > 0,
             status: online.length === checks.length ? "online" : online.length > 0 ? "degraded" : "offline",
             message: checks.map((c) => `${c.p.name}: ${c.r.ok ? `online (${c.r.modelCount} models)` : c.r.message}`).join(" · "),
-            details: { providers: checks.length, online: online.length, enabled },
+            details: { providers: checks.length, online: online.length },
           };
         } catch (err: any) {
           results.ai = { ok: false, status: "offline", message: `Could not check AI providers: ${err.message}` };

@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRoute, useLocation } from "wouter";
@@ -486,7 +487,7 @@ export default function ImageDetailPage() {
                           className="font-medium text-primary hover:underline truncate"
                           data-testid={`link-facial-person-${i}`}
                         >
-                          {person.firstName} {person.lastName}
+                          {formatPersonName(person)}
                         </Link>
                         {social && (
                           <span className="text-xs text-muted-foreground flex items-center gap-1 ml-1 shrink-0">

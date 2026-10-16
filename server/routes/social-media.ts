@@ -47,6 +47,7 @@ import { ingestManualProfileImage } from "../profile-image";
 import { profilePhotos, recognizeProfilePhotos, noFaceImpact, setAccountNoFace, RecognitionRequestError, ComputeUnreachableError } from "../recognition";
 import { banImpact, setAccountBan } from "../banned-actions";
 import { isBannedAction } from "@shared/banned-actions";
+import { MAX_CADENCE_DAYS } from "@shared/interest-level";
 import { updateTracking, type TrackingPatch } from "../tracking";
 import { sseManager } from "../middleware/sse";
 import {
@@ -635,13 +636,12 @@ export function registerRoutes(app: Express) {
         // Tracking fields re-spread the due dates, so they go through their own writer.
         const tracking: TrackingPatch = {};
         if (body.interestLevel !== undefined) tracking.interestLevel = body.interestLevel;
-        for (const k of ["infoEveryDays", "followsEveryDays", "postsEveryDays", "highlightsEveryDays"] as const) {
-          if (body[k] === undefined) continue;
-          const days = body[k] === null ? null : Number(body[k]);
-          if (days !== null && (!Number.isInteger(days) || days < 1)) {
-            return res.status(400).json({ error: `${k} must be a whole number of days` });
+        if (body.scanEveryDays !== undefined) {
+          const days = body.scanEveryDays === null ? null : Number(body.scanEveryDays);
+          if (days !== null && (!Number.isInteger(days) || days < 1 || days > MAX_CADENCE_DAYS)) {
+            return res.status(400).json({ error: `scanEveryDays must be a whole number of days, 1–${MAX_CADENCE_DAYS}` });
           }
-          tracking[k] = days;
+          tracking.scanEveryDays = days;
         }
         if (Object.keys(tracking).length > 0) await updateTracking(existing, tracking);
 

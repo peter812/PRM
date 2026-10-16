@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { computeExtendedRelationships } from "@/lib/family-tree-relations";
@@ -89,7 +90,7 @@ const VIEW_MODE_LABELS: Record<FamilyTreeViewMode, string> = {
 };
 
 function personName(p: { firstName: string; lastName: string } | undefined | null): string {
-  return p ? `${p.firstName} ${p.lastName}`.trim() : "";
+  return p ? formatPersonName(p) : "";
 }
 
 function initials(p: { firstName: string; lastName: string }): string {
@@ -705,7 +706,7 @@ export function FamilyTreeExplorer({
       const spouseIds = addMemberContext.relatedPersonId.replace(/^couple-/, "").split(":").filter(Boolean);
       const spouses = spouseIds.map(id => allPeople?.find(p => p.id === id)).filter(Boolean);
       if (spouses.length > 0) {
-        return spouses.map(s => `${s!.firstName} ${s!.lastName}`).join(" & ");
+        return spouses.map(s => formatPersonName(s!)).join(" & ");
       }
       return "Couple";
     }
@@ -1176,14 +1177,14 @@ function PersonInfoPanel({
                 {(fullPerson.imageUrl || person.avatarUrl) && (
                   <AvatarImage
                     src={fullPerson.imageUrl || person.avatarUrl || ""}
-                    alt={`${fullPerson.firstName} ${fullPerson.lastName}`}
+                    alt={formatPersonName(fullPerson)}
                   />
                 )}
                 <AvatarFallback className="text-lg">{initials(person)}</AvatarFallback>
               </Avatar>
               <div className="text-center space-y-0.5">
                 <p className="font-medium" data-testid="text-info-panel-name">
-                  {`${fullPerson.firstName} ${fullPerson.lastName}`.trim()}
+                  {formatPersonName(fullPerson)}
                 </p>
                 {(fullPerson.title || fullPerson.company) && (
                   <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground mt-1">

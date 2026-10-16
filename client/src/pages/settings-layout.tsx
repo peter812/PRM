@@ -46,7 +46,6 @@ const SocialGraphSettingsPage = lazy(() => import("@/pages/social-graph-settings
 const InstagramImportersPage = lazy(() => import("@/pages/instagram-importers"));
 const InstagramTrackingPage = lazy(() => import("@/pages/instagram-tracking"));
 const InstagramPostsPage = lazy(() => import("@/pages/instagram-posts"));
-const InstagramSummariesPage = lazy(() => import("@/pages/instagram-summaries"));
 const SocialTasksPage = lazy(() => import("@/pages/social-tasks"));
 const OsintTasksPage = lazy(() => import("@/pages/osint-tasks"));
 const SummaryTasksPage = lazy(() => import("@/pages/summary-tasks"));
@@ -152,7 +151,6 @@ const settingsMenuItems: MenuItem[] = [
       { title: "Importers", url: "/settings/instagram", icon: Server },
       { title: "Tracking", url: "/settings/instagram/tracking", icon: Radar },
       { title: "Posts", url: "/settings/instagram/posts", icon: ImageIcon },
-      { title: "Summaries", url: "/settings/instagram/summaries", icon: Sparkles },
     ],
   },
   {
@@ -308,7 +306,6 @@ export default function SettingsLayout() {
           <Route path="/import-export/instagram-xml" component={() => <Redirect to="/settings/import-export" />} />
           <Route path="/instagram/tracking" component={InstagramTrackingPage} />
           <Route path="/instagram/posts" component={InstagramPostsPage} />
-          <Route path="/instagram/summaries" component={InstagramSummariesPage} />
           <Route path="/instagram/runs" component={() => <Redirect to="/settings/tasks/social" />} />
           <Route path="/instagram" component={InstagramImportersPage} />
           <Route path="/tasks/social" component={SocialTasksPage} />

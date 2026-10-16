@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useMemo, useState, lazy, Suspense } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Trash2, Users2, Edit, MoreHorizontal } from "lucide-react";
@@ -173,7 +174,7 @@ export function RelationshipsTab({
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {group.relationships.map((rel) => {
-                        const fullName = `${rel.toPerson.firstName} ${rel.toPerson.lastName}`.trim();
+                        const fullName = formatPersonName(rel.toPerson);
                         const fullRel = relationshipsById.get(rel.id);
                         const fg = getReadableTextColor(titleColor);
                         return (

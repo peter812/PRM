@@ -109,7 +109,7 @@ export default function SummaryTasksPage() {
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
-          <Link href="~/settings/instagram/summaries">
+          <Link href="~/social-accounts/summaries">
             <Settings className="h-4 w-4 mr-1.5" />
             Summary settings
           </Link>
@@ -154,6 +154,19 @@ export default function SummaryTasksPage() {
           >
             <Trash2 className="h-3.5 w-3.5 mr-1" />
             Clear all finished
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={queueMutation.isPending || !counts.pending}
+            onClick={() => {
+              if (!confirm(`Remove all ${counts.pending} queued summary tasks?`)) return;
+              queueMutation.mutate({ method: "DELETE", path: "/api/summary-queue/queued" });
+            }}
+            data-testid="button-summary-clear-queued"
+          >
+            <Trash2 className="h-3.5 w-3.5 mr-1" />
+            Remove all queued
           </Button>
         </div>
       </div>

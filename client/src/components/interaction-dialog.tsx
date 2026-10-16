@@ -1,3 +1,4 @@
+import { formatPersonName, personSearchText } from "@shared/person-name";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -254,7 +255,7 @@ export function InteractionDialog({
   const filteredPeople = useMemo(() => {
     if (!peopleSearchQuery.trim()) return people;
     return people.filter((p) =>
-      `${p.firstName} ${p.lastName}`.toLowerCase().includes(peopleSearchQuery.toLowerCase()) ||
+      personSearchText(p).toLowerCase().includes(peopleSearchQuery.toLowerCase()) ||
       (p.company && p.company.toLowerCase().includes(peopleSearchQuery.toLowerCase()))
     );
   }, [people, peopleSearchQuery]);
@@ -372,7 +373,7 @@ export function InteractionDialog({
                     >
                       <Checkbox checked={isChecked} onCheckedChange={() => {}} />
                       <span className="text-sm font-medium">
-                        {person.firstName} {person.lastName}
+                        {formatPersonName(person)}
                         {person.company && (
                           <span className="text-xs text-muted-foreground ml-1">({person.company})</span>
                         )}
@@ -389,7 +390,7 @@ export function InteractionDialog({
                     if (!person) return null;
                     return (
                       <Badge key={id} variant="secondary" className="gap-1">
-                        {person.firstName} {person.lastName}
+                        {formatPersonName(person)}
                         <X
                           className="h-3 w-3 cursor-pointer hover:text-destructive"
                           onClick={(e) => {

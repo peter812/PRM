@@ -8,8 +8,10 @@
 // records them, posts keep the row shape the extension import used.
 import type { Express, Request, Response } from "express";
 import crypto from "crypto";
+import fs from "fs/promises";
+import path from "path";
 import multer from "multer";
-import { and, asc, desc, eq, gt, gte, ilike, inArray, isNull, ne, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNotNull, isNull, ne, notInArray, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db";
 import { postedBy, storage } from "../storage";
@@ -20,7 +22,7 @@ import { syncEntityInBackground } from "../vector-universal";
 import { photos, socialAccountPosts, socialPostComments, socialAccounts, storyImporters, storyScrapeRuns, trackingJobs, imageTaskGroups, instagramHighlights, instagramHighlightMemberships, nextHighlightColor, type SocialAccount, type TrackingJob, type HighlightWithStints } from "@shared/schema";
 import { TRACKING_KINDS, type TrackingKind } from "@shared/interest-level";
 import { generateDeterministicUuid } from "./social-media";
-import { authedRun, existingStoryPks, runImageTaskGroup, storeStoryItem, storyPostId, storyUpload } from "./stories";
+import { authedRun, existingStoryPks, ingestStoryItem, runImageTaskGroup, storeStoryItem, storyMetaSchema, storyPostId, storyUpload, type Upload } from "./stories";
 import { kickManualTrackingJobs, manualImporter, rateLimitedUntil } from "../stories-scheduler";
 import { applySnapshot, recordPostsCapture, type CaptureScope } from "../social-account-history";
 import { profileImageFromBuffer, classifyProfileImage, applyProfileImageVerdict, getImageDimensions, type ProfileImageOutcome } from "../profile-image";
@@ -34,6 +36,8 @@ import {
   isDeferral,
   latestBatch,
   markChecked,
+  markScanned,
+  type Section,
   queueAccountsRefresh,
   queueFollowingRefresh,
   queueManualJob,
@@ -153,7 +157,7 @@ type HighlightOutcome = "created" | "updated" | "unchanged";
  * position and confirmation of those still there, and a closed stint per story
  * that left. Timestamps are when PRM learned it, not when it happened.
  */
-async function upsertHighlight(accountId: string, meta: z.infer<typeof highlightMetaSchema>): Promise<HighlightOutcome> {
+export async function upsertHighlight(accountId: string, meta: z.infer<typeof highlightMetaSchema>): Promise<HighlightOutcome> {
   const now = new Date();
   const title = meta.title ?? null;
   const position = new Map<string, number>();
@@ -265,12 +269,558 @@ export async function queueMentioned(handles: string[]): Promise<void> {
   }
 }
 
+/** A core's refusal; the service routes answer it with `status`. */
+export class IngestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+/** Profile info: the journal snapshot, the picture when it beats the one held, and the fields the journal doesn't track. */
+export async function applyInfo(account: SocialAccount, meta: z.infer<typeof infoSchema>, file: Upload | null) {
+  let image: ProfileImageOutcome | undefined;
+  if (file) {
+    const fetched = await profileImageFromBuffer(file.buffer, file.mimetype ?? "image/jpeg", meta.externalImageUrl ?? undefined);
+    const verdict = await classifyProfileImage(account, fetched);
+    if (verdict.replace) {
+      image = await applyProfileImageVerdict(account.id, account, fetched, verdict);
+    }
+  }
+  await applySnapshot({
+    socialAccountId: account.id,
+    scope: "profile",
+    profile: {
+      nickname: meta.nickname,
+      bio: meta.bio,
+      accountUrl: meta.accountUrl,
+      image,
+      externalImageUrl: meta.externalImageUrl,
+      reportedFollowersCount: meta.reportedFollowersCount,
+      reportedFollowingCount: meta.reportedFollowingCount,
+      ...(meta.joinedAt ? { joinedAt: new Date(meta.joinedAt) } : {}),
+      // "Based in" fills an empty location; a location someone typed stays.
+      ...(!account.location && meta.basedIn ? { location: meta.basedIn } : {}),
+    },
+    source: "prm-stories",
+  });
+  // Fields the journal doesn't track.
+  await db
+    .update(socialAccounts)
+    .set({
+      reportedPostsCount: meta.reportedPostsCount ?? account.reportedPostsCount,
+      isPrivate: meta.isPrivate ?? account.isPrivate,
+    })
+    .where(eq(socialAccounts.id, account.id));
+  if (meta.isPrivate === false) await resolveIssues(account.id, ["private"], "became_public");
+  return { imageReplaced: Boolean(image), imageChange: image?.imageChange ?? null };
+}
+
+type PostOutcome = { outcome: "updated" | "duplicate" | "stored"; postId: string };
+
+/**
+ * One post. A post PRM already has (a redelivery) is updated in place; its
+ * slides stay.
+ */
+export async function applyPost(
+  ctx: { job: TrackingJob; account: SocialAccount },
+  meta: z.infer<typeof postMetaSchema>,
+  slides: Upload[],
+  video: Upload | null,
+): Promise<PostOutcome> {
+  const id = postId(meta.pk);
+
+  const [existing] = await db.select().from(socialAccountPosts).where(eq(socialAccountPosts.id, id)).limit(1);
+  if (!existing && slides.length === 0) throw new IngestError(400, "A new post needs at least one slide");
+
+  // A collab post is one row under its primary poster, with the other
+  // posters alongside. Whichever collaborator's grid it came from, the
+  // posters are resolved to accounts (created if PRM hasn't met them) and
+  // the tracked account must be one of them.
+  const author = (meta.author ?? ctx.account.username).trim().toLowerCase();
+  const coauthorNames = (meta.coauthors ?? []).map((u) => u.trim().toLowerCase()).filter((u) => u && u !== author);
+  const resolved = await resolveScrapedAccounts([author, ...coauthorNames].map((username) => ({ username })), INSTAGRAM_TYPE_ID, "prm-stories");
+  const primaryId = resolved.get(author);
+  if (!primaryId) throw new IngestError(500, `Could not resolve @${author}`);
+  const coauthorAccountIds = [...new Set(coauthorNames.map((u) => resolved.get(u)).filter((v): v is string => Boolean(v)))];
+  if (primaryId !== ctx.account.id && !coauthorAccountIds.includes(ctx.account.id)) {
+    throw new IngestError(409, `Post belongs to @${author}, not the tracked account`);
+  }
+  await queueMentioned(meta.slides.flatMap((s) => s.usertags));
+
+  const metadata: Record<string, unknown> = {
+    ...((existing?.metadata as Record<string, unknown> | null) ?? {}),
+    code: meta.code,
+    detail: { comments: meta.detail.comments, videoSupport: Boolean(video) },
+    mediaType: meta.mediaType,
+    productType: meta.productType ?? null,
+    isPinned: meta.isPinned ?? false,
+    location: meta.location ?? null,
+    music: meta.music ?? null,
+    author,
+    coauthors: coauthorNames,
+    videoDuration: meta.videoDuration ?? null,
+  };
+  if (video) {
+    try {
+      metadata.videoUrl = await storeMedia(video.buffer, `${meta.pk}.mp4`, video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4", "video");
+    } catch (err) {
+      console.error(`Post ${meta.pk}: video not stored:`, err);
+      metadata.detail = { comments: meta.detail.comments, videoSupport: false };
+      metadata.videoError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  // Instagram leaks the real like_count even when the poster hid it; PRM stores only what a viewer sees.
+  const likesHidden = meta.likesHidden ?? existing?.likesHidden ?? false;
+  const shared = {
+    description: meta.caption ?? existing?.description ?? null,
+    likesHidden,
+    likeCount: likesHidden ? 0 : meta.likeCount ?? existing?.likeCount ?? 0,
+    commentCount: meta.commentCount ?? existing?.commentCount ?? 0,
+    mentionedAccounts: JSON.stringify(meta.slides.map((s, i) => ({ imageIndex: i, accounts: s.usertags })).filter((m) => m.accounts.length)),
+    socialAccountId: primaryId,
+    coauthorAccountIds,
+    metadata,
+    scrapedFrom: meta.scrapedFrom,
+    updatedAt: new Date(),
+  };
+
+  if (existing) {
+    await db.update(socialAccountPosts).set(shared).where(eq(socialAccountPosts.id, id));
+    await upsertComments(id, meta.comments ?? []);
+    return { outcome: "updated", postId: id };
+  }
+
+  // Bytes go to storage first; the rows land together, so a failed insert
+  // can't leave photos pointing at a post that doesn't exist. The post row
+  // goes first so a duplicate (racing job) writes nothing instead of failing.
+  const stored = await Promise.all(
+    slides.map(async (slide, i) => {
+      const fileHash = crypto.createHash("sha256").update(slide.buffer).digest("hex");
+      let url = (await storage.getPhotoByFileHash(fileHash))?.location;
+      if (!url) url = await uploadPostImage(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg");
+      return { url, fileHash, dims: getImageDimensions(slide.buffer) };
+    })
+  );
+  const photoIds = await db.transaction(async (tx) => {
+    const [post] = await tx
+      .insert(socialAccountPosts)
+      .values({
+        id,
+        instagramPk: meta.pk,
+        postType: meta.mediaType === 2 ? "video" : meta.mediaType === 8 ? "carousel" : "post",
+        content: JSON.stringify(stored.map((s) => s.url)),
+        postedAt: new Date(meta.takenAt),
+        ...shared,
+      })
+      .onConflictDoNothing({ target: socialAccountPosts.id })
+      .returning({ id: socialAccountPosts.id });
+    if (!post) return null;
+    const created = await tx
+      .insert(photos)
+      .values(stored.map(({ url, fileHash, dims }, i) => ({
+        location: url,
+        prmLocation: `post:${id}`,
+        isSubImage: false,
+        fileHash,
+        // Measured from the stored file (face boxes use its pixels); Instagram's reported size is a fallback.
+        widthPx: dims?.width ?? meta.slides[i]?.width ?? null,
+        heightPx: dims?.height ?? meta.slides[i]?.height ?? null,
+        ogMetadata: { source: "instagram-post", pk: meta.pk, code: meta.code, slide: i, takenAt: meta.takenAt },
+      })))
+      .returning({ id: photos.id });
+    return created.map((p) => p.id);
+  });
+  if (!photoIds) return { outcome: "duplicate", postId: id };
+  await upsertComments(id, meta.comments ?? []);
+  for (const photoId of photoIds) syncEntityInBackground("image", photoId);
+  const imageTaskGroupId = ctx.job.runId ? await runImageTaskGroup(ctx.job.runId, ctx.account.id, ctx.account.username ?? "", "tracking_job") : undefined;
+  void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined, imageTaskGroupId, socialAccountId: primaryId });
+  void onPostAddedForSummary(id, primaryId);
+  return { outcome: "stored", postId: id };
+}
+
+type PostsSection = { seenPks?: string[]; complete?: boolean; oldestSeenAt?: string };
+
+/**
+ * After a completed posts scan: flag what the grid no longer shows as deleted
+ * and journal what this job added and deleted. Returns counts for the result.
+ */
+export async function applyPostsSection(job: TrackingJob, account: SocialAccount, r: PostsSection): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  // A post PRM holds that the grid no longer shows was deleted — within
+  // what the scan measured. A complete walk measured everything; one that
+  // stopped at the scan limit vouches only for posts newer than the last
+  // node it saw, so older ones are out of range, not gone. Rows are never
+  // deleted, only flagged. An empty grid on an account that claims posts
+  // is a scan that broke, not a purge.
+  const conditions: SQL[] = [
+    eq(socialAccountPosts.socialAccountId, account.id),
+    ne(socialAccountPosts.postType, "story"),
+    eq(socialAccountPosts.isDeleted, false),
+  ];
+  if (r.seenPks?.length) conditions.push(notInArray(socialAccountPosts.instagramPk, r.seenPks));
+  if (!r.complete) conditions.push(gt(socialAccountPosts.postedAt, new Date(r.oldestSeenAt ?? 0)));
+  let deleted: string[] = [];
+  if (!r.seenPks) {
+    out.deletionsSkipped = "no_seen_pks";
+  } else if (r.seenPks.length === 0 && account.reportedPostsCount !== 0) {
+    out.deletionsSkipped = "empty_scan";
+  } else if (!r.complete && !r.oldestSeenAt) {
+    out.deletionsSkipped = "no_window";
+  } else {
+    const rows = await db
+      .update(socialAccountPosts)
+      .set({ isDeleted: true, updatedAt: new Date() })
+      .where(and(...conditions))
+      .returning({ id: socialAccountPosts.id });
+    deleted = rows.map((p) => p.id);
+    out.markedDeleted = deleted.length;
+  }
+
+  // Every post delivered under this job lands in the journal, as a follower
+  // scrape does. The posts arrived one request at a time, so "this job's"
+  // posts are the ones the account is on that were created since it started.
+  const added = (
+    await db
+      .select({ id: socialAccountPosts.id })
+      .from(socialAccountPosts)
+      .where(and(postedBy(account.id), gte(socialAccountPosts.createdAt, job.startedAt ?? job.createdAt)))
+      .orderBy(desc(socialAccountPosts.postedAt))
+  ).map((p) => p.id);
+  out.imported = added.length;
+  await recordPostsCapture(account.id, { added, deleted }, "prm-stories");
+  await recordPostsDeletedEvents(account, deleted);
+  return out;
+}
+
+/** After a complete highlights read: flag the live sets the profile no longer shows as deleted. Returns how many. */
+export async function applyHighlightsSection(account: SocialAccount, seenHighlightIds: string[]): Promise<number> {
+  // A live set the profile no longer shows was deleted; its stories leave it with it.
+  const now = new Date();
+  const gone = await db
+    .update(instagramHighlights)
+    .set({ deletedSeenAt: now })
+    .where(and(
+      eq(instagramHighlights.socialAccountId, account.id),
+      isNull(instagramHighlights.deletedSeenAt),
+      seenHighlightIds.length ? notInArray(instagramHighlights.instagramId, seenHighlightIds) : undefined,
+    ))
+    .returning({ id: instagramHighlights.id });
+  if (gone.length) {
+    await db
+      .update(instagramHighlightMemberships)
+      .set({ leftSeenAt: now, leftReason: "set_deleted" })
+      .where(and(inArray(instagramHighlightMemberships.highlightId, gone.map((g) => g.id)), isNull(instagramHighlightMemberships.leftSeenAt)));
+  }
+  return gone.length;
+}
+
 const fail = (res: Response, what: string, error: unknown) => {
+  if (error instanceof IngestError) return res.status(error.status).json({ error: error.message });
   console.error(`Tracking: ${what}:`, error);
   res.status(500).json({ error: `Failed to ${what}` });
 };
 
+// ── Scans (account-scan-plan.md §5): one bundle per job, ingested from disk ──
+
+/** Received bundles, one dir per job, until their ingest ends. */
+const SCANS_DIR = path.join(process.cwd(), "uploads", "tracking-scans");
+// Files stream to disk, so the cap is only a sanity bound: a full scan of 150
+// posts with carousels and videos plus highlights runs to many hundreds.
+const MAX_SCAN_FILES = 5000;
+
+const sectionBase = { status: z.enum(["completed", "failed", "skipped"]), reason: z.string().optional(), error: z.string().optional() };
+const scanManifestSchema = z.object({
+  status: z.enum(["completed", "failed"]),
+  error: z.string().nullable().optional(),
+  sections: z.object({
+    info: z.object({ ...sectionBase, meta: infoSchema.optional(), image: z.string().optional() }),
+    posts: z.object({
+      ...sectionBase,
+      mode: z.enum(["recent", "full"]),
+      escalated: z.enum(["deleted", "gap"]).optional(),
+      seenPks: z.array(z.string()).default([]),
+      complete: z.boolean().default(false),
+      oldestSeenAt: z.string().datetime().optional(),
+      items: z.array(z.unknown()).default([]),
+    }).optional(),
+    highlights: z.object({
+      ...sectionBase,
+      seenHighlightIds: z.array(z.string()).default([]),
+      complete: z.boolean().default(false),
+      items: z.array(z.unknown()).default([]),
+      sets: z.array(z.unknown()).default([]),
+    }).optional(),
+  }),
+  result: z.record(z.unknown()).default({}),
+});
+// Items are checked one by one at ingest, so one bad item costs that item, not the scan.
+const scanPostItem = z.object({ meta: postMetaSchema, slides: z.array(z.string()), video: z.string().optional() });
+// Lazy: stories.ts and this file import each other, so storyMetaSchema may not exist yet at load.
+const scanStoryItem = z.object({ meta: z.lazy(() => storyMetaSchema), image: z.string(), video: z.string().optional() });
+const scanSetItem = z.object({ meta: highlightMetaSchema, cover: z.string().optional() });
+
+/** A bundle path (posts/<pk>/slide_0.jpg) under `dir`; refuses anything that would leave it. */
+function inside(dir: string, rel: string): string {
+  if (!/^[\w.-]+(\/[\w.-]+)*$/.test(rel) || rel.split("/").some((s) => s === "." || s === "..")) {
+    throw new IngestError(400, `Bad bundle path: ${rel}`);
+  }
+  return path.join(dir, rel);
+}
+
+/** The multipart bundle onto disk under `dir`, each file at its field name's path. */
+function receiveBundle(req: Request, res: Response, dir: string): Promise<void> {
+  const save = multer({
+    storage: multer.diskStorage({
+      destination: (_req, file, cb) => {
+        let target: string;
+        try {
+          target = path.dirname(inside(dir, file.fieldname));
+        } catch (err) {
+          return cb(err as Error, "");
+        }
+        fs.mkdir(target, { recursive: true }).then(() => cb(null, target), (err) => cb(err, ""));
+      },
+      filename: (_req, file, cb) => cb(null, path.basename(file.fieldname)),
+    }),
+    limits: { fileSize: 50 * 1024 * 1024, files: MAX_SCAN_FILES, fieldSize: 50 * 1024 * 1024 },
+  }).any();
+  return new Promise((resolve, reject) =>
+    save(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError) reject(new IngestError(err.code === "LIMIT_FILE_SIZE" ? 413 : 400, err.message));
+      else if (err) reject(err);
+      else resolve();
+    }),
+  );
+}
+
+/** Answer once the request body has been read off the socket, so the sender sees the answer, not a reset. */
+function answerAfterBody(req: Request, res: Response, status: number, body: object) {
+  if (req.readableEnded) return res.status(status).json(body);
+  req.on("error", () => {}); // a sender that hangs up mid-body gets no answer; nothing to do
+  req.on("end", () => res.status(status).json(body));
+  req.resume();
+}
+
+type SectionState = { status: "completed" | "failed" | "skipped"; reason?: string; error?: string };
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const DECIDED = new Set(["private", "not_found"]);
+/** Jobs whose ingest is running in this process; a second call for one returns at once. */
+const ingesting = new Set<string>();
+/** Bundles still uploading at boot can only be this process's own. */
+const BOOT_AT = Date.now();
+
+/**
+ * Apply a received bundle (§5.2): each section through the same cores the
+ * per-call routes use, then the account's stamps, issues and retries, and the
+ * job's end. Every step is an upsert or a diff, so re-running it after a
+ * restart is safe. The bundle dir is removed when it ends, whatever happened.
+ */
+export async function ingestScan(jobId: string): Promise<void> {
+  if (ingesting.has(jobId)) return;
+  ingesting.add(jobId);
+  const dir = path.join(SCANS_DIR, jobId);
+  let job: TrackingJob | undefined;
+  try {
+    const [row] = await db
+      .select({ job: trackingJobs, account: socialAccounts })
+      .from(trackingJobs)
+      .innerJoin(socialAccounts, eq(socialAccounts.id, trackingJobs.socialAccountId))
+      .where(eq(trackingJobs.id, jobId))
+      .limit(1);
+    if (!row || row.job.status !== "running") return;
+    job = row.job;
+    let account = row.account;
+
+    let manifest: z.infer<typeof scanManifestSchema>;
+    try {
+      manifest = scanManifestSchema.parse(JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8")));
+    } catch (err) {
+      await endScanJob(job, account, "failed", {}, `Bundle unreadable: ${errorText(err)}`);
+      return;
+    }
+    const { info, posts, highlights } = manifest.sections;
+    const read = async (rel: string): Promise<Upload> => ({
+      buffer: await fs.readFile(inside(dir, rel)),
+      mimetype: rel.endsWith(".mp4") ? "video/mp4" : "image/jpeg",
+    });
+    const readOptional = (rel?: string) => (rel ? read(rel) : Promise.resolve(null));
+    const result: Record<string, unknown> = { ...manifest.result };
+    const sections: Partial<Record<Section, SectionState>> = {};
+    let errors = 0;
+    const itemFailed = (what: string, err: unknown) => {
+      errors++;
+      console.error(`Tracking scan ${jobId}: ${what}:`, err);
+    };
+    // A core that throws on the section as a whole fails the section, not the job.
+    const sectionFailed = (s: SectionState, err: unknown) => {
+      console.error(`Tracking scan ${jobId}:`, err);
+      Object.assign(s, { status: "failed", error: errorText(err) });
+    };
+
+    const infoState: SectionState = (sections.info = { status: info.status, reason: info.reason, error: info.error });
+    if (info.status === "completed" && info.meta) {
+      try {
+        result.info = await applyInfo(account, info.meta, await readOptional(info.image));
+      } catch (err) {
+        sectionFailed(infoState, err);
+      }
+    }
+    // The posts pass reads the posts count info just stored.
+    [account] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, account.id));
+
+    if (posts) {
+      const s: SectionState = (sections.posts = { status: posts.status, reason: posts.reason, error: posts.error });
+      const counts: Record<string, unknown> = { mode: posts.mode, escalated: posts.escalated, stored: 0, updated: 0, duplicate: 0 };
+      for (const raw of posts.items) {
+        const parsed = scanPostItem.safeParse(raw);
+        if (!parsed.success) {
+          itemFailed("bad post item", parsed.error.message);
+          continue;
+        }
+        const item = parsed.data;
+        try {
+          const out = await applyPost({ job, account }, item.meta, await Promise.all(item.slides.map(read)), await readOptional(item.video));
+          counts[out.outcome] = (counts[out.outcome] as number) + 1;
+        } catch (err) {
+          itemFailed(`post ${item.meta.pk}`, err);
+        }
+      }
+      if (s.status === "completed") {
+        try {
+          Object.assign(counts, await applyPostsSection(job, account, posts));
+        } catch (err) {
+          sectionFailed(s, err);
+        }
+      }
+      result.posts = counts;
+    }
+
+    if (highlights) {
+      const s: SectionState = (sections.highlights = { status: highlights.status, reason: highlights.reason, error: highlights.error });
+      const counts: Record<string, number> = {};
+      const count = (outcome: string) => (counts[outcome] = (counts[outcome] ?? 0) + 1);
+      for (const raw of highlights.items) {
+        const parsed = scanStoryItem.safeParse(raw);
+        if (!parsed.success) {
+          itemFailed("bad highlight story item", parsed.error.message);
+          continue;
+        }
+        const item = parsed.data;
+        try {
+          count((await ingestStoryItem(item.meta, await read(item.image), await readOptional(item.video), { runId: job.runId, groupKind: "tracking_job", account })).outcome);
+        } catch (err) {
+          itemFailed(`highlight story ${item.meta.storyPk}`, err);
+        }
+      }
+      for (const raw of highlights.sets) {
+        const parsed = scanSetItem.safeParse(raw);
+        if (!parsed.success) {
+          itemFailed("bad highlight set", parsed.error.message);
+          continue;
+        }
+        const set = parsed.data;
+        try {
+          count(`set_${await upsertHighlight(account.id, set.meta)}`);
+        } catch (err) {
+          itemFailed(`highlight ${set.meta.highlightId}`, err);
+        }
+      }
+      if (s.status === "completed" && highlights.complete) {
+        try {
+          counts.setsDeleted = await applyHighlightsSection(account, highlights.seenHighlightIds);
+        } catch (err) {
+          sectionFailed(s, err);
+        }
+      }
+      result.highlights = counts;
+    }
+
+    // The account: section stamps, the scan's due date, issues.
+    const states = Object.entries(sections) as [Section, SectionState][];
+    // A private or gone account settles the scan, but only info learned anything: posts and
+    // highlights stay unchecked until a scan actually reads them.
+    const decided = (s: SectionState) => s.status === "completed" || DECIDED.has(s.reason ?? "");
+    for (const [kind, s] of states) if (s.status === "completed" || (kind === "info" && decided(s))) await markChecked(account.id, kind);
+    if (states.some(([, s]) => decided(s))) await markScanned(account.id);
+    const reasons = new Set(states.map(([, s]) => s.reason));
+    const issueJob = { id: job.id, kind: "scan" as TrackingKind };
+    if (reasons.has("private")) {
+      await db.update(socialAccounts).set({ isPrivate: true }).where(eq(socialAccounts.id, account.id));
+      await raiseIssue(account.id, "private", issueJob);
+    }
+    if (reasons.has("not_found")) await raiseIssue(account.id, "not_found", issueJob);
+    if (infoState.status === "completed") await resolveIssues(account.id, ["not_found"], "recheck_ok");
+    if (states.some(([kind, s]) => kind !== "info" && s.status === "completed")) await resolveIssues(account.id, ["not_found", "private"], "recheck_ok");
+
+    // A section that failed or ran out of budget is retried on its own, now.
+    const retry = states.filter(([, s]) => s.status === "failed" || (s.status === "skipped" && s.reason === "budget")).map(([kind]) => kind);
+    if (retry.length) {
+      const open = await db
+        .select({ kind: trackingJobs.kind })
+        .from(trackingJobs)
+        .where(and(eq(trackingJobs.socialAccountId, account.id), inArray(trackingJobs.kind, retry), inArray(trackingJobs.status, ["queued", "running"])));
+      const queued = retry.filter((kind) => !open.some((o) => o.kind === kind));
+      for (const kind of queued) await queueManualJob(account.id, kind);
+      if (queued.length) kickManualTrackingJobs();
+      result.retries = queued;
+    }
+    result.sections = sections;
+    if (errors) result.errors = errors;
+
+    const anyCompleted = states.some(([, s]) => s.status === "completed");
+    const wall = !anyCompleted && DECIDED.has(infoState.reason ?? "") ? infoState.reason : null;
+    if (wall) result.reason = wall;
+    const firstError = states.map(([, s]) => s.error).find(Boolean) ?? manifest.error ?? null;
+    await endScanJob(job, account, anyCompleted ? "completed" : wall ? "skipped" : "failed", result, anyCompleted ? null : firstError);
+  } catch (err) {
+    console.error(`Tracking scan ${jobId}: ingest failed:`, err);
+    if (job) {
+      await db
+        .update(trackingJobs)
+        .set({ status: "failed", error: `Ingest failed: ${errorText(err)}`, finishedAt: new Date() })
+        .where(and(eq(trackingJobs.id, job.id), eq(trackingJobs.status, "running")))
+        .catch((e) => console.error(`Tracking scan ${jobId}: job not failed:`, e));
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    ingesting.delete(jobId);
+  }
+}
+
+async function endScanJob(job: TrackingJob, account: SocialAccount, status: string, result: Record<string, unknown>, error: string | null) {
+  await db
+    .update(trackingJobs)
+    .set({ status, result, error, finishedAt: new Date() })
+    .where(and(eq(trackingJobs.id, job.id), eq(trackingJobs.status, "running")));
+  sseManager.broadcast("tracking_job.updated", { id: job.id, status, action: "finished" });
+  sseManager.broadcast("social_account.updated", { id: account.id });
+  syncEntityInBackground("social_account", account.id);
+}
+
+/**
+ * Boot sweep (§5.3): a bundle received before a restart finishes its ingest
+ * now; a dir with no running job behind it (a half-received upload) goes.
+ */
+async function resumeScanIngests(): Promise<void> {
+  const pending = await db
+    .select({ id: trackingJobs.id })
+    .from(trackingJobs)
+    .where(and(eq(trackingJobs.status, "running"), isNotNull(trackingJobs.scanReceivedAt)));
+  const keep = new Set(pending.map((j) => j.id));
+  for (const entry of await fs.readdir(SCANS_DIR).catch(() => [] as string[])) {
+    if (keep.has(entry)) continue;
+    const full = path.join(SCANS_DIR, entry);
+    // An upload that began after boot is in flight, not left over.
+    if (entry.endsWith(".part") && ((await fs.stat(full).catch(() => null))?.mtimeMs ?? 0) >= BOOT_AT) continue;
+    await fs.rm(full, { recursive: true, force: true });
+  }
+  for (const { id } of pending) await ingestScan(id);
+}
+
 export function registerTracking(app: Express) {
+  void resumeScanIngests().catch((err) => console.error("Tracking: scan ingests not resumed:", err));
+
   // ── Service side ──
 
   // The service is about to work this job: queued → running. 409 when it was
@@ -294,43 +844,7 @@ export function registerTracking(app: Express) {
       if (!ctx) return;
       const meta = parseMeta(req, res, infoSchema);
       if (!meta) return;
-      const { account } = ctx;
-
-      let image: ProfileImageOutcome | undefined;
-      if (req.file) {
-        const fetched = await profileImageFromBuffer(req.file.buffer, req.file.mimetype, meta.externalImageUrl ?? undefined);
-        const verdict = await classifyProfileImage(account, fetched);
-        if (verdict.replace) {
-          image = await applyProfileImageVerdict(account.id, account, fetched, verdict);
-        }
-      }
-      await applySnapshot({
-        socialAccountId: account.id,
-        scope: "profile",
-        profile: {
-          nickname: meta.nickname,
-          bio: meta.bio,
-          accountUrl: meta.accountUrl,
-          image,
-          externalImageUrl: meta.externalImageUrl,
-          reportedFollowersCount: meta.reportedFollowersCount,
-          reportedFollowingCount: meta.reportedFollowingCount,
-          ...(meta.joinedAt ? { joinedAt: new Date(meta.joinedAt) } : {}),
-          // "Based in" fills an empty location; a location someone typed stays.
-          ...(!account.location && meta.basedIn ? { location: meta.basedIn } : {}),
-        },
-        source: "prm-stories",
-      });
-      // Fields the journal doesn't track.
-      await db
-        .update(socialAccounts)
-        .set({
-          reportedPostsCount: meta.reportedPostsCount ?? account.reportedPostsCount,
-          isPrivate: meta.isPrivate ?? account.isPrivate,
-        })
-        .where(eq(socialAccounts.id, account.id));
-      if (meta.isPrivate === false) await resolveIssues(account.id, ["private"], "became_public");
-      res.json({ ok: true, imageReplaced: Boolean(image), imageChange: image?.imageChange ?? null });
+      res.json({ ok: true, ...(await applyInfo(ctx.account, meta, req.file ?? null)) });
     } catch (error) {
       fail(res, "store profile info", error);
     }
@@ -387,7 +901,6 @@ export function registerTracking(app: Express) {
   });
 
   // One post: multipart `meta` JSON + `slide_<n>` images + optional `video`.
-  // A post PRM already has (a redelivery) is updated in place; its slides stay.
   app.post("/api/v1/tracking/jobs/:id/posts", upload.any(), async (req, res) => {
     try {
       const ctx = await jobFor(req, res);
@@ -398,117 +911,8 @@ export function registerTracking(app: Express) {
       const slides = files
         .filter((f) => /^slide_\d+$/.test(f.fieldname))
         .sort((a, b) => Number(a.fieldname.slice(6)) - Number(b.fieldname.slice(6)));
-      const video = files.find((f) => f.fieldname === "video");
-      const id = postId(meta.pk);
-
-      const [existing] = await db.select().from(socialAccountPosts).where(eq(socialAccountPosts.id, id)).limit(1);
-      if (!existing && slides.length === 0) return res.status(400).json({ error: "A new post needs at least one slide" });
-
-      // A collab post is one row under its primary poster, with the other
-      // posters alongside. Whichever collaborator's grid it came from, the
-      // posters are resolved to accounts (created if PRM hasn't met them) and
-      // the tracked account must be one of them.
-      const author = (meta.author ?? ctx.account.username).trim().toLowerCase();
-      const coauthorNames = (meta.coauthors ?? []).map((u) => u.trim().toLowerCase()).filter((u) => u && u !== author);
-      const resolved = await resolveScrapedAccounts([author, ...coauthorNames].map((username) => ({ username })), INSTAGRAM_TYPE_ID, "prm-stories");
-      const primaryId = resolved.get(author);
-      if (!primaryId) return res.status(500).json({ error: `Could not resolve @${author}` });
-      const coauthorAccountIds = [...new Set(coauthorNames.map((u) => resolved.get(u)).filter((v): v is string => Boolean(v)))];
-      if (primaryId !== ctx.account.id && !coauthorAccountIds.includes(ctx.account.id)) {
-        return res.status(409).json({ error: `Post belongs to @${author}, not the tracked account` });
-      }
-      await queueMentioned(meta.slides.flatMap((s) => s.usertags));
-
-      const metadata: Record<string, unknown> = {
-        ...((existing?.metadata as Record<string, unknown> | null) ?? {}),
-        code: meta.code,
-        detail: { comments: meta.detail.comments, videoSupport: Boolean(video) },
-        mediaType: meta.mediaType,
-        productType: meta.productType ?? null,
-        isPinned: meta.isPinned ?? false,
-        location: meta.location ?? null,
-        music: meta.music ?? null,
-        author,
-        coauthors: coauthorNames,
-        videoDuration: meta.videoDuration ?? null,
-      };
-      if (video) {
-        try {
-          metadata.videoUrl = await storeMedia(video.buffer, `${meta.pk}.mp4`, video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4", "video");
-        } catch (err) {
-          console.error(`Post ${meta.pk}: video not stored:`, err);
-          metadata.detail = { comments: meta.detail.comments, videoSupport: false };
-          metadata.videoError = err instanceof Error ? err.message : String(err);
-        }
-      }
-      // Instagram leaks the real like_count even when the poster hid it; PRM stores only what a viewer sees.
-      const likesHidden = meta.likesHidden ?? existing?.likesHidden ?? false;
-      const shared = {
-        description: meta.caption ?? existing?.description ?? null,
-        likesHidden,
-        likeCount: likesHidden ? 0 : meta.likeCount ?? existing?.likeCount ?? 0,
-        commentCount: meta.commentCount ?? existing?.commentCount ?? 0,
-        mentionedAccounts: JSON.stringify(meta.slides.map((s, i) => ({ imageIndex: i, accounts: s.usertags })).filter((m) => m.accounts.length)),
-        socialAccountId: primaryId,
-        coauthorAccountIds,
-        metadata,
-        scrapedFrom: meta.scrapedFrom,
-        updatedAt: new Date(),
-      };
-
-      if (existing) {
-        await db.update(socialAccountPosts).set(shared).where(eq(socialAccountPosts.id, id));
-        await upsertComments(id, meta.comments ?? []);
-        return res.json({ outcome: "updated", postId: id });
-      }
-
-      // Bytes go to storage first; the rows land together, so a failed insert
-      // can't leave photos pointing at a post that doesn't exist. The post row
-      // goes first so a duplicate (racing job) writes nothing instead of failing.
-      const stored = await Promise.all(
-        slides.map(async (slide, i) => {
-          const fileHash = crypto.createHash("sha256").update(slide.buffer).digest("hex");
-          let url = (await storage.getPhotoByFileHash(fileHash))?.location;
-          if (!url) url = await uploadPostImage(slide.buffer, `${meta.pk}_${i}.jpg`, slide.mimetype || "image/jpeg");
-          return { url, fileHash, dims: getImageDimensions(slide.buffer) };
-        })
-      );
-      const photoIds = await db.transaction(async (tx) => {
-        const [post] = await tx
-          .insert(socialAccountPosts)
-          .values({
-            id,
-            instagramPk: meta.pk,
-            postType: meta.mediaType === 2 ? "video" : meta.mediaType === 8 ? "carousel" : "post",
-            content: JSON.stringify(stored.map((s) => s.url)),
-            postedAt: new Date(meta.takenAt),
-            ...shared,
-          })
-          .onConflictDoNothing({ target: socialAccountPosts.id })
-          .returning({ id: socialAccountPosts.id });
-        if (!post) return null;
-        const created = await tx
-          .insert(photos)
-          .values(stored.map(({ url, fileHash, dims }, i) => ({
-            location: url,
-            prmLocation: `post:${id}`,
-            isSubImage: false,
-            fileHash,
-            // Measured from the stored file (face boxes use its pixels); Instagram's reported size is a fallback.
-            widthPx: dims?.width ?? meta.slides[i]?.width ?? null,
-            heightPx: dims?.height ?? meta.slides[i]?.height ?? null,
-            ogMetadata: { source: "instagram-post", pk: meta.pk, code: meta.code, slide: i, takenAt: meta.takenAt },
-          })))
-          .returning({ id: photos.id });
-        return created.map((p) => p.id);
-      });
-      if (!photoIds) return res.json({ outcome: "duplicate", postId: id });
-      await upsertComments(id, meta.comments ?? []);
-      for (const photoId of photoIds) syncEntityInBackground("image", photoId);
-      const imageTaskGroupId = ctx.job.runId ? await runImageTaskGroup(ctx.job.runId, ctx.account.id, ctx.account.username ?? "", "tracking_job") : undefined;
-      void enqueueAutoRecognition({ kind: "post", photoIds, videoPostId: metadata.videoUrl ? id : undefined, imageTaskGroupId, socialAccountId: primaryId });
-      void onPostAddedForSummary(id, primaryId);
-      res.status(201).json({ outcome: "stored", postId: id });
+      const stored = await applyPost(ctx, meta, slides, files.find((f) => f.fieldname === "video") ?? null);
+      res.status(stored.outcome === "stored" ? 201 : 200).json(stored);
     } catch (error) {
       fail(res, "store post", error);
     }
@@ -530,7 +934,7 @@ export function registerTracking(app: Express) {
   // A highlighted story PRM didn't have: stored exactly as a story run's item.
   app.post("/api/v1/tracking/jobs/:id/highlights/items", storyUpload, async (req, res) => {
     const ctx = await jobFor(req, res);
-    if (ctx) await storeStoryItem(req, res, { runId: ctx.job.runId, groupKind: "tracking_job" });
+    if (ctx) await storeStoryItem(req, res, { runId: ctx.job.runId, groupKind: "tracking_job", account: ctx.account });
   });
 
   // One set as the profile shows it now: multipart `meta` (+ a `cover` file, ignored).
@@ -543,6 +947,54 @@ export function registerTracking(app: Express) {
       res.json({ outcome: await upsertHighlight(ctx.account.id, meta) });
     } catch (error) {
       fail(res, "store highlight", error);
+    }
+  });
+
+  // A scan's whole bundle (§3.2): onto disk, 202, then ingested in the background.
+  // The token is checked before the body is read, so no route-level multer.
+  app.post("/api/v1/tracking/jobs/:id/scan", async (req, res) => {
+    let incoming: string | null = null;
+    try {
+      const run = await authedRun(req, res);
+      if (!run) return;
+      const [job] = await db.select().from(trackingJobs).where(eq(trackingJobs.id, req.params.id)).limit(1);
+      if (!job || job.runId !== run.id) return answerAfterBody(req, res, 404, { error: "Job not found in this run" });
+      // A retry after a lost answer: PRM has this job's bundle already.
+      if (job.scanReceivedAt) return answerAfterBody(req, res, 200, { received: true, duplicate: true });
+      if (job.status !== "running" || job.kind !== "scan") return answerAfterBody(req, res, 409, { error: `Job is ${job.status} ${job.kind}` });
+
+      incoming = path.join(SCANS_DIR, `${job.id}.${crypto.randomUUID()}.part`);
+      // A bundle with no files never makes the dir through multer.
+      await fs.mkdir(incoming, { recursive: true });
+      await receiveBundle(req, res, incoming);
+      if (typeof req.body?.manifest !== "string") throw new IngestError(400, "manifest missing");
+      await fs.writeFile(path.join(incoming, "manifest.json"), req.body.manifest);
+
+      const [claimed] = await db
+        .update(trackingJobs)
+        .set({ scanReceivedAt: new Date() })
+        .where(and(eq(trackingJobs.id, job.id), eq(trackingJobs.status, "running"), isNull(trackingJobs.scanReceivedAt)))
+        .returning({ id: trackingJobs.id });
+      if (!claimed) {
+        // A racing copy won, or the run ended while this one uploaded.
+        const [now] = await db.select({ scanReceivedAt: trackingJobs.scanReceivedAt, status: trackingJobs.status }).from(trackingJobs).where(eq(trackingJobs.id, job.id));
+        return now?.scanReceivedAt ? res.json({ received: true, duplicate: true }) : res.status(409).json({ error: `Job is ${now?.status ?? "gone"}` });
+      }
+      const final = path.join(SCANS_DIR, job.id);
+      try {
+        await fs.rm(final, { recursive: true, force: true });
+        await fs.rename(incoming, final);
+      } catch (err) {
+        await db.update(trackingJobs).set({ scanReceivedAt: null }).where(eq(trackingJobs.id, job.id));
+        throw err;
+      }
+      incoming = null;
+      res.status(202).json({ received: true });
+      void ingestScan(job.id);
+    } catch (error) {
+      fail(res, "receive scan", error);
+    } finally {
+      if (incoming) await fs.rm(incoming, { recursive: true, force: true }).catch(() => {});
     }
   });
 
@@ -561,71 +1013,9 @@ export function registerTracking(app: Express) {
       const reason = typeof result.reason === "string" ? result.reason : null;
       if (reason === "private") await db.update(socialAccounts).set({ isPrivate: true }).where(eq(socialAccounts.id, account.id));
 
-      if (r.status === "completed" && job.kind === "posts") {
-        // A post PRM holds that the grid no longer shows was deleted — within
-        // what the scan measured. A complete walk measured everything; one that
-        // stopped at the scan limit vouches only for posts newer than the last
-        // node it saw, so older ones are out of range, not gone. Rows are never
-        // deleted, only flagged. An empty grid on an account that claims posts
-        // is a scan that broke, not a purge.
-        const conditions: SQL[] = [
-          eq(socialAccountPosts.socialAccountId, account.id),
-          ne(socialAccountPosts.postType, "story"),
-          eq(socialAccountPosts.isDeleted, false),
-        ];
-        if (r.seenPks?.length) conditions.push(notInArray(socialAccountPosts.instagramPk, r.seenPks));
-        if (!r.complete) conditions.push(gt(socialAccountPosts.postedAt, new Date(r.oldestSeenAt ?? 0)));
-        let deleted: string[] = [];
-        if (!r.seenPks) {
-          result.deletionsSkipped = "no_seen_pks";
-        } else if (r.seenPks.length === 0 && account.reportedPostsCount !== 0) {
-          result.deletionsSkipped = "empty_scan";
-        } else if (!r.complete && !r.oldestSeenAt) {
-          result.deletionsSkipped = "no_window";
-        } else {
-          const rows = await db
-            .update(socialAccountPosts)
-            .set({ isDeleted: true, updatedAt: new Date() })
-            .where(and(...conditions))
-            .returning({ id: socialAccountPosts.id });
-          deleted = rows.map((p) => p.id);
-          result.markedDeleted = deleted.length;
-        }
-
-        // Every post delivered under this job lands in the journal, as a follower
-        // scrape does. The posts arrived one request at a time, so "this job's"
-        // posts are the ones the account is on that were created since it started.
-        const added = (
-          await db
-            .select({ id: socialAccountPosts.id })
-            .from(socialAccountPosts)
-            .where(and(postedBy(account.id), gte(socialAccountPosts.createdAt, job.startedAt ?? job.createdAt)))
-            .orderBy(desc(socialAccountPosts.postedAt))
-        ).map((p) => p.id);
-        result.imported = added.length;
-        await recordPostsCapture(account.id, { added, deleted }, "prm-stories");
-        await recordPostsDeletedEvents(account, deleted);
-      }
-
+      if (r.status === "completed" && job.kind === "posts") Object.assign(result, await applyPostsSection(job, account, r));
       if (r.status === "completed" && job.kind === "highlights" && r.complete && r.seenHighlightIds) {
-        // A live set the profile no longer shows was deleted; its stories leave it with it.
-        const now = new Date();
-        const gone = await db
-          .update(instagramHighlights)
-          .set({ deletedSeenAt: now })
-          .where(and(
-            eq(instagramHighlights.socialAccountId, account.id),
-            isNull(instagramHighlights.deletedSeenAt),
-            r.seenHighlightIds.length ? notInArray(instagramHighlights.instagramId, r.seenHighlightIds) : undefined,
-          ))
-          .returning({ id: instagramHighlights.id });
-        if (gone.length) {
-          await db
-            .update(instagramHighlightMemberships)
-            .set({ leftSeenAt: now, leftReason: "set_deleted" })
-            .where(and(inArray(instagramHighlightMemberships.highlightId, gone.map((g) => g.id)), isNull(instagramHighlightMemberships.leftSeenAt)));
-        }
-        result.setsDeleted = gone.length;
+        result.setsDeleted = await applyHighlightsSection(account, r.seenHighlightIds);
       }
 
       if (isDeferral(r.status, reason) && canRetry(job)) {
@@ -639,7 +1029,8 @@ export function registerTracking(app: Express) {
         sseManager.broadcast("tracking_job.updated", { id: job.id, status: r.status, action: "finished" });
       }
       if (r.status === "completed" || reason === "private" || reason === "not_found") {
-        await markChecked(account.id, job.kind as TrackingKind);
+        if (job.kind === "scan") await markScanned(account.id);
+        else await markChecked(account.id, job.kind as Section);
       }
       // Issues (account-issues-plan.md §3): a wall opens one, a check that got through closes it.
       const kind = job.kind as TrackingKind;
@@ -911,17 +1302,25 @@ export function registerTracking(app: Express) {
   });
 
   // Removes job rows only; what they saved stays. A running job is left alone
-  // so its run can still report back.
-  const deleteJobs = async (ids: string[]) => {
+  // so its run can still report back. No ids means every job.
+  const deleteJobs = async (ids?: string[]) => {
     const deleted = await db
       .delete(trackingJobs)
-      .where(and(inArray(trackingJobs.id, ids), ne(trackingJobs.status, "running")))
+      .where(and(ids ? inArray(trackingJobs.id, ids) : undefined, ne(trackingJobs.status, "running")))
       .returning({ id: trackingJobs.id });
     if (deleted.length > 0) {
       sseManager.broadcast("tracking_job.updated", { count: deleted.length, action: "deleted" });
     }
     return deleted;
   };
+
+  app.delete("/api/tracking/jobs", requireAuth, async (_req, res) => {
+    try {
+      res.json({ deletedCount: (await deleteJobs()).length });
+    } catch (error) {
+      fail(res, "delete all jobs", error);
+    }
+  });
 
   app.delete("/api/tracking/jobs/:id", requireAuth, async (req, res) => {
     try {

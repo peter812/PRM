@@ -6,7 +6,7 @@ import { db } from "../db";
 import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChat, type AiChatContextEntity, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
 import { describePhoto } from "../ai/describe";
-import { asData, DATA_TAGS_NOTE, resolveModel, chat as aiChat, adapterFor, isAiEnabled, AiConfigError, type ResolvedModel, type AiMessage, type AiToolCall } from "../ai/provider";
+import { asData, DATA_TAGS_NOTE, resolveModel, chat as aiChat, adapterFor, AiConfigError, type ResolvedModel, type AiMessage, type AiToolCall } from "../ai/provider";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, lt, desc, or } from "drizzle-orm";
@@ -71,6 +71,7 @@ import {
   loadUniversalVectorConfig,
   type UniversalEntityType,
 } from "../vector-universal";
+import { getClusteringSettings, setClusteringSettings } from "../face-clusters";
 import { reindexAppKnowledge, resolveLinksInText, cleanRawLinks } from "../vector-app-knowledge";
 
 
@@ -268,7 +269,7 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    // Measure head yaw for stored faces that predate pose estimation (one batch per call).
+    // Measure head pose and sharpness for stored faces that predate them (one batch per call).
     app.post("/api/prm-face/backfill-pose", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       const apiUrl = await getPrmFaceSetting("prm_face_api_url");
@@ -612,13 +613,11 @@ export function registerRoutes(app: Express) {
         let descriptionGenerated = false;
         let description = "";
         if (pendingQuestions.length === 0) {
-          if (await isAiEnabled()) {
-            try {
-              description = await describePhoto(question.photoId);
-              descriptionGenerated = true;
-            } catch (aiErr: any) {
-              console.error("Error auto-describing photo:", aiErr.message);
-            }
+          try {
+            description = await describePhoto(question.photoId);
+            descriptionGenerated = true;
+          } catch (aiErr: any) {
+            console.error("Error auto-describing photo:", aiErr.message);
           }
         }
 
@@ -1040,36 +1039,12 @@ export function registerRoutes(app: Express) {
       }
     });
   
-    // ── Facial Intelligence feature flag ─────────────────────────────────────
-  
-    app.get("/api/prm-face/facial-intelligence", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      try {
-        const val = await getPrmFaceSetting("facial_intelligence_enabled");
-        res.json({ enabled: val === "true" });
-      } catch (error) {
-        res.status(500).json({ error: "Failed to fetch setting" });
-      }
-    });
-  
-    app.post("/api/prm-face/facial-intelligence", async (req, res) => {
-      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { enabled } = req.body;
-      if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be a boolean" });
-      try {
-        await setPrmFaceSetting("facial_intelligence_enabled", enabled ? "true" : "false");
-        res.json({ success: true });
-      } catch (error) {
-        res.status(500).json({ error: "Failed to save setting" });
-      }
-    });
-
     // ── Automatic recognition on new stories / posts / profile images ────────
 
     app.get("/api/recognition/auto", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        res.json(await getAutoRecognitionSettings());
+        res.json({ ...(await getAutoRecognitionSettings()), clustering: await getClusteringSettings() });
       } catch (error) {
         res.status(500).json({ error: "Failed to fetch settings" });
       }
@@ -1079,7 +1054,8 @@ export function registerRoutes(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         await setAutoRecognitionSettings(req.body ?? {});
-        res.json(await getAutoRecognitionSettings());
+        if (req.body?.clustering) await setClusteringSettings(req.body.clustering);
+        res.json({ ...(await getAutoRecognitionSettings()), clustering: await getClusteringSettings() });
       } catch (error) {
         res.status(500).json({ error: "Failed to save settings" });
       }
@@ -1153,13 +1129,12 @@ export function registerRoutes(app: Express) {
           .where(inArray(faces.personfaceUuid, personfaceUuids));
         const localFaceIds = personFaces.map(f => f.id);
   
-        // 3. Gather face IDs from the external PRM Compute API if enabled
+        // 3. Gather face IDs from the external PRM Compute API if configured
         let apiFaceIds: string[] = [];
-        const enabled = await getPrmFaceSetting("facial_intelligence_enabled");
         const apiUrl = await getPrmFaceSetting("prm_face_api_url");
         const apiKey = await getPrmFaceSetting("prm_face_api_key");
-  
-        if (enabled === "true" && apiUrl && apiKey) {
+
+        if (apiUrl && apiKey) {
           try {
             const response = await fetch(
               `${prmBase(apiUrl)}/api/face/list?page=${page}&page_size=${pageSize}&person_uuid=${encodeURIComponent(personUuid)}`,

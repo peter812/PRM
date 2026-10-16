@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useMemo, forwardRef, useImperativeHandle, useCallback, useRef, useState, useEffect } from "react";
 import {
   ReactFlow,
@@ -769,7 +770,7 @@ function buildFlowElements(
       position: pos,
       ...(groupId ? { parentId: groupId, extent: "parent" as const } : {}),
       data: {
-        label: `${person.firstName} ${person.lastName}`.trim(),
+        label: formatPersonName(person),
         sublabel: roleLabel,
         avatarUrl: person.avatarUrl,
         isRoot: person.id === rootPersonId,

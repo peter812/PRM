@@ -120,11 +120,12 @@ export function registerRoutes(app: Express) {
         const offset = parseInt(req.query.offset as string) || 0;
         const limit = parseInt(req.query.limit as string) || 30;
         const sortBy = (req.query.sortBy as string) || 'relationship';
+        const includeTps = req.query.includeTps === '1';
         
         // Get ME person ID to filter relationships
         const mePersonId = (await storage.getMePersonId()) ?? undefined;
         
-        const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortBy);
+        const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortBy, includeTps);
         res.json(people);
       } catch (error) {
         console.error("Error fetching paginated people:", error);

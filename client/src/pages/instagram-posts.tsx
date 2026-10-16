@@ -7,7 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  POSTS_COMMENTS_KEY,
   POSTS_COMMENT_LIMITS,
   POSTS_COMMENT_LIMIT_KEY,
   POSTS_SCAN_LIMIT_KEY,
@@ -82,25 +81,11 @@ export default function InstagramPostsPage() {
               />
             </div>
 
-            <div className="flex items-center justify-between gap-4 md:max-w-md">
-              <div>
-                <Label htmlFor="posts-comments">Import comments</Label>
-                <p className="text-xs text-muted-foreground">Opens every new post on its own page, which makes a check slower.</p>
-              </div>
-              <Switch
-                id="posts-comments"
-                checked={posts.comments}
-               
-                onCheckedChange={(v) => save.mutate({ key: POSTS_COMMENTS_KEY, value: String(v) })}
-                data-testid="switch-posts-comments"
-              />
-            </div>
-
             <div className="space-y-2 md:max-w-xs">
               <Label htmlFor="posts-comment-limit">Comments per post</Label>
+              <p className="text-xs text-muted-foreground">Comments are read for accounts at interest level High and above.</p>
               <Select
                 value={String(posts.commentLimit)}
-                disabled={!posts.comments}
                 onValueChange={(v) => save.mutate({ key: POSTS_COMMENT_LIMIT_KEY, value: v })}
               >
                 <SelectTrigger id="posts-comment-limit" data-testid="select-posts-comment-limit"><SelectValue /></SelectTrigger>

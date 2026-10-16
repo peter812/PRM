@@ -2,6 +2,9 @@ import type { AiProvider } from "@shared/schema";
 
 // Shared HTTP helpers for the AI adapters.
 
+/** The host didn't answer at all (refused, DNS, reset) — as opposed to an error reply or a timeout. */
+export class ProviderUnreachableError extends Error {}
+
 export function providerBase(p: AiProvider): string {
   return p.baseUrl.trim().replace(/\/+$/, "");
 }
@@ -29,7 +32,7 @@ export async function postJson(p: AiProvider, path: string, body: unknown, signa
     });
   } catch (err: any) {
     if (err?.name === "AbortError" || err?.name === "TimeoutError") throw new Error(`${p.name} request timed out`);
-    throw new Error(`Failed to reach ${p.name}: ${err?.message ?? err}`);
+    throw new ProviderUnreachableError(`Failed to reach ${p.name}: ${err?.message ?? err}`);
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
@@ -66,7 +69,7 @@ export async function getJson<T>(p: AiProvider, path: string, timeoutMs = 10000)
   try {
     resp = await fetch(`${providerBase(p)}${path}`, { headers: providerHeaders(p), signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
   } catch (err: any) {
-    throw new Error(`Failed to reach ${p.name}: ${err?.message ?? err}`);
+    throw new ProviderUnreachableError(`Failed to reach ${p.name}: ${err?.message ?? err}`);
   }
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");

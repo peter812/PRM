@@ -20,6 +20,7 @@ import {
   relationshipTypes,
   users,
   groups,
+  truePersonSearch,
   subGroups,
   groupNotes,
   apiKeys,
@@ -283,7 +284,7 @@ export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
   getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
-  getPeoplePaginated(offset: number, limit: number, mePersonId?: string, sortBy?: string): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>>;
+  getPeoplePaginated(offset: number, limit: number, mePersonId?: string, sortBy?: string, includeTps?: boolean): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number; hasTps: boolean }>>;
   getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
@@ -965,6 +966,10 @@ export class DatabaseStorage implements IStorage {
             ${people.lastName} ILIKE ${query} OR
             CONCAT(${people.firstName}, ' ', ${people.lastName}) ILIKE ${query} OR
             CONCAT(${people.lastName}, ' ', ${people.firstName}) ILIKE ${query} OR
+            ${people.nickname} ILIKE ${query} OR
+            ${people.maidenName} ILIKE ${query} OR
+            CONCAT(${people.nickname}, ' ', ${people.lastName}) ILIKE ${query} OR
+            CONCAT(${people.firstName}, ' ', ${people.maidenName}) ILIKE ${query} OR
             ${people.email} ILIKE ${query} OR
             ${people.company} ILIKE ${query} OR
             EXISTS (
@@ -976,7 +981,7 @@ export class DatabaseStorage implements IStorage {
       )
       .orderBy(
         sql`CASE
-          WHEN ${people.firstName} ILIKE ${startQuery} THEN 0
+          WHEN ${people.firstName} ILIKE ${startQuery} OR ${people.nickname} ILIKE ${startQuery} THEN 0
           WHEN ${people.lastName} ILIKE ${startQuery} THEN 1
           ELSE 2
         END`,
@@ -1073,8 +1078,9 @@ export class DatabaseStorage implements IStorage {
     offset: number,
     limit: number,
     mePersonId?: string,
-    sortBy?: string
-  ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number }>> {
+    sortBy?: string,
+    includeTps = false
+  ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number; hasTps: boolean }>> {
     // Fetch ME user's family tree labels to calculate dynamic family relation badges
     let familyLabels = new Map<string, string>();
     if (mePersonId) {
@@ -1093,7 +1099,7 @@ export class DatabaseStorage implements IStorage {
     }
     const familyIds: string[] = Array.from(familyLabels.keys());
 
-    type Row = { person: Person; maxValue: number | null; typeName: string | null; typeColor: string | null; groupCount: number };
+    type Row = { person: Person; maxValue: number | null; typeName: string | null; typeColor: string | null; groupCount: number; hasTps: boolean };
     const finalize = (rows: Row[]) => rows.map(row => {
       let typeName = row.typeName;
       let typeColor = row.typeColor;
@@ -1114,6 +1120,7 @@ export class DatabaseStorage implements IStorage {
         relationshipTypeName: typeName,
         relationshipTypeColor: typeColor,
         groupCount: row.groupCount,
+        hasTps: row.hasTps,
       };
     });
 
@@ -1122,6 +1129,12 @@ export class DatabaseStorage implements IStorage {
       FROM ${groups}
       WHERE ${people.id} = ANY(members)
     )`;
+    // Only the details view shows the TPS check, so skip the lookup otherwise.
+    const hasTpsExpr = includeTps
+      ? sql<boolean>`EXISTS (
+          SELECT 1 FROM ${truePersonSearch} WHERE ${truePersonSearch.personId} = ${people.id}
+        )`
+      : sql<boolean>`false`;
 
     if (mePersonId) {
       // Fast path: resolve each person's single highest-value relationship with ME
@@ -1162,6 +1175,7 @@ export class DatabaseStorage implements IStorage {
           typeName: sql<string | null>`${meRel.relName}`,
           typeColor: sql<string | null>`${meRel.relColor}`,
           groupCount: groupCountExpr,
+          hasTps: hasTpsExpr,
         })
         .from(people)
         .leftJoin(meRel, eq(meRel.otherId, people.id))
@@ -1219,6 +1233,7 @@ export class DatabaseStorage implements IStorage {
           FROM ${groups} 
           WHERE ${people.id} = ANY(members)
         )`.as('group_count'),
+        hasTps: hasTpsExpr.as('has_tps'),
       })
       .from(people)
       .leftJoin(
@@ -4637,6 +4652,9 @@ export class DatabaseStorage implements IStorage {
             ilike(people.lastName, searchPattern),
             sql`CONCAT(${people.firstName}, ' ', ${people.lastName}) ILIKE ${searchPattern}`,
             sql`CONCAT(${people.lastName}, ' ', ${people.firstName}) ILIKE ${searchPattern}`,
+            ilike(people.nickname, searchPattern),
+            ilike(people.maidenName, searchPattern),
+            sql`CONCAT(${people.nickname}, ' ', ${people.lastName}) ILIKE ${searchPattern}`,
             ilike(people.company, searchPattern),
             ilike(people.title, searchPattern),
             ilike(people.email, searchPattern),
@@ -4644,7 +4662,7 @@ export class DatabaseStorage implements IStorage {
             sql`EXISTS (SELECT 1 FROM unnest(${people.tags}) AS t WHERE t ILIKE ${searchPattern})`
           ))
           .orderBy(
-            sql`CASE WHEN ${people.firstName} ILIKE ${startPattern} OR ${people.lastName} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
+            sql`CASE WHEN ${people.firstName} ILIKE ${startPattern} OR ${people.nickname} ILIKE ${startPattern} OR ${people.lastName} ILIKE ${startPattern} THEN 0 ELSE 1 END`,
             people.firstName,
             people.lastName
           )

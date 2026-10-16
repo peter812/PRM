@@ -124,6 +124,8 @@ function trimPerson(p: any) {
     uuid: p.id,
     firstName: p.firstName ?? null,
     lastName: p.lastName ?? null,
+    nickname: p.nickname ?? null,
+    maidenName: p.maidenName ?? null,
     email: p.email ?? null,
     phone: p.phone ?? null,
     company: p.company ?? null,
@@ -161,11 +163,10 @@ function trimSocialAccount(a: any) {
     trackingConfig: {
       manual: Boolean(a.interestLevelManual),
       skipStories: Boolean(a.skipStories),
-      infoEveryDays: a.infoEveryDays ?? null,
-      followsEveryDays: a.followsEveryDays ?? null,
-      postsEveryDays: a.postsEveryDays ?? null,
+      scanEveryDays: a.scanEveryDays ?? null,
+      scanCheckedAt: a.scanCheckedAt ?? null,
+      scanDueAt: a.scanDueAt ?? null,
       postsCheckedAt: a.postsCheckedAt ?? null,
-      postsDueAt: a.postsDueAt ?? null,
     },
   };
 }

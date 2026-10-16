@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useLocation } from "wouter";
 import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase, ChevronDown, MessageSquare, Home, Calendar } from "lucide-react";
@@ -37,7 +38,6 @@ const FamilyTreeTab = lazy(() =>
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ChoosePersonImageDialog } from "@/components/choose-person-image-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { getInitials } from "@/lib/utils";
 import { MessagesTab } from "@/components/messages-tab";
 import { InsightsTab } from "@/components/insights-tab";
 import { TrueDbTab } from "@/components/true-db-tab";
@@ -109,11 +109,6 @@ export default function PersonProfile() {
   const [isAccountInfoOpen, setIsAccountInfoOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("home");
   const photoFileInputRef = useRef<HTMLInputElement>(null);
-
-  const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
-    queryKey: ["/api/prm-face/facial-intelligence"],
-  });
-  const showPhotosTab = facialIntelligenceData?.enabled ?? false;
 
   const params = new URLSearchParams(window.location.search);
   const from = params.get('from');
@@ -259,17 +254,17 @@ export default function PersonProfile() {
           {activeTab !== "home" && (
             <Avatar className="w-9 h-9 shrink-0">
               {person.imageUrl && (
-                <AvatarImage src={withImageSize(person.imageUrl, 64)} alt={`${person.firstName} ${person.lastName}`} />
+                <AvatarImage src={withImageSize(person.imageUrl, 64)} alt={formatPersonName(person)} />
               )}
               <AvatarFallback className="text-xs">
-                {getInitials(person.firstName, person.lastName)}
+                {personInitials(person)}
               </AvatarFallback>
             </Avatar>
           )}
 
           <div className="min-w-0">
             <h1 className="text-sm font-bold truncate flex items-center gap-1.5 leading-none" data-testid="text-person-name">
-              {person.firstName} {person.lastName}
+              {formatPersonName(person)}
               {person.maidenName && (
                 <span className="text-muted-foreground font-normal text-xs">
                   (née {person.maidenName})
@@ -330,12 +325,10 @@ export default function PersonProfile() {
                 <CalendarDays className="h-4 w-4 mr-2" />
                 Add Interaction
               </DropdownMenuItem>
-              {showPhotosTab && (
-                <DropdownMenuItem onClick={() => photoFileInputRef.current?.click()} data-testid="menu-item-add-photo">
-                  <ImageIcon className="h-4 w-4 mr-2" />
-                  Add Photo
-                </DropdownMenuItem>
-              )}
+              <DropdownMenuItem onClick={() => photoFileInputRef.current?.click()} data-testid="menu-item-add-photo">
+                <ImageIcon className="h-4 w-4 mr-2" />
+                Add Photo
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -395,6 +388,13 @@ export default function PersonProfile() {
                 Education & Career
               </TabsTrigger>
               <TabsTrigger
+                value="location"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-location"
+              >
+                Location
+              </TabsTrigger>
+              <TabsTrigger
                 value="truedb"
                 className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-truedb"
@@ -408,15 +408,13 @@ export default function PersonProfile() {
               >
                 Insights
               </TabsTrigger>
-              {showPhotosTab && (
-                <TabsTrigger
-                  value="photos"
-                  className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
-                  data-testid="tab-photos"
-                >
-                  Photos
-                </TabsTrigger>
-              )}
+              <TabsTrigger
+                value="photos"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-photos"
+              >
+                Photos
+              </TabsTrigger>
             </TabsList>
           </div>
         </div>
@@ -430,7 +428,10 @@ export default function PersonProfile() {
               <div className="flex-1 space-y-6 w-full min-w-0">
                 {/* Profile Brief */}
                 <div className="space-y-1">
-                  <h2 className="text-2xl font-bold">{person.firstName} {person.lastName}</h2>
+                  <h2 className="text-2xl font-bold">{formatPersonName(person)}</h2>
+                  {person.nickname && (
+                    <p className="text-sm text-muted-foreground">Nickname: {person.nickname}</p>
+                  )}
                   {person.maidenName && (
                     <p className="text-sm text-muted-foreground">Maiden Name: {person.maidenName}</p>
                   )}
@@ -474,7 +475,7 @@ export default function PersonProfile() {
                         {person.relationships.slice(0, 3).map((r: any, idx: number) => (
                           <div key={idx} className="flex justify-between border-b pb-1 last:border-0 last:pb-0">
                             <span className="font-medium text-foreground">
-                              {r.relatedPerson?.firstName} {r.relatedPerson?.lastName}
+                              {formatPersonName(r.relatedPerson)}
                             </span>
                             <span className="text-muted-foreground">{r.type?.name || "Relation"}</span>
                           </div>
@@ -541,15 +542,13 @@ export default function PersonProfile() {
                 </Card>
 
                 {/* Summaries: Photos */}
-                {showPhotosTab && (
-                  <Card className="p-4 space-y-3 shadow-none">
-                    <h3 className="font-semibold text-sm flex items-center justify-between">
-                      <span>Photos</span>
-                      <Button variant="ghost" size="sm" onClick={() => setActiveTab("photos")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
-                    </h3>
-                    <PersonPhotosOverview personId={person.id} limit={4} />
-                  </Card>
-                )}
+                <Card className="p-4 space-y-3 shadow-none">
+                  <h3 className="font-semibold text-sm flex items-center justify-between">
+                    <span>Photos</span>
+                    <Button variant="ghost" size="sm" onClick={() => setActiveTab("photos")} className="text-[11px] h-6 px-2 text-primary hover:text-primary">View all</Button>
+                  </h3>
+                  <PersonPhotosOverview personId={person.id} limit={4} />
+                </Card>
               </div>
 
               {/* Right Column: Large Profile Picture & Contact details */}
@@ -557,10 +556,10 @@ export default function PersonProfile() {
                 {/* Large Profile Image */}
                 <div className="relative aspect-square w-full rounded-2xl border bg-muted overflow-hidden shadow-sm">
                   {person.imageUrl ? (
-                    <img src={withImageSize(person.imageUrl, "max")} alt={`${person.firstName} ${person.lastName}`} className="w-full h-full object-cover" />
+                    <img src={withImageSize(person.imageUrl, "max")} alt={formatPersonName(person)} className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center text-4xl font-bold bg-primary/10 text-primary">
-                      {getInitials(person.firstName, person.lastName)}
+                      {personInitials(person)}
                     </div>
                   )}
                 </div>
@@ -680,7 +679,7 @@ export default function PersonProfile() {
             <RelationshipsTab
               relationships={person.relationships}
               personId={person.id}
-              personName={`${person.firstName} ${person.lastName}`.trim()}
+              personName={formatPersonName(person)}
               onAddRelationship={() => setIsAddRelationshipOpen(true)}
             />
           </TabsContent>
@@ -689,7 +688,7 @@ export default function PersonProfile() {
             <Suspense fallback={<Skeleton className="w-full h-[400px]" />}>
               <FamilyTreeTab
                 personId={person.id}
-                personName={`${person.firstName} ${person.lastName}`.trim()}
+                personName={formatPersonName(person)}
               />
             </Suspense>
           </TabsContent>
@@ -782,8 +781,6 @@ export default function PersonProfile() {
                 )}
               </div>
 
-              <PersonAddresses personId={person.id} />
-
               {/* Career / Jobs Section */}
               <div className="space-y-4">
                 <h3 className="text-lg font-semibold flex items-center gap-2 border-b pb-2 text-foreground/80">
@@ -813,6 +810,10 @@ export default function PersonProfile() {
             </div>
           </TabsContent>
 
+          <TabsContent value="location" className="mt-0 flex-1 min-h-0 p-6 overflow-y-auto">
+            <PersonAddresses personId={person.id} />
+          </TabsContent>
+
           <TabsContent value="truedb" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <TrueDbTab person={person} />
           </TabsContent>
@@ -821,11 +822,9 @@ export default function PersonProfile() {
             <InsightsTab personId={person.id} />
           </TabsContent>
 
-          {showPhotosTab && (
-            <TabsContent value="photos" className="mt-0 flex-1 min-h-0 overflow-y-auto">
-              <PersonPhotosTab personId={person.id} />
-            </TabsContent>
-          )}
+          <TabsContent value="photos" className="mt-0 flex-1 min-h-0 overflow-y-auto">
+            <PersonPhotosTab personId={person.id} />
+          </TabsContent>
         </div>
       </Tabs>
 
@@ -893,7 +892,7 @@ export default function PersonProfile() {
           <DialogHeader>
             <DialogTitle>Account Info</DialogTitle>
             <DialogDescription>
-              Technical metadata for {person?.firstName} {person?.lastName}
+              Technical metadata for {formatPersonName(person)}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 pt-1">

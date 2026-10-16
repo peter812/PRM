@@ -20,6 +20,7 @@ import {
   SUMMARY_ACCOUNT_ENABLED_KEY,
   SUMMARY_ACCOUNT_NO_THINK_KEY,
   SUMMARY_ACCOUNT_PROMPT_KEY,
+  SUMMARY_HOST_POOL_KEY,
   SUMMARY_POST_AUTO_ENABLED_KEY,
   SUMMARY_POST_ENABLED_KEY,
   SUMMARY_POST_MAX_WORDS_KEY,
@@ -40,6 +41,8 @@ import {
   loadSummarySettings,
   wakeSummaryRunner,
 } from "../summary-queue";
+import { listProviders } from "../ai/provider";
+import { hostPoolStatus } from "../ai/host-pool";
 
 const modelSelectionSchema = z.object({
   providerId: z.string().default(""),
@@ -62,6 +65,7 @@ const settingsPatchSchema = z.object({
   postNoThink: z.boolean().optional(),
   storyNoThink: z.boolean().optional(),
   accountNoThink: z.boolean().optional(),
+  hostPool: z.array(z.object({ providerId: z.string().min(1), slots: z.number().int().min(1).max(16), mlx: z.boolean().optional() })).max(32).optional(),
 });
 
 // Manual runs respect the same enable toggles as auto-queueing.
@@ -96,6 +100,13 @@ export function registerSummaryRoutes(app: Express) {
       if (!parsed.success) return res.status(400).json({ error: "Invalid settings payload", issues: parsed.error.issues });
       const p = parsed.data;
 
+      if (p.hostPool !== undefined) {
+        const ollama = new Set((await listProviders()).filter((pr) => pr.kind === "ollama").map((pr) => pr.id));
+        const ids = p.hostPool.map((h) => h.providerId);
+        if (new Set(ids).size !== ids.length) return res.status(400).json({ error: "A host is listed twice in the host pool" });
+        if (ids.some((id) => !ollama.has(id))) return res.status(400).json({ error: "Host pool members must be existing Ollama providers" });
+      }
+
       const ops: Promise<unknown>[] = [];
       if (p.postEnabled !== undefined) ops.push(storage.setAppSetting(SUMMARY_POST_ENABLED_KEY, String(p.postEnabled)));
       if (p.postAutoEnabled !== undefined) ops.push(storage.setAppSetting(SUMMARY_POST_AUTO_ENABLED_KEY, String(p.postAutoEnabled)));
@@ -120,8 +131,11 @@ export function registerSummaryRoutes(app: Express) {
       if (p.postNoThink !== undefined) ops.push(storage.setAppSetting(SUMMARY_POST_NO_THINK_KEY, String(p.postNoThink)));
       if (p.storyNoThink !== undefined) ops.push(storage.setAppSetting(SUMMARY_STORY_NO_THINK_KEY, String(p.storyNoThink)));
       if (p.accountNoThink !== undefined) ops.push(storage.setAppSetting(SUMMARY_ACCOUNT_NO_THINK_KEY, String(p.accountNoThink)));
+      if (p.hostPool !== undefined) ops.push(storage.setAppSetting(SUMMARY_HOST_POOL_KEY, JSON.stringify(p.hostPool)));
 
       await Promise.all(ops);
+      // The runner reloads the pool on each pass; wake it so new hosts start taking work now.
+      if (p.hostPool !== undefined) wakeSummaryRunner();
       res.json(await loadSummarySettings());
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to save summary settings" });
@@ -176,9 +190,31 @@ export function registerSummaryRoutes(app: Express) {
         .orderBy(desc(summaryJobs.createdAt))
         .limit(200);
 
-      res.json({ counts, rows });
+      res.json({ counts, rows, hosts: hostPoolStatus() });
     } catch (error) {
       res.status(500).json({ error: "Failed to load summary queue" });
+    }
+  });
+
+  // Summarized vs total for posts, stories, and accounts that have at least one post or story.
+  app.get("/api/summary/totals", async (_req, res) => {
+    try {
+      const result = await db.execute(sql`
+        SELECT
+          count(*) FILTER (WHERE p.post_type <> 'story')::int AS "postsTotal",
+          count(*) FILTER (WHERE p.post_type <> 'story' AND p.ai_summary IS NOT NULL)::int AS "postsDone",
+          count(*) FILTER (WHERE p.post_type = 'story')::int AS "storiesTotal",
+          count(*) FILTER (WHERE p.post_type = 'story' AND p.ai_summary IS NOT NULL)::int AS "storiesDone",
+          (SELECT count(*)::int FROM social_accounts a
+            WHERE EXISTS (SELECT 1 FROM social_account_posts x WHERE x.social_account_id = a.id)) AS "accountsTotal",
+          (SELECT count(*)::int FROM social_accounts a
+            WHERE a.ai_summary IS NOT NULL
+              AND EXISTS (SELECT 1 FROM social_account_posts x WHERE x.social_account_id = a.id)) AS "accountsDone"
+        FROM social_account_posts p
+      `);
+      res.json(result.rows[0]);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to load summary totals" });
     }
   });
 
@@ -208,12 +244,25 @@ export function registerSummaryRoutes(app: Express) {
     }
   });
 
+  app.delete("/api/summary-queue/queued", async (_req, res) => {
+    try {
+      const deleted = await db
+        .delete(summaryJobs)
+        .where(eq(summaryJobs.status, "pending"))
+        .returning({ id: summaryJobs.id });
+      res.json({ cleared: deleted.length });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to clear queued summary jobs" });
+    }
+  });
+
   app.post("/api/summary-queue/posts/historical", async (req, res) => {
     try {
       const disabled = await summaryDisabled("post");
       if (disabled) return res.status(409).json({ error: disabled });
       const includeSummarized = Boolean(req.body?.includeSummarized);
-      const queued = await enqueueAllHistoricalPosts(includeSummarized);
+      const only = req.body?.only === "post" || req.body?.only === "story" ? req.body.only : undefined;
+      const queued = await enqueueAllHistoricalPosts(includeSummarized, only);
       res.json({ queued });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to queue historical posts" });

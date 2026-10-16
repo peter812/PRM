@@ -36,7 +36,7 @@ export type FaceReviewSuggestion = {
   imageUrl?: string | null;
   ownerName?: string | null;
   label: string;
-  reason: "owner" | "coauthor" | "mentioned" | "profile_account" | "sender" | "participant";
+  reason: "owner" | "coauthor" | "mentioned" | "profile_account" | "sender" | "participant" | "lookalike";
 };
 
 export type FaceReviewFaceLookAlike = {
@@ -59,6 +59,10 @@ export type FaceReviewFace = {
   dismissed: boolean;
   /** Set when PRM auto-assigned this face (face-review-plan.md §8) and nobody has confirmed it. */
   autoMatchScore: number | null;
+  /** A machine quality reject (faces.noise_reason small/low_conf/blurry): not asked about unless noise is shown. */
+  noise: boolean;
+  /** The face's cluster from the last clustering run, with its live size (face-clustering-plan.md §5). */
+  cluster: { id: string; size: number } | null;
   lookAlikes: FaceReviewFaceLookAlike[];
 };
 
@@ -88,15 +92,17 @@ export type FaceReviewCounts = Record<FaceReviewKind, number> & { total: number;
  * True when `photos.facial_ids` has at least one entry that is unidentified
  * (personId and socialAccountId both null, and its face group isn't linked to
  * a person or account, re-checked live) and, per `dismissed`, either not
- * dismissed (the review queue) or dismissed (the Dismissed filter).
+ * dismissed (the review queue) or dismissed (the Dismissed filter). Quality
+ * noise (face-clustering-plan.md §3.1) doesn't count unless `showNoise`.
  */
-function faceQualifies(dismissed: boolean): SQL {
+function faceQualifies(dismissed: boolean, showNoise: boolean): SQL {
   const dismissedClause = dismissed ? sql`f.dismissed_at IS NOT NULL` : sql`f.dismissed_at IS NULL`;
   return sql`EXISTS (
     SELECT 1 FROM jsonb_array_elements(${photos.facialIds}) AS fid
     JOIN faces f ON f.id = (fid->>'faceUuid')
     WHERE (fid->>'personId') IS NULL AND (fid->>'socialAccountId') IS NULL
       AND ${dismissedClause}
+      ${showNoise ? sql`` : sql`AND (f.noise_reason IS NULL OR f.noise_reason = 'singleton')`}
       AND NOT EXISTS (
         SELECT 1 FROM people p WHERE p.personface_uuid = f.personface_uuid
         UNION ALL
@@ -106,7 +112,7 @@ function faceQualifies(dismissed: boolean): SQL {
 }
 
 /** Full WHERE for one tab's queue/count query. */
-function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
+function queueCondition(kind: FaceReviewKind, dismissed: boolean, showNoise: boolean): SQL {
   if (kind === "profile") {
     // §1/§2: current picture, HQ, and either (dismissed filter) a
     // dismissed face, or (default) an unidentified face while the account's own face isn't
@@ -132,7 +138,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
               WHERE f.personface_uuid = ${socialAccounts.personfaceUuid}
             )
           )
-      )`, faceQualifies(false));
+      )`, faceQualifies(false, showNoise));
     } else {
       base.push(
         sql`EXISTS (
@@ -143,7 +149,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
             AND NOT ('facial_scan' = ANY(${socialAccounts.bannedActions}))
            
         )`,
-        faceQualifies(true),
+        faceQualifies(true, showNoise),
       );
     }
     return and(sql`${photos.prmLocation} LIKE 'profile_image:%'`, ...base)!;
@@ -158,7 +164,7 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
          
       )`,
       sql`${photos.faceIdAt} IS NOT NULL`,
-      faceQualifies(dismissed),
+      faceQualifies(dismissed, showNoise),
     )!;
   }
 
@@ -174,24 +180,24 @@ function queueCondition(kind: FaceReviewKind, dismissed: boolean): SQL {
        
     )`,
     sql`${photos.faceIdAt} IS NOT NULL`,
-    faceQualifies(dismissed),
+    faceQualifies(dismissed, showNoise),
   )!;
 }
 
 // ── Counts (§3.2) ─────────────────────────────────────────────────────────────
 
 /** One query, one row, COUNT(*) FILTER per kind/dismissed combination (finding #6). */
-export async function getFaceReviewCounts(): Promise<FaceReviewCounts> {
+export async function getFaceReviewCounts(showNoise: boolean): Promise<FaceReviewCounts> {
   const [row] = await db
     .select({
-      story: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", false)})::int`,
-      profile: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", false)})::int`,
-      post: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", false)})::int`,
-      message: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", false)})::int`,
-      storyDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", true)})::int`,
-      profileDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", true)})::int`,
-      postDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", true)})::int`,
-      messageDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", true)})::int`,
+      story: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", false, showNoise)})::int`,
+      profile: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", false, showNoise)})::int`,
+      post: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", false, showNoise)})::int`,
+      message: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", false, showNoise)})::int`,
+      storyDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("story", true, showNoise)})::int`,
+      profileDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("profile", true, showNoise)})::int`,
+      postDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("post", true, showNoise)})::int`,
+      messageDismissed: sql<number>`count(*) FILTER (WHERE ${queueCondition("message", true, showNoise)})::int`,
     })
     .from(photos);
 
@@ -210,9 +216,9 @@ export type FaceReviewPage = { items: FaceReviewItem[]; nextCursor: string | nul
 // cursor from a still-open page in the old `<iso>_<id>` form keeps working.)
 const decodeCursor = (cursor: string | undefined) => cursor?.slice(cursor.lastIndexOf("_") + 1) || null;
 
-export async function getFaceReviewQueue(kind: FaceReviewKind, dismissed: boolean, cursor: string | undefined, limit: number): Promise<FaceReviewPage> {
+export async function getFaceReviewQueue(kind: FaceReviewKind, dismissed: boolean, showNoise: boolean, cursor: string | undefined, limit: number): Promise<FaceReviewPage> {
   const cur = decodeCursor(cursor);
-  const conditions = [queueCondition(kind, dismissed)];
+  const conditions = [queueCondition(kind, dismissed, showNoise)];
   if (cur) conditions.push(sql`(${photos.uploadedAt}, ${photos.id}) < (SELECT uploaded_at, id FROM ${photos} WHERE id = ${cur})`);
 
   const rows = await db
@@ -285,6 +291,7 @@ type IdentityInfo = { personId?: string; socialAccountId?: string; username?: st
 
 type PageCaches = {
   faceRowById: Map<string, typeof faces.$inferSelect>;
+  clusterSizeById: Map<string, number>;
   lookAlikeMap: Map<string, LookAlike[]>;
   identityCache: Map<string, IdentityInfo>;
   cropCache: Map<string, string>;
@@ -298,7 +305,7 @@ type PageCaches = {
 };
 
 /** Every known identity (person and/or account) for a batch of face groups, in two queries total. */
-async function buildIdentityCache(personfaceUuids: string[]): Promise<Map<string, IdentityInfo>> {
+export async function buildIdentityCache(personfaceUuids: string[]): Promise<Map<string, IdentityInfo>> {
   const map = new Map<string, IdentityInfo>();
   if (!personfaceUuids.length) return map;
 
@@ -398,14 +405,23 @@ function mentionedHandlesFor(photo: Photo, post: { mentionedAccounts: string | n
   }
 }
 
-/** Everything item-building needs for a page of photos, fetched in a fixed, small number of queries. */
-async function buildPageCaches(pagePhotos: Photo[], kind: FaceReviewKind): Promise<PageCaches> {
-  const allFaceUuids = Array.from(
-    new Set(pagePhotos.flatMap((p) => ((p.facialIds ?? []) as FacialId[]).map((f) => f.faceUuid).filter((u): u is string => !!u))),
-  );
+/**
+ * Everything item-building needs for a page of photos, fetched in a fixed, small number of queries.
+ * `withFaces` false skips the per-face data (rows, look-alikes, clusters) when only suggestions are wanted.
+ */
+async function buildPageCaches(pagePhotos: Photo[], kind: FaceReviewKind, withFaces = true): Promise<PageCaches> {
+  const allFaceUuids = withFaces
+    ? Array.from(new Set(pagePhotos.flatMap((p) => ((p.facialIds ?? []) as FacialId[]).map((f) => f.faceUuid).filter((u): u is string => !!u))))
+    : [];
   const faceRows = allFaceUuids.length ? await db.select().from(faces).where(inArray(faces.id, allFaceUuids)) : [];
   const faceRowById = new Map(faceRows.map((f) => [f.id, f]));
   const lookAlikeMap = await lookAlikesFor(allFaceUuids);
+  const clusterIds = Array.from(new Set(faceRows.map((f) => f.clusterId).filter((c): c is string => !!c)));
+  const clusterSizeById = new Map(
+    clusterIds.length
+      ? (await db.select({ id: faces.clusterId, n: sql<number>`count(*)::int` }).from(faces).where(inArray(faces.clusterId, clusterIds)).groupBy(faces.clusterId)).map((r) => [r.id!, r.n])
+      : [],
+  );
 
   const identityUuids = new Set<string>();
   for (const f of faceRows) if (f.personfaceUuid) identityUuids.add(f.personfaceUuid);
@@ -477,7 +493,7 @@ async function buildPageCaches(pagePhotos: Photo[], kind: FaceReviewKind): Promi
 
   const [accountCache, personCache] = await Promise.all([buildAccountCache([...accountIds]), buildPersonCache([...personIds])]);
 
-  return { faceRowById, lookAlikeMap, identityCache, cropCache, accountCache, personCache, postById, messageById, conversationById, participantsByConversation, mentionAccountIdByHandle };
+  return { faceRowById, clusterSizeById, lookAlikeMap, identityCache, cropCache, accountCache, personCache, postById, messageById, conversationById, participantsByConversation, mentionAccountIdByHandle };
 }
 
 // ── Item assembly (from caches — no per-item queries) ────────────────────────
@@ -532,6 +548,8 @@ function buildFacesFromCache(photo: Photo, caches: PageCaches): FaceReviewFace[]
       identified,
       dismissed: !!row.dismissedAt,
       autoMatchScore: row.autoMatchScore,
+      noise: !!row.noiseReason && row.noiseReason !== "singleton",
+      cluster: row.clusterId ? { id: row.clusterId, size: caches.clusterSizeById.get(row.clusterId) ?? 0 } : null,
       lookAlikes,
     });
     index++;
@@ -657,6 +675,33 @@ async function buildItems(pagePhotos: Photo[], kind: FaceReviewKind): Promise<Fa
     items.push(item);
   }
   return items;
+}
+
+/** Which review kind a photo's prm_location belongs to, or null when Face review doesn't show it. */
+function photoKind(photo: Photo): FaceReviewKind | null {
+  if (photo.prmLocation.startsWith("post:")) return "post";
+  if (photo.prmLocation.startsWith("profile_image:")) return "profile";
+  if (photo.prmLocation.startsWith("message:")) return "message";
+  return null;
+}
+
+/**
+ * The per-photo suggestions (owner, coauthors, slide mentions, profile account, sender,
+ * participants) for photos of any kind, without the per-face data. Clusters aggregate these
+ * over their photos (face-clustering-plan.md §3.3).
+ */
+export async function photoSuggestions(pagePhotos: Photo[]): Promise<Map<string, FaceReviewSuggestion[]>> {
+  const out = new Map<string, FaceReviewSuggestion[]>();
+  for (const kind of ["post", "profile", "message"] as const) {
+    const group = pagePhotos.filter((p) => photoKind(p) === kind);
+    if (!group.length) continue;
+    const caches = await buildPageCaches(group, kind, false);
+    for (const photo of group) {
+      const item = kind === "profile" ? buildProfileItem(photo, caches) : kind === "message" ? buildMessageItem(photo, caches) : buildPostItem(photo, kind, caches);
+      out.set(photo.id, item.suggestions);
+    }
+  }
+  return out;
 }
 
 // ── Post detail: faces + OCR per slide ───────────────────────────────────────

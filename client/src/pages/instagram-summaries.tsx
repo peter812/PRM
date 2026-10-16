@@ -9,8 +9,10 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, FileText, Cpu, MessageSquare, Sparkles, RefreshCw, Trash2, Play } from "lucide-react";
-import { ProviderModelPicker, apiErrorMessage, type ModelSelection } from "@/components/provider-model-picker";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { Loader2, FileText, Cpu, MessageSquare, Sparkles, RefreshCw, Trash2, Play, Server, BarChart3 } from "lucide-react";
+import { ProviderModelPicker, apiErrorMessage, useAiProviders, type ModelSelection } from "@/components/provider-model-picker";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { INTEREST_LEVELS, INTEREST_LEVEL_LABEL, type InterestLevel } from "@shared/interest-level";
@@ -44,6 +46,7 @@ type SummarySettingsResponse = {
   postNoThink: boolean;
   storyNoThink: boolean;
   accountNoThink: boolean;
+  hostPool: HostPoolEntry[];
   defaults: {
     scenePrompt: string;
     postPrompt: string;
@@ -53,7 +56,10 @@ type SummarySettingsResponse = {
   };
 };
 
-type NoThinkKey = "sceneNoThink" | "postNoThink" | "storyNoThink" | "accountNoThink";
+type HostPoolEntry = { providerId: string; slots: number; mlx?: boolean };
+type HostStatus = { providerId: string; name: string; slots: number; inFlight: number; downUntil: number | null; tokensPerSecond: number | null };
+
+type NoThinkKey ="sceneNoThink" | "postNoThink" | "storyNoThink" | "accountNoThink";
 
 const NO_THINK_OPTIONS: { key: NoThinkKey; label: string; hint: string }[] = [
   { key: "sceneNoThink", label: "No thinking on image summaries", hint: "Per-image scene descriptions in posts." },
@@ -61,6 +67,33 @@ const NO_THINK_OPTIONS: { key: NoThinkKey; label: string; hint: string }[] = [
   { key: "storyNoThink", label: "No thinking on story summaries", hint: "The single story run." },
   { key: "accountNoThink", label: "No thinking on account summaries", hint: "The account profile summary." },
 ];
+
+type SummaryTotalsResponse = {
+  postsTotal: number;
+  postsDone: number;
+  storiesTotal: number;
+  storiesDone: number;
+  accountsTotal: number;
+  accountsDone: number;
+};
+
+// Blue = summarized, grey = not yet.
+function TotalBar({ label, done, total, testId }: { label: string; done: number; total: number; testId: string }) {
+  const pct = total > 0 ? (done / total) * 100 : 0;
+  return (
+    <div className="space-y-1.5" data-testid={testId}>
+      <div className="flex items-baseline justify-between gap-3 text-sm">
+        <span className="font-medium">{label}</span>
+        <span className="text-muted-foreground tabular-nums">
+          {done.toLocaleString()} / {total.toLocaleString()} ({Math.round(pct)}%)
+        </span>
+      </div>
+      <div className="h-3 w-full rounded-full bg-muted overflow-hidden">
+        <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
 
 type SummaryQueueResponse = {
   counts: Record<string, number>;
@@ -77,6 +110,7 @@ type SummaryQueueResponse = {
     startedAt: string | null;
     completedAt: string | null;
   }>;
+  hosts: HostStatus[];
 };
 
 export default function InstagramSummariesPage() {
@@ -90,6 +124,9 @@ export default function InstagramSummariesPage() {
   const [accountPrompt, setAccountPrompt] = useState("");
   const [postMaxWords, setPostMaxWords] = useState(400);
   const [selectedLevel, setSelectedLevel] = useState<InterestLevel>("medium");
+  const [hostPool, setHostPool] = useState<HostPoolEntry[]>([]);
+  const { data: providers } = useAiProviders();
+  const ollamaProviders = (providers ?? []).filter((p) => p.kind === "ollama");
 
   const { data: settings, isLoading } = useQuery<SummarySettingsResponse>({
     queryKey: ["/api/summary/settings"],
@@ -100,6 +137,11 @@ export default function InstagramSummariesPage() {
     refetchInterval: 5000,
   });
 
+  const { data: totals } = useQuery<SummaryTotalsResponse>({
+    queryKey: ["/api/summary/totals"],
+    refetchInterval: 10000,
+  });
+
   useLoadOnce(settings, (s) => {
     if (s.sceneModel) setSceneModel(s.sceneModel);
     if (s.textModel) setTextModel(s.textModel);
@@ -108,7 +150,16 @@ export default function InstagramSummariesPage() {
     setStoryPrompt(s.storyPrompt || s.defaults.storyPrompt);
     setAccountPrompt(s.accountPrompt || s.defaults.accountPrompt);
     setPostMaxWords(s.postMaxWords);
+    setHostPool(s.hostPool ?? []);
   });
+
+  const poolEntry = (id: string) => hostPool.find((h) => h.providerId === id);
+  const toggleHost = (id: string, on: boolean) =>
+    setHostPool((pool) => (on ? [...pool, { providerId: id, slots: 1 }] : pool.filter((h) => h.providerId !== id)));
+  const setHostSlots = (id: string, slots: number) =>
+    setHostPool((pool) => pool.map((h) => (h.providerId === id ? { ...h, slots: Math.min(16, Math.max(1, slots || 1)) } : h)));
+  const setHostMlx = (id: string, mlx: boolean) =>
+    setHostPool((pool) => pool.map((h) => (h.providerId === id ? { ...h, mlx } : h)));
 
   const saveMutation = useMutation({
     mutationFn: async (patch: Record<string, unknown>) => {
@@ -135,6 +186,21 @@ export default function InstagramSummariesPage() {
     },
     onError: (err: Error) => {
       toast({ title: "Failed to queue historical posts", description: apiErrorMessage(err), variant: "destructive" });
+    },
+  });
+
+  const queueAllMutation = useMutation({
+    mutationFn: async (only: "post" | "story") => {
+      const res = await apiRequest("POST", "/api/summary-queue/posts/historical", { includeSummarized: false, only });
+      return { ...((await res.json()) as { queued: number }), only };
+    },
+    onSuccess: ({ queued, only }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/summary-queue"] });
+      const noun = only === "story" ? "stories" : "posts";
+      toast({ title: queued > 0 ? `Queued ${queued} ${noun} for summary` : `All ${noun} are already summarized or queued` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to queue", description: apiErrorMessage(err), variant: "destructive" });
     },
   });
 
@@ -182,6 +248,7 @@ export default function InstagramSummariesPage() {
   const counts = queue?.counts ?? {};
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="container max-w-full md:max-w-5xl py-3 md:py-8 px-4 md:pl-12 space-y-6">
       <div>
         <h1 className="text-2xl font-semibold flex items-center gap-2" data-testid="text-summaries-title">
@@ -192,6 +259,52 @@ export default function InstagramSummariesPage() {
           Configure post, story, and social account summaries, automatic invalidation &amp; updates, models, and prompts.
         </p>
       </div>
+
+      {/* Total Numbers */}
+      <Card data-testid="card-summary-totals">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-primary" />
+            Total Numbers
+          </CardTitle>
+          <CardDescription>How much of the library has been summarized.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {totals ? (
+            <>
+              <TotalBar label="Posts" done={totals.postsDone} total={totals.postsTotal} testId="bar-total-posts" />
+              <TotalBar label="Stories" done={totals.storiesDone} total={totals.storiesTotal} testId="bar-total-stories" />
+              <TotalBar
+                label="Accounts with posts or stories"
+                done={totals.accountsDone}
+                total={totals.accountsTotal}
+                testId="bar-total-accounts"
+              />
+            </>
+          ) : (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          )}
+          <div className="pt-2 border-t flex flex-wrap gap-2">
+            {(["post", "story"] as const).map((only) => (
+              <Button
+                key={only}
+                variant="outline"
+                size="sm"
+                disabled={!settings.postEnabled || queueAllMutation.isPending}
+                onClick={() => queueAllMutation.mutate(only)}
+                data-testid={`button-queue-all-${only}s`}
+              >
+                {queueAllMutation.isPending && queueAllMutation.variables === only ? (
+                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                ) : (
+                  <Play className="h-4 w-4 mr-1.5" />
+                )}
+                {only === "post" ? "Queue all posts" : "Queue all stories"}
+              </Button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Post Summaries Options */}
       <Card data-testid="card-post-summaries">
@@ -358,6 +471,7 @@ export default function InstagramSummariesPage() {
           <CardDescription>
             Select the vision model for per-image scene descriptions and the text model for combining post &amp; account summaries.
             Leave blank to inherit the default models from Intelligence settings.
+            {settings.hostPool.length > 0 && " With the host pool on, only the model names are used, and they run on every pool host."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -399,6 +513,94 @@ export default function InstagramSummariesPage() {
               data-testid="button-save-summary-models"
             >
               {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Models"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Host Pool */}
+      <Card data-testid="card-summary-host-pool">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Server className="h-4 w-4 text-primary" />
+            Host Pool
+          </CardTitle>
+          <CardDescription>
+            Spread summary runs across several Ollama hosts so queued jobs finish faster. Every checked host needs the
+            scene and summary models pulled. Set slots to match each host's <code>OLLAMA_NUM_PARALLEL</code>. Check <code>-mlx</code> on Macs with MLX builds pulled (named
+            <code>model-mlx</code>). With no
+            hosts checked, jobs run one at a time on the providers chosen above.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {ollamaProviders.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No Ollama providers yet. Add them at Settings → Intelligence.</p>
+          ) : (
+            ollamaProviders.map((p) => {
+              const entry = poolEntry(p.id);
+              const live = queue?.hosts?.find((h) => h.providerId === p.id);
+              return (
+                <div key={p.id} className="flex flex-wrap items-center gap-3" data-testid={`row-host-${p.id}`}>
+                  <Checkbox
+                    id={`host-${p.id}`}
+                    checked={!!entry}
+                    onCheckedChange={(checked) => toggleHost(p.id, checked === true)}
+                    data-testid={`checkbox-host-${p.id}`}
+                  />
+                  <Label htmlFor={`host-${p.id}`} className="min-w-0 flex-1">
+                    <span className="font-medium">{p.name}</span>{" "}
+                    <span className="text-xs text-muted-foreground break-all">{p.baseUrl}</span>
+                  </Label>
+                  {entry && (
+                    <div className="flex items-center gap-2" title='Use MLX builds of the models (model name + "-mlx"). Faster on Macs that have them pulled.'>
+                      <Checkbox
+                        id={`mlx-${p.id}`}
+                        checked={entry.mlx === true}
+                        onCheckedChange={(checked) => setHostMlx(p.id, checked === true)}
+                        data-testid={`checkbox-host-mlx-${p.id}`}
+                      />
+                      <Label htmlFor={`mlx-${p.id}`} className="text-xs text-muted-foreground">-mlx</Label>
+                    </div>
+                  )}
+                  {entry && (
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor={`slots-${p.id}`} className="text-xs text-muted-foreground">Slots</Label>
+                      <Input
+                        id={`slots-${p.id}`}
+                        type="number"
+                        min={1}
+                        max={16}
+                        className="w-20 h-8"
+                        value={entry.slots}
+                        onChange={(e) => setHostSlots(p.id, Number(e.target.value))}
+                        data-testid={`input-host-slots-${p.id}`}
+                      />
+                    </div>
+                  )}
+                  {live && (
+                    live.downUntil ? (
+                      <Badge variant="destructive">Unreachable, retrying in {Math.max(1, Math.ceil((live.downUntil - Date.now()) / 1000))}s</Badge>
+                    ) : (
+                      <Badge variant="secondary">{live.inFlight}/{live.slots} busy</Badge>
+                    )
+                  )}
+                  {live?.tokensPerSecond != null && (
+                    <Badge variant="outline" title="Generation speed of this host's most recent summary call">
+                      {live.tokensPerSecond.toFixed(1)} tok/s
+                    </Badge>
+                  )}
+                </div>
+              );
+            })
+          )}
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={() => saveMutation.mutate({ hostPool })}
+              disabled={saveMutation.isPending}
+              data-testid="button-save-host-pool"
+            >
+              {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Host Pool"}
             </Button>
           </div>
         </CardContent>
@@ -616,6 +818,7 @@ export default function InstagramSummariesPage() {
           )}
         </CardContent>
       </Card>
+    </div>
     </div>
   );
 }

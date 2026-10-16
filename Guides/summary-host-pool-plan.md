@@ -1,5 +1,16 @@
 # Summary Host Pool — spread social-media summary runs across several Ollama hosts
 
+> **Status: built.** It differs from the design below in three ways:
+> - Host status is returned as `hosts` on `GET /api/summary-queue`. There is no
+>   separate status endpoint.
+> - The runner reloads the pool from settings on every dispatch pass, so
+>   provider edits and deletions are picked up without extra hooks.
+> - The provider pickers stay visible. A note says only the model names apply
+>   while the pool is on.
+>
+> If every host stays unreachable for 5 minutes, the call gives up and the
+> job's normal retries take over.
+
 ## Goal
 
 When summary jobs are queued, send their AI calls to different Ollama hosts so a
@@ -111,7 +122,7 @@ dispatcher:
 
 ```
 maxJobs = pool ? pool.totalSlots + 1 : 1      // +1 keeps the next job's image fetch overlapping
-while (running < maxJobs && aiEnabled && (job = claimNextSummaryJob())):
+while (running < maxJobs && (job = claimNextSummaryJob())):
     running++; processJob(job).finally(() => { running--; wake() })
 ```
 

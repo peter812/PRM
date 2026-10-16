@@ -4,6 +4,7 @@ import { aiProviders, type AiProvider } from "@shared/schema";
 import { storage } from "../storage";
 import { ollamaAdapter } from "./ollama-adapter";
 import { openaiAdapter } from "./openai-adapter";
+import { noteTokensPerSecond } from "./host-pool";
 
 export { isExternalUrl, isMetadataUrl } from "./http";
 
@@ -39,7 +40,8 @@ export type ChatRequest = {
   signal?: AbortSignal;
 };
 
-export type ChatResult = { content: string; toolCalls: AiToolCall[] };
+/** tokensPerSecond: generation speed, when the provider reports it (Ollama). */
+export type ChatResult = { content: string; toolCalls: AiToolCall[]; tokensPerSecond?: number };
 export type ChatChunk = { content?: string; toolCalls?: AiToolCall[] };
 export type AiModelInfo = { name: string; parameterSize: string | null };
 
@@ -120,10 +122,6 @@ export async function resolveModel(task: AiTask, override?: { providerId?: strin
   throw new AiConfigError(`No AI model configured for ${AI_TASK_KEYS[task].label}. Choose one at ${where}.`);
 }
 
-export async function isAiEnabled(): Promise<boolean> {
-  return (await storage.getAppSetting("ai_enabled")) === "true";
-}
-
 // ── Untrusted input ──────────────────────────────────────────────────────────
 
 /** Tell the model to treat tagged text as data; pair with asData(). */
@@ -137,8 +135,10 @@ export function asData(tag: string, text: string): string {
 
 // ── Convenience wrappers ─────────────────────────────────────────────────────
 
-export function chat(r: ResolvedModel, req: Omit<ChatRequest, "model">): Promise<ChatResult> {
-  return adapterFor(r.provider).chat(r.provider, { ...req, model: r.model });
+export async function chat(r: ResolvedModel, req: Omit<ChatRequest, "model">): Promise<ChatResult> {
+  const result = await adapterFor(r.provider).chat(r.provider, { ...req, model: r.model });
+  if (result.tokensPerSecond) noteTokensPerSecond(r.provider.id, result.tokensPerSecond);
+  return result;
 }
 
 export function embed(r: ResolvedModel, text: string, signal?: AbortSignal): Promise<number[]> {

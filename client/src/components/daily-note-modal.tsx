@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -142,7 +143,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
         let label = p.refId;
         if (p.partyType === "person") {
           const person = (people as any[]).find(x => x.id === p.refId);
-          if (person) label = `${person.firstName} ${person.lastName}`.trim();
+          if (person) label = formatPersonName(person);
         } else if (p.partyType === "group") {
           const grp = (groups as any[]).find(x => x.id === p.refId);
           if (grp) label = grp.name;
@@ -168,7 +169,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
         let label = p.label;
         if (p.partyType === "person") {
           const person = (people as any[]).find(x => x.id === p.refId);
-          if (person) label = `${person.firstName} ${person.lastName}`.trim();
+          if (person) label = formatPersonName(person);
         } else if (p.partyType === "group") {
           const grp = (groups as any[]).find(x => x.id === p.refId);
           if (grp) label = grp.name;
@@ -401,7 +402,7 @@ export function DailyNoteModal({ open, onOpenChange, note, defaultDate, pinOverr
     ...(people as any[]).map((p: any) => ({
       partyType: "person" as const,
       refId: p.id,
-      label: `${p.firstName} ${p.lastName}`.trim(),
+      label: formatPersonName(p),
     })),
     ...(groups as any[]).map((g: any) => ({
       partyType: "group" as const,

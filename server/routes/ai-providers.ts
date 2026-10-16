@@ -209,7 +209,6 @@ export function registerRoutes(app: Express): void {
       // else to the external OpenAI-compatible server above.
       const computeConnected = !!(await get("prm_face_api_url")) && !!(await get("prm_face_api_key"));
       res.json({
-        enabled: (await get("ai_enabled")) === "true",
         autoDescribeImages: (await get("ai_auto_describe_images")) === "true",
         visionPrompt: await get("ai_vision_prompt"),
         eventsPrompt: await get("ai_events_prompt"),
@@ -226,7 +225,6 @@ export function registerRoutes(app: Express): void {
   app.post("/api/ai/settings", async (req, res) => {
     try {
       const body = z.object({
-        enabled: z.boolean().optional(),
         autoDescribeImages: z.boolean().optional(),
         visionPrompt: z.string().optional(),
         eventsPrompt: z.string().optional(),
@@ -237,7 +235,6 @@ export function registerRoutes(app: Express): void {
         events: selectionSchema.optional(),
         sexGuess: selectionSchema.optional(),
       }).parse(req.body ?? {});
-      if (body.enabled !== undefined) await storage.setAppSetting("ai_enabled", String(body.enabled));
       if (body.autoDescribeImages !== undefined) await storage.setAppSetting("ai_auto_describe_images", String(body.autoDescribeImages));
       if (body.visionPrompt !== undefined) await storage.setAppSetting("ai_vision_prompt", body.visionPrompt);
       if (body.eventsPrompt !== undefined) await storage.setAppSetting("ai_events_prompt", body.eventsPrompt);

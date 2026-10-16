@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Application, Graphics, Container, Text, TextStyle } from "pixi.js";
@@ -274,7 +275,7 @@ export default function Graph() {
           });
 
           const text = new Text({
-            text: `${person.firstName} ${person.lastName}`,
+            text: formatPersonName(person),
             style: textStyle,
           });
           text.anchor.set(0.5, -1.5);

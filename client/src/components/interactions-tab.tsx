@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, Trash2, Phone, Mail, Video, Calendar, Users, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -196,7 +197,7 @@ export function InteractionsTab({
                         {people.map((person, idx) => (
                           <span key={person.id} className="text-sm">
                             <Link href={`/person/${person.id}`} className="text-primary hover:underline">
-                              {person.firstName} {person.lastName}
+                              {formatPersonName(person)}
                             </Link>
                             {idx < people.length - 1 && <span className="text-muted-foreground">, </span>}
                           </span>

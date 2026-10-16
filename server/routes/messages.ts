@@ -3,7 +3,7 @@ import { storage } from "../storage";
 import { z } from "zod";
 import { syncEntityInBackground } from "../vector-universal";
 import { cleanPhoneNumberForStorage, formatPhoneNumberForDisplay } from "@shared/schema";
-import { AiConfigError, isAiEnabled, resolveModel } from "../ai/provider";
+import { AiConfigError, resolveModel } from "../ai/provider";
 import { guessNameFromMessages } from "../find-name-ai";
 
 export function registerRoutes(app: any) {
@@ -276,9 +276,6 @@ export function registerRoutes(app: any) {
       const conversation = await getPhoneThread(req.params.id, address);
       if (!conversation) return res.status(404).json({ error: "Number not found in this conversation" });
 
-      if (!(await isAiEnabled())) {
-        return res.status(400).json({ error: "AI is disabled in settings" });
-      }
       const resolved = await resolveModel("text");
 
       const { addresses, contactName } = conversation.metadata as { addresses: string[]; contactName: string | null };

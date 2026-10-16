@@ -202,7 +202,10 @@ function StoryDialog({ stories, highlights, onClose }: { stories: SocialAccountP
                         <Info className="h-3.5 w-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent>Scraped from {story.scrapedFrom ? `@${story.scrapedFrom}` : "an unknown account"}</TooltipContent>
+                    <TooltipContent>
+                      <div>Scraped from {story.scrapedFrom ? `@${story.scrapedFrom}` : "an unknown account"}</div>
+                      {story.captureType && <div>Captured from {story.captureType === "highlight" ? "a highlight" : "the daily story tray"}</div>}
+                    </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
               </span>

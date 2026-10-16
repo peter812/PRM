@@ -1,3 +1,4 @@
+import { formatPersonName, personSearchText } from "@shared/person-name";
 import { useState } from "react";
 import { X, Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -194,7 +195,7 @@ export function OptionsPanel({
                   data-testid="button-select-person"
                 >
                   {highlightedPerson
-                    ? `${highlightedPerson.firstName} ${highlightedPerson.lastName}`
+                    ? formatPersonName(highlightedPerson)
                     : "Select person..."}
                   <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
@@ -208,14 +209,14 @@ export function OptionsPanel({
                       {people.map((person) => (
                         <CommandItem
                           key={person.id}
-                          value={`${person.firstName} ${person.lastName}`}
+                          value={`${personSearchText(person)}`}
                           onSelect={() => {
                             onHighlightedPersonChange(person.id);
                             setSearchOpen(false);
                           }}
                           data-testid={`option-person-${person.id}`}
                         >
-                          {person.firstName} {person.lastName}
+                          {formatPersonName(person)}
                           {person.company && (
                             <span className="ml-2 text-xs text-muted-foreground">
                               {person.company}
@@ -445,7 +446,7 @@ export function OptionsPanel({
                       data-testid="button-select-person-mobile"
                     >
                       {highlightedPerson
-                        ? `${highlightedPerson.firstName} ${highlightedPerson.lastName}`
+                        ? formatPersonName(highlightedPerson)
                         : "Select person..."}
                       <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </Button>
@@ -459,14 +460,14 @@ export function OptionsPanel({
                           {people.map((person) => (
                             <CommandItem
                               key={person.id}
-                              value={`${person.firstName} ${person.lastName}`}
+                              value={`${personSearchText(person)}`}
                               onSelect={() => {
                                 onHighlightedPersonChange(person.id);
                                 setSearchOpen(false);
                               }}
                               data-testid={`option-person-mobile-${person.id}`}
                             >
-                              {person.firstName} {person.lastName}
+                              {formatPersonName(person)}
                               {person.company && (
                                 <span className="ml-2 text-xs text-muted-foreground">
                                   {person.company}

@@ -1,3 +1,4 @@
+import { formatPersonName, personSearchText } from "@shared/person-name";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -238,7 +239,7 @@ export function RelationshipDialog({
                               return (
                                 <CommandItem
                                   key={person.id}
-                                  value={`${person.firstName} ${person.lastName}`}
+                                  value={`${personSearchText(person)}`}
                                   onSelect={() => togglePerson(person.id)}
                                 >
                                   <div className="flex items-center gap-2 w-full">
@@ -249,7 +250,7 @@ export function RelationshipDialog({
                                       className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                                     />
                                     <span>
-                                      {person.firstName} {person.lastName}
+                                      {formatPersonName(person)}
                                       {person.company && (
                                         <span className="text-xs text-muted-foreground ml-1">
                                           ({person.company})
@@ -270,7 +271,7 @@ export function RelationshipDialog({
                     <div className="flex flex-wrap gap-2 pt-1">
                       {selectedPeople.map((p) => (
                         <Badge key={p.id} variant="secondary" className="gap-1">
-                          {p.firstName} {p.lastName}
+                          {formatPersonName(p)}
                           <X
                             className="h-3 w-3 cursor-pointer hover:text-destructive"
                             onClick={() => removePerson(p.id)}
@@ -287,7 +288,7 @@ export function RelationshipDialog({
               <div className="space-y-2">
                 <FormLabel>Relationship with</FormLabel>
                 <div className="p-3 bg-muted rounded-md font-medium text-sm">
-                  {relationship.toPerson.firstName} {relationship.toPerson.lastName}
+                  {formatPersonName(relationship.toPerson)}
                   {relationship.toPerson.company && (
                     <span className="text-xs text-muted-foreground ml-1">
                       ({relationship.toPerson.company})

@@ -19,7 +19,7 @@ import { uploadStoryImage, uploadMedia, deleteImageFromPrmS3, deleteMediaFromPrm
 import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, imageTaskGroups, type StoryImporter, type StorySeenBy } from "@shared/schema";
 import { generateDeterministicUuid } from "./social-media";
 import { queueMentioned } from "./tracking";
-import { DEFAULT_WINDOW, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
+import { DEFAULT_WINDOW, kickManualTrackingJobs, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
 import { failUnfinishedJobs } from "../tracking";
 import { enqueueAutoRecognition } from "../recognition";
 import { getImageDimensions } from "../profile-image";
@@ -33,7 +33,7 @@ export function storyPostId(storyPk: string): string {
   return generateDeterministicUuid(`instagram:story:${storyPk.trim()}`);
 }
 
-const storyMetaSchema = z.object({
+export const storyMetaSchema = z.object({
   storyPk: z.string().min(1),
   username: z.string().min(1),
   /** The @username the scraper was logged in as — audit provenance, required. */
@@ -160,12 +160,118 @@ export async function existingStoryPks(pks: string[]): Promise<string[]> {
 /** Multipart fields a story arrives in. */
 export const storyUpload = upload.fields([{ name: "image", maxCount: 1 }, { name: "video", maxCount: 1 }]);
 
+/** A received file: a multer upload, or one read back from disk. */
+export type Upload = { buffer: Buffer; mimetype?: string };
+
+export type StoryMeta = z.infer<typeof storyMetaSchema>;
+export type StoryOutcome = { outcome: "no_account" | "skipped" | "duplicate" | "stored"; postId?: string };
+/** A tracking job already holds the account its highlights belong to; a story run looks each item's up. */
+type StoryRun = { runId: string | null; groupKind: "story_run" | "tracking_job"; account?: { id: string; skipStories: boolean } };
+
 /**
- * Store one story (multipart `meta` + `image` + optional `video`, parsed by
- * `storyUpload`), already authenticated by the caller: a story run's item, or a
- * highlight's item under a tracking job. Answers the request.
+ * Store one story, already authenticated by the caller: a story run's item, or
+ * a highlight's item under a tracking job.
  */
-export async function storeStoryItem(req: Request, res: Response, run: { runId: string | null; groupKind: "story_run" | "tracking_job" }): Promise<unknown> {
+export async function ingestStoryItem(meta: StoryMeta, image: Upload, video: Upload | null, run: StoryRun): Promise<StoryOutcome> {
+  const { storyPk, username, scrapedFrom, takenAt, accessibilityCaption, mentions, width, height, ...rest } = meta;
+  const cleanStoryPk = storyPk.trim();
+
+  const [account] = run.account
+    ? [run.account]
+    : await db
+        .select({ id: socialAccounts.id, skipStories: socialAccounts.skipStories })
+        .from(socialAccounts)
+        .where(and(eq(sql`LOWER(${socialAccounts.username})`, username.toLowerCase()), eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)))
+        .limit(1);
+  if (!account) return { outcome: "no_account" };
+  if (account.skipStories) return { outcome: "skipped" };
+
+  const postId = storyPostId(cleanStoryPk);
+  const [existing] = await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts).where(eq(socialAccountPosts.id, postId)).limit(1);
+  if (existing) return { outcome: "duplicate", postId };
+
+  const buffer = image.buffer;
+  const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+  // Files go up first; whatever this request uploaded is removed again if a racing delivery wins the insert.
+  const uploaded: { url: string; kind: "image" | "video" }[] = [];
+  let imageUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
+  if (!imageUrl) {
+    imageUrl = await uploadStoryImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
+    uploaded.push({ url: imageUrl, kind: "image" });
+  }
+
+  // The video is a bonus on top of the cover frame: if storing it fails the story is still kept.
+  const metadata: Record<string, unknown> = { ...rest };
+  if (video) {
+    try {
+      const mime = video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4";
+      const videoUrl = await uploadMedia(video.buffer, `${cleanStoryPk}.mp4`, mime);
+      metadata.videoUrl = videoUrl;
+      uploaded.push({ url: videoUrl, kind: "video" });
+    } catch (err) {
+      console.error(`Story ${cleanStoryPk}: video not stored:`, err);
+      metadata.videoError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  // The post row goes first so a duplicate writes nothing; the photo lands with it or not at all.
+  // The stored file can be smaller than the size Instagram reports; face boxes use the file's pixels.
+  const dims = getImageDimensions(buffer);
+  const photoId = await db.transaction(async (tx) => {
+    const [post] = await tx
+      .insert(socialAccountPosts)
+      .values({
+        id: postId,
+        instagramPk: cleanStoryPk,
+        socialAccountId: account.id,
+        postType: "story",
+        // Every tracking-job story is a highlight item; a story run reads the live tray.
+        captureType: run.groupKind === "tracking_job" ? "highlight" : "daily",
+        content: JSON.stringify([imageUrl]),
+        description: accessibilityCaption ?? null,
+        mentionedAccounts: mentions.length ? JSON.stringify([{ imageIndex: 0, accounts: mentions }]) : null,
+        postedAt: new Date(takenAt),
+        metadata,
+        scrapedFrom,
+      })
+      .onConflictDoNothing({ target: socialAccountPosts.id })
+      .returning({ id: socialAccountPosts.id });
+    if (!post) return null;
+    const [photo] = await tx
+      .insert(photos)
+      .values({
+        location: imageUrl,
+        prmLocation: `post:${postId}`,
+        isSubImage: false,
+        fileHash,
+        widthPx: dims?.width ?? width ?? null,
+        heightPx: dims?.height ?? height ?? null,
+        ogMetadata: { source: "instagram-story", storyPk: cleanStoryPk, takenAt },
+      })
+      .returning({ id: photos.id });
+    return photo.id;
+  });
+
+  if (!photoId) {
+    for (const f of uploaded) await (f.kind === "video" ? deleteMediaFromPrmS3(f.url) : deleteImageFromPrmS3(f.url)).catch(() => {});
+    return { outcome: "duplicate", postId };
+  }
+  await queueMentioned(mentions);
+
+  const imageTaskGroupId = run.runId ? await runImageTaskGroup(run.runId, account.id, username, run.groupKind) : undefined;
+  await db.update(socialAccounts).set({ lastScrapedAt: new Date() }).where(eq(socialAccounts.id, account.id));
+  void enqueueAutoRecognition({ kind: "story", photoIds: [photoId], videoPostId: metadata.videoUrl ? postId : undefined, imageTaskGroupId, socialAccountId: account.id });
+  void onPostAddedForSummary(postId, account.id);
+  return { outcome: "stored", postId };
+}
+
+const STORY_STATUS: Record<StoryOutcome["outcome"], number> = { no_account: 202, skipped: 202, duplicate: 200, stored: 201 };
+
+/**
+ * `ingestStoryItem` for a multipart request (`meta` + `image` + optional
+ * `video`, parsed by `storyUpload`). Answers the request.
+ */
+export async function storeStoryItem(req: Request, res: Response, run: StoryRun): Promise<unknown> {
   try {
     let raw: unknown;
     try {
@@ -176,96 +282,11 @@ export async function storeStoryItem(req: Request, res: Response, run: { runId: 
     const parsed = storyMetaSchema.safeParse(raw);
     const files = (req.files ?? {}) as Record<string, Express.Multer.File[] | undefined>;
     const image = files.image?.[0];
-    const video = files.video?.[0];
     if (!parsed.success || !image) {
       return res.status(400).json({ error: "meta json (with scrapedFrom) and image file are required", issues: parsed.success ? [] : parsed.error.issues });
     }
-    const { storyPk, username, scrapedFrom, takenAt, accessibilityCaption, mentions, width, height, ...rest } = parsed.data;
-    const cleanStoryPk = storyPk.trim();
-
-    const [account] = await db
-      .select({ id: socialAccounts.id, skipStories: socialAccounts.skipStories })
-      .from(socialAccounts)
-      .where(and(eq(sql`LOWER(${socialAccounts.username})`, username.toLowerCase()), eq(socialAccounts.typeId, INSTAGRAM_TYPE_ID)))
-      .limit(1);
-    if (!account) return res.status(202).json({ outcome: "no_account" });
-    if (account.skipStories) return res.status(202).json({ outcome: "skipped" });
-
-    const postId = storyPostId(cleanStoryPk);
-    const [existing] = await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts).where(eq(socialAccountPosts.id, postId)).limit(1);
-    if (existing) return res.status(200).json({ outcome: "duplicate", postId });
-
-    const buffer = image.buffer;
-    const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
-    // Files go up first; whatever this request uploaded is removed again if a racing delivery wins the insert.
-    const uploaded: { url: string; kind: "image" | "video" }[] = [];
-    let imageUrl = (await storage.getPhotoByFileHash(fileHash))?.location;
-    if (!imageUrl) {
-      imageUrl = await uploadStoryImage(buffer, `${cleanStoryPk}.jpg`, image.mimetype || "image/jpeg");
-      uploaded.push({ url: imageUrl, kind: "image" });
-    }
-
-    // The video is a bonus on top of the cover frame: if storing it fails the story is still kept.
-    const metadata: Record<string, unknown> = { ...rest };
-    if (video) {
-      try {
-        const mime = video.mimetype?.startsWith("video/") ? video.mimetype : "video/mp4";
-        const videoUrl = await uploadMedia(video.buffer, `${cleanStoryPk}.mp4`, mime);
-        metadata.videoUrl = videoUrl;
-        uploaded.push({ url: videoUrl, kind: "video" });
-      } catch (err) {
-        console.error(`Story ${cleanStoryPk}: video not stored:`, err);
-        metadata.videoError = err instanceof Error ? err.message : String(err);
-      }
-    }
-
-    // The post row goes first so a duplicate writes nothing; the photo lands with it or not at all.
-    // The stored file can be smaller than the size Instagram reports; face boxes use the file's pixels.
-    const dims = getImageDimensions(buffer);
-    const photoId = await db.transaction(async (tx) => {
-      const [post] = await tx
-        .insert(socialAccountPosts)
-        .values({
-          id: postId,
-          instagramPk: cleanStoryPk,
-          socialAccountId: account.id,
-          postType: "story",
-          content: JSON.stringify([imageUrl]),
-          description: accessibilityCaption ?? null,
-          mentionedAccounts: mentions.length ? JSON.stringify([{ imageIndex: 0, accounts: mentions }]) : null,
-          postedAt: new Date(takenAt),
-          metadata,
-          scrapedFrom,
-        })
-        .onConflictDoNothing({ target: socialAccountPosts.id })
-        .returning({ id: socialAccountPosts.id });
-      if (!post) return null;
-      const [photo] = await tx
-        .insert(photos)
-        .values({
-          location: imageUrl,
-          prmLocation: `post:${postId}`,
-          isSubImage: false,
-          fileHash,
-          widthPx: dims?.width ?? width ?? null,
-          heightPx: dims?.height ?? height ?? null,
-          ogMetadata: { source: "instagram-story", storyPk: cleanStoryPk, takenAt },
-        })
-        .returning({ id: photos.id });
-      return photo.id;
-    });
-
-    if (!photoId) {
-      for (const f of uploaded) await (f.kind === "video" ? deleteMediaFromPrmS3(f.url) : deleteImageFromPrmS3(f.url)).catch(() => {});
-      return res.status(200).json({ outcome: "duplicate", postId });
-    }
-    await queueMentioned(mentions);
-
-    const imageTaskGroupId = run.runId ? await runImageTaskGroup(run.runId, account.id, username, run.groupKind) : undefined;
-    await db.update(socialAccounts).set({ lastScrapedAt: new Date() }).where(eq(socialAccounts.id, account.id));
-    void enqueueAutoRecognition({ kind: "story", photoIds: [photoId], videoPostId: metadata.videoUrl ? postId : undefined, imageTaskGroupId, socialAccountId: account.id });
-    void onPostAddedForSummary(postId, account.id);
-    res.status(201).json({ outcome: "stored", postId });
+    const { outcome, postId } = await ingestStoryItem(parsed.data, image, files.video?.[0] ?? null, run);
+    res.status(STORY_STATUS[outcome]).json(postId ? { outcome, postId } : { outcome });
   } catch (error) {
     console.error("Error storing story:", error);
     res.status(500).json({ error: "Failed to store story" });
@@ -277,6 +298,13 @@ export function registerStories(app: Express) {
   app.get("/api/v1/stories/auth", async (req, res) => {
     const run = await authedRun(req, res);
     if (run) res.json({ ok: true, runId: run.id });
+  });
+
+  // A service just came up logged in: queued manual jobs needn't wait for the
+  // unreachable retry. No token — the kick only starts what is already queued.
+  app.post("/api/v1/stories/ready", (_req, res) => {
+    kickManualTrackingJobs();
+    res.json({ ok: true });
   });
 
   // Pre-upload duplication & account check

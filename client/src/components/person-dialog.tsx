@@ -42,6 +42,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertPersonSchema, type Person, type SubGroup, formatPhoneNumberForDisplay } from "@shared/schema";
 import { z } from "zod";
 import { ImageUpload } from "./image-upload";
+import { formatPersonName } from "@shared/person-name";
 
 const updatePersonSchema = insertPersonSchema.partial();
 type FormValues = z.infer<typeof updatePersonSchema>;
@@ -80,6 +81,8 @@ export function PersonDialog({
     defaultValues: {
       firstName: "",
       lastName: "",
+      nickname: "",
+      maidenName: "",
       email: "",
       phone: "",
       company: "",
@@ -97,6 +100,8 @@ export function PersonDialog({
         form.reset({
           firstName: person.firstName,
           lastName: person.lastName,
+          nickname: person.nickname || "",
+          maidenName: person.maidenName || "",
           email: person.email || "",
           phone: formatPhoneNumberForDisplay(person.phone) || "",
           company: person.company || "",
@@ -110,6 +115,8 @@ export function PersonDialog({
         form.reset({
           firstName: "",
           lastName: "",
+          nickname: "",
+          maidenName: "",
           email: "",
           phone: "",
           company: "",
@@ -127,7 +134,8 @@ export function PersonDialog({
   }, [open, person, initialValues, form]);
 
   const mutation = useMutation({
-    mutationFn: async (data: FormValues) => {
+    mutationFn: async (values: FormValues) => {
+      const data = { ...values, nickname: values.nickname?.trim() || null, maidenName: values.maidenName?.trim() || null };
       if (isEdit && person) {
         return await apiRequest("PATCH", `/api/people/${person.id}`, data);
       } else {
@@ -257,6 +265,44 @@ export function PersonDialog({
                       <Input
                         {...field}
                         data-testid={isEdit ? "input-edit-last-name" : "input-last-name"}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="nickname"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Nickname</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        value={field.value ?? ""}
+                        data-testid={isEdit ? "input-edit-nickname" : "input-nickname"}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="maidenName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Maiden Name</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        value={field.value ?? ""}
+                        data-testid={isEdit ? "input-edit-maiden-name" : "input-maiden-name"}
                       />
                     </FormControl>
                     <FormMessage />
@@ -506,7 +552,7 @@ export function PersonDialog({
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Person</AlertDialogTitle>
               <AlertDialogDescription>
-                Are you sure you want to delete {person.firstName} {person.lastName}? 
+                Are you sure you want to delete {formatPersonName(person)}? 
                 This will permanently remove this person and all their associated data (notes, interactions, relationships). 
                 This action cannot be undone.
               </AlertDialogDescription>

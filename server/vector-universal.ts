@@ -2,6 +2,7 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import { sql, eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
+import { formatPersonName } from "@shared/person-name";
 import { storage } from "./storage";
 import {
   people,
@@ -86,8 +87,9 @@ function composeTextForEntity(type: UniversalEntityType, data: Record<string, an
   switch (type) {
     case "person": {
       const parts: string[] = [];
-      const name = [data.firstName, data.lastName].filter(Boolean).join(" ");
+      const name = formatPersonName(data);
       if (name) parts.push(name);
+      if (data.maidenName) parts.push(`née ${data.maidenName}`);
       if (data.company) parts.push(data.company);
       if (data.title) parts.push(data.title);
       if (data.tags && Array.isArray(data.tags) && data.tags.length > 0) {
@@ -195,7 +197,7 @@ function isVectorizable(type: UniversalEntityType, data: Record<string, any>): b
 function getTitleForEntity(type: UniversalEntityType, data: Record<string, any>): string {
   switch (type) {
     case "person":
-      return [data.firstName, data.lastName].filter(Boolean).join(" ") || "Unknown";
+      return formatPersonName(data) || "Unknown";
     case "group":
       return data.name || "Unnamed Group";
     case "image":

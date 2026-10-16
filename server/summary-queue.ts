@@ -22,7 +22,8 @@ import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
 import { fetchImageBuffer } from "./prm-s3";
 import { describeImage } from "./ai/describe";
 import { bannedActions } from "./banned-actions";
-import { asData, chat, DATA_TAGS_NOTE, isAiEnabled, resolveModel } from "./ai/provider";
+import { asData, chat, DATA_TAGS_NOTE, listProviders, resolveModel, type AiTask, type ResolvedModel } from "./ai/provider";
+import { hostPoolSlots, runOnHost, setHostPool } from "./ai/host-pool";
 
 export const SUMMARY_POST_ENABLED_KEY = "summary_post_enabled";
 export const SUMMARY_POST_AUTO_ENABLED_KEY = "summary_post_auto_enabled";
@@ -42,6 +43,10 @@ export const SUMMARY_SCENE_NO_THINK_KEY = "summary_scene_no_think";
 export const SUMMARY_POST_NO_THINK_KEY = "summary_post_no_think";
 export const SUMMARY_STORY_NO_THINK_KEY = "summary_story_no_think";
 export const SUMMARY_ACCOUNT_NO_THINK_KEY = "summary_account_no_think";
+// JSON [{ providerId, slots }]: Ollama hosts summary runs spread across. Empty = one job at a time on the scene/text providers.
+export const SUMMARY_HOST_POOL_KEY = "summary_host_pool";
+
+export type HostPoolEntry = { providerId: string; slots: number; mlx?: boolean };
 
 // Caps each post summary so the account prompt (built from every post summary) stays bounded.
 export const DEFAULT_POST_MAX_WORDS = 400;
@@ -85,7 +90,17 @@ export type SummarySettings = {
   postNoThink: boolean;
   storyNoThink: boolean;
   accountNoThink: boolean;
+  hostPool: HostPoolEntry[];
 };
+
+function parseHostPool(raw: string | undefined | null): HostPoolEntry[] {
+  try {
+    const parsed = JSON.parse(raw || "[]");
+    return Array.isArray(parsed) ? parsed.filter((e) => typeof e?.providerId === "string" && Number(e.slots) >= 1) : [];
+  } catch {
+    return [];
+  }
+}
 
 export async function loadSummarySettings(): Promise<SummarySettings> {
   const [
@@ -106,6 +121,7 @@ export async function loadSummarySettings(): Promise<SummarySettings> {
     postNoThink,
     storyNoThink,
     accountNoThink,
+    hostPool,
   ] = await Promise.all([
     storage.getAppSetting(SUMMARY_POST_ENABLED_KEY),
     storage.getAppSetting(SUMMARY_POST_AUTO_ENABLED_KEY),
@@ -124,6 +140,7 @@ export async function loadSummarySettings(): Promise<SummarySettings> {
     storage.getAppSetting(SUMMARY_POST_NO_THINK_KEY),
     storage.getAppSetting(SUMMARY_STORY_NO_THINK_KEY),
     storage.getAppSetting(SUMMARY_ACCOUNT_NO_THINK_KEY),
+    storage.getAppSetting(SUMMARY_HOST_POOL_KEY),
   ]);
 
   return {
@@ -142,7 +159,40 @@ export async function loadSummarySettings(): Promise<SummarySettings> {
     postNoThink: postNoThink === "true",
     storyNoThink: storyNoThink === "true",
     accountNoThink: accountNoThink === "true",
+    hostPool: parseHostPool(hostPool),
   };
+}
+
+// ── Host pool ────────────────────────────────────────────────────────────────
+
+/** Reload the pool from settings, dropping providers that no longer exist. Returns its total slots. */
+async function refreshHostPool(): Promise<number> {
+  const entries = parseHostPool(await storage.getAppSetting(SUMMARY_HOST_POOL_KEY));
+  const providers = entries.length ? await listProviders() : [];
+  setHostPool(entries.flatMap(({ providerId, slots, mlx }) => {
+    const provider = providers.find((p) => p.id === providerId);
+    return provider ? [{ provider, slots, mlx: mlx === true }] : [];
+  }));
+  return hostPoolSlots();
+}
+
+/** A step's (provider, model). With the pool on only the model name matters, so a stale provider id is ignored. */
+function resolveStep(task: AiTask, step: { providerId: string; model: string }): Promise<ResolvedModel> {
+  if (!step.model) return resolveModel(task);
+  return resolveModel(task, hostPoolSlots() > 0 ? { model: step.model } : step);
+}
+
+/** Run one AI call on a free pool host (same model) when the pool is on; otherwise on the resolved provider. */
+function onHost<T>(resolved: ResolvedModel, fn: (r: ResolvedModel) => Promise<T>): Promise<T> {
+  return hostPoolSlots() > 0 ? runOnHost(resolved.model, (provider, model) => fn({ provider, model })) : fn(resolved);
+}
+
+/** Progress writes queued in order, so concurrent image updates can't land an older snapshot last. */
+function progressSaver(jobId: string, progress: SummaryJobProgress): () => Promise<void> {
+  let chain = Promise.resolve();
+  return () => (chain = chain.catch(() => {}).then(async () => {
+    await db.update(summaryJobs).set({ progress }).where(eq(summaryJobs.id, jobId));
+  }));
 }
 
 // ── Queue Helpers ────────────────────────────────────────────────────────────
@@ -178,7 +228,7 @@ export async function enqueueSummaryJob(
 export async function onPostAddedForSummary(postId: string, socialAccountId: string): Promise<void> {
   try {
     const settings = await loadSummarySettings();
-    if (!settings.postEnabled || !settings.postAutoEnabled || !(await isAiEnabled())) return;
+    if (!settings.postEnabled || !settings.postAutoEnabled) return;
     if ((await bannedActions(socialAccountId)).includes("summary")) return;
     await enqueueSummaryJob("post", postId, socialAccountId);
   } catch (err) {
@@ -231,8 +281,10 @@ async function enqueueAccountsWhere(filter: SQL): Promise<number> {
 /**
  * Queue all unsummarized historical posts across all accounts.
  */
-export async function enqueueAllHistoricalPosts(includeSummarized = false): Promise<number> {
-  const queued = await enqueuePostsWhere(includeSummarized ? sql`true` : sql`p.ai_summary IS NULL`);
+// `only` narrows to stories ('story') or everything else ('post'); omitted queues both.
+export async function enqueueAllHistoricalPosts(includeSummarized = false, only?: "post" | "story"): Promise<number> {
+  const typeFilter = only === "story" ? sql`p.post_type = 'story'` : only === "post" ? sql`p.post_type <> 'story'` : sql`true`;
+  const queued = await enqueuePostsWhere(sql`${typeFilter} AND ${includeSummarized ? sql`true` : sql`p.ai_summary IS NULL`}`);
   if (queued) wakeSummaryRunner();
   return queued;
 }
@@ -335,12 +387,12 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
     return [done ?? { imageIndex: i, url, status: "queued" }];
   });
   const progress: SummaryJobProgress = { images, final: "queued" };
-  const saveProgress = () => db.update(summaryJobs).set({ progress }).where(eq(summaryJobs.id, job.id));
+  const saveProgress = progressSaver(job.id, progress);
   await saveProgress();
 
   // 1. For each image: apply to selected scene description model with predefined prompt
-  for (const img of images) {
-    if (img.status === "done") continue;
+  const vision = await resolveStep("vision", settings.sceneModel);
+  const describeOne = async (img: SummaryJobImageResult) => {
     img.status = "running";
     img.error = undefined;
     await saveProgress();
@@ -351,11 +403,11 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
       if (imagePeople.length > 0) {
         prompt += `\n\nRecognized people in this image: ${imagePeople.join(", ")}`;
       }
-      const description = await describeImage(buffer, {
+      const description = await onHost(vision, (r) => describeImage(buffer, {
         prompt,
-        override: settings.sceneModel.model ? settings.sceneModel : undefined,
+        override: { providerId: r.provider.id, model: r.model },
         think: thinkFlag(settings.sceneNoThink),
-      });
+      }));
       img.status = "done";
       img.description = description.trim();
     } catch (err) {
@@ -363,7 +415,11 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
       img.error = errorMessage(err);
       log(`[SummaryQueue] Image ${img.imageIndex} on post ${post.id} failed scene description: ${img.error}`);
     }
-  }
+  };
+  // With a host pool the images fan out across hosts; the post summary below waits for all of them.
+  const todo = images.filter((img) => img.status !== "done");
+  if (hostPoolSlots() > 0) await Promise.all(todo.map(describeOne));
+  else for (const img of todo) await describeOne(img);
   await saveProgress();
   const imagesAttempted = images.length;
   const imageSummaries: PostImageSummary[] = images
@@ -386,16 +442,16 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
       : "",
   ].filter(Boolean);
 
-  // A failure past here is marked on the final step by processNextJob.
+  // A failure past here is marked on the final step by runJob.
   progress.final = "running";
   await saveProgress();
-  const resolvedText = await resolveModel("text", settings.textModel.model ? settings.textModel : undefined);
+  const resolvedText = await resolveStep("text", settings.textModel);
 
   let overview = "";
   if (imageSummaries.length === 1 && !transcript) {
     overview = imageSummaries[0].description;
   } else if (contextParts.length > 0) {
-    const result = await chat(resolvedText, {
+    const result = await onHost(resolvedText, (r) => chat(r, {
       messages: [
         {
           role: "system",
@@ -405,7 +461,7 @@ async function runPostSummaryJob(job: SummaryJob): Promise<void> {
       ],
       think: thinkFlag(settings.postNoThink),
       signal: AbortSignal.timeout(120_000),
-    });
+    }));
     overview = result.content.trim();
   } else {
     overview = "No visual or text content available to summarize.";
@@ -428,7 +484,7 @@ async function runStorySummary(
   recognizedPeople: string[],
 ): Promise<void> {
   const progress: SummaryJobProgress = { images: [], final: "running" };
-  const saveProgress = () => db.update(summaryJobs).set({ progress }).where(eq(summaryJobs.id, job.id));
+  const saveProgress = progressSaver(job.id, progress);
   await saveProgress();
 
   const imageUrls = mediaUrls.filter((url) => url && !isVideoMediaUrl(url));
@@ -449,24 +505,24 @@ async function runStorySummary(
   let overview = "No visual or text content available to summarize.";
   let model: string | null = null;
   if (buffers.length > 0) {
-    const vision = await resolveModel("vision", settings.sceneModel.model ? settings.sceneModel : undefined);
+    const vision = await resolveStep("vision", settings.sceneModel);
     model = vision.model;
-    overview = await describeImage(buffers, {
+    overview = await onHost(vision, (r) => describeImage(buffers, {
       prompt: [instructions, ...contextParts].join("\n\n"),
-      override: { providerId: vision.provider.id, model: vision.model },
+      override: { providerId: r.provider.id, model: r.model },
       think,
-    });
+    }));
   } else if (transcript) {
-    const text = await resolveModel("text", settings.textModel.model ? settings.textModel : undefined);
+    const text = await resolveStep("text", settings.textModel);
     model = text.model;
-    overview = (await chat(text, {
+    overview = (await onHost(text, (r) => chat(r, {
       messages: [
         { role: "system", content: instructions },
         { role: "user", content: contextParts.join("\n\n") },
       ],
       think,
       signal: AbortSignal.timeout(120_000),
-    })).content;
+    }))).content;
   }
 
   await savePostSummary(post, { overview: clampWords(overview.trim(), settings.postMaxWords), images: [] }, model, settings);
@@ -532,7 +588,7 @@ async function runAccountSummaryJob(job: SummaryJob): Promise<void> {
     .limit(ACCOUNT_SUMMARY_MAX_POSTS);
   const posts = recentPosts.reverse();
 
-  const resolvedText = await resolveModel("text", settings.textModel.model ? settings.textModel : undefined);
+  const resolvedText = await resolveStep("text", settings.textModel);
 
   const itemLines: string[] = [];
   let postCount = 0;
@@ -574,14 +630,14 @@ async function runAccountSummaryJob(job: SummaryJob): Promise<void> {
     itemLines.length > 0 ? itemLines.join("\n") : "No posts or stories recorded for this account.",
   )}`;
 
-  const result = await chat(resolvedText, {
+  const result = await onHost(resolvedText, (r) => chat(r, {
     messages: [
       { role: "system", content: `${settings.accountPrompt}\n\n${DATA_TAGS_NOTE}` },
       { role: "user", content: promptInput },
     ],
     think: thinkFlag(settings.accountNoThink),
     signal: AbortSignal.timeout(180_000),
-  });
+  }));
 
   const newSummary: AccountAiSummary = {
     profile: result.content.trim(),
@@ -657,12 +713,7 @@ async function claimNextSummaryJob(): Promise<SummaryJob | undefined> {
   return rows[0] as SummaryJob | undefined;
 }
 
-async function processNextJob(): Promise<boolean> {
-  // The AI master switch pauses the queue; pending jobs wait until it's back on.
-  if (!(await isAiEnabled())) return false;
-  const job = await claimNextSummaryJob();
-  if (!job) return false;
-
+async function runJob(job: SummaryJob): Promise<void> {
   try {
     if (job.kind === "post") {
       await runPostSummaryJob(job);
@@ -688,23 +739,46 @@ async function processNextJob(): Promise<boolean> {
       })
       .where(eq(summaryJobs.id, job.id));
   }
-  return true;
 }
 
-let runningPass = false;
+let activeJobs = 0;
+let dispatching = false;
+let redispatch = false;
 
+/**
+ * Claim jobs until every slot is busy: one at a time without a host pool, else
+ * one per pool slot plus one so the next job's image downloads overlap.
+ * Order holds within a job (images before the post summary) and in the claim
+ * query (an account job waits for its pending and running post jobs).
+ */
 export function wakeSummaryRunner(): void {
-  if (runningPass) return;
-  runningPass = true;
+  if (dispatching) {
+    redispatch = true;
+    return;
+  }
+  dispatching = true;
   void (async () => {
     try {
-      while (await processNextJob()) {
-        // Continue draining pending jobs sequentially
-      }
+      do {
+        redispatch = false;
+        const slots = await refreshHostPool();
+        const maxJobs = slots > 0 ? slots + 1 : 1;
+        while (activeJobs < maxJobs) {
+          const job = await claimNextSummaryJob();
+          if (!job) break;
+          activeJobs++;
+          void runJob(job)
+            .catch((err) => log(`[SummaryQueue] Job ${job.id} error: ${errorMessage(err)}`))
+            .finally(() => {
+              activeJobs--;
+              wakeSummaryRunner();
+            });
+        }
+      } while (redispatch);
     } catch (err) {
       log(`[SummaryQueue] Runner error: ${errorMessage(err)}`);
     } finally {
-      runningPass = false;
+      dispatching = false;
     }
   })();
 }
@@ -715,6 +789,7 @@ export function startSummaryRunner(): void {
     .where(eq(summaryJobs.status, "running"))
     .catch((err) => log(`[SummaryQueue] Failed to reset running jobs: ${errorMessage(err)}`))
     .finally(() => {
+      wakeSummaryRunner();
       setInterval(() => wakeSummaryRunner(), TICK_MS);
     });
 }

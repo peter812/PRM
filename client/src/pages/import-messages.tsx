@@ -1,3 +1,4 @@
+import { formatPersonName, personSearchText } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronsUpDown, Phone, Upload } from "lucide-react";
@@ -58,7 +59,7 @@ export default function ImportMessagesPage() {
             <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
               <PopoverTrigger asChild>
                 <Button variant="outline" role="combobox" className="w-full justify-between" data-testid="button-pick-owner">
-                  <span>{owner ? `${owner.firstName} ${owner.lastName}` : "Select a person..."}</span>
+                  <span>{owner ? formatPersonName(owner) : "Select a person..."}</span>
                   <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
               </PopoverTrigger>
@@ -71,7 +72,7 @@ export default function ImportMessagesPage() {
                       {people.map((person) => (
                         <CommandItem
                           key={person.id}
-                          value={`${person.firstName} ${person.lastName} ${person.company || ""}`}
+                          value={`${personSearchText(person)} ${person.company || ""}`}
                           onSelect={() => {
                             setPickedId(person.id);
                             setPickerOpen(false);
@@ -80,7 +81,7 @@ export default function ImportMessagesPage() {
                           <Check className={cn("mr-2 h-4 w-4", person.id === ownerId ? "opacity-100" : "opacity-0")} />
                           <div className="flex flex-col">
                             <span className="font-medium">
-                              {person.firstName} {person.lastName}
+                              {formatPersonName(person)}
                               {person.id === me?.id && <span className="ml-1 text-xs text-muted-foreground">(me)</span>}
                             </span>
                             {person.company && <span className="text-xs text-muted-foreground">{person.company}</span>}
@@ -107,7 +108,7 @@ export default function ImportMessagesPage() {
         <ImportBackupDialog
           open={dialogOpen}
           onOpenChange={setDialogOpen}
-          source={{ kind: "sms", rootPersonId: owner.id, personName: `${owner.firstName} ${owner.lastName}` }}
+          source={{ kind: "sms", rootPersonId: owner.id, personName: formatPersonName(owner) }}
           filters={filters}
         />
       )}

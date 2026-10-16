@@ -1,5 +1,6 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Plus, X, Star, Trophy, ArrowUpDown, ArrowUp, ArrowDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink } from "lucide-react";
+import { Plus, X, Star, Trophy, ArrowUpDown, ArrowUp, ArrowDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink, CircleCheck } from "lucide-react";
 import { useState, useRef, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,6 @@ import {
 import type { Person } from "@shared/schema";
 import { formatPhoneNumberForDisplay, getTruePeopleSearchUrl } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
 import { useToast } from "@/hooks/use-toast";
 import { PersonContextMenu, PersonActionButton } from "@/components/person-context-menu";
@@ -60,7 +60,17 @@ type PersonWithRelationship = Person & {
   relationshipTypeColor: string | null;
   groupCount: number;
   isStarred?: number;
+  hasTps?: boolean;
 };
+
+function TpsCheck({ person }: { person: PersonWithRelationship }) {
+  if (!person.hasTps) return null;
+  return (
+    <span title="Has TruePeopleSearch result" className="inline-flex shrink-0">
+      <CircleCheck className="h-4 w-4 text-green-600 dark:text-green-500" data-testid={`icon-tps-${person.id}`} />
+    </span>
+  );
+}
 
 export default function PeopleList() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -75,6 +85,7 @@ export default function PeopleList() {
   });
   const { toast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const includeTps = viewMode === "details";
 
   const {
     data,
@@ -85,9 +96,9 @@ export default function PeopleList() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery<PersonWithRelationship[]>({
-    queryKey: ["/api/people/paginated", { sortBy }],
+    queryKey: ["/api/people/paginated", { sortBy, includeTps }],
     queryFn: async ({ pageParam = 0 }) => {
-      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=${sortBy}`);
+      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=${sortBy}${includeTps ? "&includeTps=1" : ""}`);
       if (!response.ok) throw new Error("Failed to fetch people");
       return response.json();
     },
@@ -543,7 +554,7 @@ export default function PeopleList() {
                           >
                             <td className="py-2 px-3">
                               <Link href={`/person/${person.id}`} className="font-medium hover:underline" data-testid={`text-name-${person.id}`}>
-                                {person.firstName} {person.lastName}
+                                {formatPersonName(person)}
                               </Link>
                             </td>
                             <td className="py-2 px-3">
@@ -580,19 +591,22 @@ export default function PeopleList() {
                               </Button>
                             </td>
                             <td className="py-2 px-3 text-muted-foreground">
-                              {person.phone && (
-                                <a
-                                  href={getTruePeopleSearchUrl(person.phone)}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="flex items-center gap-1 hover:underline text-muted-foreground"
-                                  onClick={(e) => e.stopPropagation()}
-                                  data-testid={`text-phone-${person.id}`}
-                                >
-                                  <Phone className="h-3 w-3" />
-                                  {formatPhoneNumberForDisplay(person.phone)}
-                                </a>
-                              )}
+                              <div className="flex items-center gap-1.5">
+                                {person.phone && (
+                                  <a
+                                    href={getTruePeopleSearchUrl(person.phone)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1 hover:underline text-muted-foreground"
+                                    onClick={(e) => e.stopPropagation()}
+                                    data-testid={`text-phone-${person.id}`}
+                                  >
+                                    <Phone className="h-3 w-3" />
+                                    {formatPhoneNumberForDisplay(person.phone)}
+                                  </a>
+                                )}
+                                <TpsCheck person={person} />
+                              </div>
                             </td>
                             <td className="py-2 px-3 text-muted-foreground">
                               {person.email && (
@@ -662,19 +676,19 @@ export default function PeopleList() {
                               {person.imageUrl && (
                                 <AvatarImage
                                   src={withImageSize(person.imageUrl, 64)}
-                                  alt={`${person.firstName} ${person.lastName}`}
+                                  alt={formatPersonName(person)}
                                   loading="lazy"
                                   decoding="async"
                                 />
                               )}
                               <AvatarFallback>
-                                {getInitials(person.firstName, person.lastName)}
+                                {personInitials(person)}
                               </AvatarFallback>
                             </Avatar>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <h3 className="text-sm md:text-lg font-medium" data-testid={`text-name-${person.id}`}>
-                                  {person.firstName} {person.lastName}
+                                  {formatPersonName(person)}
                                 </h3>
                                 <Button
                                   variant="ghost"
@@ -788,19 +802,19 @@ export default function PeopleList() {
                               {person.imageUrl && (
                                 <AvatarImage
                                   src={withImageSize(person.imageUrl, 150)}
-                                  alt={`${person.firstName} ${person.lastName}`}
+                                  alt={formatPersonName(person)}
                                   loading="lazy"
                                   decoding="async"
                                 />
                               )}
                               <AvatarFallback className="text-xl">
-                                {getInitials(person.firstName, person.lastName)}
+                                {personInitials(person)}
                               </AvatarFallback>
                             </Avatar>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-3">
                                 <h3 className="text-xl md:text-2xl font-semibold" data-testid={`text-name-${person.id}`}>
-                                  {person.firstName} {person.lastName}
+                                  {formatPersonName(person)}
                                 </h3>
                                 <Button
                                   variant="ghost"
@@ -920,7 +934,7 @@ export default function PeopleList() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Person</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete {personToDelete?.firstName} {personToDelete?.lastName}? This will permanently remove this person and all associated notes, interactions, and relationships. This action cannot be undone.
+              Are you sure you want to delete {formatPersonName(personToDelete)}? This will permanently remove this person and all associated notes, interactions, and relationships. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

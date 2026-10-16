@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
@@ -186,7 +187,7 @@ export default function AccountMatching() {
             className="text-2xl font-bold"
             data-testid="text-person-name"
           >
-            {person.firstName} {person.lastName}
+            {formatPersonName(person)}
           </h1>
           {(person.company || person.title) && (
             <p className="text-muted-foreground" data-testid="text-person-details">

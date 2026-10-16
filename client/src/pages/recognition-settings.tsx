@@ -16,7 +16,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, BrainCircuit, Sliders, ScanText, Download, Mic, Timer, Sparkles, Layers } from "lucide-react";
+import { Scan, Key, Wifi, WifiOff, CheckCircle2, Loader2, Eye, EyeOff, Copy, Check, Trash2, Sliders, ScanText, Download, Mic, Timer, Sparkles, Layers } from "lucide-react";
 import { Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -54,25 +54,6 @@ export default function RecognitionSettingsPage() {
 
   const { data: settings, isLoading } = useQuery<PrmFaceSettings>({
     queryKey: ["/api/prm-face/settings"],
-  });
-
-  const { data: facialIntelligenceData } = useQuery<{ enabled: boolean }>({
-    queryKey: ["/api/prm-face/facial-intelligence"],
-  });
-  const facialIntelligenceEnabled = facialIntelligenceData?.enabled ?? false;
-
-  const facialIntelligenceMutation = useMutation({
-    mutationFn: async (enabled: boolean) => {
-      const res = await apiRequest("POST", "/api/prm-face/facial-intelligence", { enabled });
-      return res.json();
-    },
-    onSuccess: (_data, enabled) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/prm-face/facial-intelligence"] });
-      toast({ title: enabled ? "Facial intelligence features enabled" : "Facial intelligence features disabled" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to update setting", description: error.message, variant: "destructive" });
-    },
   });
 
   useEffect(() => {
@@ -219,7 +200,7 @@ export default function RecognitionSettingsPage() {
     },
   });
 
-  // Walks every stored face that has no yaw yet, one server batch at a time.
+  // Walks every stored face missing pose or sharpness, one server batch at a time.
   const runBackfill = async () => {
     let cursor = "";
     let measured = 0;
@@ -235,9 +216,9 @@ export default function RecognitionSettingsPage() {
         setBackfill({ running: true, measured, skipped, remaining: batch.remaining });
         if (batch.remaining === 0) break;
       }
-      toast({ title: "Pose backfill finished", description: `${measured} measured, ${skipped} had no detectable face.` });
+      toast({ title: "Face measuring finished", description: `${measured} measured, ${skipped} had no detectable face.` });
     } catch (error: any) {
-      toast({ title: "Pose backfill failed", description: error.message, variant: "destructive" });
+      toast({ title: "Face measuring failed", description: error.message, variant: "destructive" });
     } finally {
       setBackfill((b) => ({ ...b, running: false }));
     }
@@ -267,12 +248,15 @@ export default function RecognitionSettingsPage() {
       </div>
 
       <div className="settings-cards-grid">
-        <Card data-testid="card-api-url">
+        <Card data-testid="card-api-connection">
           <CardHeader>
-            <CardTitle className="text-lg">API URL</CardTitle>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Key className="h-4 w-4" />
+              API URL &amp; Key
+            </CardTitle>
             <CardDescription>
-              The base URL of your PRM-Compute server (e.g. <code className="text-xs bg-muted px-1 rounded">http://localhost:8000</code>).
-              This setting is saved persistently.
+              The base URL of your PRM-Compute server (e.g. <code className="text-xs bg-muted px-1 rounded">http://localhost:8000</code>),
+              and the setup code printed by PRM-Compute at startup to generate an API key.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -300,20 +284,6 @@ export default function RecognitionSettingsPage() {
                 </Button>
               </div>
             </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-api-key">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Key className="h-4 w-4" />
-              API Key
-            </CardTitle>
-            <CardDescription>
-              Enter the setup code printed by PRM-Compute at startup to generate an API key.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
             {hasApiKey && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground rounded-md bg-muted p-3" data-testid="text-key-status">
@@ -537,7 +507,7 @@ export default function RecognitionSettingsPage() {
                 <div className="flex flex-wrap items-center gap-3">
                   <Button variant="outline" onClick={runBackfill} disabled={backfill.running} data-testid="button-backfill-yaw">
                     {backfill.running ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                    Measure angle of stored faces
+                    Measure angle and sharpness of stored faces
                   </Button>
                   {backfill.remaining !== null && (
                     <span className="text-sm text-muted-foreground" data-testid="text-backfill-progress">
@@ -584,39 +554,6 @@ export default function RecognitionSettingsPage() {
             <ParallelLanesCard />
           </>
         )}
-
-        <Card data-testid="card-facial-intelligence">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <BrainCircuit className="h-4 w-4" />
-              Facial Intelligence Features
-            </CardTitle>
-            <CardDescription>
-              Enables the Photos tab on person profiles and facial recognition data.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between gap-4">
-              <div className="space-y-0.5">
-                <Label htmlFor="facial-intelligence-switch" className="text-sm font-medium">
-                  Enable facial intelligence features
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  {facialIntelligenceEnabled
-                    ? "Features are active. Person profiles show a Photos tab."
-                    : "Features are disabled. No recognition data is sent to the client."}
-                </p>
-              </div>
-              <Switch
-                id="facial-intelligence-switch"
-                checked={facialIntelligenceEnabled}
-                onCheckedChange={(checked) => facialIntelligenceMutation.mutate(checked)}
-                disabled={facialIntelligenceMutation.isPending}
-                data-testid="switch-facial-intelligence"
-              />
-            </div>
-          </CardContent>
-        </Card>
 
         <AutoRecognitionCard />
 
@@ -887,7 +824,18 @@ type AutoRecognitionSettings = Record<AutoRecognitionKind, Partial<Record<AutoRe
   profileLink?: { minFacePct: number };
   lookalike?: { minScore: number };
   autoAssign?: { minScore: number };
+  clustering?: Partial<ClusteringSettings>;
 };
+type ClusteringSettings = { minSimilarity: number; noiseMinConf: number; noiseMinSharpness: number | null };
+type ClusteringSummary = {
+  eligible: number; noise: Record<string, number>; clusters: number; clustered: number;
+  singletons: number; top50Coverage: number; sizes: Record<string, number>; tookMs: number;
+};
+const CLUSTER_FIELDS: { key: keyof ClusteringSettings; label: string; min: number; max?: number; step: number; placeholder?: string }[] = [
+  { key: "minSimilarity", label: "Similarity", min: 0.01, max: 1, step: 0.01 },
+  { key: "noiseMinConf", label: "Min confidence", min: 0, max: 1, step: 0.01 },
+  { key: "noiseMinSharpness", label: "Min sharpness", min: 0, step: 10, placeholder: "off" },
+];
 type BackfillCounts = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, number>>>;
 
 const AUTO_RECOGNITION_SECTIONS: { kind: AutoRecognitionKind; title: string; noun: string; jobs: { job: AutoRecognitionJob; label: string; hint: string }[] }[] = [
@@ -917,6 +865,7 @@ function AutoRecognitionCard() {
   const [minFacePct, setMinFacePct] = useState("");
   const [minScore, setMinScore] = useState("");
   const [autoAssignScore, setAutoAssignScore] = useState("");
+  const [clusterInputs, setClusterInputs] = useState<Partial<Record<keyof ClusteringSettings, string>>>({});
 
   const { data: settings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
   useEffect(() => {
@@ -928,6 +877,10 @@ function AutoRecognitionCard() {
   useEffect(() => {
     if (settings?.autoAssign) setAutoAssignScore(String(settings.autoAssign.minScore));
   }, [settings?.autoAssign?.minScore]);
+  useEffect(() => {
+    const c = settings?.clustering;
+    if (c) setClusterInputs(Object.fromEntries(CLUSTER_FIELDS.map(({ key }) => [key, c[key] == null ? "" : String(c[key])])));
+  }, [settings?.clustering]);
   const { data: counts, isFetching: countsLoading } = useQuery<BackfillCounts>({
     queryKey: ["/api/recognition/auto/backfill-counts"],
     refetchInterval: 30000,
@@ -960,6 +913,23 @@ function AutoRecognitionCard() {
     },
     onError: (error: Error) => {
       toast({ title: "Auto-assign failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const clusterMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/face-review/cluster");
+      return res.json() as Promise<ClusteringSummary>;
+    },
+    onSuccess: (s) => {
+      const list = (r: Record<string, number>) => Object.entries(r).map(([k, n]) => `${k.replace(/_/g, " ")} ${n.toLocaleString()}`).join(", ");
+      toast({
+        title: `${s.clusters.toLocaleString()} clusters from ${s.eligible.toLocaleString()} faces`,
+        description: `${s.clustered.toLocaleString()} clustered; top 50 cover ${Math.round(s.top50Coverage * 100)}%. Noise: ${list(s.noise) || "none"}. Sizes: ${list(s.sizes)}. ${(s.tookMs / 1000).toFixed(0)}s.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Clustering failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1149,6 +1119,49 @@ function AutoRecognitionCard() {
                     data-testid="button-auto-assign-now"
                   >
                     {autoAssignMutation.isPending ? "Matching…" : "Run now"}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {section.kind === "profile" && (
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-medium">Face clustering (dry run)</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Daily, groups unnamed faces likely to be the same person. Faces under the minimum confidence or sharpness are set aside as noise. Nothing uses the results yet.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {CLUSTER_FIELDS.map(({ key, label, min, max, step, placeholder }) => (
+                    <Input
+                      key={key}
+                      type="number"
+                      aria-label={label}
+                      title={label}
+                      min={min}
+                      max={max}
+                      step={step}
+                      placeholder={placeholder}
+                      className="w-20"
+                      value={clusterInputs[key] ?? ""}
+                      onChange={(e) => setClusterInputs((c) => ({ ...c, [key]: e.target.value }))}
+                      onBlur={() => {
+                        const raw = clusterInputs[key] ?? "";
+                        const value = raw === "" ? null : Number(raw);
+                        if (value !== (settings?.clustering?.[key] ?? null)) saveMutation.mutate({ clustering: { [key]: value } });
+                      }}
+                      disabled={!settings || saveMutation.isPending}
+                      data-testid={`input-cluster-${key}`}
+                    />
+                  ))}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={clusterMutation.isPending}
+                    onClick={() => clusterMutation.mutate()}
+                    data-testid="button-cluster-now"
+                  >
+                    {clusterMutation.isPending ? "Clustering…" : "Run now"}
                   </Button>
                 </div>
               </div>

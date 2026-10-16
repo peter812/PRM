@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Trophy, RefreshCw, ArrowLeft, ArrowRight, MoreVertical, Trash2, EyeOff } from "lucide-react";
@@ -30,7 +31,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Person, RelationshipType, RelationshipWithPerson } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 const GREY_COLOR = "#9ca3af";
@@ -135,14 +135,14 @@ function PersonCardContent({
       <div className={`flex flex-col items-center ${gap} flex-1 justify-center`}>
         <Avatar className={avatarSize}>
           {person.imageUrl && (
-            <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+            <AvatarImage src={person.imageUrl} alt={formatPersonName(person)} />
           )}
           <AvatarFallback className={fallbackSize}>
-            {getInitials(person.firstName, person.lastName)}
+            {personInitials(person)}
           </AvatarFallback>
         </Avatar>
         <h2 className={`${nameSize} font-semibold text-center`} data-testid={`text-elo-name-${testIdSuffix}`}>
-          {person.firstName} {person.lastName}
+          {formatPersonName(person)}
         </h2>
         {(person.company || person.title) && (
           <p className="text-xs text-muted-foreground text-center line-clamp-2">
@@ -426,7 +426,7 @@ export default function EloRanking() {
     onSuccess: (data) => {
       toast({
         title: "Vote recorded",
-        description: `${data.winner.firstName} ${data.winner.lastName}: ${data.winner.eloScore} | ${data.loser.firstName} ${data.loser.lastName}: ${data.loser.eloScore}`,
+        description: `${formatPersonName(data.winner)}: ${data.winner.eloScore} | ${formatPersonName(data.loser)}: ${data.loser.eloScore}`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/people/paginated"] });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
@@ -700,9 +700,9 @@ export default function EloRanking() {
       <AlertDialog open={!!personToDelete} onOpenChange={(open) => !open && setPersonToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete {personToDelete?.firstName} {personToDelete?.lastName}?</AlertDialogTitle>
+            <AlertDialogTitle>Delete {formatPersonName(personToDelete)}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete {personToDelete?.firstName} {personToDelete?.lastName}? This will permanently remove this person and all associated notes, interactions, and relationships. This action cannot be undone.
+              Are you sure you want to delete {formatPersonName(personToDelete)}? This will permanently remove this person and all associated notes, interactions, and relationships. This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -84,6 +84,7 @@ const SuperSearchPage = lazy(() => import("@/pages/super-search"));
 const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-imports"));
 const SocialTrackingPage = lazy(() => import("@/pages/social-tracking"));
 const SocialAccountsIssuesPage = lazy(() => import("@/pages/social-accounts-issues"));
+const InstagramSummariesPage = lazy(() => import("@/pages/instagram-summaries"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 
@@ -221,6 +222,7 @@ function Router() {
         <ProtectedRoute path="/social-accounts/pending-imports" component={PendingSocialImportsPage} />
         <ProtectedRoute path="/social-accounts/tracking" component={SocialTrackingPage} />
         <ProtectedRoute path="/social-accounts/issues" component={SocialAccountsIssuesPage} />
+        <ProtectedRoute path="/social-accounts/summaries" component={InstagramSummariesPage} />
         <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
         <ProtectedRoute path="/graph" component={Graph} />
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
@@ -261,6 +263,7 @@ function Router() {
         <ProtectedRoute path="/import-export/image-pass-in" component={() => <Redirect to="/settings/import-export" />} />
         <ProtectedRoute path="/import-export/application" component={() => <Redirect to="/settings/import-export/backups" />} />
         <ProtectedRoute path="/osint" component={() => <Redirect to="/settings/osint" />} />
+        <ProtectedRoute path="/settings/instagram/summaries" component={() => <Redirect to="/social-accounts/summaries" />} />
         <ProtectedRoute path="/settings/social-accounts/:uuid*" component={({ params }) => {
           const search = typeof window !== "undefined" ? window.location.search : "";
           return <Redirect to={`/social-accounts/${(params as any)?.uuid || ""}${search}`} replace />;
@@ -276,10 +279,13 @@ function useInitialRoutePrefetch(location: string) {
   useEffect(() => {
     if (location === "/" || location === "/people") {
       void import("@/pages/people-list");
+      // Must match people-list's query key: TPS flags are only fetched for the details view.
+      let includeTps = false;
+      try { includeTps = localStorage.getItem("people-list-view-mode") === "details"; } catch {}
       void queryClient.prefetchInfiniteQuery({
-        queryKey: ["/api/people/paginated", { sortBy: "relationship" }],
+        queryKey: ["/api/people/paginated", { sortBy: "relationship", includeTps }],
         queryFn: async ({ pageParam = 0 }) => {
-          const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=relationship`, {
+          const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=relationship${includeTps ? "&includeTps=1" : ""}`, {
             credentials: "include",
           });
           if (!response.ok) throw new Error("Failed to fetch people");

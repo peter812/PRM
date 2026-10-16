@@ -15,8 +15,9 @@ import {
   people,
   truePersonSearch,
   type ExtensionSession,
+  type InsertPerson,
 } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { authenticateExtensionToken } from "../auth";
 import { partialDate } from "@shared/partial-date";
@@ -59,8 +60,27 @@ function normalizeName(full: string | null | undefined): { key: string; first: s
 }
 
 export function registerRoutes(app: Express) {
+  /** A contact's matchable name keys: first/nickname × last/maiden. */
+  function personNameKeys(p: { firstName?: string | null; lastName?: string | null; nickname?: string | null; maidenName?: string | null }): Set<string> {
+    const keys = new Set<string>();
+    for (const given of [p.firstName, p.nickname]) {
+      for (const family of [p.lastName, p.maidenName]) {
+        const key = normalizeName(`${given ?? ""} ${family ?? ""}`)?.key;
+        if (key) keys.add(key);
+      }
+    }
+    return keys;
+  }
+
+  /** The contact already linked to this TPS record (people.tps_id), if any. */
+  async function findLinkedPerson(tpsId: string): Promise<{ id: string } | null> {
+    const [linked] = await db.select({ id: people.id }).from(people).where(eq(people.tpsId, tpsId)).limit(1);
+    return linked ?? null;
+  }
+
   /**
-   * Find the first PRM contact whose normalized first+last name matches.
+   * Find the first PRM contact whose normalized name matches — first name or
+   * nickname, with last or maiden name.
    * `cache` memoizes the per-lastname candidate lookups within a single batch.
    */
   async function findMatchingPerson(
@@ -77,8 +97,7 @@ export function registerRoutes(app: Express) {
       cache?.set(lookupTerm, candidates);
     }
     for (const p of candidates) {
-      const candKey = normalizeName(`${p.firstName ?? ""} ${p.lastName ?? ""}`)?.key;
-      if (candKey && candKey === norm.key) return { id: p.id };
+      if (personNameKeys(p).has(norm.key)) return { id: p.id };
     }
     return null;
   }
@@ -100,8 +119,16 @@ export function registerRoutes(app: Express) {
     try {
       const cache = new Map<string, Awaited<ReturnType<typeof storage.getAllPeople>>>();
       const results: Record<string, { found: boolean; personUuid: string | null }> = {};
+      // Contacts linked by TPS id are Found even when their names differ from TPS.
+      const ids = parsed.data.items.map((i) => i.tpsId);
+      const linked = new Map(
+        (ids.length
+          ? await db.select({ id: people.id, tpsId: people.tpsId }).from(people).where(inArray(people.tpsId, ids))
+          : []
+        ).map((p) => [p.tpsId, { id: p.id }]),
+      );
       for (const item of parsed.data.items) {
-        const match = await findMatchingPerson(item.name, cache);
+        const match = linked.get(item.tpsId) ?? await findMatchingPerson(item.name, cache);
         results[item.tpsId] = { found: !!match, personUuid: match?.id ?? null };
       }
       res.json({ results });
@@ -110,6 +137,22 @@ export function registerRoutes(app: Express) {
       res.status(500).json({ error: "Failed to match names" });
     }
   });
+
+  /** The person-page state PRM-chrome renders: Found + Extract status. */
+  async function personStatus(tpsId: string, personId: string | null) {
+    const [record] = await db
+      .select({ id: truePersonSearch.id })
+      .from(truePersonSearch)
+      .where(eq(truePersonSearch.tpsId, tpsId))
+      .limit(1);
+    return {
+      found: !!personId,
+      personUuid: personId,
+      extracted: !!record,
+      tpsRecordId: record?.id ?? null,
+      primaryAddress: personId ? await getPrimaryAddress(personId) : null,
+    };
+  }
 
   // ── Person page: Found + extract status ────────────────────────────────────
   app.get("/api/v1/tps/person-status", async (req, res) => {
@@ -121,20 +164,8 @@ export function registerRoutes(app: Express) {
     if (!tpsId) return res.status(400).json({ error: "tpsId is required" });
 
     try {
-      const match = await findMatchingPerson(name);
-      const [record] = await db
-        .select({ id: truePersonSearch.id })
-        .from(truePersonSearch)
-        .where(eq(truePersonSearch.tpsId, tpsId))
-        .limit(1);
-
-      res.json({
-        found: !!match,
-        personUuid: match?.id ?? null,
-        extracted: !!record,
-        tpsRecordId: record?.id ?? null,
-        primaryAddress: match ? await getPrimaryAddress(match.id) : null,
-      });
+      const match = await findLinkedPerson(tpsId) ?? await findMatchingPerson(name);
+      res.json(await personStatus(tpsId, match?.id ?? null));
     } catch (error) {
       console.error("Error in TPS person-status:", error);
       res.status(500).json({ error: "Failed to fetch status" });
@@ -179,6 +210,91 @@ export function registerRoutes(app: Express) {
     } catch (error) {
       console.error("Error adding TPS person to PRM:", error);
       res.status(500).json({ error: "Failed to add person" });
+    }
+  });
+
+  // ── Person page: "Link to person" search (Not Found → pick an existing contact) ──
+  app.get("/api/v1/tps/people-search", async (req, res) => {
+    const session = await requireExtensionSession(req, res);
+    if (!session) return;
+
+    const q = ((req.query.q as string | undefined) ?? "").trim();
+    if (q.length < 3) return res.status(400).json({ error: "Type at least 3 characters" });
+
+    try {
+      const matches = await storage.getAllPeople(q);
+      // Image paths are PRM-relative; the extension renders them on truepeoplesearch.com.
+      const origin = `${req.protocol}://${req.get("host")}`;
+      res.json({
+        people: matches.slice(0, 20).map((p) => ({
+          id: p.id,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          nickname: p.nickname,
+          maidenName: p.maidenName,
+          imageUrl: p.imageUrl ? new URL(p.imageUrl, origin).href : null,
+          tpsId: p.tpsId,
+        })),
+      });
+    } catch (error) {
+      console.error("Error in TPS people-search:", error);
+      res.status(500).json({ error: "Failed to search people" });
+    }
+  });
+
+  // ── Person page: "Link to person" — attach this TPS record + reconcile names ──
+  const linkSchema = z.object({
+    tpsId: z.string().min(1),
+    personId: z.string().min(1),
+    tpsFirstName: z.string().default(""),
+    tpsLastName: z.string().default(""),
+    // keep | replace first name | TPS first → nickname | current first → nickname, TPS first → first
+    first: z.enum(["keep", "replace", "toNickname", "swapToNickname"]).default("keep"),
+    // keep | replace last name | TPS last → maiden name
+    last: z.enum(["keep", "replace", "toMaiden"]).default("keep"),
+  });
+
+  app.post("/api/v1/tps/link", async (req, res) => {
+    const session = await requireExtensionSession(req, res);
+    if (!session) return;
+
+    const parsed = linkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload", details: parsed.error.errors });
+    }
+    const { tpsId, personId, first, last } = parsed.data;
+    const tpsFirst = parsed.data.tpsFirstName.trim();
+    const tpsLast = parsed.data.tpsLastName.trim();
+    if (first !== "keep" && !tpsFirst) return res.status(400).json({ error: "TPS first name is empty" });
+    if (last !== "keep" && !tpsLast) return res.status(400).json({ error: "TPS last name is empty" });
+
+    try {
+      const [person] = await db.select().from(people).where(eq(people.id, personId)).limit(1);
+      if (!person) return res.status(404).json({ error: "Person not found" });
+
+      const update: Partial<InsertPerson> = { tpsId };
+      if (first === "replace") update.firstName = tpsFirst;
+      if (first === "toNickname") update.nickname = tpsFirst;
+      if (first === "swapToNickname") {
+        update.nickname = person.firstName;
+        update.firstName = tpsFirst;
+      }
+      if (last === "replace") update.lastName = tpsLast;
+      if (last === "toMaiden") update.maidenName = tpsLast;
+
+      const updated = (await storage.updatePerson(personId, update))!;
+      res.json({
+        ...(await personStatus(tpsId, personId)),
+        person: {
+          firstName: updated.firstName,
+          lastName: updated.lastName,
+          nickname: updated.nickname,
+          maidenName: updated.maidenName,
+        },
+      });
+    } catch (error) {
+      console.error("Error linking TPS record:", error);
+      res.status(500).json({ error: "Failed to link person" });
     }
   });
 

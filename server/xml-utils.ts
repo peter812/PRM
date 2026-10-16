@@ -63,36 +63,59 @@ function getMultiTagRegex(tagName: string): RegExp {
 }
 
 /**
- * Extract a top-level container section `<tagName>...</tagName>` from an XML document
- * so `parseAllTags` only scans the relevant slice instead of the entire multi-MB string.
- * Falls back to `xml` if the container tag is not present.
+ * Byte range of a top-level container section `<tagName>...</tagName>` in an XML document,
+ * or null when the container is not present.
+ *
+ * Works on the raw Buffer because a full backup can be larger than V8's maximum string
+ * length (~512 MB), so the document is never decoded as one string.
  */
-export function extractSection(xml: string, tagName: string): string {
+function findSectionRange(xml: Buffer, tagName: string): [number, number] | null {
   // Fast path for standard 2-space indented top-level sections (avoids matching inner child tags like <notes> or <messages>)
   const indentedOpen = `\n  <${tagName}>`;
   const startIndented = xml.indexOf(indentedOpen);
   if (startIndented !== -1) {
-    const contentStart = startIndented + indentedOpen.length;
-    const indentedClose = `\n  </${tagName}>`;
-    const endIndented = xml.indexOf(indentedClose, contentStart);
-    if (endIndented !== -1) {
-      return xml.slice(contentStart, endIndented);
-    }
-    const plainClose = `</${tagName}>`;
-    const endPlain = xml.indexOf(plainClose, contentStart);
-    if (endPlain !== -1) {
-      return xml.slice(contentStart, endPlain);
-    }
+    const contentStart = startIndented + Buffer.byteLength(indentedOpen);
+    const endIndented = xml.indexOf(`\n  </${tagName}>`, contentStart);
+    if (endIndented !== -1) return [contentStart, endIndented];
+    const endPlain = xml.indexOf(`</${tagName}>`, contentStart);
+    if (endPlain !== -1) return [contentStart, endPlain];
   }
 
   // Fallback for unindented XML
   const openTag = `<${tagName}>`;
   const firstIdx = xml.indexOf(openTag);
-  if (firstIdx === -1) return xml;
+  if (firstIdx === -1) return null;
+  const contentStart = firstIdx + Buffer.byteLength(openTag);
+  const end = xml.indexOf(`</${tagName}>`, contentStart);
+  return end === -1 ? null : [contentStart, end];
+}
 
-  const matches = parseAllTags(tagName, xml);
-  if (matches.length === 0) return xml;
-  return matches.length === 1 ? matches[0] : matches.join("\n");
+/** Decoded content of a top-level container section, or `""` when it is not present. */
+export function extractSection(xml: Buffer, tagName: string): string {
+  const range = findSectionRange(xml, tagName);
+  return range ? xml.toString("utf8", range[0], range[1]) : "";
+}
+
+/**
+ * Yield the trimmed content of every `<entryTag>...</entryTag>` inside a top-level section,
+ * decoding one entry at a time so a section larger than the max string length still imports.
+ * Scans the whole document when the section container is missing.
+ */
+export function* sectionEntries(xml: Buffer, sectionTag: string, entryTag: string): Generator<string> {
+  const [start, end] = findSectionRange(xml, sectionTag) ?? [0, xml.length];
+  const openTag = `<${entryTag}>`;
+  const closeTag = `</${entryTag}>`;
+  const openLen = Buffer.byteLength(openTag);
+  const closeLen = Buffer.byteLength(closeTag);
+  let pos = start;
+  while (pos < end) {
+    const open = xml.indexOf(openTag, pos);
+    if (open === -1 || open >= end) return;
+    const close = xml.indexOf(closeTag, open + openLen);
+    if (close === -1 || close > end) return;
+    yield xml.toString("utf8", open + openLen, close).trim();
+    pos = close + closeLen;
+  }
 }
 
 /** Extract the text content of the first matching XML tag. */

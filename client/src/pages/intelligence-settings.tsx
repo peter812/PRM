@@ -4,7 +4,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Loader2, Sparkles, MessagesSquare, ListChecks, MessageSquare, HelpCircle, Cpu } from "lucide-react";
 import { AiProvidersCard } from "@/components/ai-providers-card";
@@ -16,7 +15,6 @@ import { useToast } from "@/hooks/use-toast";
 const DEFAULT_EVENTS_PROMPT = "You extract a list of distinct events from a daily journal entry. An \"event\" is a concrete thing that happened that day: meetings, calls, meals, travel, milestones, decisions, conversations, or notable observations. Each event must be a short, standalone past-tense statement (one sentence, ideally under 120 characters). Do not include opinions, plans for the future, or generic reflections. Do not invent events that aren't supported by the text. Return strictly the JSON shape requested by the schema: { \"events\": [ { \"text\": string } ] }. If no events are present, return { \"events\": [] }.";
 
 type AiSettings = {
-  enabled: boolean;
   eventsPrompt: string;
   text: ModelSelection;
   events: ModelSelection;
@@ -36,7 +34,6 @@ const EMPTY_SELECTION: ModelSelection = { providerId: "", model: "" };
 export default function IntelligenceSettingsPage() {
   const { toast } = useToast();
 
-  const [enabled, setEnabled] = useState(false);
   const [selections, setSelections] = useState<Record<TaskKey, ModelSelection>>({
     text: EMPTY_SELECTION, events: EMPTY_SELECTION, sexGuess: EMPTY_SELECTION,
   });
@@ -47,7 +44,6 @@ export default function IntelligenceSettingsPage() {
   });
 
   useLoadOnce(settings, (s) => {
-    setEnabled(s.enabled);
     setSelections({ text: s.text, events: s.events, sexGuess: s.sexGuess });
     setEventsPrompt(s.eventsPrompt || DEFAULT_EVENTS_PROMPT);
   });
@@ -95,34 +91,6 @@ export default function IntelligenceSettingsPage() {
       </div>
 
       <div className="settings-cards-grid">
-        <Card data-testid="card-ai-enable">
-          <CardHeader>
-            <CardTitle className="text-lg">Enable AI</CardTitle>
-            <CardDescription>
-              Global toggle for conversational and visual AI features.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between gap-4">
-              <div className="space-y-0.5">
-                <Label htmlFor="ai-enabled-switch" className="text-sm font-medium">
-                  Enable AI
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  {enabled ? "AI features are active." : "AI features are disabled."}
-                </p>
-              </div>
-              <Switch
-                id="ai-enabled-switch"
-                checked={enabled}
-                onCheckedChange={(v) => { setEnabled(v); saveMutation.mutate({ enabled: v }); }}
-                disabled={saveMutation.isPending}
-                data-testid="switch-ai-enabled"
-              />
-            </div>
-          </CardContent>
-        </Card>
-
         <AiProvidersCard />
 
         <Card data-testid="card-ai-models">

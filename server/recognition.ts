@@ -6,7 +6,7 @@
 import path from "path";
 import crypto from "crypto";
 import sharp from "sharp";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
 import { fetchImageBuffer } from "./prm-s3";
@@ -67,15 +67,17 @@ export async function getComputeConnection(): Promise<{ apiUrl: string; apiKey: 
   return { apiUrl: apiUrl.replace(/\/+$/, ""), apiKey };
 }
 
-async function computeFetch(pathname: string, form: FormData | undefined, timeoutMs: number, method = "POST"): Promise<Response> {
+/** `body` is sent as multipart when FormData, as JSON when a plain object. */
+export async function computeFetch(pathname: string, body: FormData | object | undefined, timeoutMs: number, method = "POST"): Promise<Response> {
   const conn = await getComputeConnection();
   if (!conn) throw new Error("PRM-Compute is not configured.");
+  const json = body !== undefined && !(body instanceof FormData);
   let response: Response;
   try {
     response = await fetch(`${conn.apiUrl}${pathname}`, {
       method,
-      headers: { "X-API-Key": conn.apiKey },
-      body: form,
+      headers: { "X-API-Key": conn.apiKey, ...(json ? { "Content-Type": "application/json" } : {}) },
+      body: json ? JSON.stringify(body) : body,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err: any) {
@@ -321,20 +323,11 @@ async function refreshFacialIdsForGroups(groupUuids: string[], exec: DbExec = db
 
 // ── Face group merge / connect / disassociate ─────────────────────────────────
 
-type ComputeIdentity = { uuid: string; name: string };
-
-/**
- * The identity PRM-Compute knows a group by: the person if there is one, else
- * the account. Null for an unnamed group.
- */
-async function computeIdentity(group: string, exec: DbExec = db): Promise<ComputeIdentity | null> {
-  const personRows = await exec.select({ id: people.id, firstName: people.firstName, lastName: people.lastName }).from(people).where(eq(people.personfaceUuid, group));
-  if (personRows.length) {
-    const names = personRows.map(p => `${p.firstName ?? ""} ${p.lastName ?? ""}`.trim()).filter(Boolean);
-    return { uuid: group, name: names.join(" / ") || "Unnamed" };
-  }
-  const [account] = await exec.select({ id: socialAccounts.id, username: socialAccounts.username }).from(socialAccounts).where(eq(socialAccounts.personfaceUuid, group));
-  return account ? { uuid: group, name: `@${account.username}` } : null;
+/** A group is named when a person or social account carries it. */
+async function groupIsNamed(group: string): Promise<boolean> {
+  if (await groupPersonId(group)) return true;
+  const [account] = await db.select({ id: socialAccounts.id }).from(socialAccounts).where(eq(socialAccounts.personfaceUuid, group)).limit(1);
+  return !!account;
 }
 
 async function groupPersonId(group: string, exec: DbExec = db): Promise<string | null> {
@@ -358,40 +351,25 @@ async function computePost(pathname: string, params: Record<string, string>, lab
   }
 }
 
-/**
- * Best-effort, after commit and off the request path: fold each `from`
- * identity into the group's current one, then assign the faces that moved in.
- * Identities are resolved by the caller before the change, since a folded
- * group has nothing left to resolve afterwards.
- */
-async function syncCompute(group: string, from: Array<ComputeIdentity | null>, movedFaceIds: string[]): Promise<void> {
-  const identity = await computeIdentity(group);
-  if (!identity) return;
-  for (const other of from) {
-    if (other && other.uuid !== identity.uuid) {
-      await computePost("/api/person/merge", { primary_person_uuid: identity.uuid, secondary_person_uuid: other.uuid }, "FaceMerge");
-    }
-  }
-  for (const faceUuid of movedFaceIds) {
-    await computePost("/api/face/assign", { face_uuid: faceUuid, person_uuid: identity.uuid, name: identity.name }, "FaceConnect");
-  }
+/** Best-effort: have PRM-Compute pick up face rows PRM wrote directly (backup restore). */
+export async function resyncFaceIndex(): Promise<void> {
+  await computePost("/api/face/resync", {}, "FaceIndex");
 }
 
 async function moveGroup(exec: DbExec, keep: string, merge: string): Promise<void> {
-  await exec.update(faces).set({ personfaceUuid: keep }).where(eq(faces.personfaceUuid, merge));
+  await exec.update(faces).set({ personfaceUuid: keep, clusterId: null }).where(eq(faces.personfaceUuid, merge));
   await exec.update(people).set({ personfaceUuid: keep }).where(eq(people.personfaceUuid, merge));
   await exec.update(socialAccounts).set({ personfaceUuid: keep }).where(eq(socialAccounts.personfaceUuid, merge));
 }
 
 /**
  * Re-point every face, person and social account in `merge`'s group onto
- * `keep`, refresh photos.facial_ids for the kept group, and best-effort tell
- * PRM-Compute. Supports multiple people and social accounts sharing the same face group.
+ * `keep` and refresh photos.facial_ids for the kept group. PRM-Compute shares
+ * the faces table and reads groups fresh, so it needs no separate notice.
+ * Supports multiple people and social accounts sharing the same face group.
  */
 export async function mergeFaceGroups(keep: string, merge: string): Promise<void> {
   if (keep === merge) return;
-  const before = await Promise.all([computeIdentity(keep), computeIdentity(merge)]);
-
   await db.transaction(async (tx) => {
     await moveGroup(tx, keep, merge);
     await tx.delete(facePairDismissals).where(
@@ -405,7 +383,6 @@ export async function mergeFaceGroups(keep: string, merge: string): Promise<void
     await refreshFacialIdsForGroups([keep], tx);
   });
   markFaceIdentitiesDirty();
-  void syncCompute(keep, before, []);
 }
 
 export type ConnectFaceInput = { faceUuid?: string; personfaceUuid?: string; personId?: string; socialAccountId?: string };
@@ -422,13 +399,9 @@ export type ConnectFaceResult = { personId: string | null; socialAccountId: stri
  * Assigning a face also clears its dismissal and any auto-match score: a
  * person has now decided (face-review-plan.md §8.1).
  */
-export async function connectFace(input: ConnectFaceInput): Promise<ConnectFaceResult> {
-  const { faceUuid, socialAccountId } = input;
-  if (!faceUuid && !input.personId && !socialAccountId) throw new RecognitionRequestError(400, "At least one of faceUuid, personId or socialAccountId is required.");
-
-  const [faceRow] = faceUuid ? await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(eq(faces.id, faceUuid)) : [];
-  if (faceUuid && !faceRow) throw new RecognitionRequestError(404, "Face not found.");
-
+/** The person and/or account a face is being linked to; an account brings its owner along. */
+async function resolveIdentity(input: { personId?: string; socialAccountId?: string }) {
+  const { socialAccountId } = input;
   const [account] = socialAccountId
     ? await db.select({ id: socialAccounts.id, ownerUuid: socialAccounts.ownerUuid, personfaceUuid: socialAccounts.personfaceUuid }).from(socialAccounts).where(eq(socialAccounts.id, socialAccountId))
     : [];
@@ -440,9 +413,27 @@ export async function connectFace(input: ConnectFaceInput): Promise<ConnectFaceR
   const personId = input.personId ?? account?.ownerUuid ?? null;
   const [person] = personId ? await db.select({ id: people.id, personfaceUuid: people.personfaceUuid }).from(people).where(eq(people.id, personId)) : [];
   if (input.personId && !person) throw new RecognitionRequestError(404, "Person not found.");
+  return { account, person };
+}
+
+/** After the identity's group became `target`: point the person and account at it too. */
+async function linkIdentity(tx: DbExec, target: string, { account, person }: Awaited<ReturnType<typeof resolveIdentity>>): Promise<void> {
+  if (person && person.personfaceUuid !== target) await tx.update(people).set({ personfaceUuid: target }).where(eq(people.id, person.id));
+  if (account && account.personfaceUuid !== target) await tx.update(socialAccounts).set({ personfaceUuid: target }).where(eq(socialAccounts.id, account.id));
+}
+
+export async function connectFace(input: ConnectFaceInput): Promise<ConnectFaceResult> {
+  const { faceUuid } = input;
+  if (!faceUuid && !input.personId && !input.socialAccountId) throw new RecognitionRequestError(400, "At least one of faceUuid, personId or socialAccountId is required.");
+
+  const [faceRow] = faceUuid ? await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(eq(faces.id, faceUuid)) : [];
+  if (faceUuid && !faceRow) throw new RecognitionRequestError(404, "Face not found.");
+
+  const identity = await resolveIdentity(input);
+  const { account, person } = identity;
 
   const faceGroup = faceRow?.personfaceUuid ?? null;
-  const faceGroupNamed = faceGroup ? !!(await computeIdentity(faceGroup)) : false;
+  const faceGroupNamed = faceGroup ? await groupIsNamed(faceGroup) : false;
   const target =
     person?.personfaceUuid ?? account?.personfaceUuid ?? (faceGroup && !faceGroupNamed ? faceGroup : null) ?? input.personfaceUuid ?? crypto.randomUUID();
 
@@ -452,24 +443,55 @@ export async function connectFace(input: ConnectFaceInput): Promise<ConnectFaceR
   // Groups to fold will be moved to target (supports multiple people / social accounts per face)
   // A face in someone else's named group leaves it alone; that group keeps its other faces.
   const movedAlone = faceRow && faceGroup && faceGroup !== target && faceGroupNamed ? faceRow.id : null;
-  const movedFaceIds =
-    faceRow && faceGroup && toFold.has(faceGroup)
-      ? (await db.select({ id: faces.id }).from(faces).where(eq(faces.personfaceUuid, faceGroup))).map((r) => r.id)
-      : faceRow && faceGroup !== target ? [faceRow.id] : [];
-  const before = await Promise.all([target, ...Array.from(toFold)].map((g) => computeIdentity(g)));
 
   await db.transaction(async (tx) => {
     for (const group of Array.from(toFold)) await moveGroup(tx, target, group);
-    if (faceRow) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null }).where(eq(faces.id, faceRow.id));
-    if (person && person.personfaceUuid !== target) await tx.update(people).set({ personfaceUuid: target }).where(eq(people.id, person.id));
-    if (account && account.personfaceUuid !== target) await tx.update(socialAccounts).set({ personfaceUuid: target }).where(eq(socialAccounts.id, account.id));
+    if (faceRow) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, clusterId: null }).where(eq(faces.id, faceRow.id));
+    await linkIdentity(tx, target, identity);
     await refreshFacialIdsForGroups([target], tx, movedAlone ? [movedAlone] : []);
   });
   markFaceIdentitiesDirty();
-  void syncCompute(target, before, movedFaceIds);
 
   const [resolvedAccount] = await db.select({ id: socialAccounts.id }).from(socialAccounts).where(eq(socialAccounts.personfaceUuid, target));
   return { personId: await groupPersonId(target), socialAccountId: resolvedAccount?.id ?? null, personfaceUuid: target };
+}
+
+/**
+ * Name a set of faces (a cluster, minus what the user excluded) as one person or
+ * account (face-clustering-plan.md §3.4). Unlike connectFace it moves exactly the
+ * listed faces: an unnamed group is folded in whole only when every one of its
+ * faces is listed, and a face in a named group is never pulled out of it.
+ */
+export async function connectFaces(faceIds: string[], input: { personId?: string; socialAccountId?: string }): Promise<{ moved: number }> {
+  if (!input.personId && !input.socialAccountId) throw new RecognitionRequestError(400, "personId or socialAccountId is required.");
+  const identity = await resolveIdentity(input);
+  const { account, person } = identity;
+  const target = person?.personfaceUuid ?? account?.personfaceUuid ?? crypto.randomUUID();
+
+  const rows = await db.select({ id: faces.id, personfaceUuid: faces.personfaceUuid }).from(faces).where(inArray(faces.id, faceIds));
+  const groups = Array.from(new Set(rows.map((r) => r.personfaceUuid).filter((g): g is string => !!g && g !== target)));
+  const { accountOf, personOf } = await identitiesForGroups(groups);
+  const named = (g: string) => accountOf.has(g) || personOf.has(g);
+  const unnamed = groups.filter((g) => !named(g));
+  const partial = new Set(
+    unnamed.length
+      ? (await db.selectDistinct({ g: faces.personfaceUuid }).from(faces).where(and(inArray(faces.personfaceUuid, unnamed), notInArray(faces.id, faceIds)))).map((r) => r.g)
+      : [],
+  );
+  const toFold = new Set(unnamed.filter((g) => !partial.has(g)));
+  if (account?.personfaceUuid && account.personfaceUuid !== target) toFold.add(account.personfaceUuid);
+  const moving = rows.filter((r) => !r.personfaceUuid || r.personfaceUuid === target || !named(r.personfaceUuid)).map((r) => r.id);
+
+  await db.transaction(async (tx) => {
+    for (const group of Array.from(toFold)) await moveGroup(tx, target, group);
+    if (moving.length) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, clusterId: null }).where(inArray(faces.id, moving));
+    await linkIdentity(tx, target, identity);
+    await refreshFacialIdsForGroups([target], tx, moving);
+  });
+  markFaceIdentitiesDirty();
+  // The new faces sharpen the identity's centroid: let it sweep the rest now rather than within the hour.
+  autoAssignFaces().catch((err) => log(`[FaceAutoAssign] after naming faces failed: ${err?.message ?? err}`));
+  return { moved: moving.length };
 }
 
 export type DisassociateFaceResult = { newGroupUuid: string };
@@ -504,9 +526,9 @@ export async function disassociateFace(faceUuid: string): Promise<DisassociateFa
   if (!faceRow) throw new RecognitionRequestError(404, "Face not found.");
   const newGroupUuid = crypto.randomUUID();
   const oldGroup = faceRow.personfaceUuid;
-  const wasNamed = oldGroup ? !!(await computeIdentity(oldGroup)) : false;
+  const wasNamed = oldGroup ? await groupIsNamed(oldGroup) : false;
   await db.transaction(async (tx) => {
-    await tx.update(faces).set({ personfaceUuid: newGroupUuid, autoMatchScore: null }).where(eq(faces.id, faceRow.id));
+    await tx.update(faces).set({ personfaceUuid: newGroupUuid, autoMatchScore: null, clusterId: null }).where(eq(faces.id, faceRow.id));
     if (oldGroup && wasNamed) {
       const [a, b] = oldGroup < newGroupUuid ? [oldGroup, newGroupUuid] : [newGroupUuid, oldGroup];
       await tx.insert(facePairDismissals).values({ groupAUuid: a, groupBUuid: b }).onConflictDoNothing();
@@ -532,6 +554,10 @@ export async function disassociateGroup(personfaceUuid: string): Promise<{ count
 
 export type AutoAssignResult = { scanned: number; assigned: number };
 
+/** The face's group has no person or social account (a null group counts as unnamed). */
+export const faceGroupUnnamed = sql`NOT EXISTS (SELECT 1 FROM ${people} WHERE ${people.personfaceUuid} = ${faces.personfaceUuid})
+    AND NOT EXISTS (SELECT 1 FROM ${socialAccounts} WHERE ${socialAccounts.personfaceUuid} = ${faces.personfaceUuid})`;
+
 let fullAutoAssign: Promise<AutoAssignResult> | null = null;
 
 /**
@@ -554,12 +580,10 @@ export function autoAssignFaces(faceIds?: string[]): Promise<AutoAssignResult> {
 
 async function runAutoAssign(faceIds?: string[]): Promise<AutoAssignResult> {
   if (faceIds && !faceIds.length) return { scanned: 0, assigned: 0 };
-  const unnamed = sql`NOT EXISTS (SELECT 1 FROM ${people} WHERE ${people.personfaceUuid} = ${faces.personfaceUuid})
-    AND NOT EXISTS (SELECT 1 FROM ${socialAccounts} WHERE ${socialAccounts.personfaceUuid} = ${faces.personfaceUuid})`;
   const candidates = await db
     .select({ id: faces.id, personfaceUuid: faces.personfaceUuid })
     .from(faces)
-    .where(and(isNull(faces.dismissedAt), isNotNull(faces.photoId), isNotNull(faces.embedding), unnamed, faceIds ? inArray(faces.id, faceIds) : undefined));
+    .where(and(isNull(faces.dismissedAt), isNotNull(faces.photoId), isNotNull(faces.embedding), faceGroupUnnamed, faceIds ? inArray(faces.id, faceIds) : undefined));
   if (!candidates.length) return { scanned: 0, assigned: 0 };
 
   const minScore = await getAutoAssignMinScore();
@@ -585,17 +609,11 @@ async function runAutoAssign(faceIds?: string[]): Promise<AutoAssignResult> {
       // Guarded on the group read above, so a face a person assigned meanwhile is left alone.
       await tx
         .update(faces)
-        .set({ personfaceUuid: a.group, autoMatchScore: a.score })
+        .set({ personfaceUuid: a.group, autoMatchScore: a.score, clusterId: null })
         .where(and(eq(faces.id, a.faceId), isNull(faces.dismissedAt), a.oldGroup ? eq(faces.personfaceUuid, a.oldGroup) : isNull(faces.personfaceUuid)));
     }
     await refreshFacialIdsForGroups([], tx, picks.map((a) => a.faceId));
   });
-
-  const byGroup = new Map<string, string[]>();
-  for (const a of picks) byGroup.set(a.group, [...(byGroup.get(a.group) ?? []), a.faceId]);
-  void (async () => {
-    for (const [group, ids] of Array.from(byGroup)) await syncCompute(group, [], ids);
-  })();
 
   log(`[FaceAutoAssign] ${picks.length} of ${candidates.length} open faces assigned (min ${minScore})`);
   return { scanned: candidates.length, assigned: picks.length };
@@ -696,7 +714,7 @@ async function linkProfileFace(photo: Photo, detected: DetectedFace[], getBuffer
   const { accountId, faceRow, account, owner, target, facePct } = check;
 
   const alreadyLinked = account.personfaceUuid === target && faceRow.personfaceUuid === target;
-  if (faceRow.personfaceUuid !== target) await db.update(faces).set({ personfaceUuid: target }).where(eq(faces.id, faceRow.id));
+  if (faceRow.personfaceUuid !== target) await db.update(faces).set({ personfaceUuid: target, clusterId: null }).where(eq(faces.id, faceRow.id));
   if (account.personfaceUuid !== target) await db.update(socialAccounts).set({ personfaceUuid: target }).where(eq(socialAccounts.id, accountId));
   if (owner && !owner.personfaceUuid) await db.update(people).set({ personfaceUuid: target }).where(eq(people.id, owner.id));
   if (!alreadyLinked) {

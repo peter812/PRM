@@ -180,6 +180,8 @@ GET /api/people/:id
   "id": "uuid",
   "firstName": "John",
   "lastName": "Doe",
+  "nickname": "Johnny",
+  "maidenName": null,
   "email": "john@example.com",
   "phone": "+1234567890",
   "company": "Tech Corp",

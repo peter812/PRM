@@ -1,4 +1,5 @@
 ﻿import React, { useState, useRef, useCallback, useEffect } from "react";
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
 import {
@@ -22,7 +23,6 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import type { Person } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 type NextPersonResponse = {
@@ -69,7 +69,7 @@ export default function PoliticalLeaningGame() {
     onSuccess: () => {
       toast({
         title: "Saved!",
-        description: `Set political leaning for ${person?.firstName} ${person?.lastName}.`,
+        description: `Set political leaning for ${formatPersonName(person)}.`,
       });
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
       refetch();
@@ -253,18 +253,18 @@ export default function PoliticalLeaningGame() {
                     {person.imageUrl ? (
                       <AvatarImage
                         src={person.imageUrl}
-                        alt={`${person.firstName} ${person.lastName}`}
+                        alt={formatPersonName(person)}
                         className="object-cover"
                       />
                     ) : null}
                     <AvatarFallback className="rounded-xl text-xl font-bold bg-primary/10 text-primary">
-                      {getInitials(person.firstName, person.lastName)}
+                      {personInitials(person)}
                     </AvatarFallback>
                   </Avatar>
 
                   <div className="space-y-1 min-w-0 flex-1">
                     <h2 className="text-xl font-bold truncate">
-                      {person.firstName} {person.lastName}
+                      {formatPersonName(person)}
                     </h2>
                     {person.maidenName && (
                       <p className="text-xs text-muted-foreground">

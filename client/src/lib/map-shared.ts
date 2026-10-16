@@ -1,4 +1,5 @@
 /** What the Leaflet map demo and the Google Map page share: the pin data and how a pin looks. */
+import { formatPersonName } from "@shared/person-name";
 import { useState } from "react";
 import { withImageSize } from "@shared/image-size";
 
@@ -62,7 +63,7 @@ export function usePrimaryOnly(): [boolean, (v: boolean) => void] {
 }
 
 export const pinKey =(p: MapPin) => `${p.id}:${p.query}`;
-export const fullName = (p: MapPin) => `${p.firstName} ${p.lastName}`.trim();
+export const fullName = (p: MapPin) => formatPersonName(p);
 
 export const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);

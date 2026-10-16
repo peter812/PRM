@@ -24,8 +24,14 @@ export const DEFAULT_WINDOW = "19:30-22:30";
 const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
 const RATE_LIMIT_BACKOFF_MS = 48 * 60 * 60 * 1000;
 const TICK_MS = 60_000;
-/** A manual run's budget: at least an hour, and time enough for a big batch — under the token's 6 h TTL. */
-const manualBudgetMinutes = (jobs: number) => Math.min(Math.max(60, jobs * 2), 300);
+/** Minutes a job is expected to take: a lite scan 2, a full one 6, a deep one 10; a single section 2, follows 10. */
+const jobMinutes = (j: ClaimedJob) =>
+  j.kind === "follows" ? 10 : j.kind !== "scan" || !j.posts ? 2 : j.comments || j.highlights ? 10 : 6;
+/** The batch's minutes, capped under the token's 6 h TTL. */
+const MAX_BUDGET_MINUTES = 300;
+const workMinutes = (jobs: ClaimedJob[]) => jobs.reduce((sum, j) => sum + jobMinutes(j), 0);
+/** A manual run's budget: at least an hour, and time enough for the batch's work. */
+const manualBudgetMinutes = (jobs: ClaimedJob[]) => Math.min(Math.max(60, workMinutes(jobs)), MAX_BUDGET_MINUTES);
 const UNREACHABLE_RETRY_MS = 15 * 60_000;
 /** The service said already_running to a manual kick: it is wrapping up (or on a stories run). Ask again shortly. */
 const BUSY_RETRY_MS = 60_000;
@@ -262,9 +268,9 @@ async function tickTracking(importer: StoryImporter, now: Date): Promise<void> {
     log(`[Stories] ${importer.label}: nothing due for tracking`);
     return;
   }
-  // The run must end inside the window; whatever it doesn't reach stays due.
+  // The run has the rest of the window, or longer when the claimed work needs it; whatever it doesn't reach stays due.
   const minutesLeft = parseWindow(importer.trackingWindow)[1] - (now.getHours() * 60 + now.getMinutes());
-  const result = await triggerTrackingRun(importer, jobs, Math.max(minutesLeft, 15));
+  const result = await triggerTrackingRun(importer, jobs, Math.min(Math.max(minutesLeft, workMinutes(jobs), 15), MAX_BUDGET_MINUTES));
   // Busy with a stories run or a login window: try again in half an hour if the window allows.
   if (result.status === "already_running" && minutesLeft > 45) {
     await db.update(storyImporters).set({ nextTrackingRunAt: new Date(now.getTime() + 30 * 60_000) }).where(eq(storyImporters.id, importer.id));
@@ -309,7 +315,7 @@ export function kickManualTrackingJobs(delayMs = 250): void {
       if (await hasRunInFlight(importer.id, new Date())) return;
       const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs, { manualOnly: true });
       if (jobs.length === 0) return;
-      const result = await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs.length));
+      const result = await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs));
       if (result.status === "unreachable" || result.status === "paused") kickManualTrackingJobs(UNREACHABLE_RETRY_MS);
       else if (result.status === "already_running") kickManualTrackingJobs(BUSY_RETRY_MS);
     })().catch((err) => log(`[Stories] manual tracking run: ${err instanceof Error ? err.message : err}`));
@@ -320,7 +326,7 @@ export function kickManualTrackingJobs(delayMs = 250): void {
 export async function trackNow(importer: StoryImporter): Promise<RunStart & { jobs: number }> {
   const jobs = await claimTrackingJobs(importer.id, importer.trackingMaxJobs);
   if (jobs.length === 0) return { runId: "", status: "nothing_due", error: null, username: null, jobs: 0 };
-  return { ...(await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs.length))), jobs: jobs.length };
+  return { ...(await triggerTrackingRun(importer, jobs, manualBudgetMinutes(jobs))), jobs: jobs.length };
 }
 
 /** A run just ended: whatever manual jobs are still queued go next. */
@@ -380,6 +386,8 @@ export function startStoriesScheduler(): void {
     setTimeout(loop, TICK_MS);
   };
   setTimeout(loop, 15_000);
+  // Manual jobs queued before a restart lost their in-memory kick.
+  kickManualTrackingJobs(15_000);
 }
 
 /** The run whose live token matches, or null. Used by the /api/v1/stories routes. */

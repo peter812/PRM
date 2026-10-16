@@ -9,6 +9,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { ChevronDown, ChevronRight, Loader2, Play, Radar, RefreshCw, Search, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -107,7 +108,7 @@ interface Upcoming {
   runAt: string;
   importerLabel: string | null;
   limit: number;
-  checks: { accountId: string; username: string; nickname: string | null; interestLevel: string; kind: TrackingKind; origin: "manual" | "schedule"; at: string }[];
+  checks: { accountId: string; username: string; nickname: string | null; interestLevel: string; kind: TrackingKind; scanMode: "lite" | "full" | null; origin: "manual" | "schedule"; at: string }[];
 }
 
 /** On demand: the accounts the next morning run would check, in the order it takes them. */
@@ -164,6 +165,11 @@ function UpcomingCard() {
                     </Link>
                     <div className="flex items-center gap-2 shrink-0 text-muted-foreground">
                       <span>{TRACKING_KIND_LABEL[c.kind]}</span>
+                      {c.scanMode && (
+                        <Badge variant={c.scanMode === "full" ? "default" : "secondary"} className="text-[10px] px-1.5 py-0" data-testid={`badge-scan-mode-${c.accountId}`}>
+                          {c.scanMode === "full" ? "Full" : "Lite"}
+                        </Badge>
+                      )}
                       <span className="w-24 text-right">{c.origin === "manual" ? "queued" : `due ${day(c.at)}`}</span>
                       <InterestLevelChipPicker
                         level={picked[c.accountId] ?? c.interestLevel}
@@ -187,7 +193,10 @@ function QueueCheckButtons({ account }: { account: SocialAccount }) {
   const { toast } = useToast();
   const jobsKey = [`/api/social-accounts/${account.id}/tracking-jobs`];
   // Same key as AccountTracking, so both show a kind as queued at once.
-  const { data: jobs } = useQuery<TrackingJob[]>({ queryKey: jobsKey, refetchInterval: 30_000 });
+  const { data: jobs } = useQuery<TrackingJob[]>({
+    queryKey: jobsKey,
+    refetchInterval: (q) => (q.state.data?.some((j) => j.status === "queued" || j.status === "running") ? 30_000 : false),
+  });
   const openKinds = new Set((jobs ?? []).filter((j) => j.status === "queued" || j.status === "running").map((j) => j.kind));
   const queue = useMutation({
     mutationFn: (kind: TrackingKind) => apiRequest("POST", `/api/social-accounts/${account.id}/tracking-jobs`, { kind }),
@@ -200,7 +209,7 @@ function QueueCheckButtons({ account }: { account: SocialAccount }) {
 
   return (
     <div className="flex flex-wrap gap-2 border-t pt-4" data-testid="section-queue-checks">
-      {(["info", "posts", "highlights", "follows"] as const).map((kind) => {
+      {(["scan", "info", "posts", "highlights", "follows"] as const).map((kind) => {
         const blocker = trackingBlocker(account, kind);
         return (
           <Button
@@ -213,7 +222,7 @@ function QueueCheckButtons({ account }: { account: SocialAccount }) {
             data-testid={`button-queue-${kind}`}
           >
             {queue.isPending && queue.variables === kind ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
-            {TRACKING_KIND_LABEL[kind]}{openKinds.has(kind) && " · queued"}
+            {kind === "scan" ? "Full scan" : TRACKING_KIND_LABEL[kind]}{openKinds.has(kind) && " · queued"}
           </Button>
         );
       })}

@@ -2,7 +2,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
-import { isAiEnabled } from "../ai/provider";
 import { describePhotoInBackground } from "../ai/describe";
 import { applyBigAccountRule } from "../tracking";
 import { TRACKING_BIG_ACCOUNTS_NONE_KEY, TRACKING_MENTIONS_CREATE_KEY, TRACKING_MENTIONS_QUEUE_INFO_KEY } from "@shared/interest-level";
@@ -38,12 +37,14 @@ import { Readable } from "stream";
 import { deleteImageFromPrmS3, getPrmS3Config, presignPrmS3PublicUrl, PRM_S3_PRESIGN_WINDOW_SECONDS, uploadImage } from "../prm-s3";
 import { withImageSize, isValidImageSize, type ImageSize } from "@shared/image-size";
 import { hashPassword, requireAuth, publicUser, authenticateExtensionToken } from "../auth";
-import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, generateExportXml, executeImportXml } from "../task-worker";
+import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, writeExportXmlToFile, executeImportXml } from "../task-worker";
 import { syncEntityInBackground } from "../vector-universal";
+import { getPrimaryAddress } from "../person-addresses";
 import { scrypt, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
+import os from "os";
 import Papa from "papaparse";
 import { sendApiError, ErrorCodes } from "../middleware/error-handler";
 import { sseManager } from "../middleware/sse";
@@ -88,6 +89,8 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/v1/tps/person-status",
   "/v1/tps/add",
   "/v1/tps/extract",
+  "/v1/tps/people-search",
+  "/v1/tps/link",
   "/v1/pending-imports",
   "/v1/scrape-results",
   "/v1/account-status",
@@ -205,7 +208,6 @@ export function registerRoutes(app: Express) {
               capturedPrmLocation.startsWith("social_profile_image")
             ) return;
             if ((await storage.getAppSetting("ai_auto_describe_images")) !== "true") return;
-            if (!(await isAiEnabled())) return;
             await describePhotoInBackground(capturedPhotoId);
           } catch (err) {
             console.error("[auto-describe] error:", err);
@@ -638,10 +640,13 @@ export function registerRoutes(app: Express) {
         const includePostHistory = req.query.includePostHistory !== undefined
           ? req.query.includePostHistory === "true"
           : includeHistory;
-        const xml = await generateExportXml({ includeHistory, includePostHistory });
+        // Exported via a temp file: the full XML can exceed V8's maximum string length.
+        const tmpPath = path.join(os.tmpdir(), `crm_export_${crypto.randomUUID()}.xml`);
+        await writeExportXmlToFile(tmpPath, { includeHistory, includePostHistory });
         res.setHeader("Content-Type", "application/xml");
-        res.setHeader("Content-Disposition", `attachment; filename="crm_export_${new Date().toISOString().split('T')[0]}.xml"`);
-        res.send(xml);
+        res.download(tmpPath, `crm_export_${new Date().toISOString().split('T')[0]}.xml`, () => {
+          fs.promises.unlink(tmpPath).catch(() => {});
+        });
       } catch (error) {
         console.error("Error exporting XML:", error);
         res.status(500).json({ error: "Failed to export data" });
@@ -659,10 +664,9 @@ export function registerRoutes(app: Express) {
           return res.status(401).json({ error: "Not authenticated" });
         }
   
-        const xmlText = req.file.buffer.toString("utf-8");
         const includeHistory = req.body?.includeHistory !== "false" && req.query.includeHistory !== "false";
         const includePostHistory = req.body?.includePostHistory !== "false" && req.query.includePostHistory !== "false";
-        const result = await executeImportXml(xmlText, { includeHistory, includePostHistory });
+        const result = await executeImportXml(req.file.buffer, { includeHistory, includePostHistory });
   
         res.json({
           success: true,
@@ -1073,7 +1077,7 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Person entry not found" });
         }
   
-        res.json(mePerson);
+        res.json({ ...mePerson, primaryAddress: await getPrimaryAddress(mePerson.id) });
       } catch (error) {
         console.error("Error fetching me person:", error);
         res.status(500).json({ error: "Failed to fetch person entry" });
@@ -1670,7 +1674,6 @@ export function registerRoutes(app: Express) {
           TRACKING_BIG_ACCOUNTS_NONE_KEY,
           TRACKING_MENTIONS_CREATE_KEY,
           TRACKING_MENTIONS_QUEUE_INFO_KEY,
-          "posts_import_comments",
           "posts_comment_limit",
           "posts_scan_limit",
           "posts_download_videos",

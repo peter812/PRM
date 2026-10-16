@@ -111,10 +111,10 @@ import {
   escapeXml,
   arrayToXml,
   parseXmlTag,
-  parseAllTags,
   parseXmlArray,
   unescapeXml,
   extractSection,
+  sectionEntries,
   xmlTag,
   xmlJsonTag,
   parseOptStr,
@@ -124,7 +124,7 @@ import {
   parseOptDate,
   parseOptJson,
 } from "./xml-utils";
-import { runFaceRecognition, rescanPhotoFaces, runOcr, transcribeVideo, ComputeUnreachableError, ComputeBusyError, RECOGNITION_TASK_TYPES, JOB_TASK_TYPE, getComputeLanes, COMPUTE_LANE_DEFAULTS, enqueueAutoRecognition } from "./recognition";
+import { runFaceRecognition, rescanPhotoFaces, resyncFaceIndex, runOcr, transcribeVideo, ComputeUnreachableError, ComputeBusyError, RECOGNITION_TASK_TYPES, JOB_TASK_TYPE, getComputeLanes, COMPUTE_LANE_DEFAULTS, enqueueAutoRecognition } from "./recognition";
 
 const POLL_INTERVAL_MS = 60_000;
 const IMAGE_DOWNLOAD_DELAY_MS = 1_000;
@@ -444,11 +444,34 @@ async function insertBatchWithFallback<T extends Record<string, any>>(
   return inserted;
 }
 
-export async function generateExportXml(options: {
+/**
+ * Buffers export XML and flushes it to a file descriptor every few MB. A full export
+ * is larger than V8's maximum string length (~512 MB), so it is never joined in memory.
+ */
+class XmlFileWriter {
+  private parts: string[] = [];
+  private size = 0;
+  constructor(private fd: number) {}
+
+  push(s: string) {
+    this.parts.push(s);
+    this.size += s.length;
+    if (this.size >= 8 * 1024 * 1024) this.flush();
+  }
+
+  flush() {
+    if (this.parts.length === 0) return;
+    fs.writeSync(this.fd, this.parts.join(""));
+    this.parts = [];
+    this.size = 0;
+  }
+}
+
+async function generateExportXml(chunks: XmlFileWriter, options: {
   includeHistory?: boolean;
   includePostHistory?: boolean;
   onProgress?: (progress: number, message: string) => Promise<void> | void;
-}): Promise<string> {
+}): Promise<void> {
   const includeHistory = options.includeHistory ?? false;
   const includePostHistory = options.includePostHistory ?? true;
   const onProgress = options.onProgress;
@@ -581,7 +604,6 @@ export async function generateExportXml(options: {
 
   await onProgress?.(8, "Building export file…");
 
-  const chunks: string[] = [];
   chunks.push('<?xml version="1.0" encoding="UTF-8"?>\n<crm_data>\n');
 
   // ── User profile ──
@@ -668,6 +690,7 @@ export async function generateExportXml(options: {
     chunks.push(`      ${xmlTag("elo_rankable", person.eloRankable ?? 1)}\n`);
     chunks.push(`      ${xmlTag("personface_uuid", person.personfaceUuid || "")}\n`);
     chunks.push(`      ${xmlTag("maiden_name", person.maidenName || "")}\n`);
+    chunks.push(`      ${xmlTag("nickname", person.nickname || "")}\n`);
     chunks.push(`      ${xmlJsonTag("jobs", person.jobs)}\n`);
     chunks.push(`      ${xmlTag("tps_id", person.tpsId || "")}\n`);
     chunks.push(`      ${xmlTag("birthday", person.birthday || "")}\n`);
@@ -850,15 +873,13 @@ export async function generateExportXml(options: {
     chunks.push(`      ${xmlTag("is_simple", account.isSimple)}\n`);
     chunks.push(`      ${xmlTag("interest_level", account.interestLevel)}\n`);
     chunks.push(`      ${xmlTag("interest_level_manual", account.interestLevelManual)}\n`);
-    chunks.push(`      ${xmlTag("info_every_days", account.infoEveryDays)}\n`);
-    chunks.push(`      ${xmlTag("follows_every_days", account.followsEveryDays)}\n`);
-    chunks.push(`      ${xmlTag("posts_every_days", account.postsEveryDays)}\n`);
+    chunks.push(`      ${xmlTag("scan_every_days", account.scanEveryDays)}\n`);
+    chunks.push(`      ${xmlTag("scan_checked_at", account.scanCheckedAt)}\n`);
+    chunks.push(`      ${xmlTag("scan_due_at", account.scanDueAt)}\n`);
     chunks.push(`      ${xmlTag("info_checked_at", account.infoCheckedAt)}\n`);
-    chunks.push(`      ${xmlTag("info_due_at", account.infoDueAt)}\n`);
     chunks.push(`      ${xmlTag("follows_checked_at", account.followsCheckedAt)}\n`);
-    chunks.push(`      ${xmlTag("follows_due_at", account.followsDueAt)}\n`);
     chunks.push(`      ${xmlTag("posts_checked_at", account.postsCheckedAt)}\n`);
-    chunks.push(`      ${xmlTag("posts_due_at", account.postsDueAt)}\n`);
+    chunks.push(`      ${xmlTag("highlights_checked_at", account.highlightsCheckedAt)}\n`);
     chunks.push(`      ${xmlTag("joined_at", account.joinedAt)}\n`);
     chunks.push(`      ${xmlTag("reported_posts_count", account.reportedPostsCount)}\n`);
     chunks.push(`      ${xmlTag("is_private", account.isPrivate)}\n`);
@@ -1008,6 +1029,7 @@ export async function generateExportXml(options: {
     chunks.push(`      ${xmlTag("dismissed_at", face.dismissedAt)}\n`);
     chunks.push(`      ${xmlTag("pitch", face.pitch)}\n`);
     chunks.push(`      ${xmlTag("roll", face.roll)}\n`);
+    chunks.push(`      ${xmlTag("sharpness", face.sharpness)}\n`);
     chunks.push(`      ${xmlTag("yaw", face.yaw)}\n`);
     chunks.push(`      ${xmlTag("auto_match_score", face.autoMatchScore)}\n`);
     chunks.push("    </face_entry>\n");
@@ -1545,9 +1567,9 @@ export async function generateExportXml(options: {
   }
 
   chunks.push("</crm_data>");
-  return chunks.join("");
 }
 
+/** Writes to `<filePath>.partial` and renames on success, so a failed export never leaves a truncated .xml behind. */
 export async function writeExportXmlToFile(
   filePath: string,
   options: {
@@ -1556,10 +1578,21 @@ export async function writeExportXmlToFile(
     onProgress?: (progress: number, message: string) => Promise<void> | void;
   }
 ): Promise<void> {
-  const xml = await generateExportXml(options);
-  await options.onProgress?.(99, "Saving file…");
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.promises.writeFile(filePath, xml, "utf8");
+  const partialPath = `${filePath}.partial`;
+  const fd = fs.openSync(partialPath, "w");
+  try {
+    const writer = new XmlFileWriter(fd);
+    await generateExportXml(writer, options);
+    await options.onProgress?.(99, "Saving file…");
+    writer.flush();
+  } catch (err) {
+    fs.closeSync(fd);
+    await fs.promises.unlink(partialPath).catch(() => {});
+    throw err;
+  }
+  fs.closeSync(fd);
+  await fs.promises.rename(partialPath, filePath);
 }
 
 async function processExportXmlTask(taskId: string, payload: {
@@ -1576,6 +1609,10 @@ async function processExportXmlTask(taskId: string, payload: {
   // Sanitize filename to avoid path traversal
   fileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, "_");
   if (!fileName.endsWith(".xml")) fileName += ".xml";
+  // Never overwrite an existing backup with a custom name
+  if (fs.existsSync(path.join(backupsDir, fileName))) {
+    fileName = `${fileName.replace(/\.xml$/, "")}-${Date.now()}.xml`;
+  }
 
   const filePath = path.join(backupsDir, fileName);
   await writeExportXmlToFile(filePath, {
@@ -1590,7 +1627,7 @@ async function processExportXmlTask(taskId: string, payload: {
 // ── Import XML Engine ────────────────────────────────────────────────────────
 
 export async function executeImportXml(
-  xmlText: string,
+  xml: Buffer,
   options?: {
     includeHistory?: boolean;
     includePostHistory?: boolean;
@@ -1712,8 +1749,7 @@ export async function executeImportXml(
   }
 
   // Pre-scan social_accounts section so socialAccountIdMap is ready before importing photos, people, and groups
-  const socialAccountsSection = extractSection(xmlText, "social_accounts");
-  const socialAccountBlocks = parseAllTags("social_account", socialAccountsSection);
+  const socialAccountBlocks = Array.from(sectionEntries(xml, "social_accounts", "social_account"));
   const socialAccountIdMap = new Map<string, string>();
   for (const block of socialAccountBlocks) {
     const id = unescapeXml(parseXmlTag("id", block));
@@ -1745,7 +1781,7 @@ export async function executeImportXml(
   };
 
   // ── User profile & SSO config ──
-  const userProfileSection = extractSection(xmlText, "user_profile");
+  const userProfileSection = extractSection(xml, "user_profile");
   const currentUser = allUsers[0];
   if (userProfileSection && currentUser) {
     const importedNickname = parseOptStr(userProfileSection, "nickname");
@@ -1762,9 +1798,8 @@ export async function executeImportXml(
     }
   }
 
-  const ssoSection = extractSection(xmlText, "sso_config");
-  if (ssoSection && currentUser) {
-    for (const block of parseAllTags("sso_config_entry", ssoSection)) {
+  if (currentUser) {
+    for (const block of sectionEntries(xml, "sso_config", "sso_config_entry")) {
       const id = parseOptStr(block, "id");
       if (!id) continue;
       try {
@@ -1796,8 +1831,7 @@ export async function executeImportXml(
   await onProgress?.(10, "Importing relationship & interaction types…");
 
   // ── Relationship types ──
-  const relTypesSection = extractSection(xmlText, "relationship_types");
-  for (const block of parseAllTags("relationship_type", relTypesSection)) {
+  for (const block of sectionEntries(xml, "relationship_types", "relationship_type")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const name = unescapeXml(parseXmlTag("name", block));
     const color = unescapeXml(parseXmlTag("color", block));
@@ -1826,8 +1860,7 @@ export async function executeImportXml(
   }
 
   // ── Interaction types ──
-  const intTypesSection = extractSection(xmlText, "interaction_types");
-  for (const block of parseAllTags("interaction_type", intTypesSection)) {
+  for (const block of sectionEntries(xml, "interaction_types", "interaction_type")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const name = unescapeXml(parseXmlTag("name", block));
     const color = unescapeXml(parseXmlTag("color", block));
@@ -1856,8 +1889,7 @@ export async function executeImportXml(
   }
 
   // ── Social account types (import early so social accounts can reference them) ──
-  const socialAccountTypesSection = extractSection(xmlText, "social_account_types");
-  for (const block of parseAllTags("social_account_type", socialAccountTypesSection)) {
+  for (const block of sectionEntries(xml, "social_account_types", "social_account_type")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const name = unescapeXml(parseXmlTag("name", block));
     const color = unescapeXml(parseXmlTag("color", block));
@@ -1885,9 +1917,8 @@ export async function executeImportXml(
   const existingPhotoIds = new Set(
     (await db.select({ id: photos.id }).from(photos)).map(p => p.id)
   );
-  const photosSection = extractSection(xmlText, "photos");
   const photoBatch: (typeof photos.$inferInsert)[] = [];
-  for (const block of parseAllTags("photo_entry", photosSection)) {
+  for (const block of sectionEntries(xml, "photos", "photo_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const location = unescapeXml(parseXmlTag("location", block));
     if (!id || !location) continue;
@@ -1925,11 +1956,10 @@ export async function executeImportXml(
   for (const p of existingPeople) {
     existingPeopleMap.set(`${p.firstName.toLowerCase()}:${p.id}`, true);
   }
-  const peopleSection = extractSection(xmlText, "people");
   const peopleBatch: (typeof people.$inferInsert)[] = [];
   // Backups made before address history keep the primary in <person><address>.
   const legacyAddresses: (typeof personAddresses.$inferInsert)[] = [];
-  for (const block of parseAllTags("person", peopleSection)) {
+  for (const block of sectionEntries(xml, "people", "person")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const firstName = unescapeXml(parseXmlTag("first_name", block));
     const lastName = unescapeXml(parseXmlTag("last_name", block));
@@ -1963,6 +1993,7 @@ export async function executeImportXml(
       eloRankable: eloRankableRaw !== "" ? (parseInt(eloRankableRaw, 10) || 0) : 1,
       personfaceUuid: parseOptStr(block, "personface_uuid"),
       maidenName: parseOptStr(block, "maiden_name"),
+      nickname: parseOptStr(block, "nickname"),
       jobs: parseOptJson<any[]>(block, "jobs", []),
       tpsId: parseOptStr(block, "tps_id"),
       birthday: parseOptStr(block, "birthday"),
@@ -1987,9 +2018,8 @@ export async function executeImportXml(
 
   // ── Groups (defer centerAccountId if socialAccount not yet in DB to break FK cycle) ──
   const deferredGroupCenterAccounts: { groupId: string; centerAccountId: string }[] = [];
-  const groupsSection = extractSection(xmlText, "groups");
   const groupsBatch: (typeof groups.$inferInsert)[] = [];
-  for (const block of parseAllTags("group", groupsSection)) {
+  for (const block of sectionEntries(xml, "groups", "group")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const name = unescapeXml(parseXmlTag("name", block));
     const color = unescapeXml(parseXmlTag("color", block));
@@ -2033,9 +2063,8 @@ export async function executeImportXml(
   importedCounts.groups += await insertBatchWithFallback(groups, groupsBatch, "groups");
 
   // ── Sub-groups ──
-  const subGroupsSection = extractSection(xmlText, "sub_groups");
   const subGroupsBatch: (typeof subGroups.$inferInsert)[] = [];
-  for (const block of parseAllTags("sub_group_entry", subGroupsSection)) {
+  for (const block of sectionEntries(xml, "sub_groups", "sub_group_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const groupId = unescapeXml(parseXmlTag("group_id", block));
     const name = unescapeXml(parseXmlTag("name", block));
@@ -2118,15 +2147,14 @@ export async function executeImportXml(
       isSimple: parseOptBool(block, "is_simple", true),
       interestLevel: parseOptStr(block, "interest_level") || "none",
       interestLevelManual: parseOptBool(block, "interest_level_manual", false),
-      infoEveryDays: parseOptInt(block, "info_every_days"),
-      followsEveryDays: parseOptInt(block, "follows_every_days"),
-      postsEveryDays: parseOptInt(block, "posts_every_days"),
+      // Backups from before scans carry per-kind cadences; their info ones stand in.
+      scanEveryDays: parseOptInt(block, "scan_every_days") ?? parseOptInt(block, "info_every_days"),
+      scanCheckedAt: parseOptDate(block, "scan_checked_at"),
+      scanDueAt: parseOptDate(block, "scan_due_at") ?? parseOptDate(block, "info_due_at"),
       infoCheckedAt: parseOptDate(block, "info_checked_at"),
-      infoDueAt: parseOptDate(block, "info_due_at"),
       followsCheckedAt: parseOptDate(block, "follows_checked_at"),
-      followsDueAt: parseOptDate(block, "follows_due_at"),
       postsCheckedAt: parseOptDate(block, "posts_checked_at"),
-      postsDueAt: parseOptDate(block, "posts_due_at"),
+      highlightsCheckedAt: parseOptDate(block, "highlights_checked_at"),
       joinedAt: parseOptDate(block, "joined_at"),
       reportedPostsCount: parseOptInt(block, "reported_posts_count"),
       isPrivate: parseXmlTag("is_private", block) !== "" ? parseOptBool(block, "is_private", false) : null,
@@ -2163,9 +2191,8 @@ export async function executeImportXml(
   await onProgress?.(50, "Importing relationships, interactions & notes…");
 
   // ── Relationships ──
-  const relationshipsSection = extractSection(xmlText, "relationships");
   const relationshipsBatch: (typeof relationships.$inferInsert)[] = [];
-  for (const block of parseAllTags("relationship", relationshipsSection)) {
+  for (const block of sectionEntries(xml, "relationships", "relationship")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const fromPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("from_person_id", block)));
     const toPersonId = replaceZeroUUID(unescapeXml(parseXmlTag("to_person_id", block)));
@@ -2192,9 +2219,8 @@ export async function executeImportXml(
   importedCounts.relationships += await insertBatchWithFallback(relationships, relationshipsBatch, "relationships");
 
   // ── Lineages ──
-  const lineagesSection = extractSection(xmlText, "lineages");
   const lineagesBatch: (typeof lineage.$inferInsert)[] = [];
-  for (const block of parseAllTags("lineage_entry", lineagesSection)) {
+  for (const block of sectionEntries(xml, "lineages", "lineage_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const childId = replaceZeroUUID(unescapeXml(parseXmlTag("child_id", block)));
     const parentId = replaceZeroUUID(unescapeXml(parseXmlTag("parent_id", block)));
@@ -2211,9 +2237,8 @@ export async function executeImportXml(
   importedCounts.lineages += await insertBatchWithFallback(lineage, lineagesBatch, "lineages");
 
   // ── Partnerships ──
-  const partnershipsSection = extractSection(xmlText, "partnerships");
   const partnershipsBatch: (typeof partnerships.$inferInsert)[] = [];
-  for (const block of parseAllTags("partnership_entry", partnershipsSection)) {
+  for (const block of sectionEntries(xml, "partnerships", "partnership_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const person1Id = replaceZeroUUID(unescapeXml(parseXmlTag("person1_id", block)));
     const person2Id = replaceZeroUUID(unescapeXml(parseXmlTag("person2_id", block)));
@@ -2230,9 +2255,8 @@ export async function executeImportXml(
   importedCounts.partnerships += await insertBatchWithFallback(partnerships, partnershipsBatch, "partnerships");
 
   // ── Interactions ──
-  const interactionsSection = extractSection(xmlText, "interactions");
   const interactionsBatch: (typeof interactions.$inferInsert)[] = [];
-  for (const block of parseAllTags("interaction", interactionsSection)) {
+  for (const block of sectionEntries(xml, "interactions", "interaction")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const dateVal = parseOptDate(block, "date");
     if (!id || !dateVal) continue;
@@ -2264,9 +2288,8 @@ export async function executeImportXml(
   importedCounts.interactions += await insertBatchWithFallback(interactions, interactionsBatch, "interactions");
 
   // ── Notes ──
-  const notesSection = extractSection(xmlText, "notes");
   const notesBatch: (typeof notes.$inferInsert)[] = [];
-  for (const block of parseAllTags("note", notesSection)) {
+  for (const block of sectionEntries(xml, "notes", "note")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
     const content = unescapeXml(parseXmlTag("content", block));
@@ -2285,9 +2308,8 @@ export async function executeImportXml(
   importedCounts.notes += await insertBatchWithFallback(notes, notesBatch, "notes");
 
   // ── Person addresses ──
-  const personAddressesSection = extractSection(xmlText, "person_addresses");
-  const personAddressesBatch: (typeof personAddresses.$inferInsert)[] = xmlText.includes("<person_addresses>") ? [] : legacyAddresses;
-  for (const block of parseAllTags("person_address", personAddressesSection)) {
+  const personAddressesBatch: (typeof personAddresses.$inferInsert)[] = xml.includes("<person_addresses>") ? [] : legacyAddresses;
+  for (const block of sectionEntries(xml, "person_addresses", "person_address")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
     const address = unescapeXml(parseXmlTag("address", block));
@@ -2308,9 +2330,8 @@ export async function executeImportXml(
   importedCounts.personAddresses += await insertBatchWithFallback(personAddresses, personAddressesBatch, "person_addresses");
 
   // ── Group notes ──
-  const groupNotesSection = extractSection(xmlText, "group_notes");
   const groupNotesBatch: (typeof groupNotes.$inferInsert)[] = [];
-  for (const block of parseAllTags("group_note", groupNotesSection)) {
+  for (const block of sectionEntries(xml, "group_notes", "group_note")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const groupId = unescapeXml(parseXmlTag("group_id", block));
     const content = unescapeXml(parseXmlTag("content", block));
@@ -2325,9 +2346,8 @@ export async function executeImportXml(
   importedCounts.groupNotes += await insertBatchWithFallback(groupNotes, groupNotesBatch, "group_notes");
 
   // ── Schooling ──
-  const schoolingSection = extractSection(xmlText, "schooling");
   const schoolingBatch: (typeof schooling.$inferInsert)[] = [];
-  for (const block of parseAllTags("schooling_entry", schoolingSection)) {
+  for (const block of sectionEntries(xml, "schooling", "schooling_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
     if (!id || !personId || !existingPersonIds.has(personId)) continue;
@@ -2348,9 +2368,8 @@ export async function executeImportXml(
     const existingPostIds = new Set(
       (await db.select({ id: socialAccountPosts.id }).from(socialAccountPosts)).map(p => p.id)
     );
-    const postsSection = extractSection(xmlText, "social_account_posts");
     const postsBatch: (typeof socialAccountPosts.$inferInsert)[] = [];
-    for (const block of parseAllTags("social_account_post", postsSection)) {
+    for (const block of sectionEntries(xml, "social_account_posts", "social_account_post")) {
       const id = unescapeXml(parseXmlTag("id", block));
       const postSocialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
       if (!id || !postSocialAccountId || existingPostIds.has(id)) continue;
@@ -2393,9 +2412,8 @@ export async function executeImportXml(
     importedCounts.posts += await insertBatchWithFallback(socialAccountPosts, postsBatch, "social_account_posts");
 
     // ── Social post comments ──
-    const postCommentsSection = extractSection(xmlText, "social_post_comments");
     const postCommentsBatch: (typeof socialPostComments.$inferInsert)[] = [];
-    for (const block of parseAllTags("social_post_comment", postCommentsSection)) {
+    for (const block of sectionEntries(xml, "social_post_comments", "social_post_comment")) {
       const id = unescapeXml(parseXmlTag("id", block));
       const postId = unescapeXml(parseXmlTag("post_id", block));
       const instagramCommentId = unescapeXml(parseXmlTag("instagram_comment_id", block));
@@ -2424,9 +2442,8 @@ export async function executeImportXml(
   const existingDailyNoteIds = new Set(
     (await db.select({ id: dailyNotes.id }).from(dailyNotes)).map(d => d.id)
   );
-  const dailyNotesSection = extractSection(xmlText, "daily_notes");
   const dailyNotesBatch: (typeof dailyNotes.$inferInsert)[] = [];
-  for (const block of parseAllTags("daily_note_entry", dailyNotesSection)) {
+  for (const block of sectionEntries(xml, "daily_notes", "daily_note_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const date = unescapeXml(parseXmlTag("date", block));
     if (!id || !date) continue;
@@ -2444,9 +2461,8 @@ export async function executeImportXml(
   importedCounts.dailyNotes += await insertBatchWithFallback(dailyNotes, dailyNotesBatch, "daily_notes");
 
   // ── Daily note events ──
-  const dailyNoteEventsSection = extractSection(xmlText, "daily_note_events");
   const dailyNoteEventsBatch: (typeof dailyNoteEvents.$inferInsert)[] = [];
-  for (const block of parseAllTags("daily_note_event_entry", dailyNoteEventsSection)) {
+  for (const block of sectionEntries(xml, "daily_note_events", "daily_note_event_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
     if (!id || !dailyNoteId || !existingDailyNoteIds.has(dailyNoteId)) continue;
@@ -2461,9 +2477,8 @@ export async function executeImportXml(
   importedCounts.dailyNoteEvents += await insertBatchWithFallback(dailyNoteEvents, dailyNoteEventsBatch, "daily_note_events");
 
   // ── Daily note involved parties ──
-  const involvedPartiesSection = extractSection(xmlText, "daily_note_involved_parties");
   const involvedPartiesBatch: (typeof dailyNoteInvolvedParties.$inferInsert)[] = [];
-  for (const block of parseAllTags("daily_note_involved_party_entry", involvedPartiesSection)) {
+  for (const block of sectionEntries(xml, "daily_note_involved_parties", "daily_note_involved_party_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
     const partyType = unescapeXml(parseXmlTag("party_type", block));
@@ -2480,9 +2495,8 @@ export async function executeImportXml(
   );
 
   // ── Daily note audit logs ──
-  const auditLogsSection = extractSection(xmlText, "daily_note_audit_logs");
   const auditLogsBatch: (typeof dailyNoteAuditLogs.$inferInsert)[] = [];
-  for (const block of parseAllTags("daily_note_audit_log_entry", auditLogsSection)) {
+  for (const block of sectionEntries(xml, "daily_note_audit_logs", "daily_note_audit_log_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const dailyNoteId = unescapeXml(parseXmlTag("daily_note_id", block));
     const action = unescapeXml(parseXmlTag("action", block));
@@ -2502,9 +2516,8 @@ export async function executeImportXml(
   );
 
   // ── Sex guess records ──
-  const sexGuessSection = extractSection(xmlText, "sex_guess_records");
   const sexGuessBatch: (typeof sexGuessQueue.$inferInsert)[] = [];
-  for (const block of parseAllTags("sex_guess_entry", sexGuessSection)) {
+  for (const block of sectionEntries(xml, "sex_guess_records", "sex_guess_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const personId = replaceZeroUUID(unescapeXml(parseXmlTag("person_id", block)));
     const guessedSex = unescapeXml(parseXmlTag("guessed_sex", block));
@@ -2526,9 +2539,8 @@ export async function executeImportXml(
   const existingAiProviderIds = new Set(
     (await db.select({ id: aiProviders.id }).from(aiProviders)).map(p => p.id)
   );
-  const aiProvidersSection = extractSection(xmlText, "ai_providers");
   const aiProvidersBatch: (typeof aiProviders.$inferInsert)[] = [];
-  for (const block of parseAllTags("ai_provider", aiProvidersSection)) {
+  for (const block of sectionEntries(xml, "ai_providers", "ai_provider")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const name = unescapeXml(parseXmlTag("name", block));
     const kind = unescapeXml(parseXmlTag("kind", block));
@@ -2551,9 +2563,8 @@ export async function executeImportXml(
   importedCounts.aiProviders += await insertBatchWithFallback(aiProviders, aiProvidersBatch, "ai_providers");
 
   // ── AI Chats ──
-  const aiChatsSection = extractSection(xmlText, "ai_chats");
   const aiChatsBatch: (typeof aiChats.$inferInsert)[] = [];
-  for (const block of parseAllTags("ai_chat_entry", aiChatsSection)) {
+  for (const block of sectionEntries(xml, "ai_chats", "ai_chat_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     if (!id) continue;
     const providerIdRaw = parseOptStr(block, "provider_id");
@@ -2573,8 +2584,7 @@ export async function executeImportXml(
   importedCounts.aiChats += await insertBatchWithFallback(aiChats, aiChatsBatch, "ai_chats");
 
   // ── App settings ──
-  const appSettingsSection = extractSection(xmlText, "app_settings_list");
-  for (const block of parseAllTags("app_setting_entry", appSettingsSection)) {
+  for (const block of sectionEntries(xml, "app_settings_list", "app_setting_entry")) {
     const key = unescapeXml(parseXmlTag("key", block));
     let value = unescapeXml(parseXmlTag("value", block));
     if (!key) continue;
@@ -2596,9 +2606,8 @@ export async function executeImportXml(
   }
 
   // ── TruePersonSearch ──
-  const tpsSection = extractSection(xmlText, "true_person_search");
   const tpsBatch: (typeof truePersonSearch.$inferInsert)[] = [];
-  for (const block of parseAllTags("true_person_search_entry", tpsSection)) {
+  for (const block of sectionEntries(xml, "true_person_search", "true_person_search_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const tpsId = unescapeXml(parseXmlTag("tps_id", block));
     if (!id || !tpsId) continue;
@@ -2629,9 +2638,8 @@ export async function executeImportXml(
   importedCounts.truePersonSearch += await insertBatchWithFallback(truePersonSearch, tpsBatch, "true_person_search");
 
   // ── Faces ──
-  const facesSection = extractSection(xmlText, "faces");
   const facesBatch: (typeof faces.$inferInsert)[] = [];
-  for (const block of parseAllTags("face_entry", facesSection)) {
+  for (const block of sectionEntries(xml, "faces", "face_entry")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const s3Url = unescapeXml(parseXmlTag("s3_url", block));
     if (!id || !s3Url) continue;
@@ -2649,6 +2657,7 @@ export async function executeImportXml(
       dismissedAt: parseOptDate(block, "dismissed_at"),
       pitch: parseOptFloat(block, "pitch"),
       roll: parseOptFloat(block, "roll"),
+      sharpness: parseOptFloat(block, "sharpness"),
       yaw: parseOptFloat(block, "yaw"),
       autoMatchScore: parseOptFloat(block, "auto_match_score"),
     });
@@ -2656,9 +2665,8 @@ export async function executeImportXml(
   importedCounts.faces += await insertBatchWithFallback(faces, facesBatch, "faces");
 
   // ── Face pair dismissals ──
-  const faceDismissalsSection = extractSection(xmlText, "face_pair_dismissals");
   const faceDismissalsBatch: (typeof facePairDismissals.$inferInsert)[] = [];
-  for (const block of parseAllTags("face_pair_dismissal", faceDismissalsSection)) {
+  for (const block of sectionEntries(xml, "face_pair_dismissals", "face_pair_dismissal")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const groupAUuid = unescapeXml(parseXmlTag("group_a_uuid", block));
     const groupBUuid = unescapeXml(parseXmlTag("group_b_uuid", block));
@@ -2677,9 +2685,8 @@ export async function executeImportXml(
   );
 
   // ── Image questions ──
-  const imageQuestionsSection = extractSection(xmlText, "image_questions");
   const imageQuestionsBatch: (typeof imageQuestions.$inferInsert)[] = [];
-  for (const block of parseAllTags("image_question", imageQuestionsSection)) {
+  for (const block of sectionEntries(xml, "image_questions", "image_question")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const photoId = unescapeXml(parseXmlTag("photo_id", block));
     const subImageUrl = unescapeXml(parseXmlTag("sub_image_url", block));
@@ -2705,9 +2712,8 @@ export async function executeImportXml(
   await onProgress?.(78, "Importing OSINT, story importers, messages & geocodes…");
 
   // ── Pending social account imports ──
-  const pendingImportsSection = extractSection(xmlText, "pending_social_account_imports");
   const pendingImportsBatch: (typeof pendingSocialAccountImports.$inferInsert)[] = [];
-  for (const block of parseAllTags("pending_social_account_import", pendingImportsSection)) {
+  for (const block of sectionEntries(xml, "pending_social_account_imports", "pending_social_account_import")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const accountUsername = unescapeXml(parseXmlTag("account_username", block));
     if (!id || !accountUsername) continue;
@@ -2741,9 +2747,8 @@ export async function executeImportXml(
   );
 
   // ── Insights ──
-  const insightsSection = extractSection(xmlText, "insights");
   const insightsBatch: (typeof insights.$inferInsert)[] = [];
-  for (const block of parseAllTags("insight", insightsSection)) {
+  for (const block of sectionEntries(xml, "insights", "insight")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const type = unescapeXml(parseXmlTag("type", block));
     const source = unescapeXml(parseXmlTag("source", block));
@@ -2767,9 +2772,8 @@ export async function executeImportXml(
   importedCounts.insights += await insertBatchWithFallback(insights, insightsBatch, "insights");
 
   // ── OSINT scans ──
-  const osintScansSection = extractSection(xmlText, "osint_scans");
   const osintScansBatch: (typeof osintScans.$inferInsert)[] = [];
-  for (const block of parseAllTags("osint_scan", osintScansSection)) {
+  for (const block of sectionEntries(xml, "osint_scans", "osint_scan")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const tool = unescapeXml(parseXmlTag("tool", block));
     const target = unescapeXml(parseXmlTag("target", block));
@@ -2805,9 +2809,8 @@ export async function executeImportXml(
   const existingStoryImporterIds = new Set(
     (await db.select({ id: storyImporters.id }).from(storyImporters)).map(s => s.id)
   );
-  const storyImportersSection = extractSection(xmlText, "story_importers");
   const storyImportersBatch: (typeof storyImporters.$inferInsert)[] = [];
-  for (const block of parseAllTags("story_importer", storyImportersSection)) {
+  for (const block of sectionEntries(xml, "story_importers", "story_importer")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const label = unescapeXml(parseXmlTag("label", block));
     const serviceUrl = unescapeXml(parseXmlTag("service_url", block));
@@ -2843,9 +2846,8 @@ export async function executeImportXml(
   const existingStoryScrapeRunIds = new Set(
     (await db.select({ id: storyScrapeRuns.id }).from(storyScrapeRuns)).map(r => r.id)
   );
-  const storyScrapeRunsSection = extractSection(xmlText, "story_scrape_runs");
   const storyScrapeRunsBatch: (typeof storyScrapeRuns.$inferInsert)[] = [];
-  for (const block of parseAllTags("story_scrape_run", storyScrapeRunsSection)) {
+  for (const block of sectionEntries(xml, "story_scrape_runs", "story_scrape_run")) {
     const id = unescapeXml(parseXmlTag("id", block));
     if (!id || existingStoryScrapeRunIds.has(id)) continue;
     const importerIdRaw = parseOptStr(block, "importer_id");
@@ -2873,9 +2875,8 @@ export async function executeImportXml(
   );
 
   // ── Tracking jobs ──
-  const trackingJobsSection = extractSection(xmlText, "tracking_jobs");
   const trackingJobsBatch: (typeof trackingJobs.$inferInsert)[] = [];
-  for (const block of parseAllTags("tracking_job", trackingJobsSection)) {
+  for (const block of sectionEntries(xml, "tracking_jobs", "tracking_job")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
     const kind = unescapeXml(parseXmlTag("kind", block));
@@ -2907,9 +2908,8 @@ export async function executeImportXml(
   importedCounts.trackingJobs += await insertBatchWithFallback(trackingJobs, trackingJobsBatch, "tracking_jobs");
 
   // ── Social account issues ──
-  const issuesSection = extractSection(xmlText, "social_account_issues");
   const issuesBatch: (typeof socialAccountIssues.$inferInsert)[] = [];
-  for (const block of parseAllTags("social_account_issue", issuesSection)) {
+  for (const block of sectionEntries(xml, "social_account_issues", "social_account_issue")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
     const kind = unescapeXml(parseXmlTag("kind", block));
@@ -2941,9 +2941,8 @@ export async function executeImportXml(
   const existingConversationIds = new Set(
     (await db.select({ id: conversations.id }).from(conversations)).map(c => c.id)
   );
-  const conversationsSection = extractSection(xmlText, "conversations");
   const conversationsBatch: (typeof conversations.$inferInsert)[] = [];
-  for (const block of parseAllTags("conversation", conversationsSection)) {
+  for (const block of sectionEntries(xml, "conversations", "conversation")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const channelType = unescapeXml(parseXmlTag("channel_type", block));
     if (!id || !channelType || existingConversationIds.has(id)) continue;
@@ -2970,9 +2969,8 @@ export async function executeImportXml(
   const existingMessageIds = new Set(
     (await db.select({ id: messages.id }).from(messages)).map(m => m.id)
   );
-  const messagesSection = extractSection(xmlText, "messages");
   const messagesBatch: (typeof messages.$inferInsert)[] = [];
-  for (const block of parseAllTags("message", messagesSection)) {
+  for (const block of sectionEntries(xml, "messages", "message")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const conversationId = unescapeXml(parseXmlTag("conversation_id", block));
     const sentAt = parseOptDate(block, "sent_at");
@@ -3010,9 +3008,8 @@ export async function executeImportXml(
   importedCounts.messages += await insertBatchWithFallback(messages, messagesBatch, "messages");
 
   // ── Message recipients ──
-  const recipientsSection = extractSection(xmlText, "message_recipients");
   const recipientsBatch: (typeof messageRecipients.$inferInsert)[] = [];
-  for (const block of parseAllTags("message_recipient", recipientsSection)) {
+  for (const block of sectionEntries(xml, "message_recipients", "message_recipient")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const messageId = unescapeXml(parseXmlTag("message_id", block));
     if (!id || !messageId || !existingMessageIds.has(messageId)) continue;
@@ -3039,9 +3036,8 @@ export async function executeImportXml(
   );
 
   // ── Conversation participants ──
-  const participantsSection = extractSection(xmlText, "conversation_participants");
   const participantsBatch: (typeof conversationParticipants.$inferInsert)[] = [];
-  for (const block of parseAllTags("conversation_participant", participantsSection)) {
+  for (const block of sectionEntries(xml, "conversation_participants", "conversation_participant")) {
     const id = unescapeXml(parseXmlTag("id", block));
     const conversationId = unescapeXml(parseXmlTag("conversation_id", block));
     if (!id || !conversationId || !existingConversationIds.has(conversationId)) continue;
@@ -3069,9 +3065,8 @@ export async function executeImportXml(
   );
 
   // ── Geocodes ──
-  const geocodesSection = extractSection(xmlText, "geocodes");
   const geocodesBatch: (typeof geocodes.$inferInsert)[] = [];
-  for (const block of parseAllTags("geocode", geocodesSection)) {
+  for (const block of sectionEntries(xml, "geocodes", "geocode")) {
     const query = unescapeXml(parseXmlTag("query", block));
     const status = unescapeXml(parseXmlTag("status", block));
     if (!query || !status) continue;
@@ -3089,8 +3084,7 @@ export async function executeImportXml(
   await onProgress?.(88, "Importing follow graph & history…");
 
   // ── Social follows (explicit <social_follows> section + edges from <social_account> and <social_network_snapshot>) ──
-  const socialFollowsSection = extractSection(xmlText, "social_follows");
-  for (const block of parseAllTags("social_follow", socialFollowsSection)) {
+  for (const block of sectionEntries(xml, "social_follows", "social_follow")) {
     const followerId = unescapeXml(parseXmlTag("follower_id", block));
     const followedId = unescapeXml(parseXmlTag("followed_id", block));
     if (!followerId || !followedId) continue;
@@ -3102,8 +3096,7 @@ export async function executeImportXml(
     });
   }
 
-  const snapshotsSection = extractSection(xmlText, "social_network_snapshots");
-  for (const block of parseAllTags("social_network_snapshot", snapshotsSection)) {
+  for (const block of sectionEntries(xml, "social_network_snapshots", "social_network_snapshot")) {
     const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
     const mappedAccountId = mapSocialAccountId(socialAccountId);
     if (!socialAccountId || !existingSocialAccountUuids.has(mappedAccountId)) continue;
@@ -3114,8 +3107,7 @@ export async function executeImportXml(
 
   if (includeHistory) {
     // Legacy social_profile_versions fallback
-    const profileVersionsSection = extractSection(xmlText, "social_profile_versions");
-    for (const block of parseAllTags("social_profile_version", profileVersionsSection)) {
+    for (const block of sectionEntries(xml, "social_profile_versions", "social_profile_version")) {
       try {
         const socialAccountId = unescapeXml(parseXmlTag("social_account_id", block));
         const mappedAccountId = mapSocialAccountId(socialAccountId);
@@ -3134,9 +3126,8 @@ export async function executeImportXml(
     }
 
     // ── Social account history ──
-    const historySection = extractSection(xmlText, "social_account_history");
     const historyBatch: (typeof socialAccountHistory.$inferInsert)[] = [];
-    for (const block of parseAllTags("history_entry", historySection)) {
+    for (const block of sectionEntries(xml, "social_account_history", "history_entry")) {
       const id = unescapeXml(parseXmlTag("id", block));
       const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
       const batchId = unescapeXml(parseXmlTag("batch_id", block));
@@ -3209,9 +3200,8 @@ export async function executeImportXml(
     );
 
     // ── Historical account summaries ──
-    const histSummariesSection = extractSection(xmlText, "historical_account_summaries");
     const histSummariesBatch: (typeof historicalAccountSummaries.$inferInsert)[] = [];
-    for (const block of parseAllTags("historical_account_summary", histSummariesSection)) {
+    for (const block of sectionEntries(xml, "historical_account_summaries", "historical_account_summary")) {
       const id = unescapeXml(parseXmlTag("id", block));
       const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
       const content = parseOptJson<any>(block, "content", null);
@@ -3235,9 +3225,8 @@ export async function executeImportXml(
     );
 
     // ── Social network changes ──
-    const networkChangesSection = extractSection(xmlText, "social_network_changes");
     const networkChangesBatch: (typeof socialNetworkChanges.$inferInsert)[] = [];
-    for (const block of parseAllTags("social_network_change", networkChangesSection)) {
+    for (const block of sectionEntries(xml, "social_network_changes", "social_network_change")) {
       const id = parseOptStr(block, "id");
       const saRaw = unescapeXml(parseXmlTag("social_account_id", block));
       const changeType = unescapeXml(parseXmlTag("change_type", block));
@@ -3300,6 +3289,8 @@ export async function executeImportXml(
 
   await onProgress?.(99, "Finalizing…");
   await runAutomaticImagePassIn();
+  // Faces were written straight to the table, which PRM-Compute only notices by row count.
+  await resyncFaceIndex();
   return { imported: importedCounts, skipped: skippedCounts };
 }
 
@@ -3309,8 +3300,9 @@ async function processImportXmlTask(taskId: string, payload: {
   includeHistory?: boolean;
   includePostHistory?: boolean;
 }): Promise<string> {
-  let xmlText = payload.xml || "";
-  if (!xmlText && payload.filePath) {
+  // Kept as a Buffer: a full backup can exceed V8's maximum string length.
+  let xml = Buffer.from(payload.xml || "", "utf8");
+  if (xml.length === 0 && payload.filePath) {
     const backupsDir = path.resolve(process.cwd(), "backups");
     const safeFilename = path.basename(payload.filePath.replace(/\\/g, "/"));
     const fullPath = path.resolve(backupsDir, safeFilename);
@@ -3318,18 +3310,18 @@ async function processImportXmlTask(taskId: string, payload: {
       try {
         const stat = await fs.promises.stat(fullPath);
         if (stat.isFile()) {
-          xmlText = await fs.promises.readFile(fullPath, "utf8");
+          xml = await fs.promises.readFile(fullPath);
         }
       } catch {
         // File does not exist or cannot be read
       }
     }
   }
-  if (!xmlText) {
+  if (xml.length === 0) {
     throw new Error("No XML data found for restore/import task");
   }
 
-  const result = await executeImportXml(xmlText, {
+  const result = await executeImportXml(xml, {
     includeHistory: payload.includeHistory ?? true,
     includePostHistory: payload.includePostHistory ?? true,
     onProgress: (progress, message) => storage.updateTaskProgress(taskId, progress, message),

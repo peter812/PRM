@@ -16,6 +16,9 @@ import {
   FACE_REVIEW_KINDS, type FaceReviewKind,
   getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto,
 } from "../face-review";
+import {
+  runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces,
+} from "../face-clusters";
 
 const fail = (res: Response, what: string, error: unknown) => {
   if (error instanceof RecognitionRequestError) {
@@ -56,6 +59,12 @@ function parseFaceUuids(body: { faceUuid?: unknown; faceUuids?: unknown }): stri
   return ids.length && ids.every((id) => typeof id === "string") ? (ids as string[]) : null;
 }
 
+/** An optional `faceIds` body field: absent, or a non-empty list of strings (else null). */
+function parseOptionalIds(raw: unknown): string[] | undefined | null {
+  if (raw === undefined) return undefined;
+  return Array.isArray(raw) && raw.length && raw.every((id) => typeof id === "string") ? raw : null;
+}
+
 /** The assign target (a person or a social account) must exist. */
 async function targetReadable(socialAccountId?: string, personId?: string): Promise<boolean> {
   if (socialAccountId) {
@@ -76,7 +85,7 @@ async function targetReadable(socialAccountId?: string, personId?: string): Prom
 }
 
 export function registerFaceReview(app: Express) {
-  // ?kind=story|profile|post|message (required), ?dismissed=1, ?cursor=, ?limit=
+  // ?kind=story|profile|post|message (required), ?dismissed=1, ?noise=1, ?cursor=, ?limit=
   app.get("/api/face-review", requireAuth, async (req, res) => {
     try {
       const kind = parseKind(req.query.kind);
@@ -84,16 +93,17 @@ export function registerFaceReview(app: Express) {
       const dismissed = req.query.dismissed === "1" || req.query.dismissed === "true";
       const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
       const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
-      const page = await getFaceReviewQueue(kind, dismissed, cursor, limit);
+      const page = await getFaceReviewQueue(kind, dismissed, req.query.noise === "1", cursor, limit);
       res.json(page);
     } catch (error) {
       fail(res, "load face review queue", error);
     }
   });
 
-  app.get("/api/face-review/counts", requireAuth, async (_req, res) => {
+  // ?noise=1 counts the quality-noise faces too.
+  app.get("/api/face-review/counts", requireAuth, async (req, res) => {
     try {
-      res.json(await getFaceReviewCounts());
+      res.json(await getFaceReviewCounts(req.query.noise === "1"));
     } catch (error) {
       fail(res, "count face review queue", error);
     }
@@ -105,6 +115,81 @@ export function registerFaceReview(app: Express) {
       res.json(await autoAssignFaces());
     } catch (error) {
       fail(res, "auto-assign faces", error);
+    }
+  });
+
+  // Cluster open faces now (face-clustering-plan.md §3.2); it also runs daily.
+  app.post("/api/face-review/cluster", requireAuth, async (_req, res) => {
+    try {
+      res.json(await runFaceClustering());
+    } catch (error: any) {
+      console.error("Face review: cluster faces:", error);
+      res.status(500).json({ error: error?.message ?? "Failed to cluster faces" }); // says when compute needs updating
+    }
+  });
+
+  // ── Clusters tab (face-clustering-plan.md §3.3-§3.4, §5) ──
+  app.get("/api/face-review/cluster-summary", requireAuth, async (_req, res) => {
+    try {
+      res.json(await getClusterSummary());
+    } catch (error) {
+      fail(res, "load cluster summary", error);
+    }
+  });
+
+  // ?offset=&limit= — largest clusters first.
+  app.get("/api/face-review/clusters", requireAuth, async (req, res) => {
+    try {
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const limit = Math.min(Math.max(Number(req.query.limit) || 24, 1), 60);
+      res.json(await listClusters(offset, limit));
+    } catch (error) {
+      fail(res, "load clusters", error);
+    }
+  });
+
+  app.get("/api/face-review/clusters/:id", requireAuth, async (req, res) => {
+    try {
+      const cluster = await getCluster(req.params.id);
+      if (!cluster) return res.status(404).json({ error: "This cluster is gone; it was named, dismissed or reclustered." });
+      res.json(cluster);
+    } catch (error) {
+      fail(res, "load cluster", error);
+    }
+  });
+
+  // { faceIds?, socialAccountId? | personId? } — faceIds omitted names every face in the cluster.
+  app.post("/api/face-review/clusters/:id/name", requireAuth, async (req, res) => {
+    try {
+      const { socialAccountId, personId } = req.body ?? {};
+      const faceIds = parseOptionalIds(req.body?.faceIds);
+      if (faceIds === null) return res.status(400).json({ error: "faceIds must be a non-empty list" });
+      res.json(await nameCluster(req.params.id, faceIds, { socialAccountId, personId }));
+    } catch (error) {
+      fail(res, "name cluster", error);
+    }
+  });
+
+  // { socialAccountId | personId } — "No, not them" for a suggestion.
+  app.post("/api/face-review/clusters/:id/reject", requireAuth, async (req, res) => {
+    try {
+      const identityId = req.body?.socialAccountId ?? req.body?.personId;
+      if (typeof identityId !== "string") return res.status(400).json({ error: "socialAccountId or personId is required" });
+      await rejectClusterSuggestion(req.params.id, identityId);
+      res.json({ ok: true });
+    } catch (error) {
+      fail(res, "reject cluster suggestion", error);
+    }
+  });
+
+  // { faceIds? } — Strangers: dismiss the cluster's faces (all when faceIds is omitted).
+  app.post("/api/face-review/clusters/:id/strangers", requireAuth, async (req, res) => {
+    try {
+      const faceIds = parseOptionalIds(req.body?.faceIds);
+      if (faceIds === null) return res.status(400).json({ error: "faceIds must be a non-empty list" });
+      res.json(await dismissClusterFaces(req.params.id, faceIds));
+    } catch (error) {
+      fail(res, "dismiss cluster faces", error);
     }
   });
 
@@ -187,7 +272,7 @@ export function registerFaceReview(app: Express) {
         const k = parseKind(kind);
         if (!ids || typeof photoId !== "string" || !k) return res.status(400).json({ error: "faceUuid (or faceUuids), photoId and kind are required" });
         if (!(await faceInReadablePhoto(ids, photoId))) return res.status(404).json({ error: "Photo not found" });
-        await db.update(faces).set({ dismissedAt: dismissedAt() }).where(inArray(faces.id, ids));
+        await db.update(faces).set({ dismissedAt: dismissedAt(), clusterId: null }).where(inArray(faces.id, ids));
         const item = await getFaceReviewItem(photoId, k);
         if (!item) return res.status(404).json({ error: "Photo not found" });
         res.json(item);

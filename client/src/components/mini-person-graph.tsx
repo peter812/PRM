@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import ForceGraph3D from "@/lib/force-graph-3d";
@@ -78,7 +79,7 @@ export function MiniPersonGraph({ personId, personName, data }: MiniPersonGraphP
             seen.add(targetId);
             nodes.push({
               id: targetId,
-              name: `${rel.toPerson.firstName} ${rel.toPerson.lastName}`.trim(),
+              name: formatPersonName(rel.toPerson),
               color: group.type.color || "#6366f1",
               val: 8,
             });

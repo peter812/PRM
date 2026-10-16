@@ -21,16 +21,14 @@ import {
   Search,
 } from "lucide-react";
 import {
-  DEFAULT_LEVEL_CADENCES,
+  DEFAULT_SCAN_CADENCE,
   INTEREST_LEVELS,
   INTEREST_LEVEL_LABEL,
-  TRACKING_KINDS,
-  TRACKING_KIND_LABEL,
-  parseLevelCadences,
+  MAX_CADENCE_DAYS,
+  parseScanCadences,
+  scanCapability,
   skipRecentEnabled,
   type InterestLevel,
-  type TrackingKind,
-  type Cadence,
 } from "@shared/interest-level";
 
 export function StageTracking() {
@@ -42,7 +40,9 @@ export function StageTracking() {
   });
 
   // Tracking cadences state
-  const [cadences, setCadences] = useState<Record<InterestLevel, Cadence>>(DEFAULT_LEVEL_CADENCES);
+  const [cadences, setCadences] = useState<Record<InterestLevel, number | null>>(DEFAULT_SCAN_CADENCE);
+  // What's typed in a cadence box until it blurs, so it can be cleared and retyped.
+  const [drafts, setDrafts] = useState<Partial<Record<InterestLevel, string>>>({});
   const [skipRecent, setSkipRecent] = useState<boolean>(true);
 
   // App settings state
@@ -52,7 +52,7 @@ export function StageTracking() {
   useEffect(() => {
     if (appSettings) {
       if (appSettings.tracking_level_defaults) {
-        setCadences(parseLevelCadences(appSettings.tracking_level_defaults));
+        setCadences(parseScanCadences(appSettings.tracking_level_defaults));
       }
       setSkipRecent(skipRecentEnabled(appSettings.tracking_skip_recent));
       if (appSettings.default_graph_view) {
@@ -66,22 +66,12 @@ export function StageTracking() {
 
   const saveSettingsMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/settings", {
-        key: "tracking_level_defaults",
-        value: JSON.stringify(cadences),
-      });
-      await apiRequest("POST", "/api/settings", {
-        key: "tracking_skip_recent",
-        value: skipRecent ? "true" : "false",
-      });
-      await apiRequest("POST", "/api/settings", {
-        key: "default_graph_view",
-        value: defaultGraphView,
-      });
-      await apiRequest("POST", "/api/settings", {
-        key: "search_priority",
-        value: searchPriority,
-      });
+      await Promise.all([
+        apiRequest("POST", "/api/settings", { key: "tracking_level_defaults", value: JSON.stringify(cadences) }),
+        apiRequest("POST", "/api/settings", { key: "tracking_skip_recent", value: skipRecent ? "true" : "false" }),
+        apiRequest("POST", "/api/settings", { key: "default_graph_view", value: defaultGraphView }),
+        apiRequest("POST", "/api/settings", { key: "search_priority", value: searchPriority }),
+      ]);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
@@ -92,39 +82,21 @@ export function StageTracking() {
     },
   });
 
-  const handleCadenceChange = (level: InterestLevel, kind: TrackingKind, valueStr: string) => {
-    const val = parseInt(valueStr, 10);
-    if (isNaN(val) || val < 1) return;
-    setCadences((prev) => ({
-      ...prev,
-      [level]: {
-        ...prev[level],
-        [kind]: val,
-      },
-    }));
+  // A whole number of days in range is kept; anything else puts the last good value back.
+  const commitCadence = (level: InterestLevel) => {
+    const val = Number(drafts[level]);
+    if (Number.isInteger(val) && val >= 1 && val <= MAX_CADENCE_DAYS) setCadences((prev) => ({ ...prev, [level]: val }));
+    setDrafts(({ [level]: _, ...rest }) => rest);
   };
 
   const applyCadencePreset = (preset: "balanced" | "aggressive" | "light") => {
+    setDrafts({});
     if (preset === "balanced") {
-      setCadences(DEFAULT_LEVEL_CADENCES);
+      setCadences(DEFAULT_SCAN_CADENCE);
     } else if (preset === "aggressive") {
-      setCadences({
-        none: { info: null, follows: null, posts: null, highlights: null },
-        low: { info: 14, follows: 14, posts: 30, highlights: 30 },
-        medium: { info: 3, follows: 14, posts: 14, highlights: 14 },
-        high: { info: 2, follows: 7, posts: 7, highlights: 7 },
-        very_high: { info: 1, follows: 3, posts: 3, highlights: 3 },
-        extreme: { info: 1, follows: 1, posts: 1, highlights: 1 },
-      });
+      setCadences({ none: null, low: 14, medium: 3, high: 2, very_high: 1, extreme: 1 });
     } else if (preset === "light") {
-      setCadences({
-        none: { info: null, follows: null, posts: null, highlights: null },
-        low: { info: 60, follows: 60, posts: 90, highlights: 90 },
-        medium: { info: 30, follows: 60, posts: 60, highlights: 60 },
-        high: { info: 14, follows: 30, posts: 30, highlights: 30 },
-        very_high: { info: 7, follows: 14, posts: 14, highlights: 14 },
-        extreme: { info: 3, follows: 7, posts: 7, highlights: 7 },
-      });
+      setCadences({ none: null, low: 60, medium: 30, high: 14, very_high: 7, extreme: 3 });
     }
     toast({ title: `Applied ${preset} cadence preset` });
   };
@@ -187,9 +159,8 @@ export function StageTracking() {
                 <TableHeader>
                   <TableRow className="h-8 text-xs">
                     <TableHead className="w-[120px]">Interest Level</TableHead>
-                    {TRACKING_KINDS.map((k) => (
-                      <TableHead key={k}>{TRACKING_KIND_LABEL[k]} (Days)</TableHead>
-                    ))}
+                    <TableHead>Scan every (Days)</TableHead>
+                    <TableHead>Each scan reads</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -198,17 +169,18 @@ export function StageTracking() {
                       <TableCell className="font-medium text-xs py-1">
                         {INTEREST_LEVEL_LABEL[level]}
                       </TableCell>
-                      {TRACKING_KINDS.map((kind) => (
-                        <TableCell key={kind} className="py-1">
-                          <Input
-                            type="number"
-                            min={1}
-                            className="h-7 w-20 text-xs"
-                            value={cadences[level]?.[kind] ?? ""}
-                            onChange={(e) => handleCadenceChange(level, kind, e.target.value)}
-                          />
-                        </TableCell>
-                      ))}
+                      <TableCell className="py-1">
+                        <Input
+                          type="number"
+                          min={1}
+                          max={MAX_CADENCE_DAYS}
+                          className="h-7 w-20 text-xs"
+                          value={drafts[level] ?? cadences[level] ?? ""}
+                          onChange={(e) => setDrafts((prev) => ({ ...prev, [level]: e.target.value }))}
+                          onBlur={() => commitCadence(level)}
+                        />
+                      </TableCell>
+                      <TableCell className="py-1 text-muted-foreground">{scanCapability(level)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

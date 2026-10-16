@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useState, useMemo } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Plus, X, LayoutList, LayoutGrid, Search, ChevronDown, UserPlus, Users, Star, Phone, Mail, ExternalLink, ArrowUpDown, ArrowUp, ArrowDown, Filter, Check } from "lucide-react";
@@ -22,7 +23,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import type { Person, SubGroup } from "@shared/schema";
 import { Link } from "wouter";
 import { PersonDialog } from "@/components/person-dialog";
@@ -480,11 +480,11 @@ export function MembersTab({ members, groupId, subGroups = [] }: MembersTabProps
                           {member.imageUrl && (
                             <AvatarImage
                               src={member.imageUrl}
-                              alt={`${member.firstName} ${member.lastName}`}
+                              alt={formatPersonName(member)}
                             />
                           )}
                           <AvatarFallback>
-                            {getInitials(member.firstName, member.lastName)}
+                            {personInitials(member)}
                           </AvatarFallback>
                         </Avatar>
 
@@ -493,7 +493,7 @@ export function MembersTab({ members, groupId, subGroups = [] }: MembersTabProps
                             className="text-lg font-medium hover:underline cursor-pointer truncate"
                             data-testid={`text-member-name-${member.id}`}
                           >
-                            {member.firstName} {member.lastName}
+                            {formatPersonName(member)}
                           </h3>
                           {(member.company || member.title) && (
                             <div className="flex items-center gap-2 text-sm text-muted-foreground truncate">
@@ -788,7 +788,7 @@ export function MembersTab({ members, groupId, subGroups = [] }: MembersTabProps
                               className="font-medium hover:underline"
                               data-testid={`text-member-name-${member.id}`}
                             >
-                              {member.firstName} {member.lastName}
+                              {formatPersonName(member)}
                             </Link>
                           </td>
                           <td className="py-2 px-3 text-muted-foreground">
@@ -1079,16 +1079,16 @@ function AddMembersDialog({
                     {person.imageUrl && (
                       <AvatarImage
                         src={person.imageUrl}
-                        alt={`${person.firstName} ${person.lastName}`}
+                        alt={formatPersonName(person)}
                       />
                     )}
                     <AvatarFallback className="text-xs">
-                      {getInitials(person.firstName, person.lastName)}
+                      {personInitials(person)}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium">
-                      {person.firstName} {person.lastName}
+                      {formatPersonName(person)}
                     </p>
                     {person.company && (
                       <p className="text-xs text-muted-foreground truncate">

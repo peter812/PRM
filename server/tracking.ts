@@ -1,24 +1,25 @@
-// Interest level → cadence → due dates (account-tracking-plan.md §1–2).
+// Interest level → cadence → due dates (account-tracking-plan.md §1–2,
+// account-scan-plan.md §2).
 //
-// `*_due_at` on social_accounts is the scheduler's only per-account state. A
+// `scan_due_at` on social_accounts is the scheduler's only per-account state. A
 // fresh due date is spread uniformly across the cadence window, and every
 // reschedule after a check adds ±10 % jitter, so accounts that were graded
 // together never keep coming due together.
 import crypto from "crypto";
-import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db } from "./db";
 import { sseManager } from "./middleware/sse";
 import { resolveScrapedAccounts } from "./task-worker";
-import { appSettings, socialAccounts, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
+import { postedBy } from "./storage";
+import { appSettings, instagramHighlights, socialAccountPosts, socialAccounts, trackingJobs, type SocialAccount, type TrackingJob } from "@shared/schema";
 import {
+  DEEP_LEVELS,
   INTEREST_LEVELS,
-  MAX_FOLLOWS,
-  POSTS_COMMENTS_KEY,
+  SCAN_MODE,
   POSTS_COMMENT_LIMIT_KEY,
   POSTS_SCAN_LIMIT_KEY,
   POSTS_VIDEOS_KEY,
   RECENT_CHECK_HOURS,
-  TRACKING_KINDS,
   TRACKING_LEVEL_DEFAULTS_KEY,
   TRACKING_SKIP_RECENT_KEY,
   TRACKING_BIG_ACCOUNTS_NONE_KEY,
@@ -26,13 +27,13 @@ import {
   TRACKING_MENTIONS_QUEUE_INFO_KEY,
   BIG_ACCOUNT_FOLLOWERS,
   bigAccountsNoneEnabled,
-  parseLevelCadences,
   parsePostSettings,
-  resolveCadence,
+  parseScanCadences,
+  scanCadence,
   skipRecentEnabled,
-  type Cadence,
   type InterestLevel,
   type PostSettings,
+  type ScanMode,
   type TrackingKind,
 } from "@shared/interest-level";
 
@@ -40,14 +41,14 @@ export const INSTAGRAM_TYPE_ID = "00000000-0000-0000-0001-000000000001";
 
 const DAY_MS = 86_400_000;
 
-export async function levelCadences(): Promise<Record<InterestLevel, Cadence>> {
+export async function levelCadences(): Promise<Record<InterestLevel, number | null>> {
   const [row] = await db.select().from(appSettings).where(eq(appSettings.key, TRACKING_LEVEL_DEFAULTS_KEY));
-  return parseLevelCadences(row?.value);
+  return parseScanCadences(row?.value);
 }
 
-/** The Posts tab's settings, sent to prm-stories with every tracking run. */
+/** The Posts tab's settings, sent to prm-stories with every tracking run. Whether a job reads comments is its level's call (`comments` on the job). */
 export async function postSettings(): Promise<PostSettings> {
-  const keys = [POSTS_COMMENTS_KEY, POSTS_COMMENT_LIMIT_KEY, POSTS_SCAN_LIMIT_KEY, POSTS_VIDEOS_KEY];
+  const keys = [POSTS_COMMENT_LIMIT_KEY, POSTS_SCAN_LIMIT_KEY, POSTS_VIDEOS_KEY];
   const rows = await db.select().from(appSettings).where(inArray(appSettings.key, keys));
   return parsePostSettings(Object.fromEntries(rows.map((r) => [r.key, r.value])));
 }
@@ -83,7 +84,7 @@ export async function applyBigAccountRule(ids?: string[]): Promise<void> {
   if (ids) conditions.push(inArray(socialAccounts.id, ids));
   await db
     .update(socialAccounts)
-    .set({ interestLevel: "none", infoEveryDays: null, followsEveryDays: null, postsEveryDays: null, highlightsEveryDays: null, infoDueAt: null, followsDueAt: null, postsDueAt: null, highlightsDueAt: null })
+    .set({ interestLevel: "none", scanEveryDays: null, scanDueAt: null })
     .where(and(...conditions));
 }
 
@@ -103,16 +104,15 @@ function jitteredDue(days: number | null): Date | null {
   return days == null ? null : new Date(Date.now() + days * (0.9 + Math.random() * 0.2) * DAY_MS);
 }
 
-const DUE_COLUMN = { info: "infoDueAt", follows: "followsDueAt", posts: "postsDueAt", highlights: "highlightsDueAt" } as const;
+/** The sections a job can read; each stamps its own `*_checked_at`. */
+export type Section = Exclude<TrackingKind, "scan">;
 const CHECKED_COLUMN = { info: "infoCheckedAt", follows: "followsCheckedAt", posts: "postsCheckedAt", highlights: "highlightsCheckedAt" } as const;
-const OVERRIDE_COLUMN = { info: "infoEveryDays", follows: "followsEveryDays", posts: "postsEveryDays", highlights: "highlightsEveryDays" } as const;
 
-export type TrackingPatch = Partial<Pick<SocialAccount, "interestLevel" | "infoEveryDays" | "followsEveryDays" | "postsEveryDays" | "highlightsEveryDays">>;
+export type TrackingPatch = Partial<Pick<SocialAccount, "interestLevel" | "scanEveryDays">>;
 
 /**
- * Change an account's level and/or cadence overrides. A level change clears the
- * overrides (the UI says so) and re-spreads every due date; an override change
- * re-spreads only its own kind.
+ * Change an account's level and/or scan cadence override. A level change
+ * clears the override (the UI says so); either change re-spreads the due date.
  */
 export async function updateTracking(account: SocialAccount, patch: TrackingPatch): Promise<void> {
   const set: Record<string, unknown> = {};
@@ -122,41 +122,28 @@ export async function updateTracking(account: SocialAccount, patch: TrackingPatc
     set.interestLevel = patch.interestLevel;
     set.interestLevelManual = true;
   }
-  const kindsToSpread = new Set<TrackingKind>();
-  if (levelChanged) {
-    for (const k of TRACKING_KINDS) {
-      set[OVERRIDE_COLUMN[k]] = null;
-      kindsToSpread.add(k);
-    }
-  } else {
-    for (const k of TRACKING_KINDS) {
-      const col = OVERRIDE_COLUMN[k];
-      if (patch[col] !== undefined && patch[col] !== account[col]) {
-        set[col] = patch[col];
-        kindsToSpread.add(k);
-      }
-    }
-  }
-  if (kindsToSpread.size) {
-    const cadence = resolveCadence({ ...account, ...(set as Partial<SocialAccount>) }, await levelCadences());
-    for (const k of kindsToSpread) set[DUE_COLUMN[k]] = spreadDue(cadence[k]);
+  if (levelChanged) set.scanEveryDays = null;
+  else if (patch.scanEveryDays !== undefined && patch.scanEveryDays !== account.scanEveryDays) set.scanEveryDays = patch.scanEveryDays;
+  if (levelChanged || "scanEveryDays" in set) {
+    set.scanDueAt = spreadDue(scanCadence({ ...account, ...(set as Partial<SocialAccount>) }, await levelCadences()));
   }
   if (Object.keys(set).length) await db.update(socialAccounts).set(set).where(eq(socialAccounts.id, account.id));
 }
 
-/** A check of `kind` just finished: stamp it and roll the due date forward. */
-export async function markChecked(accountId: string, kind: TrackingKind): Promise<void> {
-  const [account] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, accountId));
-  if (!account) return;
-  const cadence = resolveCadence(account, await levelCadences());
-  await db
-    .update(socialAccounts)
-    .set({ [CHECKED_COLUMN[kind]]: new Date(), [DUE_COLUMN[kind]]: jitteredDue(cadence[kind]) })
-    .where(eq(socialAccounts.id, accountId));
+/** A section just ran, by a scan or a job of its own: stamp it. Only a scan moves the due date (`markScanned`). */
+export async function markChecked(accountId: string, section: Section): Promise<void> {
+  await db.update(socialAccounts).set({ [CHECKED_COLUMN[section]]: new Date() }).where(eq(socialAccounts.id, accountId));
 }
 
-const DUE_SQL_COLUMN = { info: "info_due_at", follows: "follows_due_at", posts: "posts_due_at", highlights: "highlights_due_at" } as const;
-const OVERRIDE_SQL_COLUMN = { info: "info_every_days", follows: "follows_every_days", posts: "posts_every_days", highlights: "highlights_every_days" } as const;
+/** A scan just finished: stamp it and roll the due date forward. */
+export async function markScanned(accountId: string): Promise<void> {
+  const [account] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, accountId));
+  if (!account) return;
+  await db
+    .update(socialAccounts)
+    .set({ scanCheckedAt: new Date(), scanDueAt: jitteredDue(scanCadence(account, await levelCadences())) })
+    .where(eq(socialAccounts.id, accountId));
+}
 
 /**
  * While nothing is auto-tracking, a lapsed due date is moved forward by whole
@@ -166,19 +153,16 @@ const OVERRIDE_SQL_COLUMN = { info: "info_every_days", follows: "follows_every_d
  */
 export async function rollForwardDueDates(): Promise<void> {
   const defaults = await levelCadences();
-  for (const kind of TRACKING_KINDS) {
-    const due = sql.identifier(DUE_SQL_COLUMN[kind]);
-    const levelDays = sql.join(
-      INTEREST_LEVELS.map((l) => sql`WHEN ${l} THEN ${defaults[l][kind]}::int`),
-      sql` `,
-    );
-    const days = sql`COALESCE(${sql.identifier(OVERRIDE_SQL_COLUMN[kind])}, CASE interest_level ${levelDays} END)`;
-    await db.execute(sql`
-      UPDATE social_accounts
-      SET ${due} = ${due} + (floor(extract(epoch FROM now() - ${due}) / (${days} * 86400)) + 1) * ${days} * interval '1 day'
-      WHERE ${due} <= now() AND ${days} >= 1
-    `);
-  }
+  const levelDays = sql.join(
+    INTEREST_LEVELS.map((l) => sql`WHEN ${l} THEN ${defaults[l]}::int`),
+    sql` `,
+  );
+  const days = sql`COALESCE(scan_every_days, CASE interest_level ${levelDays} END)`;
+  await db.execute(sql`
+    UPDATE social_accounts
+    SET scan_due_at = scan_due_at + (floor(extract(epoch FROM now() - scan_due_at) / (${days} * 86400)) + 1) * ${days} * interval '1 day'
+    WHERE scan_due_at <= now() AND ${days} >= 1
+  `);
 }
 
 /** Accounts with a me person as owner — the ones whose network the "me" rule grades. */
@@ -208,62 +192,167 @@ export async function applyMeRule(candidateIds?: string[]): Promise<void> {
   if (candidateIds) conditions.push(inArray(socialAccounts.id, candidateIds));
   await db
     .update(socialAccounts)
-    .set({
-      interestLevel: "medium",
-      infoDueAt: spreadDue(medium.info),
-      followsDueAt: spreadDue(medium.follows),
-      postsDueAt: spreadDue(medium.posts),
-      highlightsDueAt: spreadDue(medium.highlights),
-    })
+    .set({ interestLevel: "medium", scanDueAt: spreadDue(medium) })
     .where(and(...conditions));
 }
 
 // ── The job queue (account-tracking-plan.md §2.2–2.4) ──
 
-/** What the service needs to run one job. */
-export type ClaimedJob = { id: string; kind: TrackingKind; username: string; needJoinedAt: boolean };
+type JobBase = {
+  id: string;
+  username: string;
+  /** The date joined never changes, so the About dialog opens only until the account has one. */
+  needJoinedAt: boolean;
+};
 
-type ClaimedRow = { id: string; kind: TrackingKind; username: string; joined_at: Date | null };
-// The date joined never changes, so an info check opens the About dialog only
-// until the account has one.
-const toClaimed = (r: ClaimedRow): ClaimedJob => ({
-  id: r.id,
-  kind: r.kind,
-  username: r.username,
-  needJoinedAt: r.kind === "info" && r.joined_at == null,
-});
+/** A scan job (account-scan-plan.md §2, §3.1). A lite scan reads info only; a full one adds posts, and highlights at a deep level. */
+export type ScanJob = JobBase & {
+  kind: "scan";
+  /** Full scans: walk the whole grid when PRM has never had this account's posts, else read the recent ones. */
+  posts?: "recent" | "full";
+  /** Full scans at a deep level. */
+  comments?: boolean;
+  /** Full scans at a deep level, unless the account's stories are skipped. */
+  highlights?: boolean;
+  /** What PRM already holds, so the service dedupes without asking mid-scan. */
+  known: KnownContent;
+};
+
+/** A single-section job someone asked for (Refresh / Run now). */
+export type SectionJob = JobBase & {
+  kind: Exclude<TrackingKind, "scan">;
+  /** Posts jobs at a deep level. */
+  comments?: boolean;
+};
+
+/** What the service needs to run one job. */
+export type ClaimedJob = ScanJob | SectionJob;
+
+export type KnownContent = {
+  /** Live, non-story posts the account is on, newest first. */
+  posts: { pk: string; postedAt: string | null; pinned: boolean }[];
+  storyPks: string[];
+  /** Highlight sets PRM holds live. */
+  highlightIds: string[];
+};
+
+type ClaimedRow = {
+  id: string;
+  kind: TrackingKind;
+  scan_mode: ScanMode | null;
+  account_id: string;
+  username: string;
+  interest_level: string;
+  joined_at: Date | null;
+  posts_checked_at: Date | null;
+  skip_stories: boolean;
+};
+
+/** The claimed jobs `ids`, with what their accounts say the service should do. */
+async function toClaimed(ids: string[]): Promise<ClaimedJob[]> {
+  if (!ids.length) return [];
+  const { rows } = await db.execute<ClaimedRow>(sql`
+    SELECT j.id, j.kind, j.scan_mode, sa.id AS account_id, sa.username, sa.interest_level, sa.joined_at, sa.posts_checked_at, sa.skip_stories
+    FROM tracking_jobs j JOIN social_accounts sa ON sa.id = j.social_account_id
+    WHERE ${inArray(sql`j.id`, ids)}
+  `);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const jobs = ids.map((id) => claimedJob(byId.get(id)!));
+  const scans = jobs.filter((j): j is ScanJob => j.kind === "scan");
+  const accountOf = (j: ClaimedJob) => byId.get(j.id)!.account_id;
+  const known = await knownContent(
+    scans.filter((j) => j.posts).map(accountOf),
+    scans.filter((j) => j.highlights).map(accountOf),
+  );
+  for (const j of scans) j.known = known(accountOf(j));
+  return jobs;
+}
+
+function claimedJob(r: ClaimedRow): ClaimedJob {
+  const deep = DEEP_LEVELS.includes(r.interest_level);
+  const base = { id: r.id, username: r.username, needJoinedAt: (r.kind === "info" || r.kind === "scan") && r.joined_at == null };
+  if (r.kind !== "scan") return { ...base, kind: r.kind, ...(r.kind === "posts" && { comments: deep }) };
+  const job: ScanJob = { ...base, kind: "scan", known: { posts: [], storyPks: [], highlightIds: [] } };
+  if (r.scan_mode === "full") {
+    job.posts = r.posts_checked_at == null ? "full" : "recent";
+    job.comments = deep;
+    job.highlights = deep && !r.skip_stories;
+  }
+  return job;
+}
 
 /**
- * FROM/WHERE over `sa` (the account) and `k` (kind, due, checked): one row per
- * account and kind the schedule would pick up at `at`. Shared by the claim and
- * the Tracking page's preview so the two can't drift.
+ * What PRM holds for the accounts whose scans read posts (`postAccounts`) and
+ * highlights (`highlightAccounts`): three queries for the whole claim, then a
+ * lookup per account.
+ */
+async function knownContent(postAccounts: string[], highlightAccounts: string[]): Promise<(accountId: string) => KnownContent> {
+  const posts = new Map<string, KnownContent["posts"]>();
+  const storyPks = new Map<string, string[]>();
+  const highlightIds = new Map<string, string[]>();
+  const push = <T,>(m: Map<string, T[]>, k: string, v: T) => (m.get(k) ?? m.set(k, []).get(k)!).push(v);
+  if (postAccounts.length) {
+    const wanted = new Set(postAccounts);
+    const rows = await db
+      .select({
+        accountId: socialAccountPosts.socialAccountId,
+        coauthors: socialAccountPosts.coauthorAccountIds,
+        pk: socialAccountPosts.instagramPk,
+        postedAt: socialAccountPosts.postedAt,
+        pinned: sql<boolean>`COALESCE((${socialAccountPosts.metadata}->>'isPinned')::boolean, false)`,
+      })
+      .from(socialAccountPosts)
+      .where(and(
+        or(...postAccounts.map(postedBy)),
+        sql`${socialAccountPosts.postType} <> 'story'`,
+        eq(socialAccountPosts.isDeleted, false),
+        sql`${socialAccountPosts.instagramPk} IS NOT NULL`,
+      ))
+      .orderBy(sql`${socialAccountPosts.postedAt} DESC NULLS LAST`);
+    for (const r of rows) {
+      const post = { pk: r.pk!, postedAt: r.postedAt?.toISOString() ?? null, pinned: r.pinned };
+      // A post is on its poster's grid and on each coauthor's.
+      const on = new Set([r.accountId, ...((r.coauthors as string[] | null) ?? [])].filter((id) => wanted.has(id)));
+      for (const id of on) push(posts, id, post);
+    }
+  }
+  if (highlightAccounts.length) {
+    const stories = await db
+      .select({ accountId: socialAccountPosts.socialAccountId, pk: socialAccountPosts.instagramPk })
+      .from(socialAccountPosts)
+      .where(and(inArray(socialAccountPosts.socialAccountId, highlightAccounts), eq(socialAccountPosts.postType, "story"), sql`${socialAccountPosts.instagramPk} IS NOT NULL`));
+    for (const r of stories) push(storyPks, r.accountId, r.pk!);
+    const sets = await db
+      .select({ accountId: instagramHighlights.socialAccountId, id: instagramHighlights.instagramId })
+      .from(instagramHighlights)
+      .where(and(inArray(instagramHighlights.socialAccountId, highlightAccounts), sql`${instagramHighlights.deletedSeenAt} IS NULL`));
+    for (const r of sets) push(highlightIds, r.accountId, r.id);
+  }
+  return (id) => ({ posts: posts.get(id) ?? [], storyPks: storyPks.get(id) ?? [], highlightIds: highlightIds.get(id) ?? [] });
+}
+
+/** SQL: the scan mode an account's level gets. */
+const scanModeFor = (level: SQL) =>
+  sql`CASE ${level} ${sql.join(INTEREST_LEVELS.map((l) => sql`WHEN ${l} THEN ${SCAN_MODE[l]}::text`), sql` `)} END`;
+
+/**
+ * FROM/WHERE over `sa`: one row per account the schedule would scan at `at`.
+ * Shared by the claim and the Tracking page's preview so the two can't drift.
  *
- * The blocker rule here must match `trackingBlocker` in shared/interest-level.ts,
- * which the account page uses: private accounts get only info checks, and
- * follows are skipped above MAX_FOLLOWS. Blocked rows are left out here rather
- * than filtered afterwards so they can't crowd the due list forever. A kind
- * checked in the last RECENT_CHECK_HOURS (by hand, say) stays due but waits.
- * An account whose profile 404'd (an open not_found issue) waits for a person
- * to rename, dismiss or delete it; only manual jobs reach it meanwhile.
+ * A scan always runs, even on a private account: its info section does, and
+ * the service skips the rest. Followers & following are never scheduled, only
+ * queued by hand. An account scanned in the last RECENT_CHECK_HOURS (by hand,
+ * say) stays due but waits. An account with any job open waits for it. An
+ * account whose profile 404'd (an open not_found issue) waits for a person to
+ * rename, dismiss or delete it; only manual jobs reach it meanwhile.
  */
 function dueAt(at: SQL, skipRecent: boolean): SQL {
-  const notRecent = skipRecent ? sql`AND NOT (${recentlyChecked(sql`k.checked`, at)})` : sql``;
+  const notRecent = skipRecent ? sql`AND NOT (${recentlyChecked(sql`sa.scan_checked_at`, at)})` : sql``;
   return sql`
     FROM social_accounts sa
-    CROSS JOIN LATERAL (VALUES
-      ('info', sa.info_due_at, sa.info_checked_at),
-      ('follows', sa.follows_due_at, sa.follows_checked_at),
-      ('posts', sa.posts_due_at, sa.posts_checked_at),
-      ('highlights', sa.highlights_due_at, sa.highlights_checked_at)
-    ) AS k(kind, due, checked)
     WHERE sa.type_id = ${INSTAGRAM_TYPE_ID}
-      AND k.due <= ${at}
+      AND sa.scan_due_at <= ${at}
       ${notRecent}
-      AND (k.kind = 'info' OR (
-        sa.is_private IS NOT TRUE
-        AND (k.kind <> 'highlights' OR NOT sa.skip_stories)
-        AND (k.kind <> 'follows' OR GREATEST(COALESCE(sa.reported_followers_count, 0), COALESCE(sa.reported_following_count, 0)) <= ${MAX_FOLLOWS})
-      ))
       AND NOT EXISTS (SELECT 1 FROM tracking_jobs j WHERE j.social_account_id = sa.id AND j.status IN ('queued', 'running'))
       AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = sa.id AND i.kind = 'not_found' AND i.status = 'open')`;
 }
@@ -271,8 +360,8 @@ function dueAt(at: SQL, skipRecent: boolean): SQL {
 /**
  * Claim up to `limit` jobs for `importerId`, reserved on the spot (importer
  * set) so two importers (or the morning tick and a manual kick) can never take
- * the same one: queued manual jobs first (oldest first), then one schedule job
- * per due account and kind, most overdue first. They stay queued, and so
+ * the same one: queued manual jobs first (oldest first), then one scan per
+ * due account, most overdue first. They stay queued, and so
  * removable, until the service starts each one (POST .../jobs/:id/start). The
  * caller stamps the run id once it has one, or hands the jobs back with
  * `releaseTrackingJobs`.
@@ -280,38 +369,36 @@ function dueAt(at: SQL, skipRecent: boolean): SQL {
 export async function claimTrackingJobs(importerId: string, limit: number, opts: { manualOnly?: boolean } = {}): Promise<ClaimedJob[]> {
   const skipRecent = opts.manualOnly ? false : await skipRecentlyChecked();
   const claimed = await db.transaction(async (tx) => {
-    const manual = await tx.execute<ClaimedRow>(sql`
+    const manual = await tx.execute<{ id: string; created_at: Date }>(sql`
       UPDATE tracking_jobs j
       SET importer_id = ${importerId}, attempts = j.attempts + 1
-      FROM social_accounts sa
-      WHERE sa.id = j.social_account_id
-        AND j.id IN (
+      WHERE j.id IN (
           SELECT id FROM tracking_jobs
           WHERE status = 'queued' AND origin = 'manual' AND importer_id IS NULL
           ORDER BY created_at
           LIMIT ${limit}
           FOR UPDATE SKIP LOCKED
         )
-      RETURNING j.id, j.kind, sa.username, sa.joined_at
+      RETURNING j.id, j.created_at
     `);
-    const remaining = limit - manual.rows.length;
-    if (opts.manualOnly || remaining <= 0) return manual.rows.map(toClaimed);
+    const manualIds = manual.rows.sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at)).map((r) => r.id);
+    const remaining = limit - manualIds.length;
+    if (opts.manualOnly || remaining <= 0) return manualIds;
 
-    const due = await tx.execute<ClaimedRow>(sql`
-      INSERT INTO tracking_jobs (social_account_id, kind, origin, status, importer_id, attempts)
-      SELECT d.id, d.kind, 'schedule', 'queued', ${importerId}, 1
+    const due = await tx.execute<{ id: string }>(sql`
+      INSERT INTO tracking_jobs (social_account_id, kind, scan_mode, origin, status, importer_id, attempts)
+      SELECT d.id, 'scan', d.scan_mode, 'schedule', 'queued', ${importerId}, 1
       FROM (
-        SELECT sa.id, k.kind
+        SELECT sa.id, ${scanModeFor(sql`sa.interest_level`)} AS scan_mode
         ${dueAt(sql`now()`, skipRecent)}
-        ORDER BY k.due ASC
+        ORDER BY sa.scan_due_at ASC
         LIMIT ${remaining}
         FOR UPDATE OF sa SKIP LOCKED
       ) d
-      RETURNING id, kind, (SELECT username FROM social_accounts WHERE id = social_account_id) AS username,
-                (SELECT joined_at FROM social_accounts WHERE id = social_account_id) AS joined_at
+      RETURNING id
     `);
-    return [...manual.rows, ...due.rows].map(toClaimed);
-  });
+    return [...manualIds, ...due.rows.map((r) => r.id)];
+  }).then(toClaimed);
   if (claimed.length > 0) {
     sseManager.broadcast("tracking_job.updated", { action: "claimed", count: claimed.length });
   }
@@ -324,6 +411,8 @@ export type UpcomingCheck = {
   nickname: string | null;
   interestLevel: string;
   kind: TrackingKind;
+  /** Scans: lite or full. */
+  scanMode: ScanMode | null;
   origin: "manual" | "schedule";
   /** Schedule rows: the due date. Manual rows: when it was queued. */
   at: Date;
@@ -336,20 +425,20 @@ export type UpcomingCheck = {
  */
 export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingCheck[]> {
   const skipRecent = await skipRecentlyChecked();
-  const rows = await db.execute<{ id: string; username: string; nickname: string | null; interest_level: string; kind: TrackingKind; origin: "manual" | "schedule"; at: Date }>(sql`
+  const rows = await db.execute<{ id: string; username: string; nickname: string | null; interest_level: string; kind: TrackingKind; scan_mode: ScanMode | null; origin: "manual" | "schedule"; at: Date }>(sql`
     WITH manual AS (
-      SELECT j.social_account_id AS id, j.kind, 'manual' AS origin, j.created_at AS at, 0 AS rank
+      SELECT j.social_account_id AS id, j.kind, j.scan_mode, 'manual' AS origin, j.created_at AS at, 0 AS rank
       FROM tracking_jobs j
       WHERE j.status = 'queued' AND j.origin = 'manual' AND j.importer_id IS NULL
       ORDER BY j.created_at
       LIMIT ${limit}
     ), scheduled AS (
-      SELECT sa.id, k.kind, 'schedule' AS origin, k.due AS at, 1 AS rank
+      SELECT sa.id, 'scan' AS kind, ${scanModeFor(sql`sa.interest_level`)} AS scan_mode, 'schedule' AS origin, sa.scan_due_at AS at, 1 AS rank
       ${dueAt(sql`${at.toISOString()}::timestamptz`, skipRecent)}
-      ORDER BY k.due ASC
+      ORDER BY sa.scan_due_at ASC
       LIMIT greatest(${limit} - (SELECT count(*) FROM manual), 0)
     )
-    SELECT u.id, social_accounts.username, social_accounts.nickname, social_accounts.interest_level, u.kind, u.origin, u.at
+    SELECT u.id, social_accounts.username, social_accounts.nickname, social_accounts.interest_level, u.kind, u.scan_mode, u.origin, u.at
     FROM (SELECT * FROM manual UNION ALL SELECT * FROM scheduled) u
     JOIN social_accounts ON social_accounts.id = u.id
     ORDER BY u.rank, u.at
@@ -360,6 +449,7 @@ export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingC
     nickname: r.nickname,
     interestLevel: r.interest_level,
     kind: r.kind,
+    scanMode: r.scan_mode,
     origin: r.origin,
     at: r.at,
   }));
@@ -431,7 +521,8 @@ export async function requeueJob(jobId: string): Promise<void> {
  * to spare are queued again, the rest are failed.
  */
 export async function failUnfinishedJobs(runId: string, runStatus: string): Promise<void> {
-  const unfinished = and(eq(trackingJobs.runId, runId), inArray(trackingJobs.status, OPEN));
+  // A scan whose bundle PRM holds is the ingest's to finish, not the run's.
+  const unfinished = and(eq(trackingJobs.runId, runId), inArray(trackingJobs.status, OPEN), isNull(trackingJobs.scanReceivedAt));
   await db
     .update(trackingJobs)
     .set(REQUEUE)
@@ -443,10 +534,13 @@ export async function failUnfinishedJobs(runId: string, runStatus: string): Prom
   sseManager.broadcast("tracking_job.updated", { runId, action: "run_ended" });
 }
 
+/** A scan queued by hand reads everything the account's level allows. */
+const manualScanMode = (kind: TrackingKind): ScanMode | null => (kind === "scan" ? "full" : null);
+
 export async function queueManualJob(accountId: string, kind: TrackingKind): Promise<TrackingJob> {
   const [job] = await db
     .insert(trackingJobs)
-    .values({ socialAccountId: accountId, kind, origin: "manual" })
+    .values({ socialAccountId: accountId, kind, scanMode: manualScanMode(kind), origin: "manual" })
     .returning();
   sseManager.broadcast("tracking_job.updated", { id: job.id, status: job.status, action: "queued" });
   return job;
@@ -478,7 +572,7 @@ export async function resolveMentionedAccounts(handles: string[]): Promise<Queue
 
 /** The Instagram accounts Me's accounts follow — ones with a username, the only ones a job can open. */
 const FOLLOWED_BY_ME = sql`
-  SELECT DISTINCT f.followed_id AS id, sa.info_checked_at, sa.follows_checked_at, sa.posts_checked_at, sa.highlights_checked_at
+  SELECT DISTINCT f.followed_id AS id, sa.scan_checked_at, sa.info_checked_at, sa.follows_checked_at, sa.posts_checked_at, sa.highlights_checked_at
   FROM social_follows f
   JOIN social_accounts sa ON sa.id = f.followed_id
   WHERE f.follower_id IN (${ME_ACCOUNTS})
@@ -502,7 +596,7 @@ const hasOpenJob = (kind: TrackingKind) => sql`EXISTS (
   WHERE j.social_account_id = d.id AND j.kind = ${kind} AND j.status IN ('queued', 'running')
 )`;
 
-const CHECKED_SQL_COLUMN = { info: sql`d.info_checked_at`, follows: sql`d.follows_checked_at`, posts: sql`d.posts_checked_at`, highlights: sql`d.highlights_checked_at` } as const;
+const CHECKED_SQL_COLUMN = { scan: sql`d.scan_checked_at`, info: sql`d.info_checked_at`, follows: sql`d.follows_checked_at`, posts: sql`d.posts_checked_at`, highlights: sql`d.highlights_checked_at` } as const;
 
 export type QueuedBatch = { batch: BatchSummary | null; skippedRecent: number };
 
@@ -519,8 +613,8 @@ async function queueBatch(kind: TrackingKind, source: SQL): Promise<QueuedBatch>
   const recent = recentlyChecked(CHECKED_SQL_COLUMN[kind]);
   const skipRecent = await skipRecentlyChecked();
   const inserted = await db.execute<{ id: string }>(sql`
-    INSERT INTO tracking_jobs (social_account_id, kind, origin, batch_id)
-    SELECT d.id, ${kind}, 'manual', ${batchId}
+    INSERT INTO tracking_jobs (social_account_id, kind, scan_mode, origin, batch_id)
+    SELECT d.id, ${kind}, ${manualScanMode(kind)}, 'manual', ${batchId}
     FROM (${source}) d
     WHERE NOT ${hasOpenJob(kind)} ${skipRecent ? sql`AND NOT (${recent})` : sql``}
     RETURNING id
@@ -549,7 +643,7 @@ export function queueFollowingRefresh(kind: TrackingKind): Promise<QueuedBatch> 
 export function queueAccountsRefresh(kind: TrackingKind, accountIds: string[]): Promise<QueuedBatch> {
   if (!accountIds.length) return Promise.resolve({ batch: null, skippedRecent: 0 });
   const source = sql`
-    SELECT ${socialAccounts.id} AS id, info_checked_at, follows_checked_at, posts_checked_at, highlights_checked_at FROM social_accounts
+    SELECT ${socialAccounts.id} AS id, scan_checked_at, info_checked_at, follows_checked_at, posts_checked_at, highlights_checked_at FROM social_accounts
     WHERE ${inArray(socialAccounts.id, accountIds)}
       AND ${socialAccounts.typeId} = ${INSTAGRAM_TYPE_ID}
       AND ${socialAccounts.username} IS NOT NULL AND ${socialAccounts.username} <> ''`;

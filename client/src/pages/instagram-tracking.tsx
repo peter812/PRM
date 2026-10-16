@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,42 +8,44 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  DEFAULT_LEVEL_CADENCES,
+  DEFAULT_SCAN_CADENCE,
   INTEREST_LEVELS,
   INTEREST_LEVEL_LABEL,
+  MAX_CADENCE_DAYS,
   RECENT_CHECK_HOURS,
-  TRACKING_KINDS,
-  TRACKING_KIND_LABEL,
   TRACKING_SKIP_RECENT_KEY,
   TRACKING_BIG_ACCOUNTS_NONE_KEY,
   BIG_ACCOUNT_FOLLOWERS,
   bigAccountsNoneEnabled,
-  parseLevelCadences,
+  parseScanCadences,
+  scanCapability,
   skipRecentEnabled,
   type InterestLevel,
-  type TrackingKind,
 } from "@shared/interest-level";
 import type { Settings } from "@/lib/instagram";
 
-/** How often each interest level re-checks each thing, in days (account-tracking-plan.md §1.2). */
+/** How often each interest level scans an account, in days (account-scan-plan.md §1). */
 function LevelDefaultsCard({ settings }: { settings: Settings }) {
   const { toast } = useToast();
-  const stored = parseLevelCadences(settings.tracking_level_defaults);
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const key = (l: InterestLevel, k: TrackingKind) => `${l}.${k}`;
+  // The cadences as last saved here, ahead of the settings refetch, so two quick edits don't overwrite each other.
+  const [stored, setStored] = useState(() => parseScanCadences(settings.tracking_level_defaults));
+  useEffect(() => setStored(parseScanCadences(settings.tracking_level_defaults)), [settings.tracking_level_defaults]);
+  const [draft, setDraft] = useState<Partial<Record<InterestLevel, string>>>({});
   const save = useMutation({
     mutationFn: async (next: typeof stored) =>
       apiRequest("POST", "/api/settings", { key: "tracking_level_defaults", value: JSON.stringify(next) }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/settings"] }),
     onError: (error: Error) => toast({ title: "Failed to save cadences", description: error.message, variant: "destructive" }),
   });
-  const commit = (l: InterestLevel, k: TrackingKind) => {
-    const text = draft[key(l, k)];
+  const commit = (l: InterestLevel) => {
+    const text = draft[l];
     if (text === undefined) return;
     const n = Number(text);
-    setDraft((d) => { const { [key(l, k)]: _, ...rest } = d; return rest; });
-    if (!Number.isInteger(n) || n < 1 || n === stored[l][k]) return;
-    save.mutate({ ...stored, [l]: { ...stored[l], [k]: n } });
+    setDraft((d) => { const { [l]: _, ...rest } = d; return rest; });
+    if (!Number.isInteger(n) || n < 1 || n > MAX_CADENCE_DAYS || n === stored[l]) return;
+    const next = { ...stored, [l]: n };
+    setStored(next);
+    save.mutate(next);
   };
 
   return (
@@ -51,7 +53,7 @@ function LevelDefaultsCard({ settings }: { settings: Settings }) {
       <CardHeader>
         <CardTitle className="text-base">Interest level cadences</CardTitle>
         <CardDescription>
-          Days between checks for accounts at each level. An account can override these on its own page; changing its level
+          Days between scans for accounts at each level. Low reads the profile only; medium and up read posts too, and high and up comments and highlights. An account can override these on its own page; changing its level
           resets it to these.
         </CardDescription>
       </CardHeader>
@@ -60,27 +62,27 @@ function LevelDefaultsCard({ settings }: { settings: Settings }) {
           <TableHeader>
             <TableRow>
               <TableHead>Level</TableHead>
-              {TRACKING_KINDS.map((k) => <TableHead key={k}>{TRACKING_KIND_LABEL[k]}</TableHead>)}
+              <TableHead>Scan every (days)</TableHead>
+              <TableHead>Each scan reads</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {INTEREST_LEVELS.filter((l) => l !== "none").map((l) => (
               <TableRow key={l}>
                 <TableCell className="font-medium">{INTEREST_LEVEL_LABEL[l]}</TableCell>
-                {TRACKING_KINDS.map((k) => (
-                  <TableCell key={k}>
-                    <Input
-                      type="number"
-                      min={1}
-                      className="h-8 w-20"
-                     
-                      value={draft[key(l, k)] ?? String(stored[l][k] ?? DEFAULT_LEVEL_CADENCES[l][k] ?? "")}
-                      onChange={(e) => setDraft((d) => ({ ...d, [key(l, k)]: e.target.value }))}
-                      onBlur={() => commit(l, k)}
-                      data-testid={`input-cadence-${l}-${k}`}
-                    />
-                  </TableCell>
-                ))}
+                <TableCell>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={MAX_CADENCE_DAYS}
+                    className="h-8 w-20"
+                    value={draft[l] ?? String(stored[l] ?? DEFAULT_SCAN_CADENCE[l] ?? "")}
+                    onChange={(e) => setDraft((d) => ({ ...d, [l]: e.target.value }))}
+                    onBlur={() => commit(l)}
+                    data-testid={`input-cadence-${l}`}
+                  />
+                </TableCell>
+                <TableCell className="text-muted-foreground">{scanCapability(l)}</TableCell>
               </TableRow>
             ))}
           </TableBody>

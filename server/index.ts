@@ -16,12 +16,27 @@ import { startOsintScanRunner } from "./osint-scan-queue";
 import { startSummaryRunner } from "./summary-queue";
 import { startStoriesScheduler } from "./stories-scheduler";
 import { startFaceAutoAssignScheduler } from "./recognition";
+import { startFaceClusteringScheduler } from "./face-clusters";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { etagMiddleware } from "./middleware/etag-cache";
 import { prmS3DirectMiddleware } from "./middleware/prm-s3-direct";
 import { requestIdMiddleware } from "./middleware/request-id";
 
 const app = express();
+
+// Node's requestTimeout is server-wide and raised to an hour below for scan bundles; every
+// other request still gets Node's 5-minute default to finish sending its body.
+const SCAN_UPLOAD = /^\/api\/v1\/tracking\/jobs\/[^/]+\/scan$/;
+app.use((req, res, next) => {
+  if (req.method === "POST" && SCAN_UPLOAD.test(req.path)) return next();
+  const timer = setTimeout(() => {
+    if (!req.complete) req.socket.destroy();
+  }, 5 * 60_000);
+  const clear = () => clearTimeout(timer);
+  res.on("finish", clear);
+  res.on("close", clear);
+  next();
+});
 
 declare module 'http' {
   interface IncomingMessage {
@@ -172,6 +187,10 @@ app.use(prmS3DirectMiddleware);
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || '5000', 10);
+  // A deep scan's bundle (POST /api/v1/tracking/jobs/:id/scan) can be a few hundred MB; Node's
+  // 5-minute default would cut slow uploads off. The timeout is server-wide, so the middleware
+  // at the top puts the 5 minutes back on every other route.
+  server.requestTimeout = 60 * 60_000;
   const isWindows = process.platform === 'win32';
   server.listen({
     port,
@@ -187,5 +206,6 @@ app.use(prmS3DirectMiddleware);
     startSummaryRunner();
     startStoriesScheduler();
     startFaceAutoAssignScheduler();
+    startFaceClusteringScheduler();
   });
 })();

@@ -14,7 +14,6 @@ import { useToast } from "@/hooks/use-toast";
 const DEFAULT_PROMPT = "Return 2 sentences explaining what is happening in this image.";
 
 type AiSettings = {
-  enabled: boolean;
   visionPrompt: string;
   autoDescribeImages: boolean;
   vision: ModelSelection;
@@ -64,7 +63,7 @@ export default function IntelligenceImagesSettingsPage() {
     saveMutation.mutate({ visionPrompt: prompt });
   };
 
-  const aiReady = settings?.enabled && !!settings?.vision?.model;
+  const aiReady = !!settings?.vision?.model;
   const visionChanged = vision.model !== (settings?.vision?.model ?? "") || vision.providerId !== (settings?.vision?.providerId ?? "");
 
   if (isLoading) {
@@ -117,8 +116,7 @@ export default function IntelligenceImagesSettingsPage() {
               <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
                 <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
                 <span>
-                  Auto-describe is on but AI is not fully configured. Make sure AI is enabled on
-                  the Intelligence page and a vision model is selected below.
+                  Auto-describe is on but no vision model is selected below.
                 </span>
               </div>
             )}

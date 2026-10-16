@@ -15,7 +15,8 @@ function chatBody(req: ChatRequest, stream: boolean) {
   };
 }
 
-type OllamaChatLine = { message?: { content?: string; tool_calls?: AiToolCall[] }; error?: string };
+// eval_count / eval_duration (ns): generated tokens and the time spent generating them.
+type OllamaChatLine = { message?: { content?: string; tool_calls?: AiToolCall[] }; error?: string; eval_count?: number; eval_duration?: number };
 
 export const ollamaAdapter: AiAdapter = {
   async listModels(p) {
@@ -27,7 +28,8 @@ export const ollamaAdapter: AiAdapter = {
     const resp = await postJson(p, "/api/chat", chatBody(req, false), req.signal);
     const data = (await resp.json()) as OllamaChatLine;
     if (data.error) throw new Error(data.error);
-    return { content: data.message?.content ?? "", toolCalls: data.message?.tool_calls ?? [] };
+    const tokensPerSecond = data.eval_count && data.eval_duration ? data.eval_count / (data.eval_duration / 1e9) : undefined;
+    return { content: data.message?.content ?? "", toolCalls: data.message?.tool_calls ?? [], tokensPerSecond };
   },
 
   async *chatStream(p, req) {

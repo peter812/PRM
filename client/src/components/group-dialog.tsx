@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -25,7 +26,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import { insertGroupSchema, type Person, type Group } from "@shared/schema";
 import { ImageUpload } from "@/components/image-upload";
 import { X } from "lucide-react";
@@ -309,15 +309,15 @@ export function GroupDialog({ open, onOpenChange, group }: GroupDialogProps) {
                           >
                             <Avatar className="w-8 h-8">
                               {person.imageUrl && (
-                                <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                                <AvatarImage src={person.imageUrl} alt={formatPersonName(person)} />
                               )}
                               <AvatarFallback className="text-xs">
-                                {getInitials(person.firstName, person.lastName)}
+                                {personInitials(person)}
                               </AvatarFallback>
                             </Avatar>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium">
-                                {person.firstName} {person.lastName}
+                                {formatPersonName(person)}
                               </p>
                               {person.company && (
                                 <p className="text-xs text-muted-foreground truncate">

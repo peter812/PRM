@@ -11,7 +11,7 @@ import {
   LogOut,
   Moon,
   Sun,
-  Monitor,
+  Monitor,
   Mic,
   Map as MapIcon,
   Globe,
@@ -107,7 +107,7 @@ const menuItems = [
       },
       {
         title: "Summaries",
-        url: "/settings/instagram/summaries",
+        url: "/social-accounts/summaries",
         icon: Sparkles,
       },
     ],

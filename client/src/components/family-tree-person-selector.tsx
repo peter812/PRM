@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials, personSearchText } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -5,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Search, Loader2 } from "lucide-react";
-import { getInitials } from "@/lib/utils";
 
 interface Person {
   id: string;
@@ -39,7 +39,7 @@ export function FamilyTreePersonSelector({
 
   const filteredPeople = searchTerm.trim()
     ? people.filter((p) => {
-        const fullName = `${p.firstName} ${p.lastName}`.toLowerCase();
+        const fullName = personSearchText(p).toLowerCase();
         return fullName.includes(searchTerm.toLowerCase());
       })
     : people;
@@ -100,15 +100,15 @@ export function FamilyTreePersonSelector({
               >
                 <Avatar className="h-8 w-8">
                   {person.imageUrl && (
-                    <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                    <AvatarImage src={person.imageUrl} alt={formatPersonName(person)} />
                   )}
                   <AvatarFallback className="text-xs">
-                    {getInitials(person.firstName, person.lastName)}
+                    {personInitials(person)}
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">
-                    {person.firstName} {person.lastName}
+                    {formatPersonName(person)}
                   </div>
                   {(person.title || person.company) && (
                     <div className="text-xs text-muted-foreground truncate">

@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -23,7 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getInitials, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { imageDetailHref } from "@/lib/image-link";
 import type {
   Person,
@@ -233,12 +234,12 @@ function RecentPeopleContent() {
             <Avatar className="h-8 w-8">
               {p.imageUrl && <AvatarImage src={p.imageUrl} />}
               <AvatarFallback className="text-xs">
-                {getInitials(`${p.firstName} ${p.lastName}`)}
+                {personInitials(p)}
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium">
-                {p.firstName} {p.lastName}
+                {formatPersonName(p)}
               </div>
               {p.createdAt && (
                 <div className="truncate text-xs text-muted-foreground">

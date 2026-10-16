@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useState, useMemo, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -38,7 +39,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import type { SubGroup, Person } from "@shared/schema";
 import { SubGroupDialog } from "@/components/subgroup-dialog";
 
@@ -285,11 +285,11 @@ export function SubGroupsTab({
                     {member.imageUrl && (
                       <AvatarImage
                         src={member.imageUrl}
-                        alt={`${member.firstName} ${member.lastName}`}
+                        alt={formatPersonName(member)}
                       />
                     )}
                     <AvatarFallback>
-                      {getInitials(member.firstName, member.lastName)}
+                      {personInitials(member)}
                     </AvatarFallback>
                   </Avatar>
 
@@ -298,7 +298,7 @@ export function SubGroupsTab({
                       className="font-medium text-base hover:underline cursor-pointer truncate"
                       data-testid={`text-member-name-${member.id}`}
                     >
-                      {member.firstName} {member.lastName}
+                      {formatPersonName(member)}
                     </h3>
                     {(member.company || member.title) && (
                       <div className="flex items-center gap-1.5 text-xs text-muted-foreground truncate">
@@ -528,11 +528,11 @@ export function SubGroupsTab({
                             {p.imageUrl && (
                               <AvatarImage
                                 src={p.imageUrl}
-                                alt={`${p.firstName} ${p.lastName}`}
+                                alt={formatPersonName(p)}
                               />
                             )}
                             <AvatarFallback className="text-[10px]">
-                              {getInitials(p.firstName, p.lastName)}
+                              {personInitials(p)}
                             </AvatarFallback>
                           </Avatar>
                         ))}
@@ -724,16 +724,16 @@ function AddSubGroupMembersModal({
                     {person.imageUrl && (
                       <AvatarImage
                         src={person.imageUrl}
-                        alt={`${person.firstName} ${person.lastName}`}
+                        alt={formatPersonName(person)}
                       />
                     )}
                     <AvatarFallback className="text-xs">
-                      {getInitials(person.firstName, person.lastName)}
+                      {personInitials(person)}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm">
-                      {person.firstName} {person.lastName}
+                      {formatPersonName(person)}
                     </p>
                     {person.company && (
                       <p className="text-xs text-muted-foreground truncate">

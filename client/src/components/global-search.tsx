@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { Search as SearchIcon, Sparkles, Calendar, FileText, AtSign, BookOpen, MessageSquare, ChevronDown, LayoutGrid, History, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -221,7 +222,7 @@ export function GlobalSearch() {
         const entries = sortWithHistory(
           'people',
           results?.people,
-          (p) => `${p.firstName} ${p.lastName}`
+          (p) => formatPersonName(p)
         );
         if (entries.length === 0) return null;
         return (
@@ -252,7 +253,7 @@ export function GlobalSearch() {
                       <AvatarImage src={person.imageUrl} alt={fullName} />
                     )}
                     <AvatarFallback className="text-xs">
-                      {getInitials(person.firstName, person.lastName)}
+                      {personInitials(person)}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1 min-w-0">

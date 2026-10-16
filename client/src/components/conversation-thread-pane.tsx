@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -301,7 +302,7 @@ export function ConversationThreadPane({
   const participantsList = conversation.participants || [];
   const participantsNames = participantsList
     .map((p: any) => {
-      if (p.person) return `${p.person.firstName} ${p.person.lastName}`;
+      if (p.person) return formatPersonName(p.person);
       if (p.socialAccount) return p.socialAccount.username;
       return "Unknown";
     })
@@ -317,7 +318,7 @@ export function ConversationThreadPane({
           participantsList
             .filter((p: any) => !isSubjectParticipant(p))
             .map((p: any) => {
-              if (p.person) return `${p.person.firstName} ${p.person.lastName}`;
+              if (p.person) return formatPersonName(p.person);
               if (p.socialAccount) return p.socialAccount.username;
               return conversation.metadata?.ownerName || "You";
             })
@@ -459,7 +460,7 @@ export function ConversationThreadPane({
                 const senderName = isSelfEntity
                   ? "Self"
                   : msg.senderPerson
-                    ? `${msg.senderPerson.firstName} ${msg.senderPerson.lastName}`
+                    ? formatPersonName(msg.senderPerson)
                     : msg.senderSocialAccount
                       ? msg.senderSocialAccount.username
                       : msg.metadata?.senderName || "Unknown";
@@ -544,7 +545,7 @@ export function ConversationThreadPane({
                     .filter((p: any) => p.personId !== null)
                     .map((p: any) => (
                       <SelectItem key={p.personId} value={p.personId}>
-                        {p.person ? `${p.person.firstName} ${p.person.lastName}` : "Contact"}
+                        {p.person ? formatPersonName(p.person) : "Contact"}
                       </SelectItem>
                     ))}
                 </SelectContent>

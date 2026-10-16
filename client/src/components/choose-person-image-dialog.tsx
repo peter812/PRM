@@ -50,7 +50,11 @@ export function ChoosePersonImageDialog({ person, open, onOpenChange }: ChoosePe
     enabled: open,
   });
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+  // /api/me serves the same person on the Me page.
+  const refresh = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["/api/people"] }),
+    queryClient.invalidateQueries({ queryKey: ["/api/me"] }),
+  ]);
 
   const choose = useMutation({
     mutationFn: (imageUrl: string) => apiRequest("PATCH", `/api/people/${person.id}`, { imageUrl }),

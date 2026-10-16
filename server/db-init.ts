@@ -633,6 +633,7 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         maiden_name: "TEXT",
+        nickname: "TEXT",
         jobs: "JSONB DEFAULT '[]'::jsonb",
         personface_uuid: "VARCHAR",
         last_described_at: "TIMESTAMP",
@@ -689,18 +690,13 @@ async function validateAndSyncSchema(): Promise<void> {
         // Tracking (account-tracking-plan.md §7)
         interest_level: "TEXT NOT NULL DEFAULT 'none'",
         interest_level_manual: "BOOLEAN NOT NULL DEFAULT FALSE",
-        info_every_days: "INTEGER",
-        follows_every_days: "INTEGER",
-        posts_every_days: "INTEGER",
-        highlights_every_days: "INTEGER",
+        scan_every_days: "INTEGER",
+        scan_checked_at: "TIMESTAMP",
+        scan_due_at: "TIMESTAMP",
         info_checked_at: "TIMESTAMP",
-        info_due_at: "TIMESTAMP",
         follows_checked_at: "TIMESTAMP",
-        follows_due_at: "TIMESTAMP",
         posts_checked_at: "TIMESTAMP",
-        posts_due_at: "TIMESTAMP",
         highlights_checked_at: "TIMESTAMP",
-        highlights_due_at: "TIMESTAMP",
         joined_at: "TIMESTAMP",
         reported_posts_count: "INTEGER",
         is_private: "BOOLEAN",
@@ -770,6 +766,7 @@ async function validateAndSyncSchema(): Promise<void> {
         ai_summary_at: "TIMESTAMP",
         ai_summary_model: "TEXT",
         seen_by: "JSONB",
+        capture_type: "TEXT",
       },
       story_scrape_runs: {
         token_hash: "TEXT",
@@ -788,6 +785,8 @@ async function validateAndSyncSchema(): Promise<void> {
       tracking_jobs: {
         batch_id: "VARCHAR",
         attempts: "INTEGER NOT NULL DEFAULT 0",
+        scan_mode: "TEXT",
+        scan_received_at: "TIMESTAMP",
       },
     };
 
@@ -1081,17 +1080,19 @@ async function validateAndSyncSchema(): Promise<void> {
     `);
     await migrateStorySettingsToImporter();
     await dropLegacyImageStorageMode();
+    // Facial intelligence and AI are always on now; their toggles' settings are retired.
+    await pool.query(`DELETE FROM app_settings WHERE key IN ('facial_intelligence_enabled', 'ai_enabled')`);
 
-    // Tracking: due-date indexes need the columns the loop above just added, and
+    // Tracking: the due-date index needs the column the loop above just added, and
     // the "me" rule (accounts on either side of a me account start at medium) is
     // idempotent, so it simply runs on every boot.
     await pool.query(`
       CREATE INDEX IF NOT EXISTS social_accounts_interest_level_idx ON social_accounts (interest_level);
-      CREATE INDEX IF NOT EXISTS social_accounts_info_due_idx ON social_accounts (info_due_at) WHERE info_due_at IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS social_accounts_follows_due_idx ON social_accounts (follows_due_at) WHERE follows_due_at IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS social_accounts_posts_due_idx ON social_accounts (posts_due_at) WHERE posts_due_at IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS social_accounts_highlights_due_idx ON social_accounts (highlights_due_at) WHERE highlights_due_at IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS social_accounts_scan_due_idx ON social_accounts (scan_due_at) WHERE scan_due_at IS NOT NULL;
+      -- Story items find their account by LOWER(username).
+      CREATE INDEX IF NOT EXISTS social_accounts_username_lower_idx ON social_accounts (LOWER(username));
     `);
+    await migrateToScans();
     await applyMeRule();
     await applyBigAccountRule();
 
@@ -1430,6 +1431,27 @@ async function validateAndSyncSchema(): Promise<void> {
     await addColumnIfNotExists("faces", "yaw", "REAL");
     await addColumnIfNotExists("faces", "pitch", "REAL");
     await addColumnIfNotExists("faces", "roll", "REAL");
+    await addColumnIfNotExists("faces", "sharpness", "REAL");
+    await addColumnIfNotExists("faces", "cluster_id", "VARCHAR");
+    await addColumnIfNotExists("faces", "noise_reason", "TEXT");
+    await pool.query(`CREATE INDEX IF NOT EXISTS faces_cluster_id_idx ON faces (cluster_id) WHERE cluster_id IS NOT NULL`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS face_clusters (
+        id VARCHAR PRIMARY KEY,
+        size INTEGER NOT NULL,
+        medoid_face_id VARCHAR NOT NULL,
+        montage_face_ids JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS face_cluster_rejections (
+        face_id VARCHAR NOT NULL,
+        identity_id VARCHAR NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (face_id, identity_id)
+      )
+    `);
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_photo_id_idx ON faces (photo_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_personface_uuid_idx ON faces (personface_uuid)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS people_personface_uuid_idx ON people (personface_uuid)`);
@@ -1705,6 +1727,36 @@ async function ensureSsoEmailColumn(): Promise<void> {
     log(`Note: Could not check/add sso_email column: ${error}`);
     // Don't throw - this is a non-critical migration
   }
+}
+
+/**
+ * One scan due date per account instead of one per kind (account-scan-plan.md
+ * §1): the earliest old due date, so nobody jumps the queue or falls off it,
+ * and the info override as the scan override. Queued schedule jobs of the old
+ * kinds are re-derived as scans. Runs once: the old columns go at the end.
+ */
+async function migrateToScans(): Promise<void> {
+  if (!(await columnExists("social_accounts", "info_due_at"))) return;
+  // Older databases never got some of the per-kind columns.
+  const dueCols: string[] = [];
+  for (const col of ["info_due_at", "posts_due_at", "highlights_due_at"]) {
+    if (await columnExists("social_accounts", col)) dueCols.push(col);
+  }
+  await pool.query(`
+    UPDATE social_accounts SET
+      scan_due_at = COALESCE(scan_due_at, LEAST(${dueCols.join(", ")})),
+      scan_every_days = COALESCE(scan_every_days, info_every_days);
+    DELETE FROM tracking_jobs WHERE origin = 'schedule' AND status = 'queued' AND kind <> 'scan';
+    DROP INDEX IF EXISTS social_accounts_info_due_idx;
+    DROP INDEX IF EXISTS social_accounts_posts_due_idx;
+    DROP INDEX IF EXISTS social_accounts_highlights_due_idx;
+    DROP INDEX IF EXISTS social_accounts_follows_due_idx;
+    ALTER TABLE social_accounts
+      DROP COLUMN IF EXISTS info_due_at, DROP COLUMN IF EXISTS follows_due_at,
+      DROP COLUMN IF EXISTS posts_due_at, DROP COLUMN IF EXISTS highlights_due_at,
+      DROP COLUMN IF EXISTS info_every_days, DROP COLUMN IF EXISTS follows_every_days,
+      DROP COLUMN IF EXISTS posts_every_days, DROP COLUMN IF EXISTS highlights_every_days;
+  `);
 }
 
 /**
@@ -2238,7 +2290,6 @@ async function migrateOllamaToAiProviders(): Promise<void> {
   const renames: [string, string][] = [
     ["ollama_prompt", "ai_vision_prompt"],
     ["ollama_events_prompt", "ai_events_prompt"],
-    ["ollama_enabled", "ai_enabled"],
     ["ollama_auto_describe_images", "ai_auto_describe_images"],
   ];
   for (const [from, to] of renames) {

@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { HelpCircle, Check, X, Loader2, PartyPopper, Clock, Ban } from "lucide-react";
@@ -7,7 +8,6 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import type { Person } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 type QueueItem = {
@@ -271,14 +271,14 @@ export default function GuessTheSex() {
         <Card className="overflow-hidden">
           <CardContent className="flex flex-col items-center gap-4 p-8">
             <Avatar className="h-28 w-28">
-              <AvatarImage src={person.imageUrl || undefined} alt={`${person.firstName} ${person.lastName}`} />
+              <AvatarImage src={person.imageUrl || undefined} alt={formatPersonName(person)} />
               <AvatarFallback className="text-2xl">
-                {getInitials(`${person.firstName} ${person.lastName}`)}
+                {personInitials(person)}
               </AvatarFallback>
             </Avatar>
 
             <h2 className="text-2xl font-bold text-center">
-              {person.firstName} {person.lastName}
+              {formatPersonName(person)}
             </h2>
 
             {person.company && (

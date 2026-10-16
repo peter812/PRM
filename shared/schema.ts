@@ -104,6 +104,7 @@ export const people = pgTable("people", {
   vectorSyncedAt: timestamp("vector_synced_at"), // Last successful vector sync
   personfaceUuid: varchar("personface_uuid"), // links this person to a face group (faces.personface_uuid); written by PRM's face-resolution code
   maidenName: text("maiden_name"),
+  nickname: text("nickname"), // shown as "Nick (First) Last" — see shared/person-name.ts
   jobs: jsonb("jobs").$type<JobExperience[]>().default(sql`'[]'::jsonb`),
   tpsId: text("tps_id"), // TruePeopleSearch person id (/find/person/{id} slug) this contact was created from, if any
   birthday: text("birthday"),
@@ -349,20 +350,16 @@ export const socialAccounts = pgTable("social_accounts", {
   interestLevel: text("interest_level").notNull().default("none"),
   // Set when a person picked the level, so the "me" rule never overrides a choice.
   interestLevelManual: boolean("interest_level_manual").notNull().default(false),
-  // Per-account cadence overrides in days; null inherits the level's default.
-  infoEveryDays: integer("info_every_days"),
-  followsEveryDays: integer("follows_every_days"),
-  postsEveryDays: integer("posts_every_days"),
-  highlightsEveryDays: integer("highlights_every_days"),
-  // *_due_at is the scheduler's only per-account state; null when the level is none.
+  // Days between scans; null inherits the level's default (account-scan-plan.md §1).
+  scanEveryDays: integer("scan_every_days"),
+  // scan_due_at is the scheduler's only per-account state; null when the level is none.
+  scanCheckedAt: timestamp("scan_checked_at"),
+  scanDueAt: timestamp("scan_due_at"),
+  // When each section last ran, by a scan or a job of its own.
   infoCheckedAt: timestamp("info_checked_at"),
-  infoDueAt: timestamp("info_due_at"),
   followsCheckedAt: timestamp("follows_checked_at"),
-  followsDueAt: timestamp("follows_due_at"),
   postsCheckedAt: timestamp("posts_checked_at"),
-  postsDueAt: timestamp("posts_due_at"),
   highlightsCheckedAt: timestamp("highlights_checked_at"),
-  highlightsDueAt: timestamp("highlights_due_at"),
   joinedAt: timestamp("joined_at"), // first of the month Instagram's About dialog reports
   reportedPostsCount: integer("reported_posts_count"),
   isPrivate: boolean("is_private"),
@@ -393,10 +390,7 @@ export const socialAccounts = pgTable("social_accounts", {
   index("social_accounts_group_id_idx").on(t.groupId),
   index("social_accounts_type_id_idx").on(t.typeId),
   index("social_accounts_interest_level_idx").on(t.interestLevel),
-  index("social_accounts_info_due_idx").on(t.infoDueAt).where(sql`info_due_at IS NOT NULL`),
-  index("social_accounts_follows_due_idx").on(t.followsDueAt).where(sql`follows_due_at IS NOT NULL`),
-  index("social_accounts_posts_due_idx").on(t.postsDueAt).where(sql`posts_due_at IS NOT NULL`),
-  index("social_accounts_highlights_due_idx").on(t.highlightsDueAt).where(sql`highlights_due_at IS NOT NULL`),
+  index("social_accounts_scan_due_idx").on(t.scanDueAt).where(sql`scan_due_at IS NOT NULL`),
 ]);
 
 export interface PostImageSummary {
@@ -603,6 +597,10 @@ export interface SeenByViewer {
   reply: string | null; // text or emoji sent from the story
 }
 
+/** How PRM first got a story: live from the daily tray, or from a highlight set. Set once, at ingest. */
+export const STORY_CAPTURE_TYPES = ["daily", "highlight"] as const;
+export type StoryCaptureType = typeof STORY_CAPTURE_TYPES[number];
+
 // Social account posts table
 export const socialAccountPosts = pgTable("social_account_posts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -627,6 +625,7 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   aiSummaryAt: timestamp("ai_summary_at"),
   aiSummaryModel: text("ai_summary_model"),
   seenBy: jsonb("seen_by").$type<StorySeenBy>(), // own stories only: who viewed / liked / replied, kept past Instagram's 48 h
+  captureType: text("capture_type").$type<StoryCaptureType>(), // stories only; null on posts and reels
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
@@ -913,12 +912,32 @@ export const faces = pgTable("faces", {
   dismissedAt: timestamp("dismissed_at", { withTimezone: true }), // "not someone I track": Face review stops asking about this face
   pitch: real("pitch"), // head pitch (+ = up, rough) from landmarks; null = not measured
   roll: real("roll"), // head roll (+ = clockwise tilt) from landmarks; null = not measured
+  sharpness: real("sharpness"), // Laplacian variance of the aligned crop, set by compute at detect time; null = not measured
   yaw: real("yaw"), // signed head yaw in degrees estimated from landmarks by PRM-compute; null = not measured yet
   autoMatchScore: real("auto_match_score"), // set = PRM auto-assigned this face to its group at this look-alike score, unconfirmed; null = set by a person (or by compute's grouping)
+  clusterId: varchar("cluster_id"), // face_clusters.id from the last clustering run, a suggestion only; null = not clustered
+  noiseReason: text("noise_reason"), // 'small' | 'low_conf' | 'blurry' (machine quality judgements) | 'singleton' (in no cluster); null = not noise
 }, (t) => [
   index("faces_photo_id_idx").on(t.photoId),
   index("faces_personface_uuid_idx").on(t.personfaceUuid),
+  index("faces_cluster_id_idx").on(t.clusterId).where(sql`${t.clusterId} IS NOT NULL`),
 ]);
+
+// One row per cluster from the last face-clustering run (server/face-clusters.ts); rebuilt every run.
+export const faceClusters = pgTable("face_clusters", {
+  id: varchar("id").primaryKey(), // "<run>-c_<n>", unique per run so a stale id never matches a new cluster
+  size: integer("size").notNull(),
+  medoidFaceId: varchar("medoid_face_id").notNull(), // the member closest to the cluster's centre
+  montageFaceIds: jsonb("montage_face_ids").notNull(), // up to 16 frontal, sharpest members
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// "No, this face isn't @x": stored per face, not per cluster, so it survives reclustering.
+export const faceClusterRejections = pgTable("face_cluster_rejections", {
+  faceId: varchar("face_id").notNull(),
+  identityId: varchar("identity_id").notNull(), // the rejected social account's or person's id
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.faceId, t.identityId] })]);
 
 // Face pair dismissals table - stores pairs of face identities that the user confirmed are NOT the same
 export const facePairDismissals = pgTable("face_pair_dismissals", {
@@ -1176,6 +1195,9 @@ export const trackingJobs = pgTable("tracking_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   socialAccountId: varchar("social_account_id").notNull().references(() => socialAccounts.id, { onDelete: "cascade" }),
   kind: text("kind").notNull(), // TrackingKind
+  scanMode: text("scan_mode"), // 'lite' | 'full' for a scan; null otherwise
+  /** When a scan's bundle arrived (account-scan-plan.md §5.1). */
+  scanReceivedAt: timestamp("scan_received_at"),
   origin: text("origin").notNull(), // 'schedule' | 'manual'
   status: text("status").notNull().default("queued"), // queued | running | completed | failed | skipped
   importerId: varchar("importer_id").references(() => storyImporters.id, { onDelete: "set null" }),
@@ -1795,6 +1817,7 @@ export const insertSocialAccountPostSchema = createInsertSchema(socialAccountPos
     createdAt: true,
     updatedAt: true,
     seenBy: true, // written only by the stories scraper's seen-by route
+    captureType: true, // written only by story ingest
   })
   .extend({
     coauthorAccountIds: z.array(z.string()).optional(),

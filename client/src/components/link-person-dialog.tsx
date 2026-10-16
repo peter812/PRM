@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials, personSearchText } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Search, Check, Link2 } from "lucide-react";
@@ -14,7 +15,6 @@ import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import type { Person } from "@shared/schema";
 
 interface LinkPersonDialogProps {
@@ -42,7 +42,7 @@ export function LinkPersonDialog({
   const filteredPeople = people.filter((p) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
-    const fullName = `${p.firstName} ${p.lastName}`.toLowerCase();
+    const fullName = personSearchText(p).toLowerCase();
     const email = (p.email || "").toLowerCase();
     const company = (p.company || "").toLowerCase();
     const title = (p.title || "").toLowerCase();
@@ -158,16 +158,16 @@ export function LinkPersonDialog({
                     <div className="flex items-center gap-3">
                       <Avatar className="h-8 w-8 flex-shrink-0">
                         {person.imageUrl && (
-                          <AvatarImage src={person.imageUrl} alt={`${person.firstName} ${person.lastName}`} />
+                          <AvatarImage src={person.imageUrl} alt={formatPersonName(person)} />
                         )}
                         <AvatarFallback className="text-xs">
-                          {getInitials(person.firstName, person.lastName)}
+                          {personInitials(person)}
                         </AvatarFallback>
                       </Avatar>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <p className="font-medium text-xs md:text-sm truncate">
-                            {person.firstName} {person.lastName}
+                            {formatPersonName(person)}
                           </p>
                           {isCurrent && (
                             <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">

@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { MessageCircle } from "lucide-react";
@@ -70,7 +71,7 @@ function PersonMessagesView({ personId }: { personId: string }) {
       // An SMS backup imported from a profile came from that person's phone
       importSource={
         person
-          ? { kind: "sms", rootPersonId: personId, personName: `${person.firstName} ${person.lastName}` }
+          ? { kind: "sms", rootPersonId: personId, personName: formatPersonName(person) }
           : undefined
       }
     />

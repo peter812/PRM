@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -39,7 +40,7 @@ const CHANNEL_TABS = [
 const PAGE_SIZE = 25;
 
 function participantName(p: any): string | null {
-  if (p.person) return `${p.person.firstName} ${p.person.lastName}`;
+  if (p.person) return formatPersonName(p.person);
   if (p.socialAccount) return p.socialAccount.username;
   return null;
 }

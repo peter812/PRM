@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { useParams, useLocation, useSearch } from "wouter";
 import { ArrowLeft, Loader2, Edit2, Trash2, Plus, Download, ExternalLink, FileText, CheckCircle2, Heart, MessageCircle, ImageIcon, Info, GitCompare, ChevronDown, MessageSquare, RefreshCw, Users, MapPin, Calendar, Layers, AtSign, Lock, Globe, ScanFace, Star, Ban } from "lucide-react";
@@ -275,10 +276,10 @@ export default function SocialAccountProfile() {
   const followingList = followingData?.pages.flatMap((p) => p.items) ?? [];
   const followingTotal = followingData?.pages[0]?.total ?? 0;
 
-  // Query posts for this social account lazily when the posts tab is active
+  // Posts, for the posts tab and the overview card.
   const { data: allPosts, isLoading: isPostsLoading } = useQuery<SocialAccountPost[]>({
     queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"],
-    enabled: !!uuid && (activeTab === "posts" || isPostDetailOpen),
+    enabled: !!uuid && (activeTab === "account" || activeTab === "posts" || isPostDetailOpen),
   });
   // Stories come on their own, for the stories tab and the overview card.
   const { data: storyPosts } = useQuery<SocialAccountPost[]>({
@@ -354,7 +355,7 @@ export default function SocialAccountProfile() {
   const jobsKey = [`/api/social-accounts/${uuid}/tracking-jobs`];
   const { data: trackingJobs } = useQuery<TrackingJob[]>({
     queryKey: jobsKey,
-    enabled: !!uuid && (activeTab === "posts" || activeTab === "stories"),
+    enabled: !!uuid && (activeTab === "account" || activeTab === "posts" || activeTab === "stories"),
     refetchInterval: (query) => {
       const data = query.state.data as TrackingJob[] | undefined;
       const hasOpen = data?.some((j) => j.status === "queued" || j.status === "running");
@@ -366,13 +367,18 @@ export default function SocialAccountProfile() {
     (j) => j.kind === "posts" && (j.status === "queued" || j.status === "running")
   );
 
-  const prevPostsQueuedRef = useRef(false);
+  // A scan delivers posts and highlight stories too, so either kind finishing refreshes them.
+  const isPostsWorkOpen = trackingJobs?.some(
+    (j) => (j.kind === "posts" || j.kind === "scan") && (j.status === "queued" || j.status === "running")
+  );
+  const prevPostsWorkOpenRef = useRef(false);
   useEffect(() => {
-    if (prevPostsQueuedRef.current && !isPostsQueued) {
+    if (prevPostsWorkOpenRef.current && !isPostsWorkOpen) {
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?includeDeleted=true"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/social-accounts", uuid, "posts?postType=story&includeDeleted=true"] });
     }
-    prevPostsQueuedRef.current = !!isPostsQueued;
-  }, [isPostsQueued, uuid]);
+    prevPostsWorkOpenRef.current = !!isPostsWorkOpen;
+  }, [isPostsWorkOpen, uuid]);
 
   const retrievePostsMutation = useMutation({
     mutationFn: () =>
@@ -901,7 +907,7 @@ export default function SocialAccountProfile() {
                 {owner ? (
                   <Link href={`/person/${owner.id}`}>
                     <a className="text-primary hover:underline font-medium block" data-testid="link-owner">
-                      {owner.firstName} {owner.lastName}
+                      {formatPersonName(owner)}
                     </a>
                   </Link>
                 ) : (
@@ -1437,16 +1443,16 @@ export default function SocialAccountProfile() {
                         <div className="flex items-center gap-2.5 p-2 rounded-md bg-muted/40 border">
                           <Avatar className="w-8 h-8 shrink-0">
                             {owner.imageUrl && (
-                              <AvatarImage src={owner.imageUrl} alt={`${owner.firstName} ${owner.lastName}`} />
+                              <AvatarImage src={owner.imageUrl} alt={formatPersonName(owner)} />
                             )}
                             <AvatarFallback className="text-xs">
-                              {getInitials(owner.firstName, owner.lastName)}
+                              {personInitials(owner)}
                             </AvatarFallback>
                           </Avatar>
                           <div className="min-w-0 flex-1">
                             <Link href={`/person/${owner.id}`}>
                               <a className="text-primary font-medium hover:underline block truncate text-xs">
-                                {owner.firstName} {owner.lastName}
+                                {formatPersonName(owner)}
                               </a>
                             </Link>
                             {(owner.title || owner.company) && (

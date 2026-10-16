@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials, personSearchText } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Search, Check, Sparkles, UserPlus, UserSearch, Loader2 } from "lucide-react";
@@ -16,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PersonDialog } from "@/components/person-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { cn, getInitials, isSelfMessage } from "@/lib/utils";
+import { cn, isSelfMessage } from "@/lib/utils";
 import { cleanPhoneNumberForStorage, formatPhoneNumberForDisplay, type Person } from "@shared/schema";
 import { format } from "date-fns";
 
@@ -110,12 +111,12 @@ export function FindMyNameDialog({ open, onOpenChange, conversation }: FindMyNam
 
   const q = searchQuery.trim().toLowerCase();
   const filteredPeople = q
-    ? people.filter((p) => `${p.firstName} ${p.lastName}`.toLowerCase().includes(q))
+    ? people.filter((p) => personSearchText(p).toLowerCase().includes(q))
     : people;
 
   const senderLabel = (m: any) =>
     isSelfMessage(m) ? "You"
-    : m.senderPerson ? `${m.senderPerson.firstName} ${m.senderPerson.lastName}`
+    : m.senderPerson ? formatPersonName(m.senderPerson)
     : m.metadata?.senderName ?? "Unknown";
   const isFromNumber = (m: any) =>
     !isSelfMessage(m) && !m.senderPerson && (!isGroup || m.metadata?.senderName === displayed);
@@ -226,10 +227,10 @@ export function FindMyNameDialog({ open, onOpenChange, conversation }: FindMyNam
                       <div className="flex items-center gap-3">
                         <Avatar className="h-8 w-8 flex-shrink-0">
                           {person.imageUrl && <AvatarImage src={person.imageUrl} alt="" />}
-                          <AvatarFallback className="text-xs">{getInitials(person.firstName, person.lastName)}</AvatarFallback>
+                          <AvatarFallback className="text-xs">{personInitials(person)}</AvatarFallback>
                         </Avatar>
                         <div className="min-w-0 flex-1">
-                          <p className="font-medium text-xs md:text-sm truncate">{person.firstName} {person.lastName}</p>
+                          <p className="font-medium text-xs md:text-sm truncate">{formatPersonName(person)}</p>
                           {person.phone && (
                             <p className="text-[11px] text-muted-foreground truncate">{formatPhoneNumberForDisplay(person.phone)}</p>
                           )}

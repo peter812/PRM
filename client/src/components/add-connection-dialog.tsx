@@ -1,3 +1,4 @@
+import { formatPersonName, personSearchText } from "@shared/person-name";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -143,7 +144,7 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
                         >
                           {selectedPerson1 ? (
                             <span className="truncate">
-                              {selectedPerson1.firstName} {selectedPerson1.lastName}
+                              {formatPersonName(selectedPerson1)}
                               {selectedPerson1.company && (
                                 <span className="text-muted-foreground ml-2">
                                   ({selectedPerson1.company})
@@ -166,7 +167,7 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
                             {allPeople.map((person) => (
                               <CommandItem
                                 key={person.id}
-                                value={`${person.firstName} ${person.lastName} ${person.company || ""}`}
+                                value={`${personSearchText(person)} ${person.company || ""}`}
                                 onSelect={() => {
                                   form.setValue("fromPersonId", person.id);
                                   // Clear person 2 to prevent stale values
@@ -184,7 +185,7 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
                                   )}
                                 />
                                 <span className="truncate">
-                                  {person.firstName} {person.lastName}
+                                  {formatPersonName(person)}
                                   {person.company && (
                                     <span className="text-muted-foreground ml-2 text-xs">
                                       {person.company}
@@ -226,7 +227,7 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
                         >
                           {selectedPerson2 ? (
                             <span className="truncate">
-                              {selectedPerson2.firstName} {selectedPerson2.lastName}
+                              {formatPersonName(selectedPerson2)}
                               {selectedPerson2.company && (
                                 <span className="text-muted-foreground ml-2">
                                   ({selectedPerson2.company})
@@ -249,7 +250,7 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
                             {availablePeople2.map((person) => (
                               <CommandItem
                                 key={person.id}
-                                value={`${person.firstName} ${person.lastName} ${person.company || ""}`}
+                                value={`${personSearchText(person)} ${person.company || ""}`}
                                 onSelect={() => {
                                   form.setValue("toPersonId", person.id);
                                   setPerson2Open(false);
@@ -263,7 +264,7 @@ export function AddConnectionDialog({ open, onOpenChange }: AddConnectionDialogP
                                   )}
                                 />
                                 <span className="truncate">
-                                  {person.firstName} {person.lastName}
+                                  {formatPersonName(person)}
                                   {person.company && (
                                     <span className="text-muted-foreground ml-2 text-xs">
                                       {person.company}

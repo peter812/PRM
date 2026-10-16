@@ -1,3 +1,4 @@
+import { formatPersonName, personSearchText } from "@shared/person-name";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
@@ -419,7 +420,7 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
                     const newPersonName = newPersonNameMap[face.face_index] || "";
 
                     const filteredPeople = people.filter(p =>
-                      `${p.firstName} ${p.lastName}`.toLowerCase().includes(filterText.toLowerCase())
+                      personSearchText(p).toLowerCase().includes(filterText.toLowerCase())
                     );
 
                     return (
@@ -499,7 +500,7 @@ export function PhotoUploadDialog({ open, onClose, existingPhoto }: PhotoUploadD
                                 <SelectContent>
                                   {filteredPeople.slice(0, 30).map((p) => (
                                     <SelectItem key={p.id} value={p.id} className="text-xs">
-                                      {p.firstName} {p.lastName}
+                                      {formatPersonName(p)}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>

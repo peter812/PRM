@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials } from "@shared/person-name";
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link } from "wouter";
@@ -37,7 +38,6 @@ import type {
   ApplyDescribeMeInput,
 } from "@shared/schema";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { getInitials } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDictation } from "@/hooks/use-dictation";
 import { useAudioDevices } from "@/hooks/use-audio-devices";
@@ -137,7 +137,7 @@ export default function DescribeMePage() {
 
       toast({
         title: "Profile updated",
-        description: `Applied ${summary} to ${person!.firstName} ${person!.lastName}.`,
+        description: `Applied ${summary} to ${formatPersonName(person!)}.`,
       });
 
       queryClient.invalidateQueries({ queryKey: ["/api/people"] });
@@ -344,15 +344,15 @@ export default function DescribeMePage() {
             <Avatar className="h-24 w-24 border-2 border-border shadow-sm">
               <AvatarImage
                 src={person.imageUrl || undefined}
-                alt={`${person.firstName} ${person.lastName}`}
+                alt={formatPersonName(person)}
               />
               <AvatarFallback className="text-xl">
-                {getInitials(person.firstName, person.lastName)}
+                {personInitials(person)}
               </AvatarFallback>
             </Avatar>
             <div className="text-center">
               <h2 className="text-2xl font-bold">
-                {person.firstName} {person.lastName}
+                {formatPersonName(person)}
               </h2>
               {(person.title || person.company) && (
                 <p className="text-sm text-muted-foreground mt-0.5">

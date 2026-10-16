@@ -1,7 +1,7 @@
 /**
  * Tracking on an Instagram account's page (account-tracking-plan.md §5.1):
- * the interest level sits in Account Details; everything else — the three
- * cadences with their last/next dates and the buttons that queue a check for
+ * the interest level sits in Account Details; everything else — the scan
+ * cadence, each section's last date and the buttons that queue a check for
  * prm-stories to run — lives behind the "Edit tracking" dialog.
  */
 import { useEffect, useState } from "react";
@@ -17,20 +17,22 @@ import { useToast } from "@/hooks/use-toast";
 import type { SocialAccount, TrackingJob } from "@shared/schema";
 import {
   INTEREST_LEVEL_LABEL,
+  MAX_CADENCE_DAYS,
   TRACKING_KIND_LABEL,
   TRACKING_KINDS,
-  parseLevelCadences,
-  resolveCadence,
+  parseScanCadences,
+  scanCadence,
   trackingBlocker,
   type TrackingKind,
 } from "@shared/interest-level";
 import { InterestLevelSelect, asLevel } from "@/components/interest-level-badge";
 
-const ROW: Record<TrackingKind, { override: `${TrackingKind}EveryDays`; checked: `${TrackingKind}CheckedAt`; due: `${TrackingKind}DueAt` }> = {
-  info: { override: "infoEveryDays", checked: "infoCheckedAt", due: "infoDueAt" },
-  follows: { override: "followsEveryDays", checked: "followsCheckedAt", due: "followsDueAt" },
-  posts: { override: "postsEveryDays", checked: "postsCheckedAt", due: "postsDueAt" },
-  highlights: { override: "highlightsEveryDays", checked: "highlightsCheckedAt", due: "highlightsDueAt" },
+const CHECKED: Record<TrackingKind, `${TrackingKind}CheckedAt`> = {
+  scan: "scanCheckedAt",
+  info: "infoCheckedAt",
+  posts: "postsCheckedAt",
+  highlights: "highlightsCheckedAt",
+  follows: "followsCheckedAt",
 };
 
 const BLOCKER_TEXT = { private: "private account", too_many_follows: "over 10,000 follows — header count only" } as const;
@@ -40,12 +42,17 @@ const when = (d: string | Date | null | undefined) => (d ? new Date(d).toLocaleD
 export function AccountTracking({ account }: { account: SocialAccount }) {
   const { toast } = useToast();
   const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
-  const { data: jobs } = useQuery<TrackingJob[]>({ queryKey: [`/api/social-accounts/${account.id}/tracking-jobs`], refetchInterval: 30_000 });
+  const [editing, setEditing] = useState(false);
+  // Polled only while someone is looking at the jobs or one is still waiting to finish.
+  const { data: jobs } = useQuery<TrackingJob[]>({
+    queryKey: [`/api/social-accounts/${account.id}/tracking-jobs`],
+    refetchInterval: (q) => (editing || q.state.data?.some((j) => j.status === "queued" || j.status === "running") ? 30_000 : false),
+  });
   // An open not_found issue keeps the account off the schedule (account-issues-plan.md §4).
   const { data: issues } = useQuery<{ issue: { kind: string } }[]>({ queryKey: ["/api/account-issues", { accountId: account.id }] });
   const paused = issues?.some((r) => r.issue.kind === "not_found") ?? false;
-  const cadence = resolveCadence(account, parseLevelCadences(settings?.tracking_level_defaults));
-  const [editing, setEditing] = useState(false);
+  // The level's days, shown when the account has no override of its own.
+  const inherited = scanCadence({ ...account, scanEveryDays: null }, parseScanCadences(settings?.tracking_level_defaults));
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: [`/api/social-accounts/${account.id}`] });
@@ -97,28 +104,33 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
           <DialogHeader>
             <DialogTitle>Tracking</DialogTitle>
             <DialogDescription>
-              Level: {INTEREST_LEVEL_LABEL[asLevel(account.interestLevel)]}. Changing it resets the cadences below to its defaults. Days are how often prm-stories re-checks each thing.
+              Level: {INTEREST_LEVEL_LABEL[asLevel(account.interestLevel)]}. Changing it resets the scan cadence to its default. Days are how often prm-stories scans the account; the single sections run on request.
             </DialogDescription>
           </DialogHeader>
 
       <div className="space-y-2">
         {TRACKING_KINDS.map((kind) => {
-          const row = ROW[kind];
           const blocker = trackingBlocker(account, kind);
+          // Only scans are scheduled; the single sections run when queued here.
+          const scheduled = kind === "scan";
           return (
             <div key={kind} className="grid grid-cols-[1fr_auto] sm:grid-cols-[minmax(0,1.4fr)_90px_minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 items-center text-xs border-b pb-2 last:border-0 last:pb-0">
               <div className="min-w-0">
                 <div className="font-medium">{TRACKING_KIND_LABEL[kind]}</div>
                 {blocker && <div className="text-[11px] text-muted-foreground">{BLOCKER_TEXT[blocker]}</div>}
               </div>
-              <CadenceInput
-                value={account[row.override]}
-                inherited={cadence[kind]}
-                disabled={isNone}
-                onCommit={(days) => patch.mutate({ [row.override]: days })}
-              />
-              <div className="text-muted-foreground hidden sm:block">last {when(account[row.checked])}</div>
-              <div className="text-muted-foreground hidden sm:block">{isNone || blocker ? "not scheduled" : `due ${when(account[row.due])}`}</div>
+              {scheduled ? (
+                <CadenceInput
+                  value={account.scanEveryDays}
+                  inherited={inherited}
+                  disabled={isNone}
+                  onCommit={(scanEveryDays) => patch.mutate({ scanEveryDays })}
+                />
+              ) : (
+                <div className="text-muted-foreground">on request</div>
+              )}
+              <div className="text-muted-foreground hidden sm:block">last {when(account[CHECKED[kind]])}</div>
+              <div className="text-muted-foreground hidden sm:block">{!scheduled || isNone || blocker ? "not scheduled" : `due ${when(account.scanDueAt)}`}</div>
               <div className="flex items-center gap-1 col-span-2 sm:col-span-1 justify-end">
                 <Button
                   variant="outline"
@@ -128,7 +140,7 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
                   onClick={() => queue.mutate(kind)}
                   data-testid={`button-refresh-${kind}`}
                 >
-                  {openKinds.has(kind) ? "Queued" : "Refresh now"}
+                  {openKinds.has(kind) ? "Queued" : kind === "scan" ? "Full scan" : "Run now"}
                 </Button>
               </div>
             </div>
@@ -174,22 +186,22 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
   );
 }
 
-/** Read-only: how often each kind is checked for this account, when it last ran and when it's next due. */
+/** Read-only: how often this account is scanned, when each kind last ran and when the next scan is due. */
 export function TrackingSchedule({ account }: { account: SocialAccount }) {
   const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
-  const cadence = resolveCadence(account, parseLevelCadences(settings?.tracking_level_defaults));
+  const scanDays = scanCadence(account, parseScanCadences(settings?.tracking_level_defaults));
   return (
     <div className="space-y-1 text-sm" data-testid="tracking-schedule">
       {TRACKING_KINDS.map((kind) => {
         const blocker = trackingBlocker(account, kind);
-        const days = cadence[kind];
+        const days = kind === "scan" ? scanDays : null;
         return (
           <div key={kind} className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2">
             <span className="font-medium">{TRACKING_KIND_LABEL[kind]}</span>
-            <span className="text-muted-foreground">{days == null ? "never" : `every ${days} ${days === 1 ? "day" : "days"}`}</span>
-            <span className="text-muted-foreground">last {when(account[ROW[kind].checked])}</span>
+            <span className="text-muted-foreground">{kind !== "scan" ? "on request" : days == null ? "never" : `every ${days} ${days === 1 ? "day" : "days"}`}</span>
+            <span className="text-muted-foreground">last {when(account[CHECKED[kind]])}</span>
             <span className="text-muted-foreground">
-              {blocker ? BLOCKER_TEXT[blocker] : days == null ? "not scheduled" : `next ${when(account[ROW[kind].due])}`}
+              {blocker ? BLOCKER_TEXT[blocker] : days == null ? "not scheduled" : `next ${when(account.scanDueAt)}`}
             </span>
           </div>
         );
@@ -204,7 +216,7 @@ function CadenceInput({ value, inherited, disabled, onCommit }: { value: number 
   useEffect(() => setText(value == null ? "" : String(value)), [value]);
   const commit = () => {
     const n = text.trim() === "" ? null : Number(text);
-    if (n !== null && (!Number.isInteger(n) || n < 1)) return setText(value == null ? "" : String(value));
+    if (n !== null && (!Number.isInteger(n) || n < 1 || n > MAX_CADENCE_DAYS)) return setText(value == null ? "" : String(value));
     if (n !== value) onCommit(n);
   };
   return (
@@ -212,6 +224,7 @@ function CadenceInput({ value, inherited, disabled, onCommit }: { value: number 
       <Input
         type="number"
         min={1}
+        max={MAX_CADENCE_DAYS}
         className="h-7 w-16 text-xs"
         placeholder={inherited == null ? "—" : String(inherited)}
         value={text}

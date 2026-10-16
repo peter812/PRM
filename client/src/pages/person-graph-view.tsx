@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials, personSearchText } from "@shared/person-name";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import ForceGraph3D from "@/lib/force-graph-3d";
@@ -17,7 +18,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { getInitials } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import type { PersonGraphData } from "@shared/schema";
 import * as THREE from "three";
@@ -251,7 +251,7 @@ export default function PersonGraphView({
           id: p.id,
           name: anonymizePeople && p.id !== meData?.id
             ? "Anonymous"
-            : `${p.firstName} ${p.lastName}`,
+            : formatPersonName(p),
           type: "person" as const,
           color,
           val: isCenter ? 15 : (isMember ? 12 : (isCrowd && showCrowds ? 8 : 10)),
@@ -751,16 +751,16 @@ export default function PersonGraphView({
                   {selectedPerson.imageUrl && (
                     <AvatarImage
                       src={selectedPerson.imageUrl}
-                      alt={`${selectedPerson.firstName} ${selectedPerson.lastName}`}
+                      alt={formatPersonName(selectedPerson)}
                     />
                   )}
                   <AvatarFallback className="text-lg">
-                    {getInitials(selectedPerson.firstName, selectedPerson.lastName)}
+                    {personInitials(selectedPerson)}
                   </AvatarFallback>
                 </Avatar>
                 <div className="text-center space-y-0.5">
                   <p className="font-medium" data-testid="text-sidebar-person-name">
-                    {selectedPerson.firstName} {selectedPerson.lastName}
+                    {formatPersonName(selectedPerson)}
                   </p>
                   {selectedPerson.company && (
                     <p
@@ -868,13 +868,8 @@ export default function PersonGraphView({
                         style={{ paddingLeft: highlightedPersonId ? "2.5rem" : undefined }}
                         data-testid="button-person-search"
                       >
-                        {highlightedPersonId
-                          ? people.find((p) => p.id === highlightedPersonId)
-                            ? `${people.find((p) => p.id === highlightedPersonId)!.firstName} ${
-                                people.find((p) => p.id === highlightedPersonId)!.lastName
-                              }`
-                            : "Select person..."
-                          : "Select person..."}
+                        {(highlightedPersonId && formatPersonName(people.find((p) => p.id === highlightedPersonId)))
+                          || "Select person..."}
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent className="w-80 p-0" align="start">
@@ -888,14 +883,14 @@ export default function PersonGraphView({
                               .map((person) => (
                                 <CommandItem
                                   key={person.id}
-                                  value={`${person.firstName} ${person.lastName}`}
+                                  value={`${personSearchText(person)}`}
                                   onSelect={() => {
                                     setHighlightedPersonId(person.id);
                                     setSearchOpen(false);
                                   }}
                                   data-testid={`option-person-${person.id}`}
                                 >
-                                  {person.firstName} {person.lastName}
+                                  {formatPersonName(person)}
                                 </CommandItem>
                               ))}
                           </CommandGroup>

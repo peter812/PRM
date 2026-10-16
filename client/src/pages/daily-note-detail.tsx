@@ -1,3 +1,4 @@
+import { formatPersonName } from "@shared/person-name";
 import { useState } from "react";
 import { useRoute, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -84,7 +85,7 @@ export default function DailyNoteDetail() {
       let label = p.refId;
       if (p.partyType === "person") {
         const person = (people as any[]).find(x => x.id === p.refId);
-        if (person) label = `${person.firstName} ${person.lastName}`.trim();
+        if (person) label = formatPersonName(person);
       } else if (p.partyType === "group") {
         const grp = (groups as any[]).find(x => x.id === p.refId);
         if (grp) label = grp.name;

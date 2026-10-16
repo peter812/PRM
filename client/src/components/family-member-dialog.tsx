@@ -1,3 +1,4 @@
+import { formatPersonName, personInitials, personSearchText } from "@shared/person-name";
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,7 +11,6 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Search, Loader2 } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { getInitials } from "@/lib/utils";
 
 interface Person {
   id: string;
@@ -137,7 +137,7 @@ export function FamilyMemberDialog({
 
   const filteredPeople = searchTerm.trim()
     ? people.filter((p) => {
-        const fullName = `${p.firstName} ${p.lastName}`.toLowerCase();
+        const fullName = personSearchText(p).toLowerCase();
         return (
           fullName.includes(searchTerm.toLowerCase()) &&
           p.id !== personId &&
@@ -347,12 +347,12 @@ export function FamilyMemberDialog({
             <Avatar className="h-9 w-9">
               {connection.person.imageUrl && <AvatarImage src={connection.person.imageUrl} />}
               <AvatarFallback className="text-sm">
-                {getInitials(connection.person.firstName, connection.person.lastName)}
+                {personInitials(connection.person)}
               </AvatarFallback>
             </Avatar>
             <div>
               <div className="text-sm font-semibold">
-                {connection.person.firstName} {connection.person.lastName}
+                {formatPersonName(connection.person)}
               </div>
               <div className="text-xs text-muted-foreground capitalize">
                 {connection.type === "spouse" ? "Spouse/Partner" : connection.type} Connection
@@ -384,11 +384,11 @@ export function FamilyMemberDialog({
                   <Avatar className="h-7 w-7">
                     {person.imageUrl && <AvatarImage src={person.imageUrl} />}
                     <AvatarFallback className="text-xs">
-                      {getInitials(person.firstName, person.lastName)}
+                      {personInitials(person)}
                     </AvatarFallback>
                   </Avatar>
                   <span className="text-sm truncate">
-                    {person.firstName} {person.lastName}
+                    {formatPersonName(person)}
                   </span>
                 </button>
               ))}
@@ -465,7 +465,7 @@ export function FamilyMemberDialog({
                     {familyData.children.map((c: any) => (
                       <div key={c.person.id} className="flex items-center justify-between gap-2 text-sm py-1 border-b last:border-b-0">
                         <span className="truncate max-w-[180px]">
-                          {c.person.firstName} {c.person.lastName}
+                          {formatPersonName(c.person)}
                         </span>
                         <Select
                           value={childRelations[c.person.id] || "none"}
