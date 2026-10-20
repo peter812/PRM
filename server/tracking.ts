@@ -419,11 +419,11 @@ export type UpcomingCheck = {
 };
 
 /**
- * What `claimTrackingJobs` would take at `at` with this `limit`, without
- * claiming: queued manual jobs, then due schedule rows. Only accounts the
- * caller can see are listed, so the list can be shorter than the run.
+ * What `claimTrackingJobs` would take right now with this `limit`, without
+ * claiming: queued manual jobs, then due schedule rows. Evaluated at now(),
+ * like the claim, so the list never shows more than a run started now takes.
  */
-export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingCheck[]> {
+export async function upcomingChecks(limit: number): Promise<UpcomingCheck[]> {
   const skipRecent = await skipRecentlyChecked();
   const rows = await db.execute<{ id: string; username: string; nickname: string | null; interest_level: string; kind: TrackingKind; scan_mode: ScanMode | null; origin: "manual" | "schedule"; at: Date }>(sql`
     WITH manual AS (
@@ -434,7 +434,7 @@ export async function upcomingChecks(at: Date, limit: number): Promise<UpcomingC
       LIMIT ${limit}
     ), scheduled AS (
       SELECT sa.id, 'scan' AS kind, ${scanModeFor(sql`sa.interest_level`)} AS scan_mode, 'schedule' AS origin, sa.scan_due_at AS at, 1 AS rank
-      ${dueAt(sql`${at.toISOString()}::timestamptz`, skipRecent)}
+      ${dueAt(sql`now()`, skipRecent)}
       ORDER BY sa.scan_due_at ASC
       LIMIT greatest(${limit} - (SELECT count(*) FROM manual), 0)
     )

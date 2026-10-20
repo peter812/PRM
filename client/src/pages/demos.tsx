@@ -1,5 +1,5 @@
 import { Link } from "wouter";
-import { Mic, Map as MapIcon, Cloud, SlidersHorizontal, Bell, Globe, BookUser } from "lucide-react";
+import { Mic, Map as MapIcon, Cloud, SlidersHorizontal, Bell, Globe, BookUser, ScanFace } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function DemosPage() {
@@ -139,7 +139,21 @@ export default function DemosPage() {
                 Yearbook &amp; Playbill Import
               </CardTitle>
               <CardDescription>
-                Create people from a yearbook or CYT playbill page: faces, names and bios.
+                Save the faces, names and bios on a yearbook or playbill page as references.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+
+        <Link href="/demos/references">
+          <Card className="hover:bg-accent cursor-pointer transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ScanFace className="h-5 w-5" />
+                References
+              </CardTitle>
+              <CardDescription>
+                Browse imported references by name or keyword, or search them by face.
               </CardDescription>
             </CardHeader>
           </Card>

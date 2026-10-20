@@ -35,6 +35,8 @@ export default function DeleteOptionsPage() {
 
   const [isDeleteChatsDialogOpen, setIsDeleteChatsDialogOpen] = useState(false);
   const [confirmDeleteChats, setConfirmDeleteChats] = useState(false);
+  const [isDeleteReferencesDialogOpen, setIsDeleteReferencesDialogOpen] = useState(false);
+  const [confirmDeleteReferences, setConfirmDeleteReferences] = useState(false);
 
   const [isDeleteMessagesDialogOpen, setIsDeleteMessagesDialogOpen] = useState(false);
   const [confirmDeleteMessages, setConfirmDeleteMessages] = useState(false);
@@ -266,6 +268,29 @@ export default function DeleteOptionsPage() {
       deleteAllChatsMutation.mutate();
     }
   };
+
+  const deleteAllReferencesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch("/api/references/all", { method: "DELETE" });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to delete references");
+      }
+      return response.json() as Promise<{ deleted: number; cropsError: string | null }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "References Deleted",
+        description: `Deleted ${data.deleted} reference(s).${data.cropsError ? ` Some crops could not be removed: ${data.cropsError}` : ""}`,
+      });
+      setIsDeleteReferencesDialogOpen(false);
+      setConfirmDeleteReferences(false);
+      queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("/api/references") });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Delete Failed", description: error.message, variant: "destructive" });
+    },
+  });
 
   const CHANNEL_OPTIONS = [
     { value: "all", label: "All message types" },
@@ -643,6 +668,25 @@ export default function DeleteOptionsPage() {
               </Button>
             </div>
 
+            {/* Delete All References */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
+              <div className="space-y-1">
+                <h4 className="font-semibold text-sm text-destructive">Delete All References</h4>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  Deletes every reference (yearbook / playbill faces), its crop and its face vector.
+                </p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={() => setIsDeleteReferencesDialogOpen(true)}
+                className="shrink-0 self-start sm:self-center gap-2"
+                data-testid="button-delete-all-references-trigger"
+              >
+                <ScanFace className="h-4 w-4" />
+                Delete References...
+              </Button>
+            </div>
+
             {/* Row 5: Delete All Chats */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-md border border-destructive/10 bg-destructive/5">
               <div className="space-y-1">
@@ -900,6 +944,58 @@ export default function DeleteOptionsPage() {
               data-testid="button-reset-images"
             >
               {resetImagesMutation.isPending ? "Resetting..." : "Reset Images & Faces"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Delete All References */}
+      <Dialog open={isDeleteReferencesDialogOpen} onOpenChange={(open) => {
+        setIsDeleteReferencesDialogOpen(open);
+        if (!open) setConfirmDeleteReferences(false);
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-destructive flex items-center gap-2">
+              <AlertCircle className="h-5 w-5" />
+              Confirm Delete All References
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete every reference from PRM, its face vector from PRM-Compute and its crop from storage.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive">
+              <p className="font-semibold mb-2">Warning: This action cannot be undone</p>
+              <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                <li>All imported yearbook and playbill references will be deleted</li>
+                <li>People, photos and the standard face data are unaffected</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-between rounded-md border p-4">
+              <Label htmlFor="confirm-delete-references" className="text-sm font-medium pr-4 leading-normal">
+                I understand that this action is irreversible and wish to proceed
+              </Label>
+              <Switch
+                id="confirm-delete-references"
+                checked={confirmDeleteReferences}
+                onCheckedChange={setConfirmDeleteReferences}
+                data-testid="switch-confirm-delete-references"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsDeleteReferencesDialogOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteAllReferencesMutation.mutate()}
+              disabled={!confirmDeleteReferences || deleteAllReferencesMutation.isPending}
+              data-testid="button-delete-all-references"
+            >
+              {deleteAllReferencesMutation.isPending ? "Deleting..." : "Delete All References"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -22,6 +22,7 @@ import { INTEREST_LEVELS, type InterestLevel } from "@shared/interest-level";
 import { fetchImageBuffer } from "./prm-s3";
 import { describeImage } from "./ai/describe";
 import { bannedActions } from "./banned-actions";
+import { syncEntityInBackground } from "./vector-universal";
 import { asData, chat, DATA_TAGS_NOTE, listProviders, resolveModel, type AiTask, type ResolvedModel } from "./ai/provider";
 import { hostPoolSlots, runOnHost, setHostPool } from "./ai/host-pool";
 
@@ -545,6 +546,7 @@ async function savePostSummary(
       updatedAt: new Date(),
     })
     .where(eq(socialAccountPosts.id, post.id));
+  syncEntityInBackground("post", post.id);
 
   // Diagram flow after running a post summary:
   //    "is social account Summary on?" -> Yes -> "set current account summary as out of date"
@@ -671,6 +673,7 @@ async function runAccountSummaryJob(job: SummaryJob): Promise<void> {
       })
       .where(eq(socialAccounts.id, account.id));
   });
+  syncEntityInBackground("social_account", account.id);
 }
 
 // ── Runner Loop ──────────────────────────────────────────────────────────────

@@ -24,6 +24,8 @@ import { registerRoutes as registerDescribeMe } from "./routes/describe-me";
 import { registerRoutes as registerDemosMap } from "./routes/demos-map";
 import { registerRoutes as registerDemosWordCloud } from "./routes/demos-word-cloud";
 import { registerRoutes as registerRosterImport } from "./routes/roster-import";
+import { registerRoutes as registerReferences } from "./routes/references";
+import { registerRoutes as registerRecog } from "./routes/recog";
 import { registerSetupServicesRoutes } from "./routes/setup-services";
 import { registerSummaryRoutes } from "./routes/summaries";
 
@@ -61,6 +63,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerDemosMap(app);
   registerDemosWordCloud(app);
   registerRosterImport(app);
+  registerReferences(app);
+  registerRecog(app);
   registerSetupServicesRoutes(app);
 
   const httpServer = createServer(app);

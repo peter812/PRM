@@ -199,7 +199,7 @@ Each step leaves the app working the way it does today, plus whatever that step 
 | 3 ✅ | **Compute `/api/face/cluster`** (§2.3), with pytest over a synthetic matrix (well-separated blobs, the same-photo cannot-link, singleton → `null`, unknown ids → `null`). | None. | Nothing calls it yet. |
 | 4 ✅ | **PRM `cluster_id`, `noise_reason`, `face_clusters` + clustering job + noise pre-filter**, in **dry-run mode**: it writes `face_clusters` and `cluster_id`, but `faceQualifies` doesn't read `noise_reason` yet. | Only a "Face clustering (dry run)" settings row (thresholds plus Run now, with the summary in a toast). A cluster-size histogram and noise counts go to the log. | Use these numbers to tune `min_similarity`, the noise thresholds and the blur cutoff on real data before anyone sees a cluster. |
 | 5 ✅ | **`face_cluster_rejections`, `connectFaces`, suggestions, name/reject/strangers actions, and the Clusters tab** (§3.3, §3.4, §5), plus the noise clause in `faceQualifies` with its show-noise toggle and the "in a cluster" chip. | The Clusters tab appears. Per-photo counts drop by the quality-noise faces. | The noise clause ships together with the toggle that reveals it. Naming goes through `connectFaces`, so the identity model doesn't change. |
-| 6 | **`verify_*` columns, two-tier auto-assign + Verify tab** (§4), with the stored-threshold migration in the **same** release. | Fewer silent auto-assigns, and a Verify tab with the 0.55–0.75 faces plus the old unconfirmed ones. | Raising the bar without the Verify tab would strand the 0.55–0.75 faces with no queue to review them in, so the two ship together. |
+| 6 ✅ | **`verify_*` columns, two-tier auto-assign + Verify tab** (§4), with the stored-threshold migration in the **same** release. | Fewer silent auto-assigns, and a Verify tab with the 0.55–0.75 faces plus the old unconfirmed ones. | Raising the bar without the Verify tab would strand the 0.55–0.75 faces with no queue to review them in, so the two ship together. |
 
 Compute can lag behind PRM at any step. PRM treats a 404 from `/api/face/cluster` as "clustering unavailable" (§3.2), and a missing `sharpness` simply leaves the blur check off.
 
@@ -235,6 +235,29 @@ So lowering `min_similarity` would mostly merge different people, and the 40% to
 - "New person" is the create flow of the shared `IdentitySearch` picker.
 - Chips on the cluster cards are display-only. You name from the banner or from the detail dialog, which lets you click faces to leave them out.
 - Banners are rare on this data: the owners of the big clusters are already linked to a person, so §3.3 shows the owner chip instead.
+
+**After step 5 (2026-10-17, read-only, last clustering run 08:22 UTC):**
+
+| Measure | Result |
+|---|---|
+| Eligible faces | 68,954 (more photos recognised since step 4) |
+| Noise faces | 6,595 `low_conf`, 0 `small`, 0 `blurry` |
+| Clusters | 4,105, covering 30,774 faces |
+| Singletons | 38,180 |
+| Largest cluster | 216 faces |
+| Top 50 clusters | 3,226 faces (4.7%) |
+| Clusters of ≥ 10 faces | 787 clusters, 15,726 faces (23%) |
+| Banners in the top 200 clusters | 0 (all 200 show at least one suggestion chip) |
+
+The 40% target is still out of reach for the same long-tail reason. The "queue left after naming the top clusters" number needs a naming pass first.
+
+**Step 6 as built (2026-10-17):**
+- Routes live under `/api/face-review/verify`: the identity list, `/:group`, and one `POST /:group/confirm {confirm, reject}`. Faces start selected, and the faces you deselect are rejected.
+- A near tie at ≥ 0.75 (runner-up within 0.01) goes to Verify rather than being auto-assigned. Auto-assign also skips quality noise now.
+- Rejecting a verify pick records a `face_pair_dismissals` row for its own group against the identity. An orphan first gets a group via `disassociateFace`. Rejecting an unconfirmed auto-assign pulls it out with `disassociateFace`.
+- There's no extra "top suggestion" code. A face with a verify match ≥ 0.55 already shows that identity first among its look-alikes (threshold 0.45).
+- The 0.55 → 0.75 migration is guarded by an app setting, `face_two_tier_migrated`, so it runs once. A later deliberate 0.55 is kept.
+- Real tiers on read-only data: of 74,124 open faces, 18 score ≥ 0.75 and 171 fall in 0.55–0.75 across 28 identities. The bigger list is the old auto-assigns: 13,072 of 13,616 are below 0.75, spread over 673 identities (median 9, largest 387). They show as "unconfirmed".
 
 ## 8. Open risks
 - **Chaining.** Chinese Whispers can merge look-alike siblings. Mitigated by the same-photo cannot-link and by the exclude flow. HDBSCAN is the fallback.

@@ -72,6 +72,7 @@ const OllamaParamsDemo = lazy(() => import("@/pages/ollama-params-demo"));
 const AiChatDemo = lazy(() => import("@/pages/ai-chat-demo"));
 const EventLogDemo = lazy(() => import("@/pages/event-log-demo"));
 const RosterImportDemo = lazy(() => import("@/pages/roster-import-demo"));
+const ReferencesPage = lazy(() => import("@/pages/references"));
 const DemosPage = lazy(() => import("@/pages/demos"));
 const GamesPage = lazy(() => import("@/pages/games"));
 const DescribeMePage = lazy(() => import("@/pages/describe-me"));
@@ -81,6 +82,8 @@ const ImagesListPage = lazy(() => import("@/pages/images-list"));
 const DailyNotesList = lazy(() => import("@/pages/daily-notes"));
 const DailyNoteDetail = lazy(() => import("@/pages/daily-note-detail"));
 const SuperSearchPage = lazy(() => import("@/pages/super-search"));
+const SuperSearchMediaPage = lazy(() => import("@/pages/super-search-media"));
+const MessageChunkRedirect = lazy(() => import("@/pages/message-chunk-redirect"));
 const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-imports"));
 const SocialTrackingPage = lazy(() => import("@/pages/social-tracking"));
 const SocialAccountsIssuesPage = lazy(() => import("@/pages/social-accounts-issues"));
@@ -246,12 +249,15 @@ function Router() {
         <ProtectedRoute path="/demos/ollama-params" component={OllamaParamsDemo} />
         <ProtectedRoute path="/demos/event-log" component={EventLogDemo} />
         <ProtectedRoute path="/demos/roster-import" component={RosterImportDemo} />
+        <ProtectedRoute path="/demos/references" component={ReferencesPage} />
         <ProtectedRoute path="/ai-chat-demo/:id?" component={AiChatDemo} />
         <ProtectedRoute path="/image/:id" component={ImageDetailPage} />
         <ProtectedRoute path="/images" component={ImagesListPage} />
         <ProtectedRoute path="/daily-notes" component={DailyNotesList} />
         <ProtectedRoute path="/daily-notes/:id" component={DailyNoteDetail} />
+        <ProtectedRoute path="/super-search/media" component={SuperSearchMediaPage} />
         <ProtectedRoute path="/super-search" component={SuperSearchPage} />
+        <ProtectedRoute path="/message-chunks/:id" component={MessageChunkRedirect} />
         <ProtectedRoute path="/backups" component={() => <Redirect to="/settings/import-export/backups" />} />
         <ProtectedRoute path="/import-export" component={() => <Redirect to="/settings/import-export" />} />
         <ProtectedRoute path="/import-export/backups" component={() => <Redirect to="/settings/import-export/backups" />} />

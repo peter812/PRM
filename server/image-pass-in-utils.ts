@@ -2,7 +2,6 @@ import { inArray } from "drizzle-orm";
 import { socialAccounts } from "@shared/schema";
 import { db } from "./db";
 import { storage } from "./storage";
-import { syncEntityInBackground } from "./vector-universal";
 
 interface ImagePassInResult {
   totalPeopleWithoutImages: number;
@@ -72,7 +71,6 @@ export async function runAutomaticImagePassIn(): Promise<ImagePassInResult> {
 
     if (foundImage) {
       await storage.updatePerson(person.id, { imageUrl: foundImage });
-      syncEntityInBackground("person", person.id);
       updates.push({
         personId: person.id,
         personName: `${person.firstName} ${person.lastName}`.trim(),
@@ -113,7 +111,6 @@ export async function autoPassInImageForPerson(personId: string): Promise<boolea
     const imageUrl = imageById.get(uuid);
     if (imageUrl) {
       await storage.updatePerson(personId, { imageUrl });
-      syncEntityInBackground("person", personId);
       return true;
     }
   }
@@ -135,7 +132,6 @@ export async function autoPassInImageForSocialAccount(socialAccountId: string): 
     const person = await storage.getPersonById(account.ownerUuid);
     if (person && !person.imageUrl) {
       await storage.updatePerson(person.id, { imageUrl });
-      syncEntityInBackground("person", person.id);
       return true;
     }
   }
@@ -146,7 +142,6 @@ export async function autoPassInImageForSocialAccount(socialAccountId: string): 
   for (const person of allPeople) {
     if (!person.imageUrl && (person.socialAccountUuids || []).includes(socialAccountId)) {
       await storage.updatePerson(person.id, { imageUrl });
-      syncEntityInBackground("person", person.id);
       updatedAny = true;
     }
   }

@@ -1,4 +1,4 @@
-import { loadVectorConfig, embedText, buildClient, ensureCollection, getVectorSetting } from "./vector";
+import { loadVectorConfig, embedText, buildClient, ensureCollection, getVectorSetting, runPool } from "./vector";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { randomUUID } from "crypto";
 import { db } from "./db";
@@ -8,7 +8,7 @@ import fs from "fs";
 import path from "path";
 import Papa from "papaparse";
 
-const APP_KNOWLEDGE_COLLECTION = "prm-app-knowledge";
+export const APP_KNOWLEDGE_COLLECTION = "prm-app-knowledge";
 
 /**
  * Re-reads the app knowledge CSV, chunks it by 120 words with 10 words overlap,
@@ -61,7 +61,7 @@ export async function reindexAppKnowledge(): Promise<{ processed: number; failed
   void (async () => {
     let processedCount = 0;
     let failedCount = 0;
-    for (const row of inserted) {
+    await runPool(inserted, cfg.embeddingConcurrency, async (row) => {
       try {
         const vector = await embedText(row.content);
         await ensureCollection(client, APP_KNOWLEDGE_COLLECTION, vector.length);
@@ -91,7 +91,7 @@ export async function reindexAppKnowledge(): Promise<{ processed: number; failed
         console.error(`[app-knowledge] Failed to vectorize chunk ${row.id}:`, err);
         failedCount++;
       }
-    }
+    });
     console.log(`[app-knowledge] Background indexing complete. Vectorized: ${processedCount}, Failed: ${failedCount}`);
   })();
 

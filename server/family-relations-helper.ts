@@ -72,11 +72,22 @@ const PATH_MAP: Record<string, KinshipTerm> = {
   "parent,child,child": { neutral: "Nephew/Niece", male: "Nephew", female: "Niece" },
   "parent,parent,parent": { neutral: "Great-Grandparent", male: "Great-Grandfather", female: "Great-Grandmother" },
   "child,child,child": { neutral: "Great-Grandchild", male: "Great-Grandson", female: "Great-Granddaughter" },
+  "parent,sibling,child": { neutral: "Cousin", male: "Cousin", female: "Cousin" },
+  "parent,parent,sibling": { neutral: "Great-Uncle/Aunt", male: "Great-Uncle", female: "Great-Aunt" },
+  "sibling,child,child": { neutral: "Grandnephew/Niece", male: "Grandnephew", female: "Grandniece" },
+  "parent,sibling,spouse": { neutral: "Uncle/Aunt", male: "Uncle", female: "Aunt" },
 
   // 4-steps
+  "parent,parent,child,spouse": { neutral: "Uncle/Aunt", male: "Uncle", female: "Aunt" },
   "parent,parent,child,child": { neutral: "Cousin", male: "Cousin", female: "Cousin" },
   "parent,parent,parent,child": { neutral: "Great-Uncle/Aunt", male: "Great-Uncle", female: "Great-Aunt" },
+  "parent,parent,sibling,child": { neutral: "First Cousin Once Removed", male: "First Cousin Once Removed", female: "First Cousin Once Removed" },
+  "parent,sibling,child,child": { neutral: "First Cousin Once Removed", male: "First Cousin Once Removed", female: "First Cousin Once Removed" },
 };
+
+// Tree depth (in lineage/partnership hops) used when labeling relatives.
+// Aunts/uncles are 3 hops away (parent → grandparent → their child); cousins are 4.
+export const FAMILY_LABEL_DEPTH = 4;
 
 /**
  * Helper to apply appropriate prefixes (Step-, Adoptive-, Half-) based on the raw path

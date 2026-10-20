@@ -96,7 +96,12 @@ function EmbeddedMessagesView({
   title,
   importSource,
 }: EmbeddedMessagesViewProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // A message-chunk link (?conversation=&chunk=) opens that conversation with the chunk highlighted.
+  const [linked] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return { conversationId: params.get("conversation"), chunkId: params.get("chunk") };
+  });
+  const [selectedId, setSelectedId] = useState<string | null>(linked.conversationId);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const isMobile = useIsMobile();
 
@@ -131,6 +136,7 @@ function EmbeddedMessagesView({
               perspectiveAccountIds={perspective ? perspectiveAccountIds : undefined}
               onBack={isMobile ? () => setSelectedId(null) : undefined}
               onDeleted={() => setSelectedId(null)}
+              highlightChunkId={selectedId === linked.conversationId ? linked.chunkId ?? undefined : undefined}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground select-none">

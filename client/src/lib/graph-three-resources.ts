@@ -38,6 +38,23 @@ export class GraphResourceCache {
     return geom;
   }
 
+  /**
+   * Unit-height open tube along +y, used for weighted links: `radiusTop` sits
+   * at the target end. Scaled to the link's length each tick.
+   */
+  cylinderGeometry(radiusTop: number, radiusBottom: number): THREE.CylinderGeometry {
+    // Rounded so a few hundred links share a handful of geometries.
+    const top = Math.round(radiusTop * 10) / 10;
+    const bottom = Math.round(radiusBottom * 10) / 10;
+    const key = `cylinder:${top}:${bottom}`;
+    let geom = this.geometries.get(key) as THREE.CylinderGeometry | undefined;
+    if (!geom) {
+      geom = new THREE.CylinderGeometry(top, bottom, 1, 6, 1, true);
+      this.geometries.set(key, geom);
+    }
+    return geom;
+  }
+
   /** Lit material for regular graph nodes. */
   nodeMaterial(color: string, translucent: boolean): THREE.MeshLambertMaterial {
     const key = `lambert:${color}:${translucent}`;

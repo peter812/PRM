@@ -3,12 +3,13 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, tasks, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
-import { computeFamilyLabels } from "../family-relations-helper";
+import { computeFamilyLabels, FAMILY_LABEL_DEPTH } from "../family-relations-helper";
 import { getPrimaryAddress } from "../person-addresses";
+import { AiConfigError, asData, chat as aiChat, DATA_TAGS_NOTE, resolveModel } from "../ai/provider";
 import {
   insertPersonSchema,
   insertSchoolingSchema,
@@ -55,8 +56,8 @@ import {
   syncDailyNoteInBackground,
   searchDailyNotes,
 } from "../vector";
-import { syncEntityInBackground, deleteEntityVector } from "../vector-universal";
 import { autoPassInImageForPerson } from "../image-pass-in-utils";
+import { getConnectionNetwork } from "../connection-strength";
 
 const scryptAsync = promisify(scrypt);
 
@@ -68,6 +69,65 @@ let isUserCreationAllowed = false;
 // NOTE: The global "/api" auth gate (and its PUBLIC_API_PATHS allowlist) lives
 // in server/routes/auth-setup.ts, which is registered first and protects every
 // /api route in all modules. Do not add a separate allowlist here.
+
+// ── Potential-group explainer prompt ─────────────────────────────────────────
+
+const GROUP_EXPLANATION_SCHEMA = {
+  type: "object",
+  properties: {
+    explanation: { type: "string" },
+    suggestedName: { type: "string" },
+    outliers: {
+      type: "array",
+      items: { type: "object", properties: { username: { type: "string" }, reason: { type: "string" } }, required: ["username", "reason"] },
+    },
+  },
+  required: ["explanation", "suggestedName", "outliers"],
+};
+
+const GROUP_EXPLAINER_SYSTEM = `You explain why a community-detection algorithm (Louvain) grouped a set of social media accounts together.
+The graph combined these signals into weighted edges between accounts:
+- mutualFollow: both accounts follow each other (strong, 3.5 per pair)
+- oneWayFollow: one follows the other (1.0 per pair)
+- coFollow: they follow many of the same accounts (shared audience/interests)
+- coMention: they were tagged together in the same posts (2.5 per post)
+- bio: their bios share uncommon keywords
+Reply as JSON:
+- explanation: 2-4 plain sentences on why these accounts form a group. Lead with the signals that carry the most weight and cite concrete evidence (shared follows, keywords, hub accounts). Don't restate raw percentages mechanically.
+- suggestedName: a short, human group name (2-5 words) describing what the group likely is (e.g. "Denver climbing crew"). No @handles.
+- outliers: for each account listed in weak_members, one short reason it fits the group weakly. Only use usernames from weak_members; return [] if there are none.
+${DATA_TAGS_NOTE}`;
+
+function buildGroupExplainerPrompt(group: any): string {
+  const s = group.signals;
+  const signalLines = Object.keys(s.sharePct)
+    .map(sig => `- ${sig}: ${s.sharePct[sig]}% of internal weight (${s.pairCounts[sig]} pairs)`)
+    .join("\n");
+  const hubs = (group.memberPreviews ?? []).slice(0, 15)
+    .map((m: any) => `@${m.username}${m.nickname ? ` (${m.nickname})` : ""}${m.bioSummary ? ` — ${m.bioSummary}` : ""}`)
+    .join("\n");
+  const follows = s.topSharedFollows.map((f: any) => `@${f.username} (followed by ${f.memberCount} members)`).join("\n") || "(none)";
+  const keywords = s.keywordCounts.map((k: any) => `${k.keyword} (${k.memberCount} bios)`).join(", ") || "(none)";
+  const pairs = s.topPairs.map((p: any) => `@${p.a} – @${p.b} (weight ${p.weight}, mostly ${p.dominant})`).join("\n") || "(none)";
+  const weak = s.weakMembers.map((m: any) => `@${m.username} (${Math.round(m.fit * 100)}% of its connection weight is inside the group)`).join("\n") || "(none)";
+
+  return `Group of ${group.memberCount} accounts, cohesion ${group.cohesionScore}% (share of members' connection weight that stays inside the group).
+
+Signal breakdown:
+${signalLines}
+
+Shared bio keywords: ${asData("keywords", keywords)}
+
+${asData("shared_follows", follows)}
+
+Strongest pairs:
+${asData("top_pairs", pairs)}
+
+Most-connected members:
+${asData("members", hubs)}
+
+${asData("weak_members", weak)}`;
+}
 
 
 
@@ -350,7 +410,6 @@ export function registerRoutes(app: Express) {
         }
         
         const finalPerson = await storage.getPersonById(person.id) || person;
-        syncEntityInBackground("person", person.id);
         res.status(201).json(finalPerson);
       } catch (error) {
         console.error("Error creating person:", error);
@@ -397,7 +456,6 @@ export function registerRoutes(app: Express) {
           }
         }
   
-        syncEntityInBackground("person", id);
         res.json(finalPerson);
       } catch (error) {
         console.error("Error updating person:", error);
@@ -457,16 +515,7 @@ export function registerRoutes(app: Express) {
     app.delete("/api/people/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        // Collect vector IDs for cascaded child entities before deletion
-        const [personRow] = await db.select({ vectorId: people.vectorId }).from(people).where(eq(people.id, id));
-        const childNotes = await db.select({ vectorId: notes.vectorId }).from(notes).where(eq(notes.personId, id));
         await storage.deletePerson(id);
-        // Remove vectors asynchronously
-        if (personRow?.vectorId) void deleteEntityVector("person", personRow.vectorId);
-        const childNoteVectorIds = childNotes.map((n) => n.vectorId).filter(Boolean) as string[];
-        if (childNoteVectorIds.length > 0) {
-          void deleteEntityVector("note", childNoteVectorIds);
-        }
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting person:", error);
@@ -532,7 +581,6 @@ export function registerRoutes(app: Express) {
       try {
         const validatedData = insertNoteSchema.parse(req.body);
         const note = await storage.createNote(validatedData);
-        syncEntityInBackground("note", note.id);
         res.status(201).json(note);
       } catch (error) {
         console.error("Error creating note:", error);
@@ -543,9 +591,7 @@ export function registerRoutes(app: Express) {
     app.delete("/api/notes/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        const [noteRow] = await db.select({ vectorId: notes.vectorId }).from(notes).where(eq(notes.id, id));
         await storage.deleteNote(id);
-        if (noteRow?.vectorId) void deleteEntityVector("note", noteRow.vectorId);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting note:", error);
@@ -643,7 +689,6 @@ export function registerRoutes(app: Express) {
         const interaction = await storage.createInteraction({
           ...validatedData,
         });
-        syncEntityInBackground("interaction", interaction.id);
         res.status(201).json(interaction);
       } catch (error) {
         console.error("Error creating interaction:", error);
@@ -661,7 +706,6 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Interaction not found" });
         }
   
-        syncEntityInBackground("interaction", id);
         res.json(interaction);
       } catch (error) {
         console.error("Error updating interaction:", error);
@@ -686,9 +730,7 @@ export function registerRoutes(app: Express) {
           }
         }
         
-        const vectorIdToDelete = interaction?.vectorId ?? null;
         await storage.deleteInteraction(id);
-        if (vectorIdToDelete) void deleteEntityVector("interaction", vectorIdToDelete);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting interaction:", error);
@@ -821,9 +863,9 @@ export function registerRoutes(app: Express) {
         const groups = Array.from(groupsMap.values())
           .filter((g) => g.relationships.length > 0);
 
-        // Dynamically fetch and label family relationships (up to 2 steps)
+        // Dynamically fetch and label family relationships
         try {
-          const familyTree = await storage.getFamilyTree(personId, 2);
+          const familyTree = await storage.getFamilyTree(personId, FAMILY_LABEL_DEPTH);
           const familyLabels = computeFamilyLabels(personId, familyTree);
           
           if (familyLabels.size > 0) {
@@ -1077,7 +1119,6 @@ export function registerRoutes(app: Express) {
         const group = await storage.createGroup({
           ...validatedData,
         });
-        syncEntityInBackground("group", group.id);
         res.status(201).json(group);
       } catch (error) {
         console.error("Error creating group:", error);
@@ -1095,7 +1136,6 @@ export function registerRoutes(app: Express) {
           return res.status(404).json({ error: "Group not found" });
         }
   
-        syncEntityInBackground("group", id);
         res.json(group);
       } catch (error) {
         console.error("Error updating group:", error);
@@ -1106,9 +1146,7 @@ export function registerRoutes(app: Express) {
     app.delete("/api/groups/:id", async (req, res) => {
       try {
         const id = req.params.id;
-        const [groupRow] = await db.select({ vectorId: groups.vectorId }).from(groups).where(eq(groups.id, id));
         await storage.deleteGroup(id);
-        if (groupRow?.vectorId) void deleteEntityVector("group", groupRow.vectorId);
         res.json({ success: true });
       } catch (error) {
         console.error("Error deleting group:", error);
@@ -1279,8 +1317,12 @@ export function registerRoutes(app: Express) {
       try {
         const settings = req.body as {
           view?: 'person' | 'social';
+          /** 'connections' draws who interacts (connection-strength-plan.md) instead of who follows. */
+          edges?: 'follows' | 'connections';
           hideOrphans?: boolean;
           minConnections?: number;
+          /** Connections view: drop pairs whose combined score is below this. */
+          minConnectionStrength?: number;
           limitExtras?: boolean;
           maxExtras?: number;
           highlightedAccountId?: string | null;
@@ -1297,6 +1339,13 @@ export function registerRoutes(app: Express) {
           return res.json(personGraph);
         }
   
+        // Filtered before the graph is built, so orphans and minimum-connection
+        // counts are judged on the links that will actually be drawn.
+        const minStrength = settings.minConnectionStrength ?? 0;
+        const connectionPairs = settings.edges === 'connections'
+          ? (await getConnectionNetwork()).filter((p) => p.ab + p.ba >= minStrength)
+          : undefined;
+
         const graphData = await storage.getSocialGraph({
           hideOrphans: settings.hideOrphans ?? true,
           minConnections: settings.minConnections ?? 0,
@@ -1309,7 +1358,7 @@ export function registerRoutes(app: Express) {
           singleShowFriendLinks: settings.singleShowFriendLinks ?? true,
           singleRemoveExtras: settings.singleRemoveExtras ?? false,
           multiHighlightAccountIds: settings.multiHighlightAccountIds ?? [],
-        });
+        }, connectionPairs);
   
         res.json(graphData);
       } catch (error) {
@@ -1495,6 +1544,7 @@ export function registerRoutes(app: Express) {
           minCohesion?: number;
           minDensityMultiplier?: number;
           linkDefinition?: "any" | "mutual" | "family";
+          minPersonalConnections?: number;
         };
         if (!settings.entityType) {
           return res.status(400).json({ error: "entityType is required." });
@@ -1541,6 +1591,60 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error fetching analysis results:", error);
         res.status(500).json({ error: "Failed to fetch analysis results" });
+      }
+    });
+
+    // Explain why a Smart Multi-Signal group clustered, from its recorded signals.
+    // Generated on demand and saved back into the task result; ?regenerate=1 forces a new one.
+    app.post("/api/potential-groups/results/:taskId/explain/:groupId", async (req, res) => {
+      try {
+        const { taskId, groupId } = req.params;
+        const loadGroups = async () => {
+          const task = await storage.getTaskById(taskId);
+          return task?.result ? (JSON.parse(task.result) as any[]) : null;
+        };
+        const results = await loadGroups();
+        const group = results?.find(g => g.id === groupId);
+        if (!group) return res.status(404).json({ error: "Group not found" });
+        if (!group.signals) return res.status(400).json({ error: "Explanations are only available for Smart Multi-Signal groups." });
+        if (group.explanation && req.query.regenerate !== "1") return res.json(group.explanation);
+
+        const resolved = await resolveModel("text");
+        const { content } = await aiChat(resolved, {
+          think: false,
+          format: GROUP_EXPLANATION_SCHEMA,
+          messages: [
+            { role: "system", content: GROUP_EXPLAINER_SYSTEM },
+            { role: "user", content: buildGroupExplainerPrompt(group) },
+          ],
+          signal: AbortSignal.timeout(120_000),
+        });
+
+        const parsed = JSON.parse(content || "{}");
+        const weak = new Map<string, string>(group.signals.weakMembers.map((m: any) => [m.username.toLowerCase(), m.id]));
+        const explanation = {
+          explanation: String(parsed.explanation ?? "").trim(),
+          suggestedName: String(parsed.suggestedName ?? "").trim().slice(0, 80),
+          outliers: (Array.isArray(parsed.outliers) ? parsed.outliers : [])
+            .map((o: any) => ({ username: String(o?.username ?? "").replace(/^@/, ""), reason: String(o?.reason ?? "").trim() }))
+            .filter((o: any) => weak.has(o.username.toLowerCase()))
+            .map((o: any) => ({ ...o, id: weak.get(o.username.toLowerCase())! })),
+          model: resolved.model,
+          generatedAt: new Date().toISOString(),
+        };
+
+        // Re-read right before writing so a concurrent explain on another group isn't clobbered
+        const latest = await loadGroups();
+        const target = latest?.find(g => g.id === groupId);
+        if (latest && target) {
+          target.explanation = explanation;
+          await db.update(tasks).set({ result: JSON.stringify(latest) }).where(eq(tasks.id, taskId));
+        }
+        res.json(explanation);
+      } catch (error: any) {
+        console.error("Error explaining potential group:", error);
+        if (error instanceof AiConfigError) return res.status(400).json({ error: error.message });
+        res.status(500).json({ error: error?.message || "Failed to explain group" });
       }
     });
 
@@ -1595,7 +1699,6 @@ export function registerRoutes(app: Express) {
 
         await linkAccountsToGroup(group.id, accountIds);
 
-        syncEntityInBackground("group", group.id);
         res.json({ success: true, groupId: group.id });
       } catch (error) {
         console.error("Error creating group from analysis:", error);
@@ -1649,7 +1752,6 @@ export function registerRoutes(app: Express) {
           resultSubGroupId = subGroup.id;
         }
 
-        syncEntityInBackground("group", groupId);
         res.json({ success: true, groupId, subGroupId: resultSubGroupId });
       } catch (error) {
         console.error("Error assigning potential group:", error);

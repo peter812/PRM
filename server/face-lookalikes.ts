@@ -42,7 +42,7 @@ export async function setLikelySameMinScore(score: number): Promise<void> {
 }
 
 const AUTO_ASSIGN_MIN_SCORE_KEY = "face_auto_assign_min_score";
-const AUTO_ASSIGN_MIN_SCORE_DEFAULT = 0.55;
+const AUTO_ASSIGN_MIN_SCORE_DEFAULT = 0.75;
 /** A top match this close to the runner-up is a coin toss, so it's left for review (face-review-plan.md §8.2). */
 export const AUTO_ASSIGN_MIN_MARGIN = 0.01;
 
@@ -54,6 +54,19 @@ export async function getAutoAssignMinScore(): Promise<number> {
 
 export async function setAutoAssignMinScore(score: number): Promise<void> {
   if (Number.isFinite(score) && score > 0 && score <= 1) await storage.setAppSetting(AUTO_ASSIGN_MIN_SCORE_KEY, String(score));
+}
+
+const VERIFY_MIN_SCORE_KEY = "face_verify_min_score";
+const VERIFY_MIN_SCORE_DEFAULT = 0.55;
+
+/** Cosine similarity (0-1) from which a face below the auto-assign score is offered in the Verify tab instead. */
+export async function getVerifyMinScore(): Promise<number> {
+  const raw = Number(await storage.getAppSetting(VERIFY_MIN_SCORE_KEY));
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : VERIFY_MIN_SCORE_DEFAULT;
+}
+
+export async function setVerifyMinScore(score: number): Promise<void> {
+  if (Number.isFinite(score) && score > 0 && score <= 1) await storage.setAppSetting(VERIFY_MIN_SCORE_KEY, String(score));
 }
 
 // ── Centroid cache ────────────────────────────────────────────────────────────
@@ -156,17 +169,28 @@ export async function lookAlikesFor(faceUuids: string[], opts?: { minScore?: num
     const embedding = row.embedding as number[] | null;
     if (!Array.isArray(embedding) || !embedding.length) continue;
     const ownGroup = row.personfaceUuid;
-    const scored: LookAlike[] = [];
-    for (const [group, centroid] of centroids) {
-      if (group === ownGroup || centroid.length !== embedding.length || rejected.has(`${ownGroup}:${group}`)) continue;
-      let dot = 0;
-      for (let i = 0; i < embedding.length; i++) dot += embedding[i] * centroid[i];
-      if (dot >= threshold) scored.push({ personfaceUuid: group, score: dot });
-    }
-    scored.sort((a, b) => b.score - a.score);
-    result.set(row.id, scored.slice(0, 3));
+    result.set(row.id, topCentroids(embedding, threshold, (group) => group === ownGroup || rejected.has(`${ownGroup}:${group}`)));
   }
   return result;
+}
+
+/** Top 3 look-alikes for raw embeddings that aren't stored faces (PRM-VR recog mode), same order as given. */
+export async function lookAlikesForEmbeddings(embeddings: number[][], minScore: number): Promise<LookAlike[][]> {
+  await ensureCentroids();
+  return embeddings.map((embedding) => topCentroids(embedding, minScore, () => false));
+}
+
+/** Top 3 centroids an L2-normalised embedding scores at least `threshold` against, best first. */
+function topCentroids(embedding: number[], threshold: number, skip: (group: string) => boolean): LookAlike[] {
+  const scored: LookAlike[] = [];
+  for (const [group, centroid] of centroids) {
+    if (centroid.length !== embedding.length || skip(group)) continue;
+    let dot = 0;
+    for (let i = 0; i < embedding.length; i++) dot += embedding[i] * centroid[i];
+    if (dot >= threshold) scored.push({ personfaceUuid: group, score: dot });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 3);
 }
 
 export type LikelySameCandidate = {

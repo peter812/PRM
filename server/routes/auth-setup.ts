@@ -122,7 +122,7 @@ export function registerRoutes(app: Express) {
     // endpoint. In direct mode API responses already carry presigned public
     // URLs, so this route is only a safety net for stale clients: redirect
     // to the presigned URL rather than proxying the bytes.
-    app.get("/api/prm-s3/:kind(images|profiles|posts|stories|media|faces)/:filename", async (req, res) => {
+    app.get("/api/prm-s3/:kind(images|profiles|posts|stories|media|faces|references)/:filename", async (req, res) => {
       if (!req.isAuthenticated()) {
         return res.status(401).json({ error: "Not authenticated" });
       }
@@ -781,7 +781,11 @@ export function registerRoutes(app: Express) {
   
         // Import the resetDatabase function
         const { resetDatabase } = await import("../db-init");
-        
+        const { clearComputeReferencesForReset } = await import("../references");
+
+        // Reference crops live in compute's store; clear them before the tables are dropped
+        await clearComputeReferencesForReset();
+
         // Reset the database completely (no user preservation)
         await resetDatabase(null, includeExamples === true);
   

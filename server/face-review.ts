@@ -15,7 +15,8 @@ import {
   faces, photos, people, socialAccounts, socialAccountPosts, messages, conversations, conversationParticipants,
   type Photo,
 } from "@shared/schema";
-import { profileLinkReason, type ProfileLinkReason, type FacialId } from "./recognition";
+import { profileLinkReason, RecognitionRequestError, type ProfileLinkReason, type FacialId } from "./recognition";
+import { storage } from "./storage";
 import { HQ_MIN_WIDTH } from "./profile-image";
 import { lookAlikesFor, type LookAlike } from "./face-lookalikes";
 
@@ -333,7 +334,7 @@ export async function buildIdentityCache(personfaceUuids: string[]): Promise<Map
 }
 
 /** Newest face crop per group, one query for the whole batch. */
-async function buildCropCache(personfaceUuids: string[]): Promise<Map<string, string>> {
+export async function buildCropCache(personfaceUuids: string[]): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   if (!personfaceUuids.length) return map;
   const result = await db.execute(sql`
@@ -393,6 +394,20 @@ function resolveSlide(photo: Photo, post: { content: string | null } | undefined
     } catch { /* leave slide undefined */ }
   }
   return undefined;
+}
+
+/** The account for a mentioned handle (case-insensitive), created first when it isn't tracked yet. */
+export async function accountForHandle(handle: string): Promise<string> {
+  const username = handle.trim().replace(/^@/, "");
+  if (!username) throw new RecognitionRequestError(400, "username is required.");
+  const [existing] = await db.select({ id: socialAccounts.id }).from(socialAccounts)
+    .where(sql`lower(${socialAccounts.username}) = ${username.toLowerCase()}`).limit(1);
+  if (existing) return existing.id;
+  const type = await storage.getSocialAccountTypeByName("instagram");
+  const [created] = await db.insert(socialAccounts)
+    .values({ username, typeId: type?.id ?? null, internalAccountCreationType: "face review", accountUrl: `https://instagram.com/${username}` })
+    .returning({ id: socialAccounts.id });
+  return created.id;
 }
 
 function mentionedHandlesFor(photo: Photo, post: { mentionedAccounts: string | null } | undefined, slide: number | undefined): string[] {
@@ -593,7 +608,8 @@ function buildPostItem(photo: Photo, kind: "post" | "story", caches: PageCaches)
     for (const coId of post.coauthorAccountIds ?? []) suggestions.push(accountSuggestion(caches.accountCache.get(coId), "coauthor"));
     for (const handle of mentionedHandlesFor(photo, post, slide)) {
       const id = caches.mentionAccountIdByHandle.get(handle.toLowerCase());
-      suggestions.push(accountSuggestion(id ? caches.accountCache.get(id) : undefined, "mentioned"));
+      // No account yet: offer the bare handle; naming faces as it creates the account (accountForHandle).
+      suggestions.push(id ? accountSuggestion(caches.accountCache.get(id), "mentioned") : { username: handle, label: `@${handle}`, reason: "mentioned" });
     }
   }
 

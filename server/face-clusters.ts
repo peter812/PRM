@@ -13,7 +13,7 @@ import { db } from "./db";
 import { storage } from "./storage";
 import { faceClusterRejections, faceClusters, facePairDismissals, faces, photos, socialAccountPosts, socialAccounts } from "@shared/schema";
 import { log } from "./vite";
-import { computeFetch, connectFaces, faceGroupUnnamed, getComputeConnection, RecognitionRequestError, type FacialId } from "./recognition";
+import { clearedSuggestions, computeFetch, connectFaces, faceGroupUnnamed, getComputeConnection, RecognitionRequestError, type FacialId } from "./recognition";
 import { lookAlikesFor } from "./face-lookalikes";
 import { buildIdentityCache, photoSuggestions, type FaceReviewSuggestion } from "./face-review";
 
@@ -202,7 +202,9 @@ export type ClusterBanner = { suggestion: ClusterSuggestion; solo?: { hits: numb
 export type ClusterFace = { id: string; cropUrl: string };
 export type ClusterCard = { id: string; size: number; faces: ClusterFace[]; suggestions: ClusterSuggestion[]; banner: ClusterBanner | null };
 
-const identityKey = (s: { socialAccountId?: string; personId?: string }) => s.socialAccountId ?? s.personId ?? "";
+/** A mentioned handle with no account yet is keyed "@handle". */
+export const identityKey = (s: { socialAccountId?: string; personId?: string; username?: string }) =>
+  s.socialAccountId ?? s.personId ?? (s.username ? `@${s.username.toLowerCase()}` : "");
 
 export async function getClusterSummary() {
   const [row] = (await db.execute<{ clusters: number; faces: number; last_run_at: string | null }>(sql`
@@ -301,7 +303,7 @@ async function clusterSuggestions(ids: string[]): Promise<Map<string, { suggesti
         tally.set(identityKey(s), t);
       }
     }
-    const keep = (s: { socialAccountId?: string; personId?: string }) => (rejected.get(`${id}|${identityKey(s)}`) ?? 0) * 2 < members.length;
+    const keep = (s: { socialAccountId?: string; personId?: string; username?: string }) => (rejected.get(`${id}|${identityKey(s)}`) ?? 0) * 2 < members.length;
     const suggestions: ClusterSuggestion[] = Array.from(tally.values())
       .map((t) => ({ ...t.suggestion, photos: t.photos.size, share: t.photos.size / (clusterPhotos.length || 1) }))
       .filter(keep)
@@ -352,6 +354,6 @@ export async function rejectClusterSuggestion(id: string, identityId: string): P
 /** Strangers: the existing "not someone I track" flag, undoable from the Dismissed filter. */
 export async function dismissClusterFaces(id: string, faceIds?: string[]): Promise<{ dismissed: number }> {
   const ids = await clusterFaceIds(id, faceIds);
-  await db.update(faces).set({ dismissedAt: new Date(), clusterId: null }).where(and(inArray(faces.id, ids), eq(faces.clusterId, id)));
+  await db.update(faces).set({ dismissedAt: new Date(), ...clearedSuggestions }).where(and(inArray(faces.id, ids), eq(faces.clusterId, id)));
   return { dismissed: ids.length };
 }

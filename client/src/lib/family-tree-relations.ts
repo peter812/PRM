@@ -68,8 +68,10 @@ const PATH_MAP: Record<string, KinshipTerm> = {
   "parent,sibling,child": { neutral: "Cousin", male: "Cousin", female: "Cousin" },
   "parent,parent,sibling": { neutral: "Great-Uncle/Aunt", male: "Great-Uncle", female: "Great-Aunt" },
   "sibling,child,child": { neutral: "Grandnephew/Niece", male: "Grandnephew", female: "Grandniece" },
+  "parent,sibling,spouse": { neutral: "Uncle/Aunt", male: "Uncle", female: "Aunt" },
 
   // 4-steps
+  "parent,parent,child,spouse": { neutral: "Uncle/Aunt", male: "Uncle", female: "Aunt" },
   "parent,parent,child,child": { neutral: "Cousin", male: "Cousin", female: "Cousin" },
   "parent,parent,parent,child": { neutral: "Great-Uncle/Aunt", male: "Great-Uncle", female: "Great-Aunt" },
   "parent,parent,parent,parent": { neutral: "Great-Great-Grandparent", male: "Great-Great-Grandfather", female: "Great-Great-Grandmother" },

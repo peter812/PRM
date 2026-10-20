@@ -823,7 +823,7 @@ type AutoRecognitionJob = "face" | "ocr" | "transcribe";
 type AutoRecognitionSettings = Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>> & {
   profileLink?: { minFacePct: number };
   lookalike?: { minScore: number };
-  autoAssign?: { minScore: number };
+  autoAssign?: { minScore: number; verifyMinScore: number };
   clustering?: Partial<ClusteringSettings>;
 };
 type ClusteringSettings = { minSimilarity: number; noiseMinConf: number; noiseMinSharpness: number | null };
@@ -865,6 +865,7 @@ function AutoRecognitionCard() {
   const [minFacePct, setMinFacePct] = useState("");
   const [minScore, setMinScore] = useState("");
   const [autoAssignScore, setAutoAssignScore] = useState("");
+  const [verifyScore, setVerifyScore] = useState("");
   const [clusterInputs, setClusterInputs] = useState<Partial<Record<keyof ClusteringSettings, string>>>({});
 
   const { data: settings } = useQuery<AutoRecognitionSettings>({ queryKey: ["/api/recognition/auto"] });
@@ -875,8 +876,11 @@ function AutoRecognitionCard() {
     if (settings?.lookalike) setMinScore(String(settings.lookalike.minScore));
   }, [settings?.lookalike?.minScore]);
   useEffect(() => {
-    if (settings?.autoAssign) setAutoAssignScore(String(settings.autoAssign.minScore));
-  }, [settings?.autoAssign?.minScore]);
+    if (settings?.autoAssign) {
+      setAutoAssignScore(String(settings.autoAssign.minScore));
+      setVerifyScore(String(settings.autoAssign.verifyMinScore));
+    }
+  }, [settings?.autoAssign?.minScore, settings?.autoAssign?.verifyMinScore]);
   useEffect(() => {
     const c = settings?.clustering;
     if (c) setClusterInputs(Object.fromEntries(CLUSTER_FIELDS.map(({ key }) => [key, c[key] == null ? "" : String(c[key])])));
@@ -904,12 +908,12 @@ function AutoRecognitionCard() {
   const autoAssignMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/face-review/auto-assign");
-      return res.json() as Promise<{ scanned: number; assigned: number }>;
+      return res.json() as Promise<{ scanned: number; assigned: number; verify: number }>;
     },
-    onSuccess: ({ scanned, assigned }) => {
+    onSuccess: ({ scanned, assigned, verify }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/face-review"] });
       queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
-      toast({ title: assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces` });
+      toast({ title: `${assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces`}${verify ? `, ${verify} to verify` : ""}` });
     },
     onError: (error: Error) => {
       toast({ title: "Auto-assign failed", description: error.message, variant: "destructive" });
@@ -1089,12 +1093,29 @@ function AutoRecognitionCard() {
             {section.kind === "profile" && (
               <div className="flex items-center justify-between gap-4">
                 <div className="space-y-0.5">
-                  <Label htmlFor="auto-assign-min-score" className="text-sm font-medium">Auto-assign score</Label>
+                  <Label htmlFor="auto-assign-min-score" className="text-sm font-medium">Auto-assign / verify scores</Label>
                   <p className="text-xs text-muted-foreground">
-                    Minimum similarity (0–1) to auto-assign faces. Near ties are left for review.
+                    Minimum similarity (0–1) to auto-assign a face. Faces from the verify score up (and near ties) go to Face review's Verify tab instead.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  <Input
+                    id="verify-min-score"
+                    type="number"
+                    min={0.01}
+                    max={1}
+                    step={0.01}
+                    className="w-20"
+                    title="Verify score"
+                    value={verifyScore}
+                    onChange={(e) => setVerifyScore(e.target.value)}
+                    onBlur={() => {
+                      const score = Number(verifyScore);
+                      if (score > 0 && score <= 1 && score !== settings?.autoAssign?.verifyMinScore) saveMutation.mutate({ autoAssign: { ...settings!.autoAssign!, verifyMinScore: score } });
+                    }}
+                    disabled={!settings || saveMutation.isPending}
+                    data-testid="input-verify-min-score"
+                  />
                   <Input
                     id="auto-assign-min-score"
                     type="number"
@@ -1102,11 +1123,12 @@ function AutoRecognitionCard() {
                     max={1}
                     step={0.01}
                     className="w-20"
+                    title="Auto-assign score"
                     value={autoAssignScore}
                     onChange={(e) => setAutoAssignScore(e.target.value)}
                     onBlur={() => {
                       const score = Number(autoAssignScore);
-                      if (score > 0 && score <= 1 && score !== settings?.autoAssign?.minScore) saveMutation.mutate({ autoAssign: { minScore: score } });
+                      if (score > 0 && score <= 1 && score !== settings?.autoAssign?.minScore) saveMutation.mutate({ autoAssign: { ...settings!.autoAssign!, minScore: score } });
                     }}
                     disabled={!settings || saveMutation.isPending}
                     data-testid="input-auto-assign-min-score"
@@ -1126,9 +1148,9 @@ function AutoRecognitionCard() {
             {section.kind === "profile" && (
               <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div className="space-y-0.5">
-                  <Label className="text-sm font-medium">Face clustering (dry run)</Label>
+                  <Label className="text-sm font-medium">Face clustering</Label>
                   <p className="text-xs text-muted-foreground">
-                    Daily, groups unnamed faces likely to be the same person. Faces under the minimum confidence or sharpness are set aside as noise. Nothing uses the results yet.
+                    Daily, groups unnamed faces likely to be the same person for Face review's Clusters tab. Faces under the minimum confidence or sharpness are set aside as noise.
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">

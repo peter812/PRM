@@ -626,6 +626,8 @@ export const socialAccountPosts = pgTable("social_account_posts", {
   aiSummaryModel: text("ai_summary_model"),
   seenBy: jsonb("seen_by").$type<StorySeenBy>(), // own stories only: who viewed / liked / replied, kept past Instagram's 48 h
   captureType: text("capture_type").$type<StoryCaptureType>(), // stories only; null on posts and reels
+  vectorId: text("vector_id"),
+  vectorSyncedAt: timestamp("vector_synced_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [
@@ -917,11 +919,46 @@ export const faces = pgTable("faces", {
   autoMatchScore: real("auto_match_score"), // set = PRM auto-assigned this face to its group at this look-alike score, unconfirmed; null = set by a person (or by compute's grouping)
   clusterId: varchar("cluster_id"), // face_clusters.id from the last clustering run, a suggestion only; null = not clustered
   noiseReason: text("noise_reason"), // 'small' | 'low_conf' | 'blurry' (machine quality judgements) | 'singleton' (in no cluster); null = not noise
+  verifyPersonfaceUuid: varchar("verify_personface_uuid"), // auto-assign's verify tier: the named group this face probably is, not moved until confirmed; null = none
+  verifyScore: real("verify_score"), // look-alike score for verifyPersonfaceUuid
 }, (t) => [
   index("faces_photo_id_idx").on(t.photoId),
   index("faces_personface_uuid_idx").on(t.personfaceUuid),
   index("faces_cluster_id_idx").on(t.clusterId).where(sql`${t.clusterId} IS NOT NULL`),
+  index("faces_verify_personface_uuid_idx").on(t.verifyPersonfaceUuid).where(sql`${t.verifyPersonfaceUuid} IS NOT NULL`),
 ]);
+
+// References: a face crop plus what was printed next to it (yearbook / playbill import).
+// Separate from the standard face DB; the embedding lives in compute's reference_vectors (same id).
+export type ReferenceLocation = {
+  type: string; // "Yearbook" | "Playbill" | other
+  layout?: string; subtype?: string; // roster import page layout it was read with
+  year?: string; month?: string; quarter?: string;
+  schoolName?: string; schoolLocation?: string; grade?: string;
+  organization?: string; production?: string;
+  [key: string]: string | undefined;
+};
+
+export const referenceRecords = pgTable("reference_records", {
+  id: varchar("id").primaryKey(), // reference UUID
+  cropUrl: text("crop_url").notNull(), // references/{id}.jpg in PRM-s3
+  name: text("name"),
+  role: text("role"), // playbill role(s), as printed
+  bio: text("bio"),
+  location: jsonb("location").$type<ReferenceLocation>().notNull(),
+  collectedAt: timestamp("collected_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("reference_records_collected_at_idx").on(t.collectedAt),
+]);
+
+// Compute-owned: one embedding per reference (PRM provisions it, like faces).
+export const referenceVectors = pgTable("reference_vectors", {
+  id: varchar("id").primaryKey(),
+  embedding: jsonb("embedding").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type ReferenceRecord = typeof referenceRecords.$inferSelect;
 
 // One row per cluster from the last face-clustering run (server/face-clusters.ts); rebuilt every run.
 export const faceClusters = pgTable("face_clusters", {
@@ -2394,6 +2431,9 @@ export type SocialGraphLink = {
   source: string;
   target: string;
   mutual: boolean;
+  /** Connections view only: interaction strength source→target and target→source (connection-strength-plan.md). */
+  forward?: number;
+  back?: number;
 };
 
 export type SocialGraphData = {
@@ -2428,6 +2468,7 @@ export const conversations = pgTable("conversations", {
   externalUrl: text("external_url"),              // Optional link back to source
   metadata: jsonb("metadata"),                   // Extensible JSON
   lastMessageAt: timestamp("last_message_at"),   // Denormalized for sorting
+  chunkedAt: timestamp("chunked_at"),             // When message_chunks were last rebuilt; null or older than a message = stale
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -2448,8 +2489,6 @@ export const messages = pgTable("messages", {
   externalId: text("external_id"),                 // Platform-specific ID
   sentAt: timestamp("sent_at"),                    // Custom date sent (e.g., historical messages)
   metadata: jsonb("metadata"),                     // Extensible
-  vectorId: text("vector_id"),
-  vectorSyncedAt: timestamp("vector_synced_at"),
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -2481,6 +2520,25 @@ export const conversationParticipants = pgTable("conversation_participants", {
   importDate: timestamp("import_date"),
   importUuid: varchar("import_uuid"),
 });
+
+// Overlapping windows of a conversation's messages, each one point in the
+// universal vector collection (the chunk id is the Qdrant point id). Rebuilt by
+// server/message-chunks.ts; content_hash lets a rebuild keep unchanged chunks.
+export const messageChunks = pgTable("message_chunks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  conversationId: varchar("conversation_id").notNull()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  seq: integer("seq").notNull(),                   // 0-based position in the conversation
+  messageIds: text("message_ids").array().notNull(), // chronological; overlap messages appear in two chunks
+  startAt: timestamp("start_at"),
+  endAt: timestamp("end_at"),
+  charCount: integer("char_count").notNull(),
+  contentHash: text("content_hash").notNull(),
+  vectorSyncedAt: timestamp("vector_synced_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("message_chunks_conversation_idx").on(t.conversationId, t.seq),
+]);
 
 // Zod insert schemas
 export const insertConversationSchema = createInsertSchema(conversations)
@@ -2519,6 +2577,7 @@ export interface MessageMetadata {
 export type Conversation = typeof conversations.$inferSelect;
 export type InsertConversation = z.infer<typeof insertConversationSchema>;
 export type Message = typeof messages.$inferSelect;
+export type MessageChunk = typeof messageChunks.$inferSelect;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type MessageRecipient = typeof messageRecipients.$inferSelect;
 export type InsertMessageRecipient = z.infer<typeof insertMessageRecipientSchema>;

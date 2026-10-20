@@ -71,25 +71,30 @@ const NO_THINK_OPTIONS: { key: NoThinkKey; label: string; hint: string }[] = [
 type SummaryTotalsResponse = {
   postsTotal: number;
   postsDone: number;
+  postsQueued: number;
   storiesTotal: number;
   storiesDone: number;
+  storiesQueued: number;
   accountsTotal: number;
   accountsDone: number;
+  accountsQueued: number;
 };
 
-// Blue = summarized, grey = not yet.
-function TotalBar({ label, done, total, testId }: { label: string; done: number; total: number; testId: string }) {
-  const pct = total > 0 ? (done / total) * 100 : 0;
+// Green = summarized, blue = queued, grey = neither.
+function TotalBar({ label, done, queued, total, testId }: { label: string; done: number; queued: number; total: number; testId: string }) {
+  const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0);
   return (
     <div className="space-y-1.5" data-testid={testId}>
       <div className="flex items-baseline justify-between gap-3 text-sm">
         <span className="font-medium">{label}</span>
         <span className="text-muted-foreground tabular-nums">
-          {done.toLocaleString()} / {total.toLocaleString()} ({Math.round(pct)}%)
+          {done.toLocaleString()} / {total.toLocaleString()} ({Math.round(pct(done))}%)
+          {queued > 0 && <span className="text-blue-600 dark:text-blue-400"> · {queued.toLocaleString()} queued</span>}
         </span>
       </div>
-      <div className="h-3 w-full rounded-full bg-muted overflow-hidden">
-        <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+      <div className="h-3 w-full rounded-full bg-muted overflow-hidden flex">
+        <div className="h-full bg-green-500 transition-all" style={{ width: `${pct(done)}%` }} />
+        <div className="h-full bg-blue-500 transition-all" style={{ width: `${pct(queued)}%` }} />
       </div>
     </div>
   );
@@ -272,11 +277,12 @@ export default function InstagramSummariesPage() {
         <CardContent className="space-y-4">
           {totals ? (
             <>
-              <TotalBar label="Posts" done={totals.postsDone} total={totals.postsTotal} testId="bar-total-posts" />
-              <TotalBar label="Stories" done={totals.storiesDone} total={totals.storiesTotal} testId="bar-total-stories" />
+              <TotalBar label="Posts" done={totals.postsDone} queued={totals.postsQueued} total={totals.postsTotal} testId="bar-total-posts" />
+              <TotalBar label="Stories" done={totals.storiesDone} queued={totals.storiesQueued} total={totals.storiesTotal} testId="bar-total-stories" />
               <TotalBar
                 label="Accounts with posts or stories"
                 done={totals.accountsDone}
+                queued={totals.accountsQueued}
                 total={totals.accountsTotal}
                 testId="bar-total-accounts"
               />

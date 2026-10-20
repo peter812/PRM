@@ -9,16 +9,17 @@ import { storage } from "../storage";
 import { triggerImageTaskWorker } from "../task-worker";
 import { faces, imageTasks, people, socialAccounts } from "@shared/schema";
 import {
-  autoAssignFaces, connectFace, disassociateFace, photosContainingFaces, getComputeConnection, JOB_TASK_TYPE,
+  autoAssignFaces, clearedSuggestions, connectFace, disassociateFace, photosContainingFaces, getComputeConnection, JOB_TASK_TYPE,
   RecognitionRequestError, FaceMergeConflictError, type FacialId,
 } from "../recognition";
 import {
   FACE_REVIEW_KINDS, type FaceReviewKind,
-  getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto,
+  getFaceReviewCounts, getFaceReviewQueue, getFaceReviewItem, getReadablePhoto, accountForHandle,
 } from "../face-review";
 import {
-  runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces,
+  runFaceClustering, getClusterSummary, listClusters, getCluster, nameCluster, rejectClusterSuggestion, dismissClusterFaces, identityKey,
 } from "../face-clusters";
+import { listVerifyIdentities, getVerifyGroup, confirmVerify } from "../face-verify";
 
 const fail = (res: Response, what: string, error: unknown) => {
   if (error instanceof RecognitionRequestError) {
@@ -158,10 +159,12 @@ export function registerFaceReview(app: Express) {
     }
   });
 
-  // { faceIds?, socialAccountId? | personId? } — faceIds omitted names every face in the cluster.
+  // { faceIds?, socialAccountId? | personId? | username? } — faceIds omitted names every face in the
+  // cluster; a bare username (a mention with no account yet) gets its account created first.
   app.post("/api/face-review/clusters/:id/name", requireAuth, async (req, res) => {
     try {
-      const { socialAccountId, personId } = req.body ?? {};
+      const { personId, username } = req.body ?? {};
+      const socialAccountId = req.body?.socialAccountId ?? (!personId && typeof username === "string" ? await accountForHandle(username) : undefined);
       const faceIds = parseOptionalIds(req.body?.faceIds);
       if (faceIds === null) return res.status(400).json({ error: "faceIds must be a non-empty list" });
       res.json(await nameCluster(req.params.id, faceIds, { socialAccountId, personId }));
@@ -170,11 +173,11 @@ export function registerFaceReview(app: Express) {
     }
   });
 
-  // { socialAccountId | personId } — "No, not them" for a suggestion.
+  // { socialAccountId | personId | username } — "No, not them" for a suggestion.
   app.post("/api/face-review/clusters/:id/reject", requireAuth, async (req, res) => {
     try {
-      const identityId = req.body?.socialAccountId ?? req.body?.personId;
-      if (typeof identityId !== "string") return res.status(400).json({ error: "socialAccountId or personId is required" });
+      const identityId = identityKey(req.body ?? {});
+      if (typeof identityId !== "string" || !identityId) return res.status(400).json({ error: "socialAccountId, personId or username is required" });
       await rejectClusterSuggestion(req.params.id, identityId);
       res.json({ ok: true });
     } catch (error) {
@@ -193,15 +196,50 @@ export function registerFaceReview(app: Express) {
     }
   });
 
+  // ── Verify tab (face-clustering-plan.md §4) ──
+  app.get("/api/face-review/verify", requireAuth, async (_req, res) => {
+    try {
+      res.json(await listVerifyIdentities());
+    } catch (error) {
+      fail(res, "load verify list", error);
+    }
+  });
+
+  app.get("/api/face-review/verify/:group", requireAuth, async (req, res) => {
+    try {
+      const group = await getVerifyGroup(req.params.group);
+      if (!group) return res.status(404).json({ error: "This identity is gone." });
+      res.json(group);
+    } catch (error) {
+      fail(res, "load verify faces", error);
+    }
+  });
+
+  // { confirm: faceIds, reject: faceIds } — Confirm all, minus the deselected faces.
+  app.post("/api/face-review/verify/:group/confirm", requireAuth, async (req, res) => {
+    try {
+      const ids = (raw: unknown) => (raw === undefined || (Array.isArray(raw) && !raw.length) ? [] : parseOptionalIds(raw));
+      const confirm = ids(req.body?.confirm);
+      const reject = ids(req.body?.reject);
+      if (!confirm || !reject) return res.status(400).json({ error: "confirm and reject must be lists of face ids" });
+      res.json(await confirmVerify(req.params.group, confirm, reject));
+    } catch (error) {
+      fail(res, "confirm verify faces", error);
+    }
+  });
+
   // { faceUuid, photoId, kind, socialAccountId?, personId? } — same identity resolution as
   // /api/prm-face/face/connect (connectFace), returning the refreshed FaceReviewItem for the photo.
   app.post("/api/face-review/assign", requireAuth, async (req, res) => {
     try {
-      const { faceUuid, photoId, kind, socialAccountId, personId } = req.body ?? {};
+      const { faceUuid, photoId, kind, personId, username } = req.body ?? {};
+      let { socialAccountId } = req.body ?? {};
       const k = parseKind(kind);
       if (typeof faceUuid !== "string" || typeof photoId !== "string" || !k) return res.status(400).json({ error: "faceUuid, photoId and kind are required" });
-      if (!socialAccountId && !personId) return res.status(400).json({ error: "socialAccountId or personId is required" });
+      if (!socialAccountId && !personId && typeof username !== "string") return res.status(400).json({ error: "socialAccountId, personId or username is required" });
       if (!(await faceInReadablePhoto(faceUuid, photoId))) return res.status(404).json({ error: "Photo not found" });
+      // A mention with no account yet: create it, then name the face as it.
+      if (!socialAccountId && !personId) socialAccountId = await accountForHandle(username);
       if (!(await targetReadable(socialAccountId, personId))) return res.status(404).json({ error: "Target not found" });
       await connectFace({ faceUuid, socialAccountId, personId });
       const item = await getFaceReviewItem(photoId, k);
@@ -272,7 +310,7 @@ export function registerFaceReview(app: Express) {
         const k = parseKind(kind);
         if (!ids || typeof photoId !== "string" || !k) return res.status(400).json({ error: "faceUuid (or faceUuids), photoId and kind are required" });
         if (!(await faceInReadablePhoto(ids, photoId))) return res.status(404).json({ error: "Photo not found" });
-        await db.update(faces).set({ dismissedAt: dismissedAt(), clusterId: null }).where(inArray(faces.id, ids));
+        await db.update(faces).set({ dismissedAt: dismissedAt(), ...clearedSuggestions }).where(inArray(faces.id, ids));
         const item = await getFaceReviewItem(photoId, k);
         if (!item) return res.status(404).json({ error: "Photo not found" });
         res.json(item);

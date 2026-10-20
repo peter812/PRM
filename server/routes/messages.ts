@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { storage } from "../storage";
 import { z } from "zod";
-import { syncEntityInBackground } from "../vector-universal";
 import { cleanPhoneNumberForStorage, formatPhoneNumberForDisplay } from "@shared/schema";
 import { AiConfigError, resolveModel } from "../ai/provider";
 import { guessNameFromMessages } from "../find-name-ai";
@@ -247,9 +246,6 @@ export function registerRoutes(app: any) {
         },
         parsed.recipients || []
       );
-
-      // Trigger universal vector sync in background
-      void syncEntityInBackground("message", message.id);
 
       res.status(201).json(message);
     } catch (error) {

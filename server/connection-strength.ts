@@ -340,3 +340,127 @@ export async function getConnections(accountId: string): Promise<ConnectionsResu
   const earliest = connections.reduce((min, c) => (c.events[0].at < min ? c.events[0].at : min), since.toISOString());
   return { since: earliest, weights, connections };
 }
+
+/** One pair of accounts that interact, `a < b`: what a did toward b and what b did toward a, both decayed to now. */
+export type ConnectionPair = { a: string; b: string; ab: number; ba: number };
+
+const NETWORK_TTL_MS = 5 * 60_000;
+let networkCache: { at: number; weightsKey: string; pairs: ConnectionPair[] } | null = null;
+
+/**
+ * Every interacting pair in the instance, for the graph's Connections view. The
+ * same signals and dedupe rules as getConnections, gathered for everyone in one
+ * pass instead of from one account's side. Cached briefly because each graph
+ * filter change asks again, and scores barely move in a few minutes.
+ */
+export async function getConnectionNetwork(): Promise<ConnectionPair[]> {
+  const weights = await connectionWeights();
+  const weightsKey = JSON.stringify(weights);
+  if (networkCache && networkCache.weightsKey === weightsKey && Date.now() - networkCache.at < NETWORK_TTL_MS) {
+    return networkCache.pairs;
+  }
+
+  const accounts = await db
+    .select({ id: socialAccounts.id, username: socialAccounts.username, typeId: socialAccounts.typeId, bio: socialAccounts.bio, since: socialAccounts.internalAccountCreationDate })
+    .from(socialAccounts);
+  // An Instagram-typed row wins over an untyped one under the same name; other networks never match a handle.
+  const byHandle = new Map<string, string>();
+  for (const a of [...accounts].sort((x, y) => Number(y.typeId === INSTAGRAM_TYPE_ID) - Number(x.typeId === INSTAGRAM_TYPE_ID))) {
+    if (a.typeId !== INSTAGRAM_TYPE_ID && a.typeId !== null) continue;
+    const h = a.username.toLowerCase();
+    if (!byHandle.has(h)) byHandle.set(h, a.id);
+  }
+
+  // Directed events keyed "from|to|dedupe key", first one wins.
+  const events = new Map<string, { from: string; to: string; event: ConnectionEvent }>();
+  const add = (from: string | undefined, to: string | undefined, key: string, event: ConnectionEvent) => {
+    if (!from || !to || from === to) return;
+    const k = `${from}|${to}|${key}`;
+    if (!events.has(k)) events.set(k, { from, to, event });
+  };
+
+  // ── Posts and stories: tags and caption @handles ──
+  const naming = await db
+    .select(postCols)
+    .from(socialAccountPosts)
+    .where(or(sql`${socialAccountPosts.mentionedAccounts} IS NOT NULL`, sql`${socialAccountPosts.description} LIKE '%@%'`));
+  for (const p of naming) {
+    const mentioned = mentionedIn(p);
+    if (!mentioned.size) continue;
+    const event = { at: postAt(p), kind: postKind(p), dir: "out" as const };
+    for (const h of mentioned) {
+      for (const poster of postersOf(p)) add(poster, byHandle.get(h), `post:${p.id}`, event);
+    }
+  }
+
+  // ── Faces in posts: the same event as a tag, so one per post either way ──
+  const faceRows = await db
+    .select({ prmLocation: photos.prmLocation, personfaceUuid: faces.personfaceUuid })
+    .from(faces)
+    .innerJoin(photos, eq(photos.id, faces.photoId))
+    .where(and(sql`${faces.personfaceUuid} IS NOT NULL`, isNull(faces.dismissedAt), sql`${photos.prmLocation} LIKE 'post:%'`));
+  if (faceRows.length) {
+    const postIds = [...new Set(faceRows.map((r) => r.prmLocation.slice("post:".length)))];
+    const posts = new Map((await db.select(postCols).from(socialAccountPosts).where(inArray(socialAccountPosts.id, postIds))).map((p) => [p.id, p]));
+    const faceAccounts = await accountsForFaces([...new Set(faceRows.map((r) => r.personfaceUuid!))]);
+    for (const r of faceRows) {
+      const p = posts.get(r.prmLocation.slice("post:".length));
+      if (!p) continue;
+      const posters = postersOf(p);
+      for (const id of faceAccounts.get(r.personfaceUuid!) ?? []) {
+        if (posters.includes(id)) continue;
+        for (const poster of posters) add(poster, id, `post:${p.id}`, { at: postAt(p), kind: postKind(p), dir: "out" });
+      }
+    }
+  }
+
+  // ── Comments: commenter → each poster, one per (commenter, post), earliest kept ──
+  const comments = await db
+    .select({ postId: socialPostComments.postId, username: socialPostComments.username, postedAt: socialPostComments.postedAt, createdAt: socialPostComments.createdAt, post: postCols })
+    .from(socialPostComments)
+    .innerJoin(socialAccountPosts, eq(socialAccountPosts.id, socialPostComments.postId))
+    .where(sql`EXISTS (SELECT 1 FROM ${socialAccounts} WHERE lower(${socialAccounts.username}) = lower(${socialPostComments.username}))`)
+    .orderBy(asc(socialPostComments.postedAt));
+  for (const c of comments) {
+    const from = byHandle.get(cleanHandle(c.username));
+    const at = (c.postedAt ?? c.createdAt).toISOString();
+    for (const poster of postersOf(c.post)) add(from, poster, `comment:${c.postId}`, { at, kind: "comment", dir: "out" });
+  }
+
+  // ── Bios: every handle a bio has ever named ──
+  const withHandles = accounts.filter((a) => a.bio?.includes("@"));
+  const pastNaming = await db
+    .selectDistinct({ id: socialAccountHistory.socialAccountId })
+    .from(socialAccountHistory)
+    .where(sql`${socialAccountHistory.previousBio} LIKE '%@%'`);
+  const bioIds = new Set([...withHandles.map((a) => a.id), ...pastNaming.map((r) => r.id)]);
+  const changes = await bioChanges([...bioIds]);
+  for (const a of accounts) {
+    if (!bioIds.has(a.id)) continue;
+    for (const [handle, m] of bioMentions(a, changes.get(a.id) ?? [])) {
+      add(a.id, byHandle.get(handle), "bio", {
+        at: m.at.toISOString(),
+        kind: "bio",
+        dir: "out",
+        heart: m.heart,
+        ...(m.removedAt ? { removedAt: m.removedAt.toISOString() } : {}),
+      });
+    }
+  }
+
+  // ── Score each pair ──
+  const now = Date.now();
+  const pairs = new Map<string, ConnectionPair>();
+  for (const { from, to, event } of events.values()) {
+    const [a, b] = from < to ? [from, to] : [to, from];
+    const key = `${a}|${b}`;
+    const pair = pairs.get(key) ?? { a, b, ab: 0, ba: 0 };
+    const v = eventValue(event, weights, now);
+    if (from === a) pair.ab += v;
+    else pair.ba += v;
+    pairs.set(key, pair);
+  }
+  const result = [...pairs.values()].filter((p) => p.ab + p.ba > 0);
+  networkCache = { at: Date.now(), weightsKey, pairs: result };
+  return result;
+}

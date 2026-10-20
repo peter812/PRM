@@ -1214,21 +1214,21 @@ export function registerTracking(app: Express) {
     }
   });
 
-  // Tracking page, "Next to get updated": what the next morning run would check.
-  // With auto tracking off there is no run; show what a run a day from now would take.
+  // Tracking page, "Next to get updated": what a run started now would check
+  // (exactly what "Run tracking now" claims). The next scheduled run is reported
+  // alongside; it takes these plus whatever comes due before it.
   app.get("/api/tracking/upcoming", requireAuth, async (_req, res) => {
     try {
       const importers = await db.select().from(storyImporters).where(eq(storyImporters.trackingEnabled, true));
       const next = importers.sort((a, b) => (a.nextTrackingRunAt?.getTime() ?? 0) - (b.nextTrackingRunAt?.getTime() ?? 0))[0] ?? (await manualImporter());
       const trackingEnabled = Boolean(next?.trackingEnabled);
-      const runAt = trackingEnabled ? (next!.nextTrackingRunAt ?? new Date()) : new Date(Date.now() + 86_400_000);
       const limit = next?.trackingMaxJobs ?? 40;
       res.json({
         trackingEnabled,
-        runAt,
+        runAt: trackingEnabled ? next!.nextTrackingRunAt : null,
         importerLabel: next?.label ?? null,
         limit,
-        checks: await upcomingChecks(runAt, limit),
+        checks: await upcomingChecks(limit),
       });
     } catch (error) {
       fail(res, "read upcoming checks", error);

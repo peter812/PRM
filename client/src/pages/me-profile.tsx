@@ -1,7 +1,7 @@
 import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
-import { Mail, Phone, Home, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, GraduationCap, Briefcase, ChevronDown } from "lucide-react";
+import { Mail, Phone, Home, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, ScanFace, GraduationCap, Briefcase, ChevronDown } from "lucide-react";
 import { useState, useRef, lazy, Suspense } from "react";
 import { MessagesTab } from "@/components/messages-tab";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,7 @@ import { PersonFlowTab } from "@/components/person-flow-tab";
 import { PersonPhotosTab } from "@/components/person-photos-tab";
 import { OUTDATED_TEXT, OutdatedBadge, PersonAddresses } from "@/components/person-addresses";
 import { mapHref } from "@/lib/map-shared";
+import { ReferenceMatchesDialog, type ReferenceProbe } from "@/components/reference-matches-dialog";
 
 const FamilyTreeTab = lazy(() =>
   import("@/components/family-tree-tab").then((module) => ({
@@ -87,10 +88,12 @@ function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit
 }
 
 export default function MeProfile() {
-  const [activeTab, setActiveTab] = useState("home");
+  // ?tab= opens a tab directly, e.g. a message-chunk link to the Messages tab.
+  const [activeTab, setActiveTab] = useState(() => new URLSearchParams(window.location.search).get("tab") || "home");
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
+  const [referenceProbe, setReferenceProbe] = useState<ReferenceProbe | null>(null);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
@@ -240,6 +243,10 @@ export default function MeProfile() {
               <DropdownMenuItem onClick={() => photoFileInputRef.current?.click()} data-testid="menu-item-add-photo">
                 <ImageIcon className="h-4 w-4 mr-2" />
                 Add Photo
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setReferenceProbe({ personId: person.id })} data-testid="menu-item-find-references">
+                <ScanFace className="h-4 w-4 mr-2" />
+                Find in References
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -726,6 +733,7 @@ export default function MeProfile() {
           e.target.value = "";
         }}
       />
+      <ReferenceMatchesDialog probe={referenceProbe} onClose={() => setReferenceProbe(null)} />
     </div>
   );
 }

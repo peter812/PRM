@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ProviderModelPicker, type ModelSelection } from "@/components/provider-model-picker";
-import { Database, CheckCircle2, Loader2, RefreshCw, AlertCircle, Sparkles, BookOpen } from "lucide-react";
+import { Database, CheckCircle2, Loader2, RefreshCw, AlertCircle, Sparkles, BookOpen, Square, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -18,17 +18,20 @@ type VectorSettings = {
   collectionName: string;
   embeddingModel: string;
   embeddingProviderId: string;
+  embeddingConcurrency: number;
 };
 
 type TestResult = { ok: boolean; message: string };
-type VectorStats = {
-  totalNotes: number;
-  vectorized: number;
-  missing: number;
-  lastSyncedAt: string | null;
-};
 type UniversalStats = Record<string, { total: number; vectorized: number }>;
 type UniversalStatus = { enabled: boolean; collectionReady: boolean; pointCount: number };
+type BulkSyncProgress = {
+  running: boolean;
+  stopRequested: boolean;
+  processed: number;
+  failed: number;
+  total: number;
+  error: string | null;
+};
 
 export default function VectorSettingsPage() {
   const { toast } = useToast();
@@ -38,14 +41,11 @@ export default function VectorSettingsPage() {
   const [qdrantApiKey, setQdrantApiKey] = useState("");
   const [collectionName, setCollectionName] = useState("");
   const [embedding, setEmbedding] = useState<ModelSelection>({ providerId: "", model: "" });
+  const [concurrency, setConcurrency] = useState("1");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data: settings, isLoading } = useQuery<VectorSettings>({
     queryKey: ["/api/vector/settings"],
-  });
-
-  const { data: stats, refetch: refetchStats } = useQuery<VectorStats>({
-    queryKey: ["/api/vector/stats"],
   });
 
   useLoadOnce(settings, (s) => {
@@ -53,6 +53,7 @@ export default function VectorSettingsPage() {
     setQdrantUrl(s.qdrantUrl);
     setCollectionName(s.collectionName);
     setEmbedding({ providerId: s.embeddingProviderId ?? "", model: s.embeddingModel });
+    setConcurrency(String(s.embeddingConcurrency ?? 1));
   });
 
   const saveMutation = useMutation({
@@ -78,33 +79,13 @@ export default function VectorSettingsPage() {
     onError: (error: Error) => setTestResult({ ok: false, message: error.message }),
   });
 
-  const vectorizeAllMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/daily-notes/vectorize-all", {});
-      return res.json() as Promise<{ ok: boolean; processed: number; failed: number; total: number; errors: string[] }>;
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Vectorize complete",
-        description: `Processed ${data.processed}/${data.total}, ${data.failed} failed.`,
-      });
-      refetchStats();
-    },
-    onError: (error: Error) => {
-      toast({ title: "Vectorize failed", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const handleSaveConnection = () => {
-    const patch: Record<string, unknown> = { qdrantUrl, collectionName };
+  const handleSave = () => {
+    const patch: Record<string, unknown> = { qdrantUrl, collectionName, embeddingConcurrency: Number(concurrency) || 1 };
     if (qdrantApiKey.length > 0) patch.qdrantApiKey = qdrantApiKey;
+    // Server treats a model change as invalidating vectors, so don't send a blank one.
+    if (embedding.model) Object.assign(patch, { embeddingModel: embedding.model, embeddingProviderId: embedding.providerId });
     saveMutation.mutate(patch);
   };
-
-  const handleSaveModel = () => {
-    saveMutation.mutate({ embeddingModel: embedding.model, embeddingProviderId: embedding.providerId });
-  };
-
 
   if (isLoading) {
     return (
@@ -127,14 +108,14 @@ export default function VectorSettingsPage() {
       </div>
 
       <div className="settings-cards-grid">
-        <Card data-testid="card-vector-enable">
+        <Card data-testid="card-vector-storage">
           <CardHeader>
-            <CardTitle className="text-lg">Enable Vector Storage</CardTitle>
+            <CardTitle className="text-lg">Qdrant &amp; Embeddings</CardTitle>
             <CardDescription>
               Sync daily notes and entities automatically to Qdrant.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-0.5">
                 <Label htmlFor="vector-enabled-switch" className="text-sm font-medium">Enable vector sync</Label>
@@ -150,17 +131,6 @@ export default function VectorSettingsPage() {
                 data-testid="switch-vector-enabled"
               />
             </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-qdrant-connection">
-          <CardHeader>
-            <CardTitle className="text-lg">Qdrant Connection</CardTitle>
-            <CardDescription>
-              Base URL of your Qdrant server (e.g. <code className="text-xs bg-muted px-1 rounded">http://localhost:6333</code>).
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="qdrant-url">Server URL</Label>
               <Input
@@ -200,8 +170,32 @@ export default function VectorSettingsPage() {
                 Created automatically the first time a note is vectorized. Vector size is determined by the embedding model.
               </p>
             </div>
+            <div className="space-y-2">
+              <Label>Embedding model</Label>
+              <ProviderModelPicker value={embedding} onChange={setEmbedding} testId="picker-embedding" />
+              <p className="text-xs text-muted-foreground">
+                Changing this invalidates existing vectors. Use "Vectorize Everything Now" below to re-embed.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="embedding-concurrency">Parallel requests</Label>
+              <Input
+                id="embedding-concurrency"
+                type="number"
+                min={1}
+                max={16}
+                className="w-24"
+                value={concurrency}
+                onChange={(e) => setConcurrency(e.target.value)}
+                data-testid="input-embedding-concurrency"
+              />
+              <p className="text-xs text-muted-foreground">
+                Embedding requests sent at once during Vectorize Everything and App Knowledge re-index (1–16).
+                Match <code className="text-xs bg-muted px-1 rounded">OLLAMA_NUM_PARALLEL</code> on the embedding machine.
+              </p>
+            </div>
             <div className="flex flex-wrap gap-2 pt-1">
-              <Button onClick={handleSaveConnection} disabled={saveMutation.isPending} data-testid="button-save-qdrant">
+              <Button onClick={handleSave} disabled={saveMutation.isPending} data-testid="button-save-vector-settings">
                 {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save"}
               </Button>
               <Button
@@ -225,73 +219,6 @@ export default function VectorSettingsPage() {
           </CardContent>
         </Card>
 
-        <Card data-testid="card-embedding-model">
-          <CardHeader>
-            <CardTitle className="text-lg">Embedding Model</CardTitle>
-            <CardDescription>
-              Model used to generate embeddings, and the provider it runs on (e.g. <code className="text-xs bg-muted px-1 rounded">nomic-embed-text</code>).
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Model</Label>
-              <ProviderModelPicker value={embedding} onChange={setEmbedding} testId="picker-embedding" />
-              <p className="text-xs text-muted-foreground">
-                Changing this invalidates existing vectors. Use "Vectorize all daily notes" below to re-embed.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={handleSaveModel} disabled={saveMutation.isPending || !embedding.model} data-testid="button-save-model">
-                {saveMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save model"}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card data-testid="card-vector-usage">
-          <CardHeader>
-            <CardTitle className="text-lg">Usage</CardTitle>
-            <CardDescription>Vectorization status across all daily notes.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-3 gap-3 text-center">
-              <div className="rounded-md border p-3" data-testid="stat-total">
-                <div className="text-2xl font-semibold">{stats?.totalNotes ?? 0}</div>
-                <div className="text-xs text-muted-foreground">Total notes</div>
-              </div>
-              <div className="rounded-md border p-3" data-testid="stat-vectorized">
-                <div className="text-2xl font-semibold">{stats?.vectorized ?? 0}</div>
-                <div className="text-xs text-muted-foreground">Vectorized</div>
-              </div>
-              <div className="rounded-md border p-3" data-testid="stat-missing">
-                <div className="text-2xl font-semibold">{stats?.missing ?? 0}</div>
-                <div className="text-xs text-muted-foreground">Pending</div>
-              </div>
-            </div>
-            {stats?.lastSyncedAt && (
-              <p className="text-xs text-muted-foreground" data-testid="text-last-synced">
-                Last sync: {new Date(stats.lastSyncedAt).toLocaleString()}
-              </p>
-            )}
-            <div className="flex flex-wrap gap-2">
-              <Button
-                onClick={() => vectorizeAllMutation.mutate()}
-                disabled={vectorizeAllMutation.isPending || !enabled}
-                data-testid="button-vectorize-all"
-              >
-                {vectorizeAllMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                Vectorize all daily notes
-              </Button>
-              <Button variant="outline" onClick={() => refetchStats()} data-testid="button-refresh-stats">
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </div>
-            {!enabled && (
-              <p className="text-xs text-muted-foreground">Enable vector sync to vectorize notes.</p>
-            )}
-          </CardContent>
-        </Card>
-
         <UniversalVectorizationSection />
         <AppKnowledgeSection />
       </div>
@@ -304,8 +231,10 @@ export default function VectorSettingsPage() {
 function UniversalVectorizationSection() {
   const { toast } = useToast();
   const [universalEnabled, setUniversalEnabled] = useState(false);
+  const [chunkChars, setChunkChars] = useState("");
+  const [chunkOverlap, setChunkOverlap] = useState("");
 
-  const { data: universalSettings } = useQuery<{ enabled: boolean; collectionName: string }>({
+  const { data: universalSettings } = useQuery<{ enabled: boolean; collectionName: string; chunkChars: number; chunkOverlap: number }>({
     queryKey: ["/api/vector/universal/settings"],
   });
 
@@ -320,6 +249,8 @@ function UniversalVectorizationSection() {
   useEffect(() => {
     if (universalSettings) {
       setUniversalEnabled(universalSettings.enabled);
+      setChunkChars(String(universalSettings.chunkChars));
+      setChunkOverlap(String(universalSettings.chunkOverlap));
     }
   }, [universalSettings]);
 
@@ -331,6 +262,7 @@ function UniversalVectorizationSection() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/vector/universal/settings"] });
       queryClient.invalidateQueries({ queryKey: ["/api/vector/universal/status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/vector/universal/stats"] });
       toast({ title: "Saved" });
     },
     onError: (error: Error) => {
@@ -338,30 +270,100 @@ function UniversalVectorizationSection() {
     },
   });
 
+  // The run executes server-side in the background; poll its progress while it's active.
+  const { data: progress, refetch: refetchProgress } = useQuery<BulkSyncProgress>({
+    queryKey: ["/api/vector/universal/progress"],
+    refetchInterval: (query) => (query.state.data?.running ? 1500 : false),
+  });
+  const running = progress?.running ?? false;
+
+  // Toast once when a run we saw in progress finishes, then refresh the counts.
+  const [wasRunning, setWasRunning] = useState(false);
+  useEffect(() => {
+    if (running) { setWasRunning(true); return; }
+    if (!wasRunning || !progress) return;
+    setWasRunning(false);
+    refetchUniversalStats();
+    refetchStatus();
+    if (progress.error) {
+      toast({ title: "Vectorize Everything failed", description: progress.error, variant: "destructive" });
+    } else {
+      toast({
+        title: progress.stopRequested ? "Vectorize Everything stopped" : "Vectorize Everything complete",
+        description: `Processed ${progress.processed}/${progress.total}, ${progress.failed} failed.`,
+      });
+    }
+  }, [running, wasRunning, progress, refetchUniversalStats, refetchStatus, toast]);
+
+  // Refresh per-type counts alongside progress polling.
+  useEffect(() => {
+    if (running) refetchUniversalStats();
+  }, [running, progress?.processed, refetchUniversalStats]);
+
   const vectorizeEverythingMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/vector/universal/vectorize-all", {});
-      return res.json() as Promise<{ ok: boolean; processed: number; failed: number; total: number; errors: string[] }>;
+      return res.json();
     },
-    onSuccess: (data) => {
-      toast({
-        title: "Vectorize Everything complete",
-        description: `Processed ${data.processed}/${data.total}, ${data.failed} failed.`,
-      });
-      refetchUniversalStats();
-      refetchStatus();
-    },
+    onSettled: () => { refetchProgress(); refetchUniversalStats(); },
     onError: (error: Error) => {
       toast({ title: "Vectorize Everything failed", description: error.message, variant: "destructive" });
     },
   });
 
-  const totalEntities = universalStats
-    ? Object.values(universalStats).reduce((sum, s) => sum + s.total, 0)
-    : 0;
-  const totalVectorized = universalStats
-    ? Object.values(universalStats).reduce((sum, s) => sum + s.vectorized, 0)
-    : 0;
+  const stopMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/vector/universal/stop", {});
+      return res.json();
+    },
+    onSettled: () => refetchProgress(),
+  });
+
+  // Clears vector_synced_at so a new/emptied Qdrant instance gets everything on the next Vectorize Everything.
+  const resetSyncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/vector/universal/reset-sync", {});
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Sync status reset", description: "Run Vectorize Everything and Re-index App Knowledge Base to reload the collections." });
+      queryClient.invalidateQueries({ queryKey: ["/api/vector/app-knowledge/stats"] });
+      refetchUniversalStats();
+      refetchStatus();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Reset failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Drops every Qdrant collection PRM uses and marks everything as not vectorized.
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/vector/delete-all", {});
+      return res.json() as Promise<{ ok: boolean; deletedCollections: string[] }>;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "All vectors deleted",
+        description: data.deletedCollections.length
+          ? `Removed ${data.deletedCollections.join(", ")}.`
+          : "No collections existed; sync status cleared.",
+      });
+      refetchUniversalStats();
+      refetchStatus();
+      queryClient.invalidateQueries({ queryKey: ["/api/vector/app-knowledge/stats"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // message_chunks is a point count, not entities waiting to be vectorized.
+  const { message_chunks: chunkStats, ...entityStats } = universalStats ?? {};
+  const totalEntities = Object.values(entityStats).reduce((sum, s) => sum + s.total, 0);
+  const totalVectorized = Object.values(entityStats).reduce((sum, s) => sum + s.vectorized, 0);
+  const chunkSettingsDirty = !!universalSettings &&
+    (chunkChars !== String(universalSettings.chunkChars) || chunkOverlap !== String(universalSettings.chunkOverlap));
 
   return (
     <Card data-testid="card-universal-vectorization">
@@ -411,7 +413,7 @@ function UniversalVectorizationSection() {
           <div className="space-y-2">
             <p className="text-sm font-medium">Vectorization Progress</p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-center text-xs">
-              {Object.entries(universalStats).map(([name, { total, vectorized }]) => (
+              {Object.entries(entityStats).map(([name, { total, vectorized }]) => (
                 <div key={name} className="rounded-md border p-2">
                   <div className="font-semibold text-sm">{vectorized}/{total}</div>
                   <div className="text-muted-foreground">{name.replace(/_/g, ' ')}</div>
@@ -429,17 +431,122 @@ function UniversalVectorizationSection() {
                 {totalVectorized}/{totalEntities}
               </span>
             </div>
+            {chunkStats && (
+              <p className="text-xs text-muted-foreground">{chunkStats.total} message chunks stored.</p>
+            )}
+          </div>
+        )}
+
+        <div className="rounded-md border p-3 space-y-2">
+          <p className="text-sm font-medium">Message chunking</p>
+          <p className="text-xs text-muted-foreground">
+            Each conversation is split into overlapping chunks of whole messages, one point per chunk.
+            Overlap rounds to the nearest whole message. Changes apply on the next Vectorize Everything.
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="chunk-chars" className="text-xs">Chunk size (chars)</Label>
+              <Input
+                id="chunk-chars"
+                type="number"
+                min={500}
+                max={50000}
+                className="w-32"
+                value={chunkChars}
+                onChange={(e) => setChunkChars(e.target.value)}
+                data-testid="input-chunk-chars"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="chunk-overlap" className="text-xs">Overlap (chars)</Label>
+              <Input
+                id="chunk-overlap"
+                type="number"
+                min={0}
+                className="w-32"
+                value={chunkOverlap}
+                onChange={(e) => setChunkOverlap(e.target.value)}
+                data-testid="input-chunk-overlap"
+              />
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => saveUniversalMutation.mutate({ chunkChars: Number(chunkChars), chunkOverlap: Number(chunkOverlap) })}
+              disabled={!chunkSettingsDirty || saveUniversalMutation.isPending || running}
+              data-testid="button-save-chunk-settings"
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+
+        {running && progress && (
+          <div className="rounded-md border p-3 space-y-2" data-testid="universal-run-progress">
+            <div className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-2 font-medium">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {progress.stopRequested ? "Stopping…" : "Vectorizing…"}
+              </span>
+              <span className="text-muted-foreground">
+                {progress.processed}/{progress.total}{progress.failed > 0 && ` · ${progress.failed} failed`}
+              </span>
+            </div>
+            <div className="h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full bg-blue-500 rounded-full transition-all"
+                style={{ width: progress.total > 0 ? `${(progress.processed / progress.total) * 100}%` : "0%" }}
+              />
+            </div>
           </div>
         )}
 
         <div className="flex flex-wrap gap-2 pt-2">
+          {running ? (
+            <Button
+              variant="destructive"
+              onClick={() => stopMutation.mutate()}
+              disabled={stopMutation.isPending || progress?.stopRequested}
+              data-testid="button-stop-vectorize-everything"
+            >
+              <Square className="h-4 w-4 mr-2" />
+              Stop
+            </Button>
+          ) : (
+            <Button
+              onClick={() => vectorizeEverythingMutation.mutate()}
+              disabled={vectorizeEverythingMutation.isPending || !universalEnabled}
+              data-testid="button-vectorize-everything"
+            >
+              {vectorizeEverythingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
+              Vectorize Everything Now
+            </Button>
+          )}
           <Button
-            onClick={() => vectorizeEverythingMutation.mutate()}
-            disabled={vectorizeEverythingMutation.isPending || !universalEnabled}
-            data-testid="button-vectorize-everything"
+            variant="outline"
+            onClick={() => {
+              if (confirm("Mark every entity and app knowledge chunk as not vectorized? Use this after switching to a new or emptied Qdrant instance.")) {
+                resetSyncMutation.mutate();
+              }
+            }}
+            disabled={resetSyncMutation.isPending || running}
+            data-testid="button-reset-universal-sync"
           >
-            {vectorizeEverythingMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
-            Vectorize Everything Now
+            {resetSyncMutation.isPending && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+            Reset sync
+          </Button>
+          <Button
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            onClick={() => {
+              if (confirm("Delete ALL vectors? This drops the Super Search, daily notes and app knowledge collections in Qdrant. You'll need to run Vectorize Everything and Re-index App Knowledge Base again.")) {
+                deleteAllMutation.mutate();
+              }
+            }}
+            disabled={deleteAllMutation.isPending || running}
+            data-testid="button-delete-all-vectors"
+          >
+            {deleteAllMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Trash2 className="h-4 w-4 mr-2" />}
+            Delete all
           </Button>
           <Button variant="outline" onClick={() => { refetchUniversalStats(); refetchStatus(); }} data-testid="button-refresh-universal-stats">
             <RefreshCw className="h-4 w-4" />

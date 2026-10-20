@@ -22,9 +22,17 @@ export type VectorConfig = {
   qdrantApiKey: string;
   collectionName: string;
   embeddingModel: string;
+  /** Concurrent embedding requests for bulk runs; match OLLAMA_NUM_PARALLEL on the embedding host. */
+  embeddingConcurrency: number;
 };
 
 const DEFAULT_COLLECTION = "prm_daily_notes";
+export const MAX_EMBEDDING_CONCURRENCY = 16;
+
+export function clampConcurrency(value: unknown): number {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) ? Math.min(MAX_EMBEDDING_CONCURRENCY, Math.max(1, n)) : 1;
+}
 
 export async function loadVectorConfig(): Promise<VectorConfig> {
   return {
@@ -33,7 +41,31 @@ export async function loadVectorConfig(): Promise<VectorConfig> {
     qdrantApiKey: (await getVectorSetting("vector_qdrant_api_key")) ?? "",
     collectionName: (await getVectorSetting("vector_collection")) ?? DEFAULT_COLLECTION,
     embeddingModel: (await getVectorSetting("vector_embedding_model")) ?? "",
+    embeddingConcurrency: clampConcurrency((await getVectorSetting("vector_embedding_concurrency")) ?? 1),
   };
+}
+
+/**
+ * Runs `fn` over `items` with up to `concurrency` calls in flight. Workers pull
+ * from a shared cursor, so a `shouldStop` check lets in-flight items finish and
+ * starts no new ones. Returns false if stopped early.
+ */
+export async function runPool<T>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+  shouldStop?: () => boolean,
+): Promise<boolean> {
+  let next = 0;
+  let stopped = false;
+  const worker = async () => {
+    while (next < items.length) {
+      if (shouldStop?.()) { stopped = true; return; }
+      await fn(items[next++]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return !stopped;
 }
 
 // ── Embeddings ───────────────────────────────────────────────────────────────
@@ -88,10 +120,18 @@ function dimensionMismatch(name: string, existing: number, model: number): strin
 
 /** Create the collection if missing; refuse to write vectors of a different size into an existing one. */
 export async function ensureCollection(client: QdrantClient, name: string, vectorSize: number): Promise<void> {
-  const existing = await collectionSize(client, name);
+  let existing = await collectionSize(client, name);
   if (existing === null) {
-    await client.createCollection(name, { vectors: { size: vectorSize, distance: "Cosine" } });
-  } else if (existing !== vectorSize) {
+    try {
+      await client.createCollection(name, { vectors: { size: vectorSize, distance: "Cosine" } });
+      return;
+    } catch (err) {
+      // Parallel workers can race to create it; accept if another one won.
+      existing = await collectionSize(client, name);
+      if (existing === null) throw err;
+    }
+  }
+  if (existing !== vectorSize) {
     throw new Error(dimensionMismatch(name, existing, vectorSize));
   }
 }

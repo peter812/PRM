@@ -5,6 +5,7 @@
 import { and, eq, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
 import { db } from "./db";
 import { storage } from "./storage";
+import { removeAccountPostVectorsInBackground, syncEntityInBackground } from "./vector-universal";
 import { historicalAccountSummaries, imageTasks, photos, socialAccountPosts, socialAccounts, summaryJobs } from "@shared/schema";
 import type { BannedAction } from "@shared/banned-actions";
 // Only referenced inside functions, so the recognition -> banned-actions import
@@ -108,6 +109,8 @@ export async function setAccountBan(accountId: string, action: BannedAction, ban
           aiSummary: null, aiSummaryGeneratedAt: null, aiSummaryInvalidated: false, aiSummaryInvalidatedAt: null, aiSummaryModel: null,
         }).where(eq(socialAccounts.id, accountId));
       });
+      syncEntityInBackground("social_account", accountId);
+      removeAccountPostVectorsInBackground(accountId);
       break;
   }
 }

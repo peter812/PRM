@@ -23,7 +23,7 @@ type ClusterSummary = { clusters: number; faces: number; noise: Record<string, n
 const NOISE_LABEL: Record<string, string> = { small: "too small", low_conf: "low confidence", blurry: "blurry", singleton: "no cluster" };
 const PAGE = 24;
 
-const target = (s: IdentityTarget): IdentityTarget => ({ socialAccountId: s.socialAccountId, personId: s.personId });
+const target = (s: IdentityTarget): IdentityTarget => ({ socialAccountId: s.socialAccountId, personId: s.personId, username: s.username });
 
 function suggestionText(s: ClusterSuggestion): string {
   const why = s.reason === "lookalike" && s.score !== undefined ? `looks like them · ${Math.round(s.score * 100)}%` : `${SUGGESTION_COPY[s.reason]?.replace(/[()]/g, "") ?? s.reason} · ${s.photos} photo${s.photos === 1 ? "" : "s"}`;
@@ -76,7 +76,7 @@ function useClusterActions(onDone?: () => void) {
   return { name, reject, strangers, busy: name.isPending || reject.isPending || strangers.isPending };
 }
 
-const identityId = (s: IdentityTarget) => s.socialAccountId ?? s.personId ?? "";
+const identityId = (s: IdentityTarget) => s.socialAccountId ?? s.personId ?? (s.username ? `@${s.username}` : "");
 
 export function FaceClustersTab({ clusterId, onOpenCluster }: { clusterId: string | null; onOpenCluster: (id: string | null) => void }) {
   const { toast } = useToast();
@@ -181,10 +181,18 @@ function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
   const { data: cluster, isLoading, isError } = useQuery<ClusterCard>({ queryKey: ["/api/face-review/clusters", id], retry: false });
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [searching, setSearching] = useState(false);
-  useEffect(() => setExcluded(new Set()), [id]);
+  const [pending, setPending] = useState<{ to: IdentityTarget; label: string } | null>(null);
+  useEffect(() => {
+    setExcluded(new Set());
+    setPending(null);
+  }, [id]);
   const actions = useClusterActions(onClose);
   const included = cluster?.faces.filter((f) => !excluded.has(f.id)).map((f) => f.id) ?? [];
-  const nameAs = (to: IdentityTarget, label: string) => actions.name.mutate({ id, faceIds: included, to, label });
+  const nameAs = (to: IdentityTarget, label: string) => {
+    setPending({ to, label });
+    setSearching(false);
+  };
+  const confirmName = () => pending && actions.name.mutate({ id, faceIds: included, ...pending });
   const toggle = (faceId: string) =>
     setExcluded((prev) => {
       const next = new Set(prev);
@@ -194,7 +202,7 @@ function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{cluster ? `Cluster of ${cluster.size} faces` : "Cluster"}</DialogTitle>
           <DialogDescription>Click a face to leave it out, then name the rest or skip them.</DialogDescription>
@@ -229,11 +237,24 @@ function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
                 <UserX className="h-3 w-3" /> Strangers
               </button>
             </div>
-            {searching && <IdentitySearch onPick={(to) => nameAs(to, "them")} onCancel={() => setSearching(false)} />}
+            {searching && <IdentitySearch onPick={(to, label) => nameAs(to, label ?? "them")} onCancel={() => setSearching(false)} />}
+            {pending && (
+              <div className="rounded-md bg-accent p-2 flex flex-wrap items-center gap-2 text-sm" data-testid="cluster-confirm-name">
+                <span>Name {included.length} face{included.length === 1 ? "" : "s"} as <strong>{pending.label}</strong>?</span>
+                <div className="flex gap-1.5 ml-auto">
+                  <Button size="sm" className="h-7" disabled={actions.busy || !included.length} onClick={confirmName} data-testid="button-cluster-confirm-name">
+                    {actions.name.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Check className="h-3.5 w-3.5 mr-1" />} Confirm
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-7" disabled={actions.name.isPending} onClick={() => setPending(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
             <p className="text-xs text-muted-foreground">
               {included.length} of {cluster.faces.length} faces selected{excluded.size ? ` · ${excluded.size} left out` : ""}
             </p>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1 overflow-y-auto min-h-0">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(72px,1fr))] gap-1">
               {cluster.faces.map((f) => (
                 <button key={f.id} type="button" onClick={() => toggle(f.id)} className="relative" data-testid={`cluster-face-${f.id}`}>
                   <img src={withImageSize(f.cropUrl, 128)} alt="" loading="lazy" className={cn("aspect-square w-full object-cover rounded bg-muted", excluded.has(f.id) && "opacity-25 grayscale")} />

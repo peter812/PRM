@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, groups, photos, appKnowledge, imageQuestions, faces, messages, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChat, type AiChatContextEntity, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, aiChats, dailyNotes, sexGuessQueue, notes, photos, appKnowledge, imageQuestions, faces, messages, messageChunks, conversations, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChat, type AiChatContextEntity, type AiChatMessage, type AiToolCallTrace, type AiUserQuestion, type AiUserAnswer } from "@shared/schema";
 import { AI_TOOLS, getAiToolByName, listAiToolMetadata, buildToolsArray, ASK_USER_SYSTEM_INSTRUCTIONS } from "../ai-tools";
 import { describePhoto } from "../ai/describe";
 import { asData, DATA_TAGS_NOTE, resolveModel, chat as aiChat, adapterFor, AiConfigError, type ResolvedModel, type AiMessage, type AiToolCall } from "../ai/provider";
@@ -53,6 +53,8 @@ import { sendApiError, ErrorCodes } from "../middleware/error-handler";
 import { sseManager } from "../middleware/sse";
 import {
   loadVectorConfig,
+  clampConcurrency,
+  buildClient,
   setVectorSetting,
   getVectorSetting,
   testVectorConnection,
@@ -67,12 +69,19 @@ import {
   deleteEntityVector,
   searchUniversal,
   getUniversalStatus,
-  bulkSyncAll,
+  startBulkSync,
+  stopBulkSync,
+  getBulkSyncProgress,
   loadUniversalVectorConfig,
+  resyncEntity,
+  removeEntityVector,
+  UNIVERSAL_SOURCES,
+  type RowEntityType,
   type UniversalEntityType,
 } from "../vector-universal";
+import { loadChunkSettings, saveChunkSettings, rechunkConversation, clearConversationChunks, resolveChunkLink } from "../message-chunks";
 import { getClusteringSettings, setClusteringSettings } from "../face-clusters";
-import { reindexAppKnowledge, resolveLinksInText, cleanRawLinks } from "../vector-app-knowledge";
+import { reindexAppKnowledge, resolveLinksInText, cleanRawLinks, APP_KNOWLEDGE_COLLECTION } from "../vector-app-knowledge";
 
 
 const scryptAsync = promisify(scrypt);
@@ -2640,6 +2649,7 @@ export function registerRoutes(app: Express) {
           collectionName: cfg.collectionName,
           embeddingModel: cfg.embeddingModel,
           embeddingProviderId: (await getVectorSetting("vector_embedding_provider")) ?? "",
+          embeddingConcurrency: cfg.embeddingConcurrency,
         });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -2648,9 +2658,12 @@ export function registerRoutes(app: Express) {
   
     app.post("/api/vector/settings", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { enabled, qdrantUrl, qdrantApiKey, collectionName, embeddingModel, embeddingProviderId } = req.body ?? {};
+      const { enabled, qdrantUrl, qdrantApiKey, collectionName, embeddingModel, embeddingProviderId, embeddingConcurrency } = req.body ?? {};
       try {
         if (typeof enabled === "boolean") await setVectorSetting("vector_enabled", String(enabled));
+        if (embeddingConcurrency !== undefined) {
+          await setVectorSetting("vector_embedding_concurrency", String(clampConcurrency(embeddingConcurrency)));
+        }
         if (typeof qdrantUrl === "string") await setVectorSetting("vector_qdrant_url", qdrantUrl.trim());
         if (typeof qdrantApiKey === "string" && qdrantApiKey.length > 0) {
           await setVectorSetting("vector_qdrant_api_key", qdrantApiKey);
@@ -2807,6 +2820,7 @@ export function registerRoutes(app: Express) {
         res.json({
           enabled: cfg.universalEnabled,
           collectionName: cfg.universalCollection,
+          ...(await loadChunkSettings()),
         });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -2815,30 +2829,34 @@ export function registerRoutes(app: Express) {
 
     app.post("/api/vector/universal/settings", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { enabled, collectionName } = req.body ?? {};
+      const { enabled, collectionName, chunkChars, chunkOverlap } = req.body ?? {};
       try {
         if (typeof enabled === "boolean") await setVectorSetting("vector_universal_enabled", String(enabled));
         if (typeof collectionName === "string" && collectionName.trim().length > 0) {
           await setVectorSetting("vector_universal_collection", collectionName.trim());
         }
+        if (chunkChars !== undefined || chunkOverlap !== undefined) {
+          await saveChunkSettings({ chunkChars, chunkOverlap });
+        }
         res.json({ success: true });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        res.status(400).json({ error: error.message });
       }
     });
 
     // Universal semantic search
     app.post("/api/vector/universal/search", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
-      const { query, limit, typeFilter } = req.body ?? {};
+      const { query, limit, typeFilter, minScore } = req.body ?? {};
       if (!query || typeof query !== "string" || !query.trim()) {
         return res.status(400).json({ error: "Missing 'query' field." });
       }
       try {
         const results = await searchUniversal(
           query.trim(),
-          Math.min(50, Math.max(1, limit || 20)),
-          typeFilter as UniversalEntityType[] | undefined
+          Math.min(100, Math.max(1, limit || 20)),
+          typeFilter as UniversalEntityType[] | undefined,
+          typeof minScore === "number" ? minScore : undefined
         );
         res.json({ results });
       } catch (error: any) {
@@ -2846,29 +2864,74 @@ export function registerRoutes(app: Express) {
       }
     });
 
-    // Bulk vectorize all entities
+    // Bulk vectorize all entities. Runs in the background; poll /progress, cancel via /stop.
     app.post("/api/vector/universal/vectorize-all", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const result = await bulkSyncAll();
-        res.json({ ok: true, ...result });
+        const started = await startBulkSync();
+        if (!started) return res.status(409).json({ ...getBulkSyncProgress(), error: "A vectorize run is already in progress." });
+        res.status(202).json({ ok: true, ...getBulkSyncProgress() });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
     });
 
-    // Reset universal vector sync (clear vector_synced_at on all tables)
+    app.get("/api/vector/universal/progress", (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      res.json(getBulkSyncProgress());
+    });
+
+    app.post("/api/vector/universal/stop", (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      res.json({ ok: stopBulkSync(), ...getBulkSyncProgress() });
+    });
+
+    // Delete all vectors: drop the universal, daily-note and app-knowledge Qdrant
+    // collections and clear vector_id / vector_synced_at everywhere.
+    app.post("/api/vector/delete-all", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      if (getBulkSyncProgress().running) {
+        return res.status(409).json({ error: "Stop the running Vectorize Everything first." });
+      }
+      try {
+        const cfg = await loadUniversalVectorConfig();
+        const deleted: string[] = [];
+        if (cfg.qdrantUrl) {
+          const client = buildClient(cfg);
+          const existing = new Set((await client.getCollections()).collections.map((c) => c.name));
+          for (const name of new Set([cfg.universalCollection, cfg.collectionName, APP_KNOWLEDGE_COLLECTION])) {
+            if (!existing.has(name)) continue;
+            await client.deleteCollection(name);
+            deleted.push(name);
+          }
+        }
+        for (const table of [people, photos, notes, interactions, socialAccounts, socialAccountPosts, dailyNotes, aiChats, appKnowledge]) {
+          await db.update(table).set({ vectorId: null, vectorSyncedAt: null });
+        }
+        await db.delete(messageChunks);
+        await db.update(conversations).set({ chunkedAt: null });
+        res.json({ ok: true, deletedCollections: deleted });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Reset vector sync (clear vector_synced_at on all entity tables + app knowledge)
     app.post("/api/vector/universal/reset-sync", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
         await db.update(people).set({ vectorSyncedAt: null });
-        await db.update(groups).set({ vectorSyncedAt: null });
         await db.update(photos).set({ vectorSyncedAt: null });
         await db.update(notes).set({ vectorSyncedAt: null });
         await db.update(interactions).set({ vectorSyncedAt: null });
         await db.update(socialAccounts).set({ vectorSyncedAt: null });
+        await db.update(socialAccountPosts).set({ vectorSyncedAt: null });
         await db.update(dailyNotes).set({ vectorSyncedAt: null });
         await db.update(aiChats).set({ vectorSyncedAt: null });
+        // Chunks whose text is unchanged keep their points on the rebuild.
+        await db.update(conversations).set({ chunkedAt: null });
+        // App knowledge stats count vector_id, so clear it too; Re-index rebuilds the collection.
+        await db.update(appKnowledge).set({ vectorId: null, vectorSyncedAt: null });
         res.json({ ok: true });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
@@ -2879,29 +2942,77 @@ export function registerRoutes(app: Express) {
     app.get("/api/vector/universal/stats", async (req, res) => {
       if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
       try {
-        const tables = [
-          { name: "people", table: people },
-          { name: "groups", table: groups },
-          { name: "photos", table: photos },
-          { name: "notes", table: notes },
-          { name: "interactions", table: interactions },
-          { name: "social_accounts", table: socialAccounts },
-          { name: "daily_notes", table: dailyNotes },
-          { name: "ai_chats", table: aiChats },
-          { name: "messages", table: messages },
-        ];
         const stats: Record<string, { total: number; vectorized: number }> = {};
-        for (const { name, table } of tables) {
+        for (const { type, table, eligible } of UNIVERSAL_SOURCES) {
           const rows = await db
             .select({
               total: sql<number>`COUNT(*)::int`,
               vectorized: sql<number>`COUNT(*) FILTER (WHERE vector_synced_at IS NOT NULL)::int`,
             })
-            .from(table);
+            .from(table)
+            .where(eligible);
           const r = rows[0] ?? { total: 0, vectorized: 0 };
-          stats[name] = { total: r.total ?? 0, vectorized: r.vectorized ?? 0 };
+          stats[type] = { total: r.total ?? 0, vectorized: r.vectorized ?? 0 };
         }
+        // Conversations: vectorized once chunked with no message added since.
+        const { rows: [conv] } = await db.execute<{ total: number; vectorized: number; chunks: number }>(sql`
+          SELECT COUNT(*)::int AS total,
+                 COUNT(*) FILTER (WHERE c.chunked_at IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM messages m2 WHERE m2.conversation_id = c.id AND m2.created_at > c.chunked_at))::int AS vectorized,
+                 (SELECT COUNT(*)::int FROM message_chunks) AS chunks
+          FROM conversations c
+          WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
+        `);
+        stats.conversations = { total: conv?.total ?? 0, vectorized: conv?.vectorized ?? 0 };
+        stats.message_chunks = { total: conv?.chunks ?? 0, vectorized: conv?.chunks ?? 0 };
         res.json(stats);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Re-embed one entity's point now (delete + re-add). `conversation` rebuilds its message chunks.
+    const ROW_TYPES = new Set<string>(UNIVERSAL_SOURCES.map((s) => s.type));
+    app.post("/api/vector/universal/:type/:id/resync", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { type, id } = req.params;
+      try {
+        if (type === "conversation") {
+          const cfg = await loadUniversalVectorConfig();
+          if (!cfg.universalEnabled || !cfg.qdrantUrl || !cfg.embeddingModel) return res.json({ result: "disabled" });
+          await rechunkConversation(id);
+          return res.json({ result: "upserted" });
+        }
+        if (!ROW_TYPES.has(type)) return res.status(400).json({ error: `Unknown type '${type}'.` });
+        res.json({ result: await resyncEntity(type as RowEntityType, id) });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Delete one entity's point. `conversation` drops all its message chunks.
+    app.delete("/api/vector/universal/:type/:id", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      const { type, id } = req.params;
+      try {
+        if (type === "conversation") {
+          await clearConversationChunks(id);
+          return res.json({ result: "removed" });
+        }
+        if (!ROW_TYPES.has(type)) return res.status(400).json({ error: `Unknown type '${type}'.` });
+        res.json({ result: await removeEntityVector(type as RowEntityType, id) });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Where a message-chunk search hit links to: the chat page plus the chunk's messages.
+    app.get("/api/message-chunks/:id", async (req, res) => {
+      if (!req.isAuthenticated()) return res.status(401).json({ error: "Not authenticated" });
+      try {
+        const link = await resolveChunkLink(req.params.id);
+        if (!link) return res.status(404).json({ error: "Chunk not found (the conversation may have been rechunked)." });
+        res.json(link);
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }

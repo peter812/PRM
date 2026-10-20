@@ -1,35 +1,37 @@
-import { QdrantClient } from "@qdrant/js-client-rest";
-import { sql, eq } from "drizzle-orm";
+import type { QdrantClient } from "@qdrant/js-client-rest";
+import { sql, eq, inArray, type SQL } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db } from "./db";
 import { formatPersonName } from "@shared/person-name";
 import { storage } from "./storage";
 import {
   people,
-  groups,
   photos,
   notes,
   interactions,
   socialAccounts,
+  socialAccountPosts,
   dailyNotes,
   aiChats,
-  messages,
-  type AiChatMessage,
 } from "@shared/schema";
-import { embedText, ensureCollection, loadVectorConfig, getVectorSetting, setVectorSetting, type VectorConfig } from "./vector";
+import { buildClient, embedText, ensureCollection, loadVectorConfig, getVectorSetting, runPool } from "./vector";
+import { listStaleConversationIds, rechunkConversation } from "./message-chunks";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type UniversalEntityType =
+/** Entity types with one point per row; message chunks are managed by message-chunks.ts. */
+export type RowEntityType =
   | "person"
-  | "group"
   | "image"
   | "note"
   | "interaction"
   | "social_account"
+  | "post"
+  | "story"
   | "daily_note"
-  | "ai_chat"
-  | "message";
+  | "ai_chat";
+
+export type UniversalEntityType = RowEntityType | "message_chunk";
 
 export type UniversalSearchResult = {
   type: UniversalEntityType;
@@ -55,33 +57,48 @@ export async function loadUniversalVectorConfig() {
   };
 }
 
-// ── Qdrant client (shared logic from vector.ts) ──────────────────────────────
+// ── Sources ──────────────────────────────────────────────────────────────────
 
-function buildClient(cfg: VectorConfig): QdrantClient {
-  if (!cfg.qdrantUrl) throw new Error("Qdrant URL is not configured.");
-  let parsed: URL;
-  try {
-    parsed = new URL(cfg.qdrantUrl);
-  } catch {
-    throw new Error(`Invalid Qdrant URL: "${cfg.qdrantUrl}"`);
-  }
-  const isHttps = parsed.protocol === "https:";
-  const defaultPort = isHttps ? 443 : 6333;
-  const port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
-  const prefix = parsed.pathname !== "/" ? parsed.pathname.replace(/\/$/, "") : undefined;
-  return new QdrantClient({
-    host: parsed.hostname,
-    https: isHttps,
-    port,
-    ...(prefix ? { prefix } : {}),
-    apiKey: cfg.qdrantApiKey || undefined,
-    checkCompatibility: false,
-  });
-}
+/**
+ * Every row-backed type: its table and which rows are eligible for a point.
+ * A row that stops being eligible (summary cleared, description removed) has
+ * its point removed on the next resync. Shared with the stats endpoint.
+ */
+export const UNIVERSAL_SOURCES: { type: RowEntityType; table: any; eligible: SQL }[] = [
+  { type: "person", table: people, eligible: sql`TRUE` },
+  { type: "image", table: photos, eligible: sql`image_description IS NOT NULL AND btrim(image_description) <> ''` },
+  { type: "note", table: notes, eligible: sql`TRUE` },
+  { type: "interaction", table: interactions, eligible: sql`TRUE` },
+  { type: "social_account", table: socialAccounts, eligible: sql`ai_summary IS NOT NULL` },
+  { type: "post", table: socialAccountPosts, eligible: sql`ai_summary IS NOT NULL AND post_type <> 'story'` },
+  { type: "story", table: socialAccountPosts, eligible: sql`ai_summary IS NOT NULL AND post_type = 'story'` },
+  { type: "daily_note", table: dailyNotes, eligible: sql`TRUE` },
+  { type: "ai_chat", table: aiChats, eligible: sql`TRUE` },
+];
+
+const tableFor = (type: RowEntityType) => UNIVERSAL_SOURCES.find((s) => s.type === type)!.table;
+
+/** Posts and stories share a table; a row's post_type decides which it is. */
+const postEntityType = (postType: string | null | undefined): RowEntityType =>
+  postType === "story" ? "story" : "post";
 
 // ── Text composition per entity type ─────────────────────────────────────────
 
-function composeTextForEntity(type: UniversalEntityType, data: Record<string, any>): string {
+/** Account summaries were plain strings before AccountAiSummary. */
+function accountSummaryText(summary: unknown): string {
+  if (typeof summary === "string") return summary;
+  return (summary as { profile?: string } | null)?.profile ?? "";
+}
+
+/** A post's overview, or its per-image descriptions when the overview is empty. */
+function postSummaryText(summary: unknown): string {
+  const s = summary as { overview?: string; images?: { description?: string }[] } | null;
+  if (!s) return "";
+  if (s.overview?.trim()) return s.overview;
+  return (s.images ?? []).map((i) => i.description).filter(Boolean).join("\n");
+}
+
+function composeTextForEntity(type: RowEntityType, data: Record<string, any>): string {
   const truncate = (s: string, maxLen = 2000) => s.slice(0, maxLen);
 
   switch (type) {
@@ -97,18 +114,6 @@ function composeTextForEntity(type: UniversalEntityType, data: Record<string, an
       }
       if (data.email) parts.push(data.email);
       if (data.phone) parts.push(data.phone);
-      return truncate(parts.join(" | "));
-    }
-
-    case "group": {
-      const parts: string[] = [];
-      if (data.name) parts.push(data.name);
-      if (data.type && Array.isArray(data.type) && data.type.length > 0) {
-        parts.push(data.type.join(", "));
-      }
-      if (data.memberNames && Array.isArray(data.memberNames) && data.memberNames.length > 0) {
-        parts.push("Members: " + data.memberNames.join(", "));
-      }
       return truncate(parts.join(" | "));
     }
 
@@ -131,13 +136,19 @@ function composeTextForEntity(type: UniversalEntityType, data: Record<string, an
       return truncate(parts.join(" | "));
     }
 
+    // Only summarized accounts get a point: the summary carries the content,
+    // the handle and platform keep name searches working.
     case "social_account": {
-      const parts: string[] = [];
-      if (data.username) parts.push(data.username);
-      if (data.bio) parts.push(data.bio);
-      if (data.nickname) parts.push(data.nickname);
-      if (data.platformName) parts.push(data.platformName);
-      return truncate(parts.join(" | "));
+      const summary = accountSummaryText(data.aiSummary).trim();
+      if (!summary) return "";
+      const header = [data.username, data.platformName].filter(Boolean).join(" | ");
+      return truncate(header ? `${header}\n\n${summary}` : summary);
+    }
+
+    // Posts and stories embed their AI summary and nothing else.
+    case "post":
+    case "story": {
+      return truncate(postSummaryText(data.aiSummary).trim());
     }
 
     case "daily_note": {
@@ -164,42 +175,17 @@ function composeTextForEntity(type: UniversalEntityType, data: Record<string, an
       return truncate(parts.join("\n\n").trim());
     }
 
-    case "message": {
-      const parts: string[] = [];
-      if (data.senderName) parts.push(`Sender: ${data.senderName}`);
-      if (data.sentAt) parts.push(`Date: ${new Date(data.sentAt).toISOString()}`);
-      if (data.content) parts.push(`Content: ${data.content}`);
-      return truncate(parts.join("\n").trim());
-    }
-
     default:
       return "";
   }
 }
 
-/**
- * Whether an entity currently has content worth vectorizing.
- *
- * Images are special: a photo is only eligible once it has an AI-generated
- * description (`imageDescription`). Photos are inserted into the DB before that
- * description exists, and several call sites fire `syncEntityInBackground("image", …)`
- * at insert time, so this guard keeps description-less photos out of vector storage.
- */
-function isVectorizable(type: UniversalEntityType, data: Record<string, any>): boolean {
-  if (type === "image") {
-    return typeof data.imageDescription === "string" && data.imageDescription.trim().length > 0;
-  }
-  return composeTextForEntity(type, data).trim().length > 0;
-}
-
 // ── Get title for display ────────────────────────────────────────────────────
 
-function getTitleForEntity(type: UniversalEntityType, data: Record<string, any>): string {
+function getTitleForEntity(type: RowEntityType, data: Record<string, any>): string {
   switch (type) {
     case "person":
       return formatPersonName(data) || "Unknown";
-    case "group":
-      return data.name || "Unnamed Group";
     case "image":
       return data.imageDescription?.slice(0, 60) || "Image";
     case "note":
@@ -208,12 +194,14 @@ function getTitleForEntity(type: UniversalEntityType, data: Record<string, any>)
       return data.title || "Interaction";
     case "social_account":
       return data.username || "Account";
+    case "post":
+      return data.username ? `Post by @${data.username}` : "Post";
+    case "story":
+      return data.username ? `Story by @${data.username}` : "Story";
     case "daily_note":
       return data.userTitle || data.date || "Daily Note";
     case "ai_chat":
       return data.title || "Chat";
-    case "message":
-      return `Message from ${data.senderName || "Unknown"}`;
     default:
       return "Unknown";
   }
@@ -221,84 +209,78 @@ function getTitleForEntity(type: UniversalEntityType, data: Record<string, any>)
 
 // ── Core operations ──────────────────────────────────────────────────────────
 
-/**
- * Embeds and upserts an entity vector into the universal Qdrant collection.
- * Returns the point ID used.
- */
-async function upsertEntityVector(
-  type: UniversalEntityType,
-  entityId: string,
-  data: Record<string, any>,
-  existingVectorId?: string | null
-): Promise<string> {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Client for an enabled universal collection, or null when vectorization is off. */
+async function universalClient(): Promise<{ client: QdrantClient; collection: string } | null> {
   const cfg = await loadUniversalVectorConfig();
-  if (!cfg.universalEnabled) throw new Error("Universal vector storage is disabled.");
-  if (!cfg.qdrantUrl) throw new Error("Qdrant URL is not configured.");
+  if (!cfg.universalEnabled || !cfg.qdrantUrl || !cfg.embeddingModel) return null;
+  return { client: buildClient(cfg), collection: cfg.universalCollection };
+}
 
-  if (type === "image" && !isVectorizable(type, data)) {
-    throw new Error(`Skipping image ${entityId}: no AI description yet.`);
+// Filter deletes match on these payload keys; index them once per process.
+let payloadIndexesReady = false;
+async function ensurePayloadIndexes(client: QdrantClient, collection: string): Promise<void> {
+  if (payloadIndexesReady) return;
+  for (const field of ["type", "entity_id", "meta.conversation_id", "meta.socialAccountId"]) {
+    await client.createPayloadIndex(collection, { field_name: field, field_schema: "keyword", wait: true });
   }
+  payloadIndexesReady = true;
+}
 
-  const text = composeTextForEntity(type, data);
-  if (!text) throw new Error(`No text to embed for ${type} ${entityId}`);
+export type UniversalPoint = {
+  id: string;
+  type: UniversalEntityType;
+  entityId: string;
+  text: string;
+  title: string;
+  createdAt?: Date | string | null;
+  meta?: Record<string, unknown>;
+};
 
-  const vector = await embedText(text);
-  const client = buildClient(cfg);
-  await ensureCollection(client, cfg.universalCollection, vector.length);
-
-  const pointId =
-    existingVectorId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(existingVectorId)
-      ? existingVectorId
-      : randomUUID();
-
-  const title = getTitleForEntity(type, data);
-  const snippet = text.slice(0, 200);
-
-  await client.upsert(cfg.universalCollection, {
+/** Embeds and upserts one point into the universal collection. */
+export async function writeUniversalPoint(point: UniversalPoint): Promise<void> {
+  const target = await universalClient();
+  if (!target) throw new Error("Universal vector storage is disabled or not configured.");
+  const vector = await embedText(point.text);
+  await ensureCollection(target.client, target.collection, vector.length);
+  await ensurePayloadIndexes(target.client, target.collection);
+  await target.client.upsert(target.collection, {
     wait: true,
     points: [
       {
-        id: pointId,
+        id: point.id,
         vector,
         payload: {
-          type,
-          entity_id: entityId,
-          title,
-          snippet,
-          created_at: data.createdAt ? new Date(data.createdAt).toISOString() : new Date().toISOString(),
-          meta: data.meta || {},
+          type: point.type,
+          entity_id: point.entityId,
+          title: point.title,
+          snippet: point.text.slice(0, 200),
+          created_at: point.createdAt ? new Date(point.createdAt).toISOString() : new Date().toISOString(),
+          meta: point.meta ?? {},
         },
       },
     ],
   });
+}
 
-  // Update the vector_id and vector_synced_at on the source table
-  const now = new Date();
-  const tableMap: Record<UniversalEntityType, any> = {
-    person: people,
-    group: groups,
-    image: photos,
-    note: notes,
-    interaction: interactions,
-    social_account: socialAccounts,
-    daily_note: dailyNotes,
-    ai_chat: aiChats,
-    message: messages,
-  };
-
-  const table = tableMap[type];
-  if (table) {
-    await db
-      .update(table)
-      .set({ vectorId: pointId, vectorSyncedAt: now })
-      .where(eq(table.id, entityId));
+/** Removes every point matching a payload filter. No-op when vectorization is off. */
+export async function deleteUniversalPointsWhere(match: Record<string, string>): Promise<void> {
+  const target = await universalClient();
+  if (!target) return;
+  try {
+    await target.client.delete(target.collection, {
+      wait: true,
+      filter: { must: Object.entries(match).map(([key, value]) => ({ key, match: { value } })) },
+    });
+  } catch (err: any) {
+    // A collection that doesn't exist yet has nothing to delete.
+    if (err?.status !== 404) throw err;
   }
-
-  return pointId;
 }
 
 /**
- * Removes entity vectors from the universal Qdrant collection.
+ * Removes entity vectors from the universal Qdrant collection by point id.
  */
 export async function deleteEntityVector(
   type: UniversalEntityType,
@@ -319,13 +301,17 @@ export async function deleteEntityVector(
   }
 }
 
+/** Lowest cosine score a search returns. Big message chunks score lower than short entities, so keep this loose. */
+export const SEARCH_MIN_SCORE = 0.3;
+
 /**
  * Searches the universal collection with semantic similarity.
  */
 export async function searchUniversal(
   query: string,
   limit = 20,
-  typeFilter?: UniversalEntityType[]
+  typeFilter?: UniversalEntityType[],
+  minScore = SEARCH_MIN_SCORE
 ): Promise<UniversalSearchResult[]> {
   const cfg = await loadUniversalVectorConfig();
   if (!cfg.universalEnabled) throw new Error("Universal vector storage is disabled.");
@@ -346,10 +332,10 @@ export async function searchUniversal(
     limit,
     with_payload: true,
     filter,
-    score_threshold: 0.55,
+    score_threshold: minScore,
   });
 
-  return result.map((r) => ({
+  const results = result.map((r) => ({
     type: (r.payload?.type as UniversalEntityType) || "person",
     entityId: (r.payload?.entity_id as string) || "",
     title: (r.payload?.title as string) || "",
@@ -358,53 +344,106 @@ export async function searchUniversal(
     createdAt: r.payload?.created_at as string | undefined,
     meta: (r.payload?.meta as Record<string, unknown>) || {},
   }));
+  await addPostThumbnails(results);
+  return results;
+}
+
+/** Puts each post/story hit's first image in meta.thumbnailUrl, read fresh since CDN URLs change. */
+async function addPostThumbnails(results: UniversalSearchResult[]): Promise<void> {
+  const hits = results.filter((r) => r.type === "post" || r.type === "story");
+  const ids = hits.map((r) => r.entityId).filter((id) => UUID_RE.test(id));
+  if (ids.length === 0) return;
+  const rows = await db
+    .select({ id: socialAccountPosts.id, content: socialAccountPosts.content })
+    .from(socialAccountPosts)
+    .where(inArray(socialAccountPosts.id, ids));
+  const firstImage = new Map<string, string>();
+  for (const row of rows) {
+    try {
+      const images = row.content ? JSON.parse(row.content) : [];
+      if (typeof images[0] === "string") firstImage.set(row.id, images[0]);
+    } catch {}
+  }
+  for (const hit of hits) {
+    const url = firstImage.get(hit.entityId);
+    if (url) hit.meta = { ...hit.meta, thumbnailUrl: url };
+  }
+}
+
+export type ResyncResult = "upserted" | "removed" | "disabled";
+
+/**
+ * Brings one entity's point in line with the database: deletes its old point,
+ * then re-adds it if the row still exists and is eligible. Call after any
+ * create, edit or delete. For posts the row's post_type picks post vs story.
+ */
+export async function resyncEntity(type: RowEntityType, entityId: string): Promise<ResyncResult> {
+  if (!(await universalClient())) return "disabled";
+
+  const data = await loadEntityData(type, entityId);
+  const actualType = data && (type === "post" || type === "story") ? postEntityType(data.postType) : type;
+
+  // Delete first so a point never outlives its row or eligibility — also
+  // catches a post re-typed to a story, which keys on a different type.
+  await deleteUniversalPointsWhere({ entity_id: entityId });
+
+  const text = data ? composeTextForEntity(actualType, data).trim() : "";
+  if (!data || !text) {
+    if (data?.vectorId) {
+      await db.update(tableFor(actualType)).set({ vectorId: null, vectorSyncedAt: null }).where(eq(tableFor(actualType).id, entityId));
+    }
+    return "removed";
+  }
+
+  const pointId = data.vectorId && UUID_RE.test(data.vectorId) ? data.vectorId : randomUUID();
+  await writeUniversalPoint({
+    id: pointId,
+    type: actualType,
+    entityId,
+    text,
+    title: getTitleForEntity(actualType, data),
+    createdAt: data.postedAt ?? data.createdAt,
+    meta: data.meta,
+  });
+  const table = tableFor(actualType);
+  await db.update(table).set({ vectorId: pointId, vectorSyncedAt: new Date() }).where(eq(table.id, entityId));
+  return "upserted";
+}
+
+/** Deletes one entity's point and clears its sync columns; the next Vectorize Everything re-adds it if still eligible. */
+export async function removeEntityVector(type: RowEntityType, entityId: string): Promise<ResyncResult> {
+  if (!(await universalClient())) return "disabled";
+  await deleteUniversalPointsWhere({ entity_id: entityId });
+  const table = tableFor(type);
+  await db.update(table).set({ vectorId: null, vectorSyncedAt: null }).where(eq(table.id, entityId));
+  return "removed";
 }
 
 /**
- * Fire-and-forget background sync for a single entity.
- * Failures are swallowed (logged) so vectorization never blocks CRUD.
+ * Fire-and-forget resyncEntity. Failures are logged so vectorization never
+ * blocks CRUD; safe to call after a delete (the point is removed).
  */
-export function syncEntityInBackground(type: UniversalEntityType, entityId: string): void {
-  void (async () => {
-    try {
-      const cfg = await loadUniversalVectorConfig();
-      if (!cfg.universalEnabled || !cfg.qdrantUrl || !cfg.embeddingModel) return;
+export function syncEntityInBackground(type: RowEntityType, entityId: string): void {
+  void resyncEntity(type, entityId).catch((err: any) => {
+    console.warn("[vector-universal] background sync for " + type + "/" + entityId + " failed:", err?.message ?? err);
+  });
+}
 
-      const data = await loadEntityData(type, entityId);
-      if (!data) return;
-
-      // Skip cleanly (no warning) when there's nothing to vectorize yet — e.g. a
-      // photo that hasn't been given an AI description. It'll sync once eligible.
-      if (!isVectorizable(type, data)) return;
-
-      await upsertEntityVector(type, entityId, data, data.vectorId);
-    } catch (err: any) {
-      console.warn("[vector-universal] background sync for " + type + "/" + entityId + " failed:", err?.message ?? err);
-    }
-  })();
+/** Drops the points of every post and story of an account (call when the account is deleted). */
+export function removeAccountPostVectorsInBackground(socialAccountId: string): void {
+  void deleteUniversalPointsWhere({ "meta.socialAccountId": socialAccountId }).catch((err: any) => {
+    console.warn(`[vector-universal] removing post vectors of account ${socialAccountId} failed:`, err?.message ?? err);
+  });
 }
 
 /**
  * Loads entity data from the database for vectorization.
  */
-async function loadEntityData(type: UniversalEntityType, entityId: string): Promise<Record<string, any> | null> {
+async function loadEntityData(type: RowEntityType, entityId: string): Promise<Record<string, any> | null> {
   switch (type) {
     case "person": {
       const [row] = await db.select().from(people).where(eq(people.id, entityId));
       return row || null;
-    }
-    case "group": {
-      const [row] = await db.select().from(groups).where(eq(groups.id, entityId));
-      if (!row) return null;
-      // Resolve member names
-      let memberNames: string[] = [];
-      if (row.members && row.members.length > 0) {
-        const memberRows = await db.select({ firstName: people.firstName, lastName: people.lastName })
-          .from(people)
-          .where(sql`id = ANY(${row.members})`);
-        memberNames = memberRows.map(m => `${m.firstName} ${m.lastName}`);
-      }
-      return { ...row, memberNames };
     }
     case "image": {
       const [row] = await db.select().from(photos).where(eq(photos.id, entityId));
@@ -437,17 +476,25 @@ async function loadEntityData(type: UniversalEntityType, entityId: string): Prom
     case "social_account": {
       const [row] = await db.select().from(socialAccounts).where(eq(socialAccounts.id, entityId));
       if (!row) return null;
-      // Get platform name
       let platformName = "";
       if (row.typeId) {
         const typeRow = await db.query.socialAccountTypes.findFirst({ where: (t, { eq }) => eq(t.id, row.typeId!) });
         platformName = typeRow?.name || "";
       }
+      return { ...row, platformName };
+    }
+    case "post":
+    case "story": {
+      const [row] = await db
+        .select({ post: socialAccountPosts, username: socialAccounts.username })
+        .from(socialAccountPosts)
+        .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountPosts.socialAccountId))
+        .where(eq(socialAccountPosts.id, entityId));
+      if (!row) return null;
       return {
-        ...row,
-        bio: row.bio || "",
-        nickname: row.nickname || "",
-        platformName,
+        ...row.post,
+        username: row.username,
+        meta: { socialAccountId: row.post.socialAccountId, postType: row.post.postType },
       };
     }
     case "daily_note": {
@@ -459,34 +506,67 @@ async function loadEntityData(type: UniversalEntityType, entityId: string): Prom
       const [row] = await db.select().from(aiChats).where(eq(aiChats.id, entityId));
       return row || null;
     }
-    case "message": {
-      const [row] = await db.select().from(messages).where(eq(messages.id, entityId));
-      if (!row) return null;
-      let senderName = "Unknown";
-      if (row.senderPersonId) {
-        const [p] = await db.select({ firstName: people.firstName, lastName: people.lastName })
-          .from(people).where(eq(people.id, row.senderPersonId));
-        if (p) senderName = `${p.firstName} ${p.lastName}`;
-      } else if (row.senderSocialAccountId) {
-        const [sa] = await db.select({ username: socialAccounts.username })
-          .from(socialAccounts).where(eq(socialAccounts.id, row.senderSocialAccountId));
-        if (sa) senderName = sa.username;
-      } else if (row.metadata && typeof row.metadata === "object") {
-        senderName = (row.metadata as any).senderName || "Unknown";
-      }
-      return { ...row, senderName };
-    }
     default:
       return null;
   }
 }
 
+export type BulkSyncProgress = {
+  running: boolean;
+  stopRequested: boolean;
+  processed: number;
+  failed: number;
+  total: number;
+  errors: string[];
+  error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+// Single in-process bulk job; the settings page polls it and can request a stop.
+const bulkJob: BulkSyncProgress = {
+  running: false, stopRequested: false, processed: 0, failed: 0, total: 0,
+  errors: [], error: null, startedAt: null, finishedAt: null,
+};
+
+export function getBulkSyncProgress(): BulkSyncProgress {
+  return { ...bulkJob, errors: [...bulkJob.errors] };
+}
+
+export function stopBulkSync(): boolean {
+  if (!bulkJob.running) return false;
+  bulkJob.stopRequested = true;
+  return true;
+}
+
+/** Starts bulkSyncAll in the background. Returns false if a run is already active. */
+export async function startBulkSync(): Promise<boolean> {
+  if (bulkJob.running) return false;
+  const cfg = await loadUniversalVectorConfig();
+  if (!cfg.universalEnabled) throw new Error("Universal vector storage is disabled.");
+  Object.assign(bulkJob, {
+    running: true, stopRequested: false, processed: 0, failed: 0, total: 0,
+    errors: [], error: null, startedAt: new Date().toISOString(), finishedAt: null,
+  });
+  void bulkSyncAll((processed, total, failed) => {
+    Object.assign(bulkJob, { processed, total, failed });
+  }, () => bulkJob.stopRequested)
+    .then((r) => { bulkJob.errors = r.errors; })
+    .catch((e: any) => { bulkJob.error = e?.message ?? String(e); })
+    .finally(() => Object.assign(bulkJob, { running: false, finishedAt: new Date().toISOString() }));
+  return true;
+}
+
+type BulkWork = { type: RowEntityType; id: string } | { type: "conversation"; id: string };
+
 /**
- * Bulk sync all entities. Returns progress info.
+ * Bulk sync: eligible rows not yet synced, rows holding a point they are no
+ * longer eligible for, and conversations whose message chunks are stale.
  */
 export async function bulkSyncAll(
-  onProgress?: (processed: number, total: number, failed: number) => void
-): Promise<{ processed: number; failed: number; total: number; errors: string[] }> {
+  onProgress?: (processed: number, total: number, failed: number) => void,
+  shouldStop?: () => boolean,
+): Promise<{ processed: number; failed: number; total: number; errors: string[]; stopped: boolean }> {
   const cfg = await loadUniversalVectorConfig();
   if (!cfg.universalEnabled) throw new Error("Universal vector storage is disabled.");
 
@@ -494,57 +574,39 @@ export async function bulkSyncAll(
   let failed = 0;
   const errors: string[] = [];
 
-  // Define all entity types and their tables
-  const entitySources: { type: UniversalEntityType; table: any }[] = [
-    { type: "person", table: people },
-    { type: "group", table: groups },
-    { type: "image", table: photos },
-    { type: "note", table: notes },
-    { type: "interaction", table: interactions },
-    { type: "social_account", table: socialAccounts },
-    { type: "daily_note", table: dailyNotes },
-    { type: "ai_chat", table: aiChats },
-    { type: "message", table: messages },
-  ];
+  // Messages used to get one point each; they are chunked now.
+  await deleteUniversalPointsWhere({ type: "message" });
 
-  // Count total entities that need syncing
-  let totalCount = 0;
-  const entityIds: { type: UniversalEntityType; ids: string[] }[] = [];
-
-  for (const { type, table } of entitySources) {
-    // Images are only eligible once they have an AI description; excluding the
-    // rest here avoids re-scanning description-less photos on every bulk sync.
-    const where =
-      type === "image"
-        ? sql`vector_synced_at IS NULL AND image_description IS NOT NULL AND btrim(image_description) <> ''`
-        : sql`vector_synced_at IS NULL`;
+  const work: BulkWork[] = [];
+  for (const { type, table, eligible } of UNIVERSAL_SOURCES) {
     const rows = await db
       .select({ id: table.id })
       .from(table)
-      .where(where);
-    entityIds.push({ type, ids: rows.map((r: any) => r.id) });
-    totalCount += rows.length;
+      .where(sql`(vector_synced_at IS NULL AND ${eligible}) OR (vector_id IS NOT NULL AND NOT (${eligible}))`);
+    for (const r of rows as { id: string }[]) work.push({ type, id: r.id });
   }
+  for (const id of await listStaleConversationIds()) work.push({ type: "conversation", id });
 
-  // Process in sequence (throttled to avoid overwhelming the embedding server)
-  for (const { type, ids } of entityIds) {
-    for (const id of ids) {
-      try {
-        const data = await loadEntityData(type, id);
-        if (!data) continue;
-        const text = composeTextForEntity(type, data);
-        if (!text) continue;
-        await upsertEntityVector(type, id, data, data.vectorId);
-        processed++;
-      } catch (e: any) {
-        failed++;
-        if (errors.length < 10) errors.push(`${type}/${id}: ${e?.message ?? String(e)}`);
-      }
-      if (onProgress) onProgress(processed + failed, totalCount, failed);
+  const totalCount = work.length;
+  if (onProgress) onProgress(0, totalCount, 0);
+
+  // `embeddingConcurrency` requests in flight (match OLLAMA_NUM_PARALLEL).
+  let done = 0;
+  const finished = await runPool(work, cfg.embeddingConcurrency, async ({ type, id }) => {
+    try {
+      if (type === "conversation") await rechunkConversation(id);
+      else await resyncEntity(type, id);
+      processed++;
+    } catch (e: any) {
+      failed++;
+      if (errors.length < 10) errors.push(`${type}/${id}: ${e?.message ?? String(e)}`);
+    } finally {
+      done++;
+      if (onProgress) onProgress(done, totalCount, failed);
     }
-  }
+  }, shouldStop);
 
-  return { processed, failed, total: totalCount, errors };
+  return { processed, failed, total: totalCount, errors, stopped: !finished };
 }
 
 /**

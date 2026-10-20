@@ -19,7 +19,7 @@ import { getPrmS3Config, presignPrmS3PublicUrl, normalizeEndpointUrl, type PrmS3
  * rewrite adds no PRM-S3 traffic and no DB reads per response.
  */
 
-const PROXY_PATH_RE = /\/api\/prm-s3\/(images|profiles|posts|stories|media|faces)\/([A-Za-z0-9_.-]+)/g;
+const PROXY_PATH_RE = /\/api\/prm-s3\/(images|profiles|posts|stories|media|faces|references)\/([A-Za-z0-9_.-]+)/g;
 
 // JSON endpoints whose payloads must keep raw storage paths.
 const EXCLUDED_PREFIXES = ["/api/image-storage/"];
@@ -67,7 +67,7 @@ export function rewriteProxyPathsToPublicUrls(body: unknown, cfg: PrmS3Config): 
   );
 }
 
-const PROXY_SIZED_RE = /\/api\/prm-s3\/(images|profiles|posts|stories|media|faces)\/([A-Za-z0-9_.-]+)(?:[?&]s=[^\s"'\\<>]+)/g;
+const PROXY_SIZED_RE = /\/api\/prm-s3\/(images|profiles|posts|stories|media|faces|references)\/([A-Za-z0-9_.-]+)(?:[?&]s=[^\s"'\\<>]+)/g;
 
 let inboundRe: RegExp | null = null;
 let inboundReKey = "";
@@ -80,7 +80,7 @@ function getInboundRegex(cfg: PrmS3Config): RegExp {
     const escaped = prefix.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
     // The query stops at whitespace, quotes or a backslash (URLs inside JSON-encoded strings).
     // Swallows SigV4 parameters and any ?s= / &s= size parameters.
-    inboundRe = new RegExp(`${escaped}/(images|profiles|posts|stories|media|faces)/([A-Za-z0-9_.-]+)(?:\\?[^\\s"'\\\\<>]*)?`, "g");
+    inboundRe = new RegExp(`${escaped}/(images|profiles|posts|stories|media|faces|references)/([A-Za-z0-9_.-]+)(?:\\?[^\\s"'\\\\<>]*)?`, "g");
     inboundReKey = key;
   }
   return inboundRe;

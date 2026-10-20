@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { PhotoUploadDialog } from "@/components/photo-upload-dialog";
 import { OcrRunDialog, isOcrData } from "@/components/ocr-run-dialog";
+import { ReferenceMatchesDialog, type ReferenceProbe } from "@/components/reference-matches-dialog";
 
 function formatDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
@@ -124,6 +125,7 @@ export default function ImageDetailPage() {
   const [showConfirmRecog, setShowConfirmRecog] = useState(false);
   const [showForegroundRecog, setShowForegroundRecog] = useState(false);
   const [showOcr, setShowOcr] = useState(false);
+  const [referenceProbe, setReferenceProbe] = useState<ReferenceProbe | null>(null);
   const [isRunningBackground, setIsRunningBackground] = useState(false);
 
   const handleRunBackground = async () => {
@@ -516,6 +518,14 @@ export default function ImageDetailPage() {
                     ) : (
                       <span className="text-muted-foreground">Unknown / Unmapped</span>
                     )}
+                    <button
+                      type="button"
+                      className="ml-auto shrink-0 text-xs text-muted-foreground underline hover:text-foreground"
+                      onClick={() => setReferenceProbe({ faceUuid: face.faceUuid })}
+                      data-testid={`btn-face-references-${i}`}
+                    >
+                      Find in references
+                    </button>
                   </li>
                 );
               })}
@@ -778,6 +788,8 @@ export default function ImageDetailPage() {
           photo={{ id, imageUrl: photo.location, ocrData: photo.ocrData, ocrAt: photo.ocrAt }}
         />
       )}
+
+      <ReferenceMatchesDialog probe={referenceProbe} onClose={() => setReferenceProbe(null)} />
     </div>
   );
 }

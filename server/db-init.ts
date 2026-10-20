@@ -731,6 +731,7 @@ async function validateAndSyncSchema(): Promise<void> {
         title: "TEXT",
       },
       conversations: {
+        chunked_at: "TIMESTAMP",
         import_date: "TIMESTAMP",
         import_uuid: "VARCHAR",
       },
@@ -767,6 +768,8 @@ async function validateAndSyncSchema(): Promise<void> {
         ai_summary_model: "TEXT",
         seen_by: "JSONB",
         capture_type: "TEXT",
+        vector_id: "TEXT",
+        vector_synced_at: "TIMESTAMP",
       },
       story_scrape_runs: {
         token_hash: "TEXT",
@@ -1355,8 +1358,6 @@ async function validateAndSyncSchema(): Promise<void> {
           external_id TEXT,
           sent_at TIMESTAMP,
           metadata JSONB,
-          vector_id TEXT,
-          vector_synced_at TIMESTAMP,
           import_date TIMESTAMP,
           import_uuid VARCHAR,
           created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -1365,9 +1366,22 @@ async function validateAndSyncSchema(): Promise<void> {
       log("messages table created successfully");
     }
 
-    // Ensure vector columns exist on messages table
-    await addColumnIfNotExists("messages", "vector_id", "TEXT");
-    await addColumnIfNotExists("messages", "vector_synced_at", "TIMESTAMP");
+    // Messages are vectorized as overlapping chunks (server/message-chunks.ts)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS message_chunks (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id VARCHAR NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL,
+        message_ids TEXT[] NOT NULL,
+        start_at TIMESTAMP,
+        end_at TIMESTAMP,
+        char_count INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        vector_synced_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS message_chunks_conversation_idx ON message_chunks (conversation_id, seq)`);
 
     // Create message_recipients table if it doesn't exist
     const recipientsExists = await tableExists("message_recipients");
@@ -1435,6 +1449,18 @@ async function validateAndSyncSchema(): Promise<void> {
     await addColumnIfNotExists("faces", "cluster_id", "VARCHAR");
     await addColumnIfNotExists("faces", "noise_reason", "TEXT");
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_cluster_id_idx ON faces (cluster_id) WHERE cluster_id IS NOT NULL`);
+    await addColumnIfNotExists("faces", "verify_personface_uuid", "VARCHAR");
+    await addColumnIfNotExists("faces", "verify_score", "REAL");
+    await pool.query(`CREATE INDEX IF NOT EXISTS faces_verify_personface_uuid_idx ON faces (verify_personface_uuid) WHERE verify_personface_uuid IS NOT NULL`);
+    // Two-tier auto-assign (face-clustering-plan.md §4), once: the old 0.55 default saved from the
+    // settings page becomes the new 0.75; any other stored value was a deliberate choice and stays.
+    await pool.query(`
+      WITH first_time AS (
+        INSERT INTO app_settings (key, value) VALUES ('face_two_tier_migrated', 'true') ON CONFLICT (key) DO NOTHING RETURNING 1
+      )
+      UPDATE app_settings SET value = '0.75'
+      WHERE key = 'face_auto_assign_min_score' AND value = '0.55' AND EXISTS (SELECT 1 FROM first_time)
+    `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS face_clusters (
         id VARCHAR PRIMARY KEY,
@@ -1450,6 +1476,25 @@ async function validateAndSyncSchema(): Promise<void> {
         identity_id VARCHAR NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (face_id, identity_id)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS reference_records (
+        id VARCHAR PRIMARY KEY,
+        crop_url TEXT NOT NULL,
+        name TEXT,
+        bio TEXT,
+        location JSONB NOT NULL,
+        collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`ALTER TABLE reference_records ADD COLUMN IF NOT EXISTS role TEXT`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS reference_records_collected_at_idx ON reference_records (collected_at)`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS reference_vectors (
+        id VARCHAR(36) PRIMARY KEY,
+        embedding JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_photo_id_idx ON faces (photo_id)`);

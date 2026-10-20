@@ -5,6 +5,52 @@
 export type GraphMode = 'default' | 'blob' | 'single-highlight' | 'multi-highlight';
 export type ColorScheme = 'type' | 'distance' | 'connections';
 export type SingleNodeColorScheme = 'follow-status' | 'type';
+/** Connections view node colours: total interaction score, link count, or account type. */
+export type ConnectionsNodeColorScheme = 'strength' | 'connections' | 'type';
+
+/** A colour ramp, weakest first. Two or more hex stops. */
+export type Palette = string[];
+
+export const GRAPH_PALETTES: { id: string; name: string; stops: Palette }[] = [
+  { id: 'ember', name: 'Ember', stops: ['#3b0764', '#ef4444'] },
+  { id: 'viridis', name: 'Viridis', stops: ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'] },
+  { id: 'magma', name: 'Magma', stops: ['#2c105c', '#8c2981', '#de4968', '#fe9f6d', '#fcfdbf'] },
+  { id: 'ocean', name: 'Ocean', stops: ['#0c4a6e', '#0ea5e9', '#e0f2fe'] },
+  { id: 'heat', name: 'Heat', stops: ['#4b5563', '#facc15', '#f97316', '#dc2626'] },
+  { id: 'forest', name: 'Forest', stops: ['#14532d', '#22c55e', '#d9f99d'] },
+  { id: 'mono', name: 'Mono', stops: ['#374151', '#f9fafb'] },
+];
+
+function parseHex(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+/** The colour `t` (0–1) of the way along a palette. */
+export function paletteColor(stops: Palette, t: number): string {
+  if (stops.length === 1) return stops[0];
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  const f = x - i;
+  const a = parseHex(stops[i]);
+  const b = parseHex(stops[i + 1]);
+  return '#' + a.map((v, k) => Math.round(v + (b[k] - v) * f).toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Where a connection score sits between the weak and strong scores, 0–1. On a
+ * log scale because scores are heavily skewed: most pairs are one or two
+ * interactions, a few are hundreds.
+ */
+export function connectionStrength(score: number, weakAt: number, strongAt: number): number {
+  const lo = Math.log(Math.max(0.1, weakAt));
+  const hi = Math.log(Math.max(weakAt + 1, strongAt));
+  return Math.min(1, Math.max(0, (Math.log(Math.max(0.1, score)) - lo) / (hi - lo)));
+}
+
+export function paletteGradientCss(stops: Palette): string {
+  return `linear-gradient(to right, ${stops.join(', ')})`;
+}
 
 /**
  * A setting that is either forced on, forced off, or decided from the size of
@@ -21,6 +67,12 @@ export interface SocialGraphDefaults {
   // Filters
   hideOrphans: boolean;
   minConnections: number;
+  /** Connections view: links scoring below this are left out. */
+  minConnectionStrength: number;
+  /** Connections view: the score at which a link reads as fully strong. */
+  strongConnectionScore: number;
+  /** Connections view: the score at or below which a link reads as fully weak. */
+  weakConnectionScore: number;
   limitExtras: boolean;
   maxExtras: number;
 
@@ -35,6 +87,11 @@ export interface SocialGraphDefaults {
   distanceColorDirect: string;
   distanceColor2nd: string;
   distanceColorOther: string;
+
+  // Connections view colours
+  connectionsNodeColorScheme: ConnectionsNodeColorScheme;
+  connectionsNodePalette: Palette;
+  connectionsLinkPalette: Palette;
 
   // Single-highlight mode
   defaultSingleAccountId: string | null;
@@ -75,7 +132,10 @@ export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
   defaultMode: 'single-highlight',
 
   hideOrphans: true,
-  minConnections: 3,
+  minConnections: 5,
+  minConnectionStrength: 0,
+  strongConnectionScore: 25,
+  weakConnectionScore: 5,
   limitExtras: true,
   maxExtras: 20,
 
@@ -91,6 +151,10 @@ export const SOCIAL_GRAPH_DEFAULTS: SocialGraphDefaults = {
   distanceColorDirect: '#22c55e',
   distanceColor2nd: '#3b82f6',
   distanceColorOther: '#9ca3af',
+
+  connectionsNodeColorScheme: 'strength',
+  connectionsNodePalette: ['#0c4a6e', '#0ea5e9', '#e0f2fe'],
+  connectionsLinkPalette: ['#3b0764', '#ef4444'],
 
   defaultSingleAccountId: null,
   singleNodeColorScheme: 'follow-status',

@@ -13,7 +13,8 @@ import { getInitials } from "@/lib/utils";
 import { withImageSize } from "@shared/image-size";
 import type { Person, SocialAccount } from "@shared/schema";
 
-export type IdentityTarget = { personId?: string; socialAccountId?: string };
+/** `username` alone: a mentioned handle with no account yet; the server creates it on naming. */
+export type IdentityTarget = { personId?: string; socialAccountId?: string; username?: string };
 
 type SearchPerson = Person & { uuid?: string; name?: string };
 
@@ -22,7 +23,7 @@ const getPersonName = (p: SearchPerson) => `${p.firstName ?? ""} ${p.lastName ??
 
 /** `placedIds`: identities already on another face here; still pickable, listed last and marked. */
 export function IdentitySearch({ onPick, onCancel, placedIds, placedLabel = " (also in this photo)" }: {
-  onPick: (target: IdentityTarget) => void;
+  onPick: (target: IdentityTarget, label?: string) => void;
   onCancel: () => void;
   placedIds?: Set<unknown>;
   placedLabel?: string;
@@ -105,7 +106,7 @@ export function IdentitySearch({ onPick, onCancel, placedIds, placedLabel = " (a
                     key={pid}
                     type="button"
                     className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2"
-                    onClick={() => onPick({ personId: pid })}
+                    onClick={() => onPick({ personId: pid }, name)}
                     data-testid={`result-person-${pid}`}
                   >
                     <Avatar className="h-5 w-5 shrink-0">
@@ -128,7 +129,7 @@ export function IdentitySearch({ onPick, onCancel, placedIds, placedLabel = " (a
                   key={a.id}
                   type="button"
                   className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2"
-                  onClick={() => onPick({ socialAccountId: a.id })}
+                  onClick={() => onPick({ socialAccountId: a.id }, `@${a.username}`)}
                   data-testid={`result-account-${a.id}`}
                 >
                   <Avatar className="h-5 w-5 shrink-0">
@@ -161,13 +162,13 @@ export function IdentitySearch({ onPick, onCancel, placedIds, placedLabel = " (a
         onOpenChange={(open) => !open && setCreateFor(null)}
         initialUsername={debounced.replace(/^@/, "")}
         queueTrackingByDefault={false}
-        onAccountCreated={(a) => onPick({ socialAccountId: a.id })}
+        onAccountCreated={(a) => onPick({ socialAccountId: a.id }, `@${a.username}`)}
       />
       <PersonDialog
         open={createFor === "person"}
         onOpenChange={(open) => !open && setCreateFor(null)}
         initialValues={newPersonName}
-        onPersonCreated={(p) => onPick({ personId: p.id })}
+        onPersonCreated={(p) => onPick({ personId: p.id }, getPersonName(p))}
       />
     </div>
   );

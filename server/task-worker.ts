@@ -31,7 +31,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, and, isNotNull, inArray, like } from "drizzle-orm";
+import { eq, and, or, isNotNull, inArray, like } from "drizzle-orm";
 import Papa from "papaparse";
 import { sseManager } from "./middleware/sse";
 
@@ -4134,7 +4134,6 @@ async function importOneDmThread(
     );
     existingExternalIds.add(msg.externalId);
     summary.inserted++;
-    void syncEntityInBackground("message", message.id);
 
     if (!importMedia || msg.media.length === 0) continue;
 
@@ -4729,7 +4728,6 @@ export async function processImportSms(
           recipients
         );
         summary.inserted++;
-        void syncEntityInBackground("message", message.id);
       }
     }
 
@@ -5205,6 +5203,88 @@ function extractBioKeywords(text?: string | null): string[] {
   return valid;
 }
 
+type GroupSignal = "mutualFollow" | "oneWayFollow" | "coFollow" | "coMention" | "bio";
+const GROUP_SIGNALS: GroupSignal[] = ["mutualFollow", "oneWayFollow", "coFollow", "coMention", "bio"];
+const emptySignalRecord = (): Record<GroupSignal, number> =>
+  ({ mutualFollow: 0, oneWayFollow: 0, coFollow: 0, coMention: 0, bio: 0 });
+
+/**
+ * Why a hybrid community hangs together: which signals carry its internal
+ * weight, what members commonly follow, its strongest pairs and weakest fits.
+ * Stored with the result and fed to the LLM explainer on demand.
+ */
+function buildGroupSignals(opts: {
+  memberIdxs: number[];
+  internalEdges: GraphEdge[];
+  internalWeight: number;
+  edgeSignals: Map<string, Record<GroupSignal, number>>;
+  totalDegree: Map<number, number>;
+  followsByFollower: Map<number, string[]>;
+  accounts: { id: string; username: string }[];
+  idToIdx: Map<string, number>;
+  keywordCounts: { keyword: string; memberCount: number }[];
+}) {
+  const { memberIdxs, internalEdges, internalWeight, edgeSignals, totalDegree, followsByFollower, accounts, idToIdx } = opts;
+
+  const internalWeightBySignal = emptySignalRecord();
+  const pairCounts = emptySignalRecord();
+  const memberInternal = new Map<number, number>();
+  const pairs: { a: string; b: string; weight: number; dominant: GroupSignal }[] = [];
+
+  for (const e of internalEdges) {
+    const s = edgeSignals.get(`${e.u}:${e.v}`) ?? emptySignalRecord();
+    let dominant: GroupSignal = "mutualFollow";
+    for (const sig of GROUP_SIGNALS) {
+      internalWeightBySignal[sig] += s[sig];
+      if (s[sig] > 0) pairCounts[sig]++;
+      if (s[sig] > s[dominant]) dominant = sig;
+    }
+    memberInternal.set(e.u, (memberInternal.get(e.u) || 0) + e.weight);
+    memberInternal.set(e.v, (memberInternal.get(e.v) || 0) + e.weight);
+    pairs.push({ a: accounts[e.u].username, b: accounts[e.v].username, weight: e.weight, dominant });
+  }
+
+  const sharePct = emptySignalRecord();
+  for (const sig of GROUP_SIGNALS) {
+    sharePct[sig] = internalWeight > 0 ? Math.round((internalWeightBySignal[sig] / internalWeight) * 100) : 0;
+    internalWeightBySignal[sig] = Math.round(internalWeightBySignal[sig] * 10) / 10;
+  }
+
+  // Accounts followed by the most members (only ones we know a username for)
+  const followedCounts = new Map<string, number>();
+  for (const idx of memberIdxs) {
+    for (const followedId of new Set(followsByFollower.get(idx) ?? [])) {
+      followedCounts.set(followedId, (followedCounts.get(followedId) || 0) + 1);
+    }
+  }
+  const topSharedFollows = [...followedCounts.entries()]
+    .filter(([id, count]) => count >= 2 && idToIdx.has(id))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([id, memberCount]) => ({ username: accounts[idToIdx.get(id)!].username, memberCount }));
+
+  // Members whose connections mostly lead outside the group
+  const weakMembers = memberIdxs
+    .map(idx => {
+      const total = totalDegree.get(idx) || 0;
+      return { id: accounts[idx].id, username: accounts[idx].username, fit: total > 0 ? (memberInternal.get(idx) || 0) / total : 0 };
+    })
+    .filter(m => m.fit < 0.3)
+    .sort((a, b) => a.fit - b.fit)
+    .slice(0, 5)
+    .map(m => ({ ...m, fit: Math.round(m.fit * 100) / 100 }));
+
+  return {
+    internalWeightBySignal,
+    sharePct,
+    pairCounts,
+    topSharedFollows,
+    keywordCounts: opts.keywordCounts,
+    topPairs: pairs.sort((a, b) => b.weight - a.weight).slice(0, 5).map(p => ({ ...p, weight: Math.round(p.weight * 10) / 10 })),
+    weakMembers,
+  };
+}
+
 async function processFindPotentialGroups(taskId: string, payload: {
   entityType: "people" | "social_accounts";
   strategy?: "hybrid" | "co_following" | "network_modularity" | "bio_keywords";
@@ -5214,8 +5294,10 @@ async function processFindPotentialGroups(taskId: string, payload: {
   minCohesion?: number;
   minDensityMultiplier?: number; // legacy backwards compat
   linkDefinition?: "any" | "mutual" | "family";
+  minPersonalConnections?: number; // social accounts only: members that follow / are followed by a Me account
 }): Promise<string> {
   const { entityType } = payload;
+  const minPersonalConnections = Math.max(0, payload.minPersonalConnections ?? 0);
   const strategy = payload.strategy ?? "hybrid";
   const linkDefinition = payload.linkDefinition ?? "any";
   const minGroupSize = Math.max(2, payload.minGroupSize ?? 3);
@@ -5257,21 +5339,28 @@ async function processFindPotentialGroups(taskId: string, payload: {
     
     // Accumulator map for weighted edges: "u-v" -> weight
     const edgeWeights = new Map<string, number>();
-    const addWeightedEdge = (uIdx: number, vIdx: number, w: number) => {
+    // Hybrid only: per-signal breakdown of each edge, used by the group explainer
+    const edgeSignals = new Map<string, Record<GroupSignal, number>>();
+    const addWeightedEdge = (uIdx: number, vIdx: number, w: number, signal: GroupSignal) => {
       if (uIdx === vIdx) return;
       const minIdx = uIdx < vIdx ? uIdx : vIdx;
       const maxIdx = uIdx < vIdx ? vIdx : uIdx;
       const key = `${minIdx}:${maxIdx}`;
       edgeWeights.set(key, (edgeWeights.get(key) || 0) + w);
+      if (strategy === "hybrid") {
+        let s = edgeSignals.get(key);
+        if (!s) edgeSignals.set(key, s = emptySignalRecord());
+        s[signal] += w;
+      }
     };
+
+    const needsFollows = strategy === "hybrid" || strategy === "network_modularity" || strategy === "co_following";
+    const allFollows = needsFollows
+      ? await db.select({ followerId: socialFollows.followerId, followedId: socialFollows.followedId }).from(socialFollows)
+      : [];
 
     // Signal A: Direct Follows
     if (strategy === "hybrid" || strategy === "network_modularity") {
-      const allFollows = await db.select({
-        followerId: socialFollows.followerId,
-        followedId: socialFollows.followedId,
-      }).from(socialFollows);
-
       const followPairs = new Set<string>();
       for (const f of allFollows) {
         followPairs.add(`${f.followerId}->${f.followedId}`);
@@ -5293,19 +5382,14 @@ async function processFindPotentialGroups(taskId: string, payload: {
         const isMutual = followPairs.has(reverseKey);
         if (linkDefinition === "mutual" && !isMutual) continue;
 
-        const weight = isMutual ? 3.5 : 1.0;
-        addWeightedEdge(uIdx, vIdx, weight);
+        if (isMutual) addWeightedEdge(uIdx, vIdx, 3.5, "mutualFollow");
+        else addWeightedEdge(uIdx, vIdx, 1.0, "oneWayFollow");
       }
     }
 
     // Signal B: Co-Following / Shared Audience Bipartite Projection
     if (strategy === "hybrid" || strategy === "co_following") {
       await storage.updateTaskProgress(taskId, 50, "Analyzing co-following & shared audience overlap...");
-      const allFollows = await db.select({
-        followerId: socialFollows.followerId,
-        followedId: socialFollows.followedId,
-      }).from(socialFollows);
-
       const followedToFollowers = new Map<string, number[]>();
       const followerDegree = new Map<number, number>();
 
@@ -5347,7 +5431,7 @@ async function processFindPotentialGroups(taskId: string, payload: {
           // Cosine / Jaccard similarity weighting
           const sim = count / Math.sqrt(degU * degV);
           const weight = Math.min(4.0, sim * 5.0 + (count >= 4 ? 1.0 : 0));
-          addWeightedEdge(uIdx, vIdx, weight);
+          addWeightedEdge(uIdx, vIdx, weight, "coFollow");
         }
       }
     }
@@ -5379,7 +5463,7 @@ async function processFindPotentialGroups(taskId: string, payload: {
               }
               for (let i = 0; i < mentionedUIdxs.length; i++) {
                 for (let j = i + 1; j < mentionedUIdxs.length; j++) {
-                  addWeightedEdge(mentionedUIdxs[i], mentionedUIdxs[j], 2.5);
+                  addWeightedEdge(mentionedUIdxs[i], mentionedUIdxs[j], 2.5, "coMention");
                 }
               }
             }
@@ -5435,7 +5519,7 @@ async function processFindPotentialGroups(taskId: string, payload: {
           const uIdx = parseInt(uStr, 10);
           const vIdx = parseInt(vStr, 10);
           const weight = Math.min(strategy === "bio_keywords" ? 3.0 : 1.5, score);
-          addWeightedEdge(uIdx, vIdx, weight);
+          addWeightedEdge(uIdx, vIdx, weight, "bio");
         }
       }
     }
@@ -5463,14 +5547,44 @@ async function processFindPotentialGroups(taskId: string, payload: {
       internalDegreeMap.set(edge.v, (internalDegreeMap.get(edge.v) || 0) + edge.weight);
     }
 
+    // Hybrid only: follower idx -> followed account ids, for "accounts most members follow"
+    const followsByFollower = new Map<number, string[]>();
+    if (strategy === "hybrid") {
+      for (const f of allFollows) {
+        const uIdx = idToIdx.get(f.followerId);
+        if (uIdx === undefined) continue;
+        if (!followsByFollower.has(uIdx)) followsByFollower.set(uIdx, []);
+        followsByFollower.get(uIdx)!.push(f.followedId);
+      }
+    }
+
+    // Accounts directly connected (follower or following) to one of Me's own accounts
+    const personalIds = new Set<string>();
+    if (minPersonalConnections > 0) {
+      const meIds = await storage.getMeSocialAccountIds();
+      if (meIds.length > 0) {
+        const meSet = new Set(meIds);
+        const rows = await db.select({ followerId: socialFollows.followerId, followedId: socialFollows.followedId })
+          .from(socialFollows)
+          .where(or(inArray(socialFollows.followerId, meIds), inArray(socialFollows.followedId, meIds)));
+        for (const r of rows) {
+          if (!meSet.has(r.followerId)) personalIds.add(r.followerId);
+          if (!meSet.has(r.followedId)) personalIds.add(r.followedId);
+        }
+      }
+    }
+
     for (const [commId, memberIdxs] of communities.entries()) {
       const cSize = memberIdxs.length;
       if (cSize < minGroupSize || cSize > maxGroupSize) continue;
+      if (minPersonalConnections > 0 &&
+          memberIdxs.filter(idx => personalIds.has(nodeIds[idx])).length < minPersonalConnections) continue;
 
       const memberSet = new Set(memberIdxs);
       let internalWeight = 0;
       let totalIncidentWeight = 0;
       let internalEdgesCount = 0;
+      const internalEdges: GraphEdge[] = [];
 
       for (const edge of graphEdges) {
         const uIn = memberSet.has(edge.u);
@@ -5478,6 +5592,7 @@ async function processFindPotentialGroups(taskId: string, payload: {
         if (uIn && vIn) {
           internalWeight += edge.weight;
           internalEdgesCount++;
+          internalEdges.push(edge);
         }
         if (uIn || vIn) {
           totalIncidentWeight += edge.weight;
@@ -5554,6 +5669,13 @@ async function processFindPotentialGroups(taskId: string, payload: {
         density: cSize > 1 ? (2 * internalEdgesCount) / (cSize * (cSize - 1)) : 1.0,
         densityRatio: cohesionScore / 20.0,
         internalEdgesCount,
+        signals: strategy === "hybrid"
+          ? buildGroupSignals({
+              memberIdxs, internalEdges, internalWeight, edgeSignals, totalDegree: internalDegreeMap,
+              followsByFollower, accounts, idToIdx,
+              keywordCounts: topKeywords.map(kw => ({ keyword: kw, memberCount: commTokenCounts.get(kw) || 0 })),
+            })
+          : undefined,
       });
     }
 

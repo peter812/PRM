@@ -12,6 +12,7 @@ import { Command, CommandInput, CommandItem, CommandList } from "@/components/ui
 import { X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ConnectionWeightsCard } from "@/components/connection-weights-card";
+import { GraphPalettePicker } from "@/components/graph-palette-picker";
 import {
   DENSE_THRESHOLD_STEPS,
   EXTRAS_STEPS,
@@ -21,6 +22,7 @@ import {
   type DenseModeSetting,
   type GraphMode,
   type ColorScheme,
+  type ConnectionsNodeColorScheme,
   type LinkArrowMode,
   type SingleNodeColorScheme,
   type SocialGraphDefaults,
@@ -255,6 +257,39 @@ export default function SocialGraphSettingsPage() {
             />
           </div>
 
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Minimum connection strength</Label>
+              <span className="text-sm font-medium" data-testid="text-min-connection-strength-value">{settings.minConnectionStrength}+</span>
+            </div>
+            <Slider
+              value={[settings.minConnectionStrength]}
+              min={0}
+              max={100}
+              step={1}
+              onValueChange={(v) => update('minConnectionStrength', v[0])}
+              data-testid="slider-min-connection-strength"
+            />
+            <p className="text-xs text-muted-foreground">Connections view only: hides links scoring below this.</p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Weak / strong connection at</Label>
+              <span className="text-sm font-medium" data-testid="text-connection-score-range-value">{settings.weakConnectionScore} – {settings.strongConnectionScore}</span>
+            </div>
+            <Slider
+              value={[settings.weakConnectionScore, settings.strongConnectionScore]}
+              min={1}
+              max={200}
+              step={1}
+              minStepsBetweenThumbs={1}
+              onValueChange={([weak, strong]) => setSettings((s) => ({ ...s, weakConnectionScore: weak, strongConnectionScore: strong }))}
+              data-testid="slider-connection-score-range"
+            />
+            <p className="text-xs text-muted-foreground">Connections view only: links at or below the first score get the full weak color, at or above the second the full strong color.</p>
+          </div>
+
           <div className="flex items-center justify-between">
             <Label htmlFor="limit-extras">Limit extras</Label>
             <Switch
@@ -384,6 +419,52 @@ export default function SocialGraphSettingsPage() {
               checked={settings.autoRotate}
               onCheckedChange={(v) => update('autoRotate', v)}
               data-testid="switch-auto-rotate"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Connections view colors */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Connections View Colors</CardTitle>
+          <CardDescription>Node and link palettes used when the graph shows who interacts rather than who follows.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor="connections-node-scheme">Node colors</Label>
+            <Select
+              value={settings.connectionsNodeColorScheme}
+              onValueChange={(v) => update('connectionsNodeColorScheme', v as ConnectionsNodeColorScheme)}
+            >
+              <SelectTrigger id="connections-node-scheme" data-testid="select-connections-node-scheme">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="strength">By total connection strength</SelectItem>
+                <SelectItem value="connections">By connection count</SelectItem>
+                <SelectItem value="type">By type</SelectItem>
+              </SelectContent>
+            </Select>
+            {settings.connectionsNodeColorScheme !== 'type' && (
+              <GraphPalettePicker
+                value={settings.connectionsNodePalette}
+                onChange={(v) => update('connectionsNodePalette', v)}
+                lowLabel={settings.connectionsNodeColorScheme === 'strength' ? 'Weakest' : 'Fewest'}
+                highLabel={settings.connectionsNodeColorScheme === 'strength' ? 'Strongest' : 'Most'}
+                testId="connections-node"
+              />
+            )}
+          </div>
+
+          <div className="space-y-2 pt-2 border-t">
+            <Label>Link palette</Label>
+            <GraphPalettePicker
+              value={settings.connectionsLinkPalette}
+              onChange={(v) => update('connectionsLinkPalette', v)}
+              lowLabel="Weak"
+              highLabel="Strong"
+              testId="connections-link"
             />
           </div>
         </CardContent>

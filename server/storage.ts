@@ -154,14 +154,16 @@ import {
   cleanPhoneNumberForStorage,
   formatPhoneNumberForDisplay,
 } from "@shared/schema";
-import { computeFamilyLabels } from "./family-relations-helper";
+import type { ConnectionPair } from "./connection-strength";
+import { computeFamilyLabels, FAMILY_LABEL_DEPTH } from "./family-relations-helper";
 import { db, pool } from "./db";
 import { legacyHqImageUrls } from "./db-init";
 import { eq, ne, or, and, ilike, sql, inArray, notInArray, arrayContains, asc, desc, lt, isNotNull, gte, isNull, getTableColumns } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
 import { deleteImageFromPrmS3, isPrmS3ImageUrl, deletePrmS3ObjectKey, normalizePrmS3Key } from "./prm-s3";
-import { syncEntityInBackground, deleteEntityVector } from "./vector-universal";
+import { syncEntityInBackground, deleteEntityVector, removeAccountPostVectorsInBackground } from "./vector-universal";
+import { scheduleRechunk, removeConversationVectorsInBackground } from "./message-chunks";
 import { sseManager } from "./middleware/sse";
 
 const ME_PERSON_ID_KEY = "me_person_id";
@@ -420,7 +422,7 @@ export interface IStorage {
   deleteGroupNote(id: string): Promise<void>;
 
   // Social graph operations
-  getSocialGraph(settings: SocialGraphSettings): Promise<SocialGraphData>;
+  getSocialGraph(settings: SocialGraphSettings, connectionPairs?: ConnectionPair[]): Promise<SocialGraphData>;
 
   // Social account operations
   getAllSocialAccounts(searchQuery?: string, typeId?: string): Promise<SocialAccountWithCurrentProfile[]>;
@@ -1089,7 +1091,7 @@ export class DatabaseStorage implements IStorage {
         familyLabels = cached;
       } else {
         try {
-          const familyTree = await this.getFamilyTree(mePersonId, 2);
+          const familyTree = await this.getFamilyTree(mePersonId, FAMILY_LABEL_DEPTH);
           familyLabels = computeFamilyLabels(mePersonId, familyTree);
           meFamilyLabelsCache.set(mePersonId, familyLabels);
         } catch (err) {
@@ -1405,6 +1407,7 @@ export class DatabaseStorage implements IStorage {
       data.phone = cleanPhoneNumberForStorage(data.phone);
     }
     const [person] = await db.insert(people).values(data).returning();
+    syncEntityInBackground("person", person.id);
     return person;
   }
 
@@ -1424,6 +1427,7 @@ export class DatabaseStorage implements IStorage {
     if (personData.socialAccountUuids !== undefined) {
       meSocialAccountIdsCache.invalidate(id);
     }
+    if (person) syncEntityInBackground("person", id);
     return person || undefined;
   }
 
@@ -1438,7 +1442,10 @@ export class DatabaseStorage implements IStorage {
     ]);
     
     // Delete person (cascade will handle notes, relationships)
+    const childNotes = await db.select({ id: notes.id }).from(notes).where(eq(notes.personId, id));
     await db.delete(people).where(eq(people.id, id));
+    syncEntityInBackground("person", id);
+    for (const n of childNotes) syncEntityInBackground("note", n.id);
   }
 
   async deletePeopleCreatedSince(cutoff: Date): Promise<{ deleted: number }> {
@@ -1650,11 +1657,13 @@ export class DatabaseStorage implements IStorage {
   // Note operations
   async createNote(insertNote: InsertNote): Promise<Note> {
     const [note] = await db.insert(notes).values(insertNote).returning();
+    syncEntityInBackground("note", note.id);
     return note;
   }
 
   async deleteNote(id: string): Promise<void> {
     await db.delete(notes).where(eq(notes.id, id));
+    syncEntityInBackground("note", id);
   }
 
   async getNoteById(id: string): Promise<Note | undefined> {
@@ -1673,6 +1682,7 @@ export class DatabaseStorage implements IStorage {
       .insert(interactions)
       .values(insertInteraction)
       .returning();
+    syncEntityInBackground("interaction", interaction.id);
     return interaction;
   }
 
@@ -1685,11 +1695,13 @@ export class DatabaseStorage implements IStorage {
       .set(interactionData)
       .where(eq(interactions.id, id))
       .returning();
+    if (interaction) syncEntityInBackground("interaction", id);
     return interaction || undefined;
   }
 
   async deleteInteraction(id: string): Promise<void> {
     await db.delete(interactions).where(eq(interactions.id, id));
+    syncEntityInBackground("interaction", id);
   }
 
   // Relationship operations
@@ -3021,12 +3033,21 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Social graph operations
-  async getSocialGraph(settings: SocialGraphSettings): Promise<SocialGraphData> {
-    const [allAccounts, allTypes, allFollows] = await Promise.all([
+  /**
+   * With `connectionPairs` (the Connections view) the graph is built from who
+   * interacts instead of who follows: each pair stands in as a mutual follow, so
+   * every filter and mode below works unchanged, and the links come back
+   * carrying each direction's strength.
+   */
+  async getSocialGraph(settings: SocialGraphSettings, connectionPairs?: ConnectionPair[]): Promise<SocialGraphData> {
+    const [allAccounts, allTypes, realFollows] = await Promise.all([
       db.select().from(socialAccounts),
       db.select().from(socialAccountTypes),
-      db.select().from(socialFollows),
+      connectionPairs ? Promise.resolve([]) : db.select().from(socialFollows),
     ]);
+    const allFollows: { followerId: string; followedId: string }[] = connectionPairs
+      ? connectionPairs.flatMap(p => [{ followerId: p.a, followedId: p.b }, { followerId: p.b, followedId: p.a }])
+      : realFollows;
 
     const typeColorMap = new Map<string, string>();
     allTypes.forEach(t => {
@@ -3334,6 +3355,17 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
+    if (connectionPairs) {
+      const pairByKey = new Map(connectionPairs.map(p => [`${p.a}|${p.b}`, p]));
+      for (const l of links) {
+        const forwardPair = pairByKey.get(`${l.source}|${l.target}`);
+        const pair = forwardPair ?? pairByKey.get(`${l.target}|${l.source}`);
+        if (!pair) continue;
+        l.forward = forwardPair ? pair.ab : pair.ba;
+        l.back = forwardPair ? pair.ba : pair.ab;
+      }
+    }
+
     return { nodes, links };
   }
 
@@ -3611,6 +3643,7 @@ export class DatabaseStorage implements IStorage {
       .set(updateFields)
       .where(eq(socialAccounts.id, id))
       .returning();
+    if (account) syncEntityInBackground("social_account", id);
     return account || undefined;
   }
 
@@ -3628,6 +3661,8 @@ export class DatabaseStorage implements IStorage {
     
     await db.delete(socialAccounts).where(eq(socialAccounts.id, id));
     meSocialAccountIdsCache.clear();
+    syncEntityInBackground("social_account", id);
+    removeAccountPostVectorsInBackground(id);
   }
 
   async deleteAllSocialAccounts(options: { deleteMedia?: boolean } = {}): Promise<{
@@ -4990,6 +5025,7 @@ export class DatabaseStorage implements IStorage {
       .set({ ...post, updatedAt: new Date() })
       .where(eq(socialAccountPosts.id, id))
       .returning();
+    if (updated) syncEntityInBackground("post", id);
     return updated || undefined;
   }
 
@@ -4997,6 +5033,7 @@ export class DatabaseStorage implements IStorage {
     // summary_jobs.target_id has no FK, so drop the post's jobs explicitly.
     await db.delete(summaryJobs).where(and(eq(summaryJobs.kind, "post"), eq(summaryJobs.targetId, id)));
     await db.delete(socialAccountPosts).where(eq(socialAccountPosts.id, id));
+    syncEntityInBackground("post", id);
   }
 
   async getCommentsByPostId(postId: string): Promise<SocialPostCommentWithAccount[]> {
@@ -6138,6 +6175,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteConversation(id: string): Promise<void> {
     await db.delete(conversations).where(eq(conversations.id, id));
+    removeConversationVectorsInBackground(id);
   }
 
   // Bulk-delete conversations (and their messages/participants/recipients via
@@ -6159,6 +6197,7 @@ export class DatabaseStorage implements IStorage {
     const messageCount = Number(msgCountRes[0]?.count ?? 0);
 
     await db.delete(conversations).where(where);
+    for (const id of convIds) removeConversationVectorsInBackground(id);
     return { conversations: convIds.length, messages: messageCount };
   }
 
@@ -6187,7 +6226,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createMessage(data: InsertMessage, recipients: Array<{ personId?: string | null; socialAccountId?: string | null; recipientType?: string }>): Promise<Message> {
-    return await db.transaction(async (tx) => {
+    const created = await db.transaction(async (tx) => {
       const [messageRow] = await tx.insert(messages).values(data).returning();
 
       if (recipients.length > 0) {
@@ -6209,6 +6248,8 @@ export class DatabaseStorage implements IStorage {
 
       return messageRow;
     });
+    scheduleRechunk(created.conversationId);
+    return created;
   }
 
   async getMessagesByConversation(
@@ -6310,7 +6351,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteMessage(id: string): Promise<void> {
-    await db.delete(messages).where(eq(messages.id, id));
+    const [row] = await db.delete(messages).where(eq(messages.id, id)).returning({ conversationId: messages.conversationId });
+    if (row) scheduleRechunk(row.conversationId);
   }
 
   async updateMessage(id: string, data: Partial<InsertMessage>): Promise<Message> {
@@ -6320,6 +6362,7 @@ export class DatabaseStorage implements IStorage {
       .where(eq(messages.id, id))
       .returning();
     if (!row) throw new Error("Message not found");
+    scheduleRechunk(row.conversationId);
     return row;
   }
 

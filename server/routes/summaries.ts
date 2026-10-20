@@ -199,18 +199,30 @@ export function registerSummaryRoutes(app: Express) {
   // Summarized vs total for posts, stories, and accounts that have at least one post or story.
   app.get("/api/summary/totals", async (_req, res) => {
     try {
+      // Queued = unsummarized with a live (pending/running) job.
       const result = await db.execute(sql`
+        WITH posts AS (
+          SELECT p.post_type = 'story' AS is_story, p.ai_summary IS NOT NULL AS done,
+            EXISTS (SELECT 1 FROM summary_jobs j WHERE j.kind = 'post' AND j.target_id = p.id
+              AND j.status IN ('pending', 'running')) AS queued
+          FROM social_account_posts p
+        ), accounts AS (
+          SELECT a.ai_summary IS NOT NULL AS done,
+            EXISTS (SELECT 1 FROM summary_jobs j WHERE j.kind = 'account' AND j.target_id = a.id
+              AND j.status IN ('pending', 'running')) AS queued
+          FROM social_accounts a
+          WHERE EXISTS (SELECT 1 FROM social_account_posts x WHERE x.social_account_id = a.id)
+        )
         SELECT
-          count(*) FILTER (WHERE p.post_type <> 'story')::int AS "postsTotal",
-          count(*) FILTER (WHERE p.post_type <> 'story' AND p.ai_summary IS NOT NULL)::int AS "postsDone",
-          count(*) FILTER (WHERE p.post_type = 'story')::int AS "storiesTotal",
-          count(*) FILTER (WHERE p.post_type = 'story' AND p.ai_summary IS NOT NULL)::int AS "storiesDone",
-          (SELECT count(*)::int FROM social_accounts a
-            WHERE EXISTS (SELECT 1 FROM social_account_posts x WHERE x.social_account_id = a.id)) AS "accountsTotal",
-          (SELECT count(*)::int FROM social_accounts a
-            WHERE a.ai_summary IS NOT NULL
-              AND EXISTS (SELECT 1 FROM social_account_posts x WHERE x.social_account_id = a.id)) AS "accountsDone"
-        FROM social_account_posts p
+          (SELECT count(*) FILTER (WHERE NOT is_story)::int FROM posts) AS "postsTotal",
+          (SELECT count(*) FILTER (WHERE NOT is_story AND done)::int FROM posts) AS "postsDone",
+          (SELECT count(*) FILTER (WHERE NOT is_story AND NOT done AND queued)::int FROM posts) AS "postsQueued",
+          (SELECT count(*) FILTER (WHERE is_story)::int FROM posts) AS "storiesTotal",
+          (SELECT count(*) FILTER (WHERE is_story AND done)::int FROM posts) AS "storiesDone",
+          (SELECT count(*) FILTER (WHERE is_story AND NOT done AND queued)::int FROM posts) AS "storiesQueued",
+          (SELECT count(*)::int FROM accounts) AS "accountsTotal",
+          (SELECT count(*) FILTER (WHERE done)::int FROM accounts) AS "accountsDone",
+          (SELECT count(*) FILTER (WHERE NOT done AND queued)::int FROM accounts) AS "accountsQueued"
       `);
       res.json(result.rows[0]);
     } catch (error) {

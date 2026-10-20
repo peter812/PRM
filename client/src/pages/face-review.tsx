@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Search, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban, Users, EyeOff } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search, UserX, Settings, SkipForward, Wand2, MoreVertical, ScanFace, RefreshCw, Loader2, Ban, Users, EyeOff, CheckCheck } from "lucide-react";
 import { useBannedActionToggle } from "@/components/banned-action-toggle";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useNoFaceToggle } from "@/components/no-face-account";
 import { IdentitySearch } from "@/components/identity-search";
 import { FaceClustersTab } from "@/components/face-clusters-tab";
+import { FaceVerifyTab } from "@/components/face-verify-tab";
 import type { ImageTask } from "@shared/schema";
 
 type FaceReviewKind = "story" | "profile" | "post" | "message";
@@ -165,9 +166,11 @@ export default function FaceReviewPage() {
   const search = useSearch();
   const [, navigate] = useLocation();
   const params = useMemo(() => new URLSearchParams(search), [search]);
-  // The Clusters tab is the default; `kind` is the per-photo queue the other tabs show.
-  const clustersTab = !KINDS.includes(params.get("tab") as FaceReviewKind);
-  const kind = (clustersTab ? "story" : params.get("tab")) as FaceReviewKind;
+  // The Clusters tab is the default; `kind` is the per-photo queue the story/profile/post/message tabs show.
+  const tabParam = params.get("tab");
+  const queueTab = KINDS.includes(tabParam as FaceReviewKind);
+  const clustersTab = !queueTab && tabParam !== "verify";
+  const kind = (queueTab ? tabParam : "story") as FaceReviewKind;
   const dismissedFilter = params.get("dismissed") === "1";
   const showNoise = params.get("noise") === "1";
   const queueKey = ["/api/face-review", kind, dismissedFilter, showNoise];
@@ -189,7 +192,7 @@ export default function FaceReviewPage() {
 
   const queueQuery = useInfiniteQuery<FaceReviewPage>({
     queryKey: queueKey,
-    enabled: !clustersTab,
+    enabled: queueTab,
     queryFn: async ({ pageParam }) => {
       const p = new URLSearchParams({ kind, limit: "20" });
       if (dismissedFilter) p.set("dismissed", "1");
@@ -364,7 +367,7 @@ export default function FaceReviewPage() {
   }
 
   const assignMutation = useMutation({
-    mutationFn: async (vars: { photoId: string; faceUuid: string; socialAccountId?: string; personId?: string }) => {
+    mutationFn: async (vars: { photoId: string; faceUuid: string; socialAccountId?: string; personId?: string; username?: string }) => {
       const res = await apiRequest("POST", "/api/face-review/assign", { ...vars, kind });
       return (await res.json()) as FaceReviewItem;
     },
@@ -437,9 +440,9 @@ export default function FaceReviewPage() {
   const autoAssignMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/face-review/auto-assign");
-      return (await res.json()) as { scanned: number; assigned: number };
+      return (await res.json()) as { scanned: number; assigned: number; verify: number };
     },
-    onSuccess: async ({ scanned, assigned }) => {
+    onSuccess: async ({ scanned, assigned, verify }) => {
       // The refetch drops photos auto-assign finished, shifting positions: stay on the same photo
       // (or, if it left the queue, the one that followed it) rather than the same index.
       const ids = (d?: { pages: FaceReviewPage[] }) => d?.pages.flatMap((p) => p.items.map((it) => it.photoId)) ?? [];
@@ -450,7 +453,7 @@ export default function FaceReviewPage() {
       const after = ids(queryClient.getQueryData(queueKey));
       const next = before.slice(from).map((id) => after.indexOf(id)).find((i) => i >= 0);
       setIndex(next ?? Math.max(after.length - 1, 0));
-      toast({ title: assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces` });
+      toast({ title: `${assigned ? `Auto-assigned ${assigned} of ${scanned} faces` : `No confident matches among ${scanned} faces`}${verify ? `, ${verify} to verify` : ""}` });
     },
     onError: () => toast({ title: "Auto-assign failed", variant: "destructive" }),
   });
@@ -542,10 +545,13 @@ export default function FaceReviewPage() {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-        <Tabs value={clustersTab ? "clusters" : kind} onValueChange={(v) => setParam({ tab: v === "clusters" ? null : v, cluster: null })}>
+        <Tabs value={queueTab ? kind : clustersTab ? "clusters" : "verify"} onValueChange={(v) => setParam({ tab: v === "clusters" ? null : v, cluster: null })}>
           <TabsList>
             <TabsTrigger value="clusters" data-testid="tab-clusters">
               <Users className="h-4 w-4 mr-1.5" /> Clusters
+            </TabsTrigger>
+            <TabsTrigger value="verify" data-testid="tab-verify">
+              <CheckCheck className="h-4 w-4 mr-1.5" /> Verify
             </TabsTrigger>
             {KINDS.map((k) => (
               <TabsTrigger key={k} value={k} data-testid={`tab-${k}`}>
@@ -591,6 +597,8 @@ export default function FaceReviewPage() {
 
       {clustersTab ? (
         <FaceClustersTab clusterId={params.get("cluster")} onOpenCluster={(id) => setParam({ cluster: id })} />
+      ) : !queueTab ? (
+        <FaceVerifyTab />
       ) : queueQuery.isLoading ? (
         <div className="text-center py-16 text-muted-foreground">Loading…</div>
       ) : queueQuery.isError ? (
@@ -798,11 +806,11 @@ export default function FaceReviewPage() {
                     <div className="flex flex-wrap gap-1.5">
                       {lookAlikeMerged.map((s) => (
                         <button
-                          key={`${s.socialAccountId ?? s.personId}-${s.reason}`}
+                          key={`${s.socialAccountId ?? s.personId ?? s.username}-${s.reason}`}
                           type="button"
                           className="text-xs px-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1"
-                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, socialAccountId: s.socialAccountId, personId: s.personId }); }}
-                          data-testid={`chip-suggestion-${s.socialAccountId ?? s.personId}`}
+                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, socialAccountId: s.socialAccountId, personId: s.personId, username: s.username }); }}
+                          data-testid={`chip-suggestion-${s.socialAccountId ?? s.personId ?? s.username}`}
                         >
                           {suggestionLabel(item.kind, s)}
                           {isPlaced(s) && <span className="text-muted-foreground">{ALSO_HERE}</span>}

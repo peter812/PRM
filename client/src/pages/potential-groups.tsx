@@ -64,6 +64,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getInitials } from "@/lib/utils";
+import { GroupExplainerDialog, type GroupExplanation, type GroupSignals } from "@/components/group-explainer-dialog";
 
 interface MemberPreview {
   id: string;
@@ -88,6 +89,8 @@ interface PotentialGroupResult {
   density: number;
   densityRatio: number;
   internalEdgesCount: number;
+  signals?: GroupSignals; // Smart Multi-Signal only
+  explanation?: GroupExplanation;
 }
 
 interface AnalysisTaskResponse {
@@ -108,6 +111,7 @@ export default function PotentialGroupsPage() {
   const [minGroupSize, setMinGroupSize] = useState<number>(3);
   const [maxGroupSize, setMaxGroupSize] = useState<number>(50);
   const [resolution, setResolution] = useState<number>(1.0);
+  const [minPersonalConnections, setMinPersonalConnections] = useState<number>(0);
 
   // Task running state
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
@@ -124,6 +128,9 @@ export default function PotentialGroupsPage() {
 
   // Small account popup when a member chip is clicked
   const [viewedMember, setViewedMember] = useState<MemberPreview | null>(null);
+
+  // Result whose "why grouped?" explainer is open (looked up live so cached explanations show)
+  const [explainedId, setExplainedId] = useState<string | null>(null);
 
   const { data: groups = [] } = useQuery<Group[]>({
     queryKey: ["/api/groups"],
@@ -161,6 +168,7 @@ export default function PotentialGroupsPage() {
         minGroupSize,
         maxGroupSize,
         resolution,
+        minPersonalConnections: entityType === "social_accounts" ? minPersonalConnections : 0,
       });
       return res.json() as Promise<{ taskId: string }>;
     },
@@ -249,16 +257,23 @@ export default function PotentialGroupsPage() {
     }
   }, [entityType, linkDefinition]);
 
-  const handleOpenPromoteDialog = (result: PotentialGroupResult, mode: PromoteMode) => {
+  const handleOpenPromoteDialog = (
+    result: PotentialGroupResult,
+    mode: PromoteMode,
+    opts: { name?: string; excludeIds?: string[] } = {},
+  ) => {
+    const name = opts.name ?? result.suggestedName;
+    const exclude = new Set(opts.excludeIds ?? []);
     setSelectedResult(result);
     setPromoteMode(mode);
-    setNewGroupName(result.suggestedName);
+    setNewGroupName(name);
     setNewGroupColor("#" + Math.floor(Math.random() * 16777215).toString(16).padStart(6, "0"));
-    setSelectedMemberIds(new Set(result.memberIds));
+    setSelectedMemberIds(new Set(result.memberIds.filter((id) => !exclude.has(id))));
     setTargetGroupId("");
     setTargetSubGroupId("");
-    setNewSubGroupName(result.suggestedName);
+    setNewSubGroupName(name);
   };
+  const explainedResult = taskStatus?.results?.find((r) => r.id === explainedId) ?? null;
 
   const handleToggleMember = (id: string) => {
     const updated = new Set(selectedMemberIds);
@@ -474,6 +489,24 @@ export default function PotentialGroupsPage() {
                   />
                 </div>
               </div>
+
+              {entityType === "social_accounts" && (
+                <div className="space-y-1.5 pt-1">
+                  <Label className="text-xs">
+                    Min Personal Connections: {minPersonalConnections === 0 ? "Off" : minPersonalConnections}
+                  </Label>
+                  <Slider
+                    min={0}
+                    max={10}
+                    step={1}
+                    value={[minPersonalConnections]}
+                    onValueChange={(val) => setMinPersonalConnections(val[0])}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Only keep groups with at least this many accounts that follow or are followed by your own account.
+                  </p>
+                </div>
+              )}
             </CardContent>
             <CardFooter className="pt-2">
               <Button
@@ -561,9 +594,26 @@ export default function PotentialGroupsPage() {
                           <CardTitle className="text-base font-semibold line-clamp-2 leading-snug">
                             {result.suggestedName}
                           </CardTitle>
-                          <Badge className="bg-primary/15 text-primary hover:bg-primary/20 border-none shrink-0 text-xs">
-                            {result.cohesionScore}% Cohesion
-                          </Badge>
+                          {result.signals ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setExplainedId(result.id)}
+                                  className="h-6 px-2 bg-primary/15 text-primary hover:bg-primary/25 hover:text-primary shrink-0 text-xs font-semibold"
+                                >
+                                  <Sparkles className="h-3 w-3 mr-1" />
+                                  {result.cohesionScore}% Cohesion
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Why are these grouped?</TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            <Badge className="bg-primary/15 text-primary hover:bg-primary/20 border-none shrink-0 text-xs">
+                              {result.cohesionScore}% Cohesion
+                            </Badge>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 flex-wrap pt-1">
                           <span className="text-xs text-muted-foreground font-medium">
@@ -841,6 +891,25 @@ export default function PotentialGroupsPage() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+        )}
+
+        {currentTaskId && (
+          <GroupExplainerDialog
+            taskId={currentTaskId}
+            group={explainedResult}
+            onClose={() => setExplainedId(null)}
+            onUseName={(name) => {
+              setExplainedId(null);
+              handleOpenPromoteDialog(explainedResult!, "create", { name });
+            }}
+            onPromoteWithout={(ids) => {
+              setExplainedId(null);
+              handleOpenPromoteDialog(explainedResult!, "create", {
+                name: explainedResult!.explanation?.suggestedName || undefined,
+                excludeIds: ids,
+              });
+            }}
+          />
         )}
 
         {/* Account popup */}

@@ -8,7 +8,6 @@ import type { Express } from "express";
 import crypto from "crypto";
 import { z } from "zod";
 import { storage } from "../storage";
-import { syncEntityInBackground } from "../vector-universal";
 import { extractJsonObject } from "../json-extract";
 import { AiConfigError, asData, chat, DATA_TAGS_NOTE, resolveModel } from "../ai/provider";
 import {
@@ -357,7 +356,6 @@ ${asData("transcript", transcript)}` },
           personId: data.personId,
           content: noteContent,
         });
-        syncEntityInBackground("note", created.id);
         notesCount++;
       }
 
@@ -367,7 +365,6 @@ ${asData("transcript", transcript)}` },
           personId: data.personId,
           content: `${data.bullets.map((b) => `- ${b}`).join("\n")}\n\n(describe me)`,
         });
-        syncEntityInBackground("note", created.id);
         notesCount++;
       }
 
@@ -394,7 +391,6 @@ ${asData("transcript", transcript)}` },
           description: interaction.description?.trim() || undefined,
           typeId: typeId || undefined,
         });
-        syncEntityInBackground("interaction", created.id);
         interactionsCount++;
       }
 

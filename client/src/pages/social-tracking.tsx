@@ -105,7 +105,7 @@ function BatchProgress({ batch, perRun }: { batch: Batch; perRun: number }) {
 
 interface Upcoming {
   trackingEnabled: boolean;
-  runAt: string;
+  runAt: string | null;
   importerLabel: string | null;
   limit: number;
   checks: { accountId: string; username: string; nickname: string | null; interestLevel: string; kind: TrackingKind; scanMode: "lite" | "full" | null; origin: "manual" | "schedule"; at: string }[];
@@ -136,7 +136,7 @@ function UpcomingCard() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Next to get updated</CardTitle>
-        <CardDescription>The accounts the next tracking run will check: anything queued by hand first, then the most overdue.</CardDescription>
+        <CardDescription>The accounts a tracking run started now would check: anything queued by hand first, then the most overdue.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <Button variant="outline" onClick={() => refetch()} disabled={isFetching} data-testid="button-load-upcoming">
@@ -146,12 +146,13 @@ function UpcomingCard() {
         {data && (
           <>
             <p className="text-sm text-muted-foreground" data-testid="text-upcoming-run">
-              {data.trackingEnabled
-                ? <>Next run {new Date(data.runAt).toLocaleString()}{data.importerLabel && <> on {data.importerLabel}</>}, up to {data.limit} checks.</>
-                : <>Auto tracking is off, so nothing is scheduled. If it ran a day from now, up to {data.limit} checks, it would take these.</>}
+              A run started now would take these, up to {data.limit} checks.{" "}
+              {data.trackingEnabled && data.runAt
+                ? <>The next scheduled run is {new Date(data.runAt).toLocaleString()}{data.importerLabel && <> on {data.importerLabel}</>}; it also takes whatever comes due before then.</>
+                : <>Auto tracking is off, so nothing is scheduled.</>}
             </p>
             {data.checks.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Nothing is due by then.</p>
+              <p className="text-sm text-muted-foreground">Nothing is due right now.</p>
             ) : (
               <div className="border rounded-md divide-y max-h-96 overflow-y-auto" data-testid="list-upcoming">
                 {data.checks.map((c) => (

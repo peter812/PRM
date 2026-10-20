@@ -8,7 +8,7 @@ import net from "node:net";
 import { storage } from "./storage";
 
 /** The only key prefixes this app writes; deletes and sweeps never reach outside them. */
-export const STORAGE_KEY_PREFIXES = ["images/", "profiles/", "posts/", "stories/", "media/", "faces/"];
+export const STORAGE_KEY_PREFIXES = ["images/", "profiles/", "posts/", "stories/", "media/", "faces/", "references/"];
 
 /** A referenced object that no longer exists in PRM-S3: dead, not retryable. */
 export class ObjectMissingError extends Error {}
@@ -447,12 +447,12 @@ export async function syncFaceCropStorage(): Promise<void> {
 }
 
 export function normalizePrmS3Key(keyOrUrl: string): string {
-  const proxy = keyOrUrl.match(/^\/api\/prm-s3\/(images|profiles|posts|stories|media|faces)\/([^/?#]+)/);
+  const proxy = keyOrUrl.match(/^\/api\/prm-s3\/(images|profiles|posts|stories|media|faces|references)\/([^/?#]+)/);
   if (proxy) return `${proxy[1]}/${proxy[2]}`;
   // Absolute (possibly presigned) urls and bare keys under any prefix we write.
   // Anchored on the object name so a bucket also called "images" isn't taken
   // for the prefix (http://host/images/faces/x.jpg -> faces/x.jpg).
-  const match = keyOrUrl.match(/(?:^|\/)(images|profiles|posts|stories|media|faces)\/([^/?#]+)(?=[?#]|$)/);
+  const match = keyOrUrl.match(/(?:^|\/)(images|profiles|posts|stories|media|faces|references)\/([^/?#]+)(?=[?#]|$)/);
   return match ? `${match[1]}/${match[2]}` : keyOrUrl;
 }
 

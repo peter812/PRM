@@ -861,7 +861,7 @@ fetch('${baseUrl}/api/upload-image', {
       id: "vector",
       name: "Vector Storage & Qdrant",
       icon: Database,
-      description: "Manage Qdrant vector database integration, Universal Vectorization across 9 entity types, and App Knowledge Base RAG.",
+      description: "Manage Qdrant vector database integration, Universal Vectorization across 8 entity types, and App Knowledge Base RAG.",
       endpoints: [
         {
           id: "get-vector-settings",
@@ -894,16 +894,16 @@ fetch('${baseUrl}/api/upload-image', {
         },
         {
           id: "universal-search",
-          method: "GET",
+          method: "POST",
           path: "/api/vector/universal/search",
           summary: "Super Search (Universal semantic search)",
-          description: "Execute cosine similarity search across people, groups, notes, interactions, social accounts, and images.",
-          queryParams: [
-            { name: "q", type: "string", description: "Search query string", required: true },
-            { name: "type", type: "string", description: "Filter to entity type (person, group, note, etc.)", required: false },
-            { name: "limit", type: "number", description: "Maximum results (default: 20)", required: false },
-            { name: "threshold", type: "number", description: "Minimum cosine similarity score (default: 0.70)", required: false }
-          ],
+          description: "Execute cosine similarity search across people, notes, interactions, social accounts, posts, stories, message chunks, and images.",
+          body: `{
+  "query": "machine learning",
+  "typeFilter": ["person", "post"],
+  "limit": 20,
+  "minScore": 0.3
+}`,
           response: `{
   "results": [
     {
@@ -915,23 +915,63 @@ fetch('${baseUrl}/api/upload-image', {
     }
   ]
 }`,
-          example: `fetch('${baseUrl}/api/vector/universal/search?q=machine%20learning&limit=10')
-  .then(res => res.json());`
+          example: `fetch('${baseUrl}/api/vector/universal/search', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ query: 'machine learning', limit: 10 })
+}).then(res => res.json());`
         },
         {
           id: "universal-vectorize-all",
           method: "POST",
           path: "/api/vector/universal/vectorize-all",
           summary: "Vectorize all entities",
-          description: "Batch embeds and indexes all unindexed entities into the universal Qdrant collection.",
+          description: "Starts a background run that embeds and indexes all unindexed entities into the universal Qdrant collection (202; 409 if one is already running). Poll GET /api/vector/universal/progress; cancel with POST /api/vector/universal/stop.",
           response: `{
   "ok": true,
-  "processed": 384,
+  "running": true,
+  "stopRequested": false,
+  "processed": 0,
   "failed": 0,
   "total": 384,
   "errors": []
 }`,
           example: `fetch('${baseUrl}/api/vector/universal/vectorize-all', { method: 'POST' })
+  .then(res => res.json());`
+        },
+        {
+          id: "universal-resync-entity",
+          method: "POST",
+          path: "/api/vector/universal/:type/:id/resync",
+          summary: "Resync one entity's vector",
+          description: "Deletes the entity's point and re-adds it if still eligible. type: person, image, note, interaction, social_account, post, story, daily_note, ai_chat, or conversation (rebuilds its message chunks). Edits already resync automatically.",
+          response: `{ "result": "upserted" }`,
+          example: `fetch('${baseUrl}/api/vector/universal/post/POST_ID/resync', { method: 'POST' })
+  .then(res => res.json());`
+        },
+        {
+          id: "universal-delete-entity",
+          method: "DELETE",
+          path: "/api/vector/universal/:type/:id",
+          summary: "Delete one entity's vector",
+          description: "Removes the entity's point and clears its sync status (conversation drops all its message chunks). The next Vectorize Everything re-adds it if still eligible.",
+          response: `{ "result": "removed" }`,
+          example: `fetch('${baseUrl}/api/vector/universal/conversation/CONVERSATION_ID', { method: 'DELETE' })
+  .then(res => res.json());`
+        },
+        {
+          id: "message-chunk-link",
+          method: "GET",
+          path: "/api/message-chunks/:id",
+          summary: "Resolve a message chunk link",
+          description: "Where a message_chunk search hit links to: the me user's Messages tab if they are in the chat, else the first linked person's. Includes the chunk's message ids for highlighting. 404 once a rebuild replaced the chunk.",
+          response: `{
+  "conversationId": "uuid",
+  "messageIds": ["uuid-1", "uuid-2"],
+  "newerCount": 130,
+  "href": "/me?tab=messages&conversation=uuid&chunk=uuid"
+}`,
+          example: `fetch('${baseUrl}/api/message-chunks/CHUNK_ID')
   .then(res => res.json());`
         },
         {

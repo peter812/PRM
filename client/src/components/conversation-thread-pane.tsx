@@ -74,6 +74,8 @@ interface ConversationThreadPaneProps {
   perspectiveSocialAccountId?: string;
   perspectivePersonId?: string;
   perspectiveAccountIds?: string[];
+  /** A message chunk (from a Super Search hit) to scroll to and highlight */
+  highlightChunkId?: string;
 }
 
 export function ConversationThreadPane({
@@ -83,6 +85,7 @@ export function ConversationThreadPane({
   perspectiveSocialAccountId,
   perspectivePersonId,
   perspectiveAccountIds,
+  highlightChunkId,
 }: ConversationThreadPaneProps) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -178,6 +181,30 @@ export function ConversationThreadPane({
     prevScrollHeightRef.current = scrollRef.current?.scrollHeight ?? null;
     setPageCount((n) => n + 1);
   };
+
+  // Chunk highlight: page back far enough to include the chunk, then scroll to its first message once.
+  const { data: chunk } = useQuery<{ messageIds: string[]; newerCount: number }>({
+    queryKey: [`/api/message-chunks/${highlightChunkId}`],
+    enabled: !!highlightChunkId,
+    retry: false,
+  });
+  const chunkMessageIds = new Set(chunk?.messageIds ?? []);
+  // A few extra older messages so the chunk doesn't sit on the load-older edge.
+  const chunkPages = chunk ? Math.ceil((chunk.newerCount + 1 + PAGE_SIZE / 5) / PAGE_SIZE) : 1;
+  useEffect(() => {
+    setPageCount((n) => Math.max(n, chunkPages));
+  }, [chunkPages]);
+  const scrolledToChunkRef = useRef(false);
+  useEffect(() => {
+    // Wait for the full window, or the bottom-scroll on its arrival would undo this.
+    if (!chunk || scrolledToChunkRef.current || isFetching) return;
+    if (messages.length < Math.min(total, PAGE_SIZE * chunkPages)) return;
+    const first = chronologicalMessages.find((m) => chunkMessageIds.has(m.id));
+    const el = first && document.getElementById(`message-${first.id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "start" });
+    scrolledToChunkRef.current = true;
+  }, [chunk, chunkPages, isFetching, chronologicalMessages.length]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -496,7 +523,7 @@ export function ConversationThreadPane({
                   <div
                     key={msg.id}
                     id={`message-${msg.id}`}
-                    className={cn(sameSenderAsPrev ? "mt-0.5" : "mt-4", i === 0 && "mt-0", "transition-all duration-500 rounded-lg p-1")}
+                    className={cn(sameSenderAsPrev ? "mt-0.5" : "mt-4", i === 0 && "mt-0", "transition-all duration-500 rounded-lg p-1", chunkMessageIds.has(msg.id) && "bg-primary/10")}
                   >
                     {showTimeSeparator && msg.sentAt && (
                       <div className="flex justify-center py-3 select-none">

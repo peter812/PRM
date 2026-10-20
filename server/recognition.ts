@@ -20,8 +20,11 @@ import { BAN_FOR_JOB, accountBans, bannedActions } from "./banned-actions";
 import { HQ_MIN_WIDTH, getImageDimensions } from "./profile-image";
 import {
   markFaceIdentitiesDirty, getLookalikeMinScore, setLookalikeMinScore, lookAlikesFor,
-  getAutoAssignMinScore, setAutoAssignMinScore, AUTO_ASSIGN_MIN_MARGIN,
+  getAutoAssignMinScore, setAutoAssignMinScore, AUTO_ASSIGN_MIN_MARGIN, getVerifyMinScore, setVerifyMinScore,
 } from "./face-lookalikes";
+
+/** Spread into every update that decides a face's identity: its cluster and verify suggestions no longer apply (face-clustering-plan.md §1). */
+export const clearedSuggestions = { clusterId: null, verifyPersonfaceUuid: null, verifyScore: null };
 
 // ── Compute connection ────────────────────────────────────────────────────────
 
@@ -357,7 +360,7 @@ export async function resyncFaceIndex(): Promise<void> {
 }
 
 async function moveGroup(exec: DbExec, keep: string, merge: string): Promise<void> {
-  await exec.update(faces).set({ personfaceUuid: keep, clusterId: null }).where(eq(faces.personfaceUuid, merge));
+  await exec.update(faces).set({ personfaceUuid: keep, ...clearedSuggestions }).where(eq(faces.personfaceUuid, merge));
   await exec.update(people).set({ personfaceUuid: keep }).where(eq(people.personfaceUuid, merge));
   await exec.update(socialAccounts).set({ personfaceUuid: keep }).where(eq(socialAccounts.personfaceUuid, merge));
 }
@@ -446,7 +449,7 @@ export async function connectFace(input: ConnectFaceInput): Promise<ConnectFaceR
 
   await db.transaction(async (tx) => {
     for (const group of Array.from(toFold)) await moveGroup(tx, target, group);
-    if (faceRow) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, clusterId: null }).where(eq(faces.id, faceRow.id));
+    if (faceRow) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
     await linkIdentity(tx, target, identity);
     await refreshFacialIdsForGroups([target], tx, movedAlone ? [movedAlone] : []);
   });
@@ -484,7 +487,7 @@ export async function connectFaces(faceIds: string[], input: { personId?: string
 
   await db.transaction(async (tx) => {
     for (const group of Array.from(toFold)) await moveGroup(tx, target, group);
-    if (moving.length) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, clusterId: null }).where(inArray(faces.id, moving));
+    if (moving.length) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, ...clearedSuggestions }).where(inArray(faces.id, moving));
     await linkIdentity(tx, target, identity);
     await refreshFacialIdsForGroups([target], tx, moving);
   });
@@ -528,7 +531,7 @@ export async function disassociateFace(faceUuid: string): Promise<DisassociateFa
   const oldGroup = faceRow.personfaceUuid;
   const wasNamed = oldGroup ? await groupIsNamed(oldGroup) : false;
   await db.transaction(async (tx) => {
-    await tx.update(faces).set({ personfaceUuid: newGroupUuid, autoMatchScore: null, clusterId: null }).where(eq(faces.id, faceRow.id));
+    await tx.update(faces).set({ personfaceUuid: newGroupUuid, autoMatchScore: null, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
     if (oldGroup && wasNamed) {
       const [a, b] = oldGroup < newGroupUuid ? [oldGroup, newGroupUuid] : [newGroupUuid, oldGroup];
       await tx.insert(facePairDismissals).values({ groupAUuid: a, groupBUuid: b }).onConflictDoNothing();
@@ -552,7 +555,7 @@ export async function disassociateGroup(personfaceUuid: string): Promise<{ count
 
 // ── Auto-assign confident matches (face-review-plan.md §8.2) ─────────────────
 
-export type AutoAssignResult = { scanned: number; assigned: number };
+export type AutoAssignResult = { scanned: number; assigned: number; verify: number };
 
 /** The face's group has no person or social account (a null group counts as unnamed). */
 export const faceGroupUnnamed = sql`NOT EXISTS (SELECT 1 FROM ${people} WHERE ${people.personfaceUuid} = ${faces.personfaceUuid})
@@ -561,9 +564,12 @@ export const faceGroupUnnamed = sql`NOT EXISTS (SELECT 1 FROM ${people} WHERE ${
 let fullAutoAssign: Promise<AutoAssignResult> | null = null;
 
 /**
- * Assign each open face (not dismissed, not in a named group) to its top
- * look-alike when that score is at least `face_auto_assign_min_score` and the
- * runner-up isn't within AUTO_ASSIGN_MIN_MARGIN of it. The face alone moves
+ * Assign each open face (not dismissed, not in a named group, not quality noise)
+ * to its top look-alike when that score is at least `face_auto_assign_min_score`
+ * and the runner-up isn't within AUTO_ASSIGN_MIN_MARGIN of it. A face that misses
+ * that but scores at least `face_verify_min_score` isn't moved: its top match is
+ * stored as `verify_personface_uuid` for the Verify tab (face-clustering-plan.md §4),
+ * and a run rewrites those for every face it scans. The face alone moves
  * (its unnamed compute siblings are scored on their own) and is marked with
  * `auto_match_score` until a person confirms or removes it. Several faces in
  * one photo may go to the same identity (collage images).
@@ -579,44 +585,60 @@ export function autoAssignFaces(faceIds?: string[]): Promise<AutoAssignResult> {
 }
 
 async function runAutoAssign(faceIds?: string[]): Promise<AutoAssignResult> {
-  if (faceIds && !faceIds.length) return { scanned: 0, assigned: 0 };
+  if (faceIds && !faceIds.length) return { scanned: 0, assigned: 0, verify: 0 };
   const candidates = await db
     .select({ id: faces.id, personfaceUuid: faces.personfaceUuid })
     .from(faces)
-    .where(and(isNull(faces.dismissedAt), isNotNull(faces.photoId), isNotNull(faces.embedding), faceGroupUnnamed, faceIds ? inArray(faces.id, faceIds) : undefined));
-  if (!candidates.length) return { scanned: 0, assigned: 0 };
+    .where(and(
+      isNull(faces.dismissedAt), isNotNull(faces.photoId), isNotNull(faces.embedding), faceGroupUnnamed,
+      or(isNull(faces.noiseReason), eq(faces.noiseReason, "singleton")), // singletons may still be a known person seen once
+      faceIds ? inArray(faces.id, faceIds) : undefined,
+    ));
 
   const minScore = await getAutoAssignMinScore();
+  const verifyMin = Math.min(await getVerifyMinScore(), minScore);
   type Pick = { faceId: string; oldGroup: string | null; group: string; score: number };
   const picks: Pick[] = [];
+  const verify: { id: string; group: string; score: number }[] = [];
   const BATCH = 500;
   for (let i = 0; i < candidates.length; i += BATCH) {
     const batch = candidates.slice(i, i + BATCH);
     // Scoring a margin below the threshold keeps a just-under runner-up in the list, so near ties are seen.
-    const scores = await lookAlikesFor(batch.map((c) => c.id), { minScore: minScore - AUTO_ASSIGN_MIN_MARGIN });
+    const scores = await lookAlikesFor(batch.map((c) => c.id), { minScore: Math.min(verifyMin, minScore - AUTO_ASSIGN_MIN_MARGIN) });
     for (const c of batch) {
       const [top, runnerUp] = scores.get(c.id) ?? [];
-      if (!top || top.score < minScore) continue;
-      if (runnerUp && top.score - runnerUp.score < AUTO_ASSIGN_MIN_MARGIN) continue;
-      picks.push({ faceId: c.id, oldGroup: c.personfaceUuid, group: top.personfaceUuid, score: top.score });
+      if (!top) continue;
+      if (top.score >= minScore && !(runnerUp && top.score - runnerUp.score < AUTO_ASSIGN_MIN_MARGIN)) {
+        picks.push({ faceId: c.id, oldGroup: c.personfaceUuid, group: top.personfaceUuid, score: top.score });
+      } else if (top.score >= verifyMin) {
+        verify.push({ id: c.id, group: top.personfaceUuid, score: top.score });
+      }
     }
   }
-  // The same identity may take several faces in one photo: a post image is often a collage of one person.
-  if (!picks.length) return { scanned: candidates.length, assigned: 0 };
 
   await db.transaction(async (tx) => {
+    // Verify suggestions always reflect the current centroids: drop the old ones for what was scanned, then rewrite.
+    await tx.update(faces).set({ verifyPersonfaceUuid: null, verifyScore: null })
+      .where(faceIds ? inArray(faces.id, faceIds) : isNotNull(faces.verifyPersonfaceUuid));
+    if (verify.length) {
+      await tx.execute(sql`
+        UPDATE faces SET verify_personface_uuid = v."group", verify_score = v.score
+        FROM jsonb_to_recordset(${JSON.stringify(verify)}::jsonb) AS v(id varchar, "group" varchar, score real)
+        WHERE faces.id = v.id`);
+    }
+    // The same identity may take several faces in one photo: a post image is often a collage of one person.
     for (const a of picks) {
       // Guarded on the group read above, so a face a person assigned meanwhile is left alone.
       await tx
         .update(faces)
-        .set({ personfaceUuid: a.group, autoMatchScore: a.score, clusterId: null })
+        .set({ personfaceUuid: a.group, autoMatchScore: a.score, ...clearedSuggestions })
         .where(and(eq(faces.id, a.faceId), isNull(faces.dismissedAt), a.oldGroup ? eq(faces.personfaceUuid, a.oldGroup) : isNull(faces.personfaceUuid)));
     }
-    await refreshFacialIdsForGroups([], tx, picks.map((a) => a.faceId));
+    if (picks.length) await refreshFacialIdsForGroups([], tx, picks.map((a) => a.faceId));
   });
 
-  log(`[FaceAutoAssign] ${picks.length} of ${candidates.length} open faces assigned (min ${minScore})`);
-  return { scanned: candidates.length, assigned: picks.length };
+  log(`[FaceAutoAssign] ${picks.length} of ${candidates.length} open faces assigned (min ${minScore}), ${verify.length} to verify (min ${verifyMin})`);
+  return { scanned: candidates.length, assigned: picks.length, verify: verify.length };
 }
 
 const AUTO_ASSIGN_INTERVAL_MS = 60 * 60 * 1000;
@@ -714,7 +736,7 @@ async function linkProfileFace(photo: Photo, detected: DetectedFace[], getBuffer
   const { accountId, faceRow, account, owner, target, facePct } = check;
 
   const alreadyLinked = account.personfaceUuid === target && faceRow.personfaceUuid === target;
-  if (faceRow.personfaceUuid !== target) await db.update(faces).set({ personfaceUuid: target, clusterId: null }).where(eq(faces.id, faceRow.id));
+  if (faceRow.personfaceUuid !== target) await db.update(faces).set({ personfaceUuid: target, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
   if (account.personfaceUuid !== target) await db.update(socialAccounts).set({ personfaceUuid: target }).where(eq(socialAccounts.id, accountId));
   if (owner && !owner.personfaceUuid) await db.update(people).set({ personfaceUuid: target }).where(eq(people.id, owner.id));
   if (!alreadyLinked) {
@@ -953,7 +975,7 @@ export type AutoRecognitionSettings = {
   message: { face: boolean };
   profileLink: { minFacePct: number };
   lookalike: { minScore: number };
-  autoAssign: { minScore: number };
+  autoAssign: { minScore: number; verifyMinScore: number };
 };
 
 const AUTO_RECOGNITION_KEYS: Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, string>>> = {
@@ -1011,7 +1033,7 @@ export async function getAutoRecognitionSettings(): Promise<AutoRecognitionSetti
   }
   out.profileLink = { minFacePct: await getProfileLinkMinFacePct() };
   out.lookalike = { minScore: await getLookalikeMinScore() };
-  out.autoAssign = { minScore: await getAutoAssignMinScore() };
+  out.autoAssign = { minScore: await getAutoAssignMinScore(), verifyMinScore: await getVerifyMinScore() };
   return out;
 }
 
@@ -1019,7 +1041,7 @@ export async function setAutoRecognitionSettings(
   update: Partial<Record<AutoRecognitionKind, Partial<Record<AutoRecognitionJob, boolean>>>> & {
     profileLink?: { minFacePct?: unknown };
     lookalike?: { minScore?: unknown };
-    autoAssign?: { minScore?: unknown };
+    autoAssign?: { minScore?: unknown; verifyMinScore?: unknown };
   },
 ): Promise<void> {
   for (const kind of Object.keys(AUTO_RECOGNITION_KEYS) as AutoRecognitionKind[]) {
@@ -1033,6 +1055,7 @@ export async function setAutoRecognitionSettings(
   if (Number.isFinite(pct) && pct > 0 && pct <= 100) await storage.setAppSetting(PROFILE_LINK_MIN_FACE_PCT_KEY, String(pct));
   if (update.lookalike?.minScore !== undefined) await setLookalikeMinScore(Number(update.lookalike.minScore));
   if (update.autoAssign?.minScore !== undefined) await setAutoAssignMinScore(Number(update.autoAssign.minScore));
+  if (update.autoAssign?.verifyMinScore !== undefined) await setVerifyMinScore(Number(update.autoAssign.verifyMinScore));
 }
 
 /** Ids among `ids` (photoId or payload postId) that already have a live task of `type`. */

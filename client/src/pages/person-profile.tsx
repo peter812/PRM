@@ -1,7 +1,7 @@
 import { formatPersonName, personInitials } from "@shared/person-name";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useLocation } from "wouter";
-import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, Info, GraduationCap, Briefcase, ChevronDown, MessageSquare, Home, Calendar } from "lucide-react";
+import { Mail, Phone, ArrowLeft, Edit, Plus, GitBranch, StickyNote, CalendarDays, ImageIcon, ScanFace, Info, GraduationCap, Briefcase, ChevronDown, MessageSquare, Home, Calendar } from "lucide-react";
 import { GraphTriangleIcon } from "@/components/icons/graph-triangle-icon";
 import { useState, useRef, lazy, Suspense } from "react";
 import { Button } from "@/components/ui/button";
@@ -44,6 +44,7 @@ import { TrueDbTab } from "@/components/true-db-tab";
 import { OUTDATED_TEXT, OutdatedBadge, PersonAddresses } from "@/components/person-addresses";
 import { PoliticalLeaningCard } from "@/components/political-leaning-card";
 import { mapHref } from "@/lib/map-shared";
+import { ReferenceMatchesDialog, type ReferenceProbe } from "@/components/reference-matches-dialog";
 
 function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit?: number }) {
   const { data, isLoading } = useQuery<any>({
@@ -100,6 +101,7 @@ export default function PersonProfile() {
   const [location, navigate] = useLocation();
   const { toast } = useToast();
   const [isAddNoteOpen, setIsAddNoteOpen] = useState(false);
+  const [referenceProbe, setReferenceProbe] = useState<ReferenceProbe | null>(null);
   const [isAddInteractionOpen, setIsAddInteractionOpen] = useState(false);
   const [isEditPersonOpen, setIsEditPersonOpen] = useState(false);
   const [isEditAdditionalOpen, setIsEditAdditionalOpen] = useState(false);
@@ -107,7 +109,8 @@ export default function PersonProfile() {
   const [isAddRelationshipOpen, setIsAddRelationshipOpen] = useState(false);
   const [isAddSocialAccountOpen, setIsAddSocialAccountOpen] = useState(false);
   const [isAccountInfoOpen, setIsAccountInfoOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("home");
+  // ?tab= opens a tab directly, e.g. a message-chunk link to the Messages tab.
+  const [activeTab, setActiveTab] = useState(() => new URLSearchParams(window.location.search).get("tab") || "home");
   const photoFileInputRef = useRef<HTMLInputElement>(null);
 
   const params = new URLSearchParams(window.location.search);
@@ -328,6 +331,10 @@ export default function PersonProfile() {
               <DropdownMenuItem onClick={() => photoFileInputRef.current?.click()} data-testid="menu-item-add-photo">
                 <ImageIcon className="h-4 w-4 mr-2" />
                 Add Photo
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setReferenceProbe({ personId: person.id })} data-testid="menu-item-find-references">
+                <ScanFace className="h-4 w-4 mr-2" />
+                Find in References
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -951,6 +958,7 @@ export default function PersonProfile() {
           </div>
         </DialogContent>
       </Dialog>
+      <ReferenceMatchesDialog probe={referenceProbe} onClose={() => setReferenceProbe(null)} />
     </div>
   );
 }

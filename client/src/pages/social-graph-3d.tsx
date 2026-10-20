@@ -41,16 +41,22 @@ import {
   getInitialGraphSettings,
   resolveArrowsEnabled,
   resolveDenseEnabled,
+  connectionStrength,
+  paletteColor,
+  type ConnectionsNodeColorScheme,
   type DenseModeSetting,
   type LinkArrowMode,
+  type Palette as ColorPalette,
 } from "@/lib/social-graph-defaults";
+import { GraphPalettePicker } from "@/components/graph-palette-picker";
 import { GraphResourceCache, applyRendererPerfSettings } from "@/lib/graph-three-resources";
 import { DenseGraphRenderer } from "@/lib/dense-graph-renderer";
 import { withImageSize } from "@shared/image-size";
 import GraphLayoutWorker from "@/lib/graph-layout.worker?worker";
 import type { LayoutRequest } from "@/lib/graph-layout.worker";
 
-type ViewMode = 'person' | 'social' | 'hybrid';
+/** `connections` is the social graph drawn from who interacts (connection-strength-plan.md) rather than who follows. */
+type ViewMode = 'person' | 'social' | 'connections';
 
 /** Link endpoints arrive as ids but are rehydrated into node objects by d3. */
 function linkEndId(endpoint: unknown): string {
@@ -60,7 +66,7 @@ function linkEndId(endpoint: unknown): string {
 function parseGraphUrl() {
   const params = new URLSearchParams(window.location.search);
   const raw = params.get('view');
-  const view: ViewMode = raw === 'person' || raw === 'hybrid' ? raw : 'social';
+  const view: ViewMode = raw === 'person' || raw === 'connections' ? raw : 'social';
   return {
     view,
     selected: params.get('selected'),
@@ -188,13 +194,24 @@ interface GraphLink {
   invisible: boolean;
   /** Stable handle used to find this link's line object when recolouring. */
   idx: number;
+  /** Connections view: 0–1 strength against the strongest link drawn. */
+  strength?: number;
+  /** Set when the link is drawn as a tube: its radius at each end. */
+  radiusSrc?: number;
+  radiusTgt?: number;
 }
+
+type EffortDirection = 'none' | 'arrows' | 'taper';
+
+/** Tubes are opaque-ish meshes; plain links stay lines. */
+const tubeMaterial = (resources: GraphResourceCache, color: string) => resources.basicMaterial(color, { opacity: 0.8 });
+const TUBE_UP = new THREE.Vector3(0, 1, 0);
 
 export default function SocialGraph3D() {
   const initial = parseGraphUrl();
   const [viewMode, setViewModeState] = useState<ViewMode>(initial.view);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
-    initial.view === 'social' ? initial.selected : null
+    initial.view !== 'person' ? initial.selected : null
   );
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(
     initial.view === 'person' ? initial.selected : null
@@ -207,13 +224,10 @@ export default function SocialGraph3D() {
         const target = selected !== undefined ? selected : selectedPersonId;
         setSelectedPersonId(target);
         syncGraphUrl(v, target, 'push');
-      } else if (v === 'social') {
+      } else {
         const target = selected !== undefined ? selected : selectedAccountId;
         setSelectedAccountId(target);
         syncGraphUrl(v, target, 'push');
-      } else {
-        // hybrid: preserve existing selections, just sync view in URL.
-        syncGraphUrl(v, null, 'push');
       }
     },
     [selectedPersonId, selectedAccountId]
@@ -228,7 +242,6 @@ export default function SocialGraph3D() {
   useEffect(() => {
     const isFirstRun = !urlNormalisedRef.current;
     urlNormalisedRef.current = true;
-    if (viewMode === 'hybrid') return;
     const next = viewMode === 'person' ? selectedPersonId : selectedAccountId;
     syncGraphUrl(viewMode, next, isFirstRun ? 'replace' : 'push');
   }, [viewMode, selectedAccountId, selectedPersonId]);
@@ -258,34 +271,6 @@ export default function SocialGraph3D() {
           selectedPersonId={selectedPersonId}
           setSelectedPersonId={setSelectedPersonId}
         />
-      ) : viewMode === 'hybrid' ? (
-        <div
-          className="flex h-full w-full items-center justify-center p-6"
-          data-testid="placeholder-hybrid-view"
-        >
-          <Card className="max-w-md p-6 text-center space-y-3">
-            <h2 className="text-lg font-semibold">Hybrid view is coming soon</h2>
-            <p className="text-sm text-muted-foreground">
-              We're working on a unified hybrid graph that shows people and their
-              social accounts together. For now, choose Person or Social Account.
-            </p>
-            <div className="flex justify-center gap-2 pt-2">
-              <Button
-                variant="outline"
-                onClick={() => setViewMode('person')}
-                data-testid="button-switch-person"
-              >
-                Open Person view
-              </Button>
-              <Button
-                onClick={() => setViewMode('social')}
-                data-testid="button-switch-social"
-              >
-                Open Social view
-              </Button>
-            </div>
-          </Card>
-        </div>
       ) : (
         <SocialGraphContent
           viewMode={viewMode}
@@ -315,7 +300,7 @@ function ViewModeHeaderControl({ viewMode, setViewMode }: ViewModeHeaderControlP
     <Select
       value={viewMode}
       onValueChange={(v) => {
-        if (v === 'person' || v === 'social' || v === 'hybrid') {
+        if (v === 'person' || v === 'social' || v === 'connections') {
           setViewMode(v as ViewMode);
         }
       }}
@@ -334,8 +319,8 @@ function ViewModeHeaderControl({ viewMode, setViewMode }: ViewModeHeaderControlP
         <SelectItem value="social" data-testid="option-view-social">
           Social Account
         </SelectItem>
-        <SelectItem value="hybrid" disabled data-testid="option-view-hybrid">
-          Hybrid (coming soon)
+        <SelectItem value="connections" data-testid="option-view-connections">
+          Connections
         </SelectItem>
       </SelectContent>
     </Select>,
@@ -344,8 +329,8 @@ function ViewModeHeaderControl({ viewMode, setViewMode }: ViewModeHeaderControlP
 }
 
 interface SocialGraphContentProps {
-  viewMode: 'person' | 'social';
-  setViewMode: (v: 'person' | 'social', selected?: string | null) => void;
+  viewMode: 'social' | 'connections';
+  setViewMode: (v: ViewMode, selected?: string | null) => void;
   selectedAccountId: string | null;
   setSelectedAccountId: (id: string | null) => void;
 }
@@ -363,7 +348,7 @@ function SocialGraphContent({
   // Live three.js objects, so colour changes can swap materials in place
   // instead of rebuilding the graph and restarting the layout.
   const nodeObjMapRef = useRef<Map<string, THREE.Object3D>>(new Map());
-  const linkObjMapRef = useRef<Map<number, THREE.Line>>(new Map());
+  const linkObjMapRef = useRef<Map<number, THREE.Line | THREE.Mesh>>(new Map());
   // ── Dense path state ──────────────────────────────────────────────────────
   // Only populated while dense mode is on; the standard path leaves all of it
   // null. `positions` is kept so a filter change can seed the next layout from
@@ -381,8 +366,21 @@ function SocialGraphContent({
   const initialDefaultsRef = useRef(getInitialGraphSettings());
   const initialDefaults = initialDefaultsRef.current;
 
+  const isConnectionsView = viewMode === 'connections';
+  // How the Connections view draws a link's strength and who puts in the effort.
+  const [linkGradient, setLinkGradient] = useState(true);
+  const [linkPull, setLinkPull] = useState(true);
+  const [linkThickness, setLinkThickness] = useState(false);
+  const [effortDirection, setEffortDirection] = useState<EffortDirection>('none');
+  const [connectionsNodeColorScheme, setConnectionsNodeColorScheme] = useState<ConnectionsNodeColorScheme>(initialDefaults.connectionsNodeColorScheme);
+  const [connectionsNodePalette, setConnectionsNodePalette] = useState<ColorPalette>(initialDefaults.connectionsNodePalette);
+  const [connectionsLinkPalette, setConnectionsLinkPalette] = useState<ColorPalette>(initialDefaults.connectionsLinkPalette);
+
   const [hideOrphans, setHideOrphans] = useState(initialDefaults.hideOrphans);
   const [minConnections, setMinConnections] = useState(initialDefaults.minConnections);
+  const [minConnectionStrength, setMinConnectionStrength] = useState(initialDefaults.minConnectionStrength);
+  const [strongConnectionScore, setStrongConnectionScore] = useState(initialDefaults.strongConnectionScore);
+  const [weakConnectionScore, setWeakConnectionScore] = useState(initialDefaults.weakConnectionScore);
   const [limitExtras, setLimitExtras] = useState(initialDefaults.limitExtras);
   const [maxExtras, setMaxExtras] = useState(initialDefaults.maxExtras);
   const [colorScheme, setColorScheme] = useState<'type' | 'distance' | 'connections'>(initialDefaults.colorScheme);
@@ -473,7 +471,8 @@ function SocialGraphContent({
 
   const [appliedSettings, setAppliedSettings] = useState({
     hideOrphans,
-    minConnections: 3,
+    minConnections: 5,
+    minConnectionStrength,
     limitExtras,
     maxExtras,
     singleHighlightAccountId,
@@ -492,12 +491,12 @@ function SocialGraphContent({
     isFetching: isGraphFetching,
     isPlaceholderData: isGraphPlaceholder,
   } = useQuery<SocialGraphData>({
-    queryKey: ["/api/social-graph", appliedSettings],
+    queryKey: ["/api/social-graph", appliedSettings, viewMode],
     queryFn: async () => {
       const res = await fetch("/api/social-graph", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(appliedSettings),
+        body: JSON.stringify({ ...appliedSettings, edges: isConnectionsView ? 'connections' : 'follows' }),
         credentials: "include",
       });
       if (!res.ok) throw new Error("Failed to fetch graph data");
@@ -510,6 +509,7 @@ function SocialGraphContent({
     setAppliedSettings({
       hideOrphans,
       minConnections,
+      minConnectionStrength,
       limitExtras,
       maxExtras,
       singleHighlightAccountId,
@@ -574,8 +574,9 @@ function SocialGraphContent({
   );
   // The dense renderer draws links as plain segments, so it has nowhere to hang
   // an arrow head.
-  const arrowsEnabled =
-    !denseEnabled && resolveArrowsEnabled(linkArrowMode, renderedCounts.links, arrowAutoThreshold);
+  const arrowsEnabled = !denseEnabled && (isConnectionsView
+    ? effortDirection === 'arrows'
+    : resolveArrowsEnabled(linkArrowMode, renderedCounts.links, arrowAutoThreshold));
 
   const interpolateColor = useCallback((hex1: string, hex2: string, t: number) => {
     const parse = (hex: string) => {
@@ -692,7 +693,24 @@ function SocialGraphContent({
       return colorMap;
     }
 
-    if (colorScheme === 'type') {
+    if (isConnectionsView && connectionsNodeColorScheme !== 'type') {
+      // Strength: everything a node did and had done back across all its links.
+      // Either measure goes on a square root so the long tail stays visible.
+      const value = new Map<string, number>();
+      if (connectionsNodeColorScheme === 'strength') {
+        for (const l of graphData.links) {
+          const score = (l.forward ?? 0) + (l.back ?? 0);
+          for (const id of [linkEndId(l.source), linkEndId(l.target)]) value.set(id, (value.get(id) ?? 0) + score);
+        }
+      } else {
+        for (const n of graphData.nodes) value.set(n.id, n.connectionCount);
+      }
+      let max = 0;
+      value.forEach(v => { if (v > max) max = v; });
+      graphData.nodes.forEach(n => {
+        colorMap.set(n.id, paletteColor(connectionsNodePalette, max > 0 ? Math.sqrt((value.get(n.id) ?? 0) / max) : 0));
+      });
+    } else if (colorScheme === 'type' || isConnectionsView) {
       graphData.nodes.forEach(n => colorMap.set(n.id, n.typeColor));
     } else if (colorScheme === 'connections') {
       // Spreading a large array into Math.max blows the argument limit, so
@@ -725,7 +743,7 @@ function SocialGraphContent({
     }
 
     return colorMap;
-  }, [graphData, graphIndex, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, multiHighlightAccountIds, multiHighlightColor, multiFollowsAllColor, multiFollowsOneColor]);
+  }, [graphData, graphIndex, isConnectionsView, connectionsNodeColorScheme, connectionsNodePalette, colorScheme, colorSchemeAccountId, connectionsColorMin, connectionsColorMax, interpolateColor, computeDistances, distanceColorSelf, distanceColorDirect, distanceColor2nd, distanceColorOther, graphMode, singleHighlightAccountId, singleNodeColorScheme, singleLinkMutualColor, singleLinkFollowsYouColor, singleLinkYouFollowColor, multiHighlightAccountIds, multiHighlightColor, multiFollowsAllColor, multiFollowsOneColor]);
 
   interface GraphVisuals {
     nodes: GraphNode[];
@@ -877,9 +895,35 @@ function SocialGraphContent({
     const targetId = appliedSettings.singleHighlightAccountId;
     const isSingleMode = appliedSettings.mode === 'single-highlight' && targetId;
 
+    // Connections view: strength runs from the "weak at" score to the "strong
+    // at" one rather than from zero to the strongest link — a single outlier
+    // pair would otherwise leave every other link at the weak end.
+
     const links: GraphLink[] = graphData.links.map((l, idx) => {
-      const src = linkEndId(l.source);
-      const tgt = linkEndId(l.target);
+      let src = linkEndId(l.source);
+      let tgt = linkEndId(l.target);
+      let mutual = l.mutual;
+      let strength: number | undefined;
+      let radiusSrc: number | undefined;
+      let radiusTgt: number | undefined;
+      if (isConnectionsView) {
+        // Point every link from whoever puts in more, so an arrow or the thick
+        // end of a taper lands on them; near-even pairs count as mutual.
+        let forward = l.forward ?? 0;
+        let back = l.back ?? 0;
+        if (back > forward) {
+          [src, tgt] = [tgt, src];
+          [forward, back] = [back, forward];
+        }
+        mutual = back >= forward * 0.8;
+        strength = connectionStrength(forward + back, weakConnectionScore, strongConnectionScore);
+        if (linkThickness || effortDirection === 'taper') {
+          const base = linkThickness ? 0.3 + 2.2 * strength : 0.8;
+          const share = effortDirection === 'taper' && forward + back > 0 ? forward / (forward + back) : 0.5;
+          radiusSrc = base * (0.2 + 1.6 * share);
+          radiusTgt = base * (0.2 + 1.6 * (1 - share));
+        }
+      }
 
       const srcNode = graphIndex.nodeById.get(src);
       const matchingCrowdGroup = resolveCrowdGroup(src, srcNode?.ownerPersonId);
@@ -902,8 +946,10 @@ function SocialGraphContent({
         color = denseEnabled ? denseInvisibleColor : linkDefaultColor;
       } else if (isCrowdLink && matchingCrowdGroup) {
         color = crowdColorByGroup.get(matchingCrowdGroup.id) ?? linkDefaultColor;
+      } else if (strength !== undefined && linkGradient) {
+        color = paletteColor(connectionsLinkPalette, strength);
       } else if (isSingleMode && (src === targetId || tgt === targetId)) {
-        if (l.mutual) {
+        if (mutual) {
           color = singleLinkMutualColor;
         } else if (src === targetId) {
           color = singleLinkYouFollowColor;
@@ -913,10 +959,15 @@ function SocialGraphContent({
           color = linkDefaultColor;
         }
       } else {
-        color = l.mutual ? linkMutualColor : linkDefaultColor;
+        color = mutual ? linkMutualColor : linkDefaultColor;
       }
 
-      return { source: src, target: tgt, type: 'follows' as const, color, mutual: l.mutual, isCrowdLink, invisible, idx };
+      // Crowd links keep their dashed line.
+      const tube = !isCrowdLink && radiusSrc !== undefined;
+      return {
+        source: src, target: tgt, type: 'follows' as const, color, mutual, isCrowdLink, invisible, idx, strength,
+        ...(tube ? { radiusSrc, radiusTgt } : {}),
+      };
     });
 
     let filteredLinks = links;
@@ -1060,6 +1111,17 @@ function SocialGraphContent({
       .enableNavigationControls(true)
       .showNavInfo(false)
       .linkThreeObject((link: any) => {
+        if (link.radiusSrc !== undefined) {
+          const tube = new THREE.Mesh(
+            resources.cylinderGeometry(link.radiusTgt, link.radiusSrc),
+            tubeMaterial(resources, link.color || '#6b7280'),
+          );
+          tube.frustumCulled = false;
+          tube.userData.tube = true;
+          tube.visible = !link.invisible;
+          if (typeof link.idx === 'number') linkObjMapRef.current.set(link.idx, tube);
+          return tube;
+        }
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
         const material = resources.lineMaterial(link.color || '#6b7280', !!link.isCrowdLink);
@@ -1079,6 +1141,15 @@ function SocialGraphContent({
         if (!coords || !coords.start || !coords.end) return false;
         const { start, end } = coords;
         if (typeof start.x !== 'number' || typeof end.x !== 'number') return false;
+        if (obj?.userData?.tube) {
+          // Stretch the unit tube between the endpoints, +y pointing at the target.
+          const dir = new THREE.Vector3(end.x - start.x, end.y - start.y, (end.z ?? 0) - (start.z ?? 0));
+          const length = dir.length();
+          obj.position.set((start.x + end.x) / 2, (start.y + end.y) / 2, ((start.z ?? 0) + (end.z ?? 0)) / 2);
+          obj.scale.set(1, Math.max(length, 0.001), 1);
+          if (length > 0) obj.quaternion.setFromUnitVectors(TUBE_UP, dir.divideScalar(length));
+          return true;
+        }
         const line = obj as THREE.Line;
         const positions = line?.geometry?.attributes?.position as THREE.BufferAttribute;
         if (!positions || !positions.array) return false;
@@ -1358,6 +1429,9 @@ function SocialGraphContent({
     } else {
       fg.graphData({ nodes: visuals.nodes, links: visuals.links });
       applyChargeForce();
+      // Pull: stronger connections sit closer. 30 is d3's stock distance.
+      const pull = isConnectionsView && linkPull;
+      fg.d3Force('link')?.distance((l: any) => (pull && l.strength != null ? 60 - 50 * l.strength : 30));
     }
     setRenderedCounts(prev =>
       prev.nodes === visuals.nodes.length && prev.links === visuals.links.length
@@ -1385,6 +1459,13 @@ function SocialGraphContent({
     maxPixelRatio,
     nodeSegments,
     denseEnabled,
+    // These change link shape (line vs tube) or layout, not just colour.
+    isConnectionsView,
+    linkPull,
+    linkThickness,
+    effortDirection,
+    strongConnectionScore,
+    weakConnectionScore,
   ]);
 
   // ── Effect C: recolour in place ─────────────────────────────────────────
@@ -1433,7 +1514,9 @@ function SocialGraphContent({
     for (const link of visuals.links) {
       const line = linkObjMapRef.current.get(link.idx);
       if (!line) continue;
-      line.material = resources.lineMaterial(link.color, link.isCrowdLink);
+      line.material = line.userData.tube
+        ? tubeMaterial(resources, link.color)
+        : resources.lineMaterial(link.color, link.isCrowdLink);
       line.visible = !link.invisible;
     }
     const liveLinks = fg.graphData().links as any[];
@@ -1468,6 +1551,8 @@ function SocialGraphContent({
     singleLinkMutualColor,
     singleLinkFollowsYouColor,
     singleLinkYouFollowColor,
+    linkGradient,
+    connectionsLinkPalette,
   ]);
 
   // ── Effect D: arrows ────────────────────────────────────────────────────
@@ -1801,6 +1886,70 @@ function SocialGraphContent({
                   </div>
                 </div>
 
+                {isConnectionsView && (
+                  <div className="space-y-2 rounded-md border p-2" data-testid="connection-links-settings">
+                    <Label>Connection Links</Label>
+                    <p className="text-xs text-muted-foreground">How a link shows how strong the connection is.</p>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="font-normal">Minimum strength</Label>
+                        <span className="text-sm font-medium" data-testid="text-min-connection-strength-value">{minConnectionStrength}+</span>
+                      </div>
+                      <Slider
+                        value={[minConnectionStrength]}
+                        min={0}
+                        max={100}
+                        step={1}
+                        onValueChange={(values) => setMinConnectionStrength(values[0])}
+                        data-testid="slider-min-connection-strength"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="font-normal">Weak / strong at</Label>
+                        <span className="text-sm font-medium" data-testid="text-connection-score-range-value">{weakConnectionScore} – {strongConnectionScore}</span>
+                      </div>
+                      <Slider
+                        value={[weakConnectionScore, strongConnectionScore]}
+                        min={1}
+                        max={200}
+                        step={1}
+                        minStepsBetweenThumbs={1}
+                        onValueChange={([weak, strong]) => { setWeakConnectionScore(weak); setStrongConnectionScore(strong); }}
+                        data-testid="slider-connection-score-range"
+                      />
+                      <p className="text-xs text-muted-foreground">Links at or below the first score get the full weak color, at or above the second the full strong color; in between is spread on a log scale.</p>
+                    </div>
+                    {([
+                      ['link-gradient', 'Color gradient', linkGradient, setLinkGradient],
+                      ['link-pull', 'Pull nodes closer', linkPull, setLinkPull],
+                      ['link-thickness', 'Thickness', linkThickness, setLinkThickness],
+                    ] as const).map(([id, label, checked, set]) => (
+                      <div key={id} className="flex items-center justify-between">
+                        <Label htmlFor={id} className="font-normal">{label}</Label>
+                        <Switch id={id} checked={checked} onCheckedChange={set} data-testid={`switch-${id}`} />
+                      </div>
+                    ))}
+                    <Label className="block pt-1">Who puts in more effort</Label>
+                    <div className="grid grid-cols-3 gap-1" data-testid="effort-direction-selector">
+                      {([['none', 'Off'], ['arrows', 'Arrows'], ['taper', 'Thicker end']] as const).map(([value, label]) => (
+                        <Button
+                          key={value}
+                          variant={effortDirection === value ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => setEffortDirection(value)}
+                          data-testid={`button-effort-${value}`}
+                        >
+                          {label}
+                        </Button>
+                      ))}
+                    </div>
+                    {denseEnabled && (
+                      <p className="text-xs text-muted-foreground">Dense mode draws plain lines, so only the color gradient applies.</p>
+                    )}
+                  </div>
+                )}
+
                 {graphMode === 'blob' && (
                   <>
                     <div className="space-y-2">
@@ -2052,7 +2201,7 @@ function SocialGraphContent({
                   <Slider
                     value={[minConnections]}
                     min={0}
-                    max={6}
+                    max={7}
                     step={1}
                     onValueChange={(values) => setMinConnections(values[0])}
                     data-testid="slider-min-connections"
@@ -2065,6 +2214,7 @@ function SocialGraphContent({
                     <span>4</span>
                     <span>5</span>
                     <span>6</span>
+                    <span>7</span>
                   </div>
                 </div>
 
@@ -2384,7 +2534,34 @@ function SocialGraphContent({
                     </div>
                   </div>
                 )}
-                {(graphMode === 'default' || graphMode === 'blob') && (
+                {isConnectionsView && (graphMode === 'default' || graphMode === 'blob') && (
+                  <div className="space-y-2" data-testid="connections-node-color-options">
+                    <Label>Node Colors</Label>
+                    <Select
+                      value={connectionsNodeColorScheme}
+                      onValueChange={(value: ConnectionsNodeColorScheme) => setConnectionsNodeColorScheme(value)}
+                    >
+                      <SelectTrigger data-testid="select-connections-node-scheme">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="strength" data-testid="option-connections-node-strength">Total Connection Strength</SelectItem>
+                        <SelectItem value="connections" data-testid="option-connections-node-count">Number of Connections</SelectItem>
+                        <SelectItem value="type" data-testid="option-connections-node-type">Account Type</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {connectionsNodeColorScheme !== 'type' && (
+                      <GraphPalettePicker
+                        value={connectionsNodePalette}
+                        onChange={setConnectionsNodePalette}
+                        lowLabel={connectionsNodeColorScheme === 'strength' ? 'Weakest' : 'Fewest'}
+                        highLabel={connectionsNodeColorScheme === 'strength' ? 'Strongest' : 'Most'}
+                        testId="connections-node"
+                      />
+                    )}
+                  </div>
+                )}
+                {!isConnectionsView && (graphMode === 'default' || graphMode === 'blob') && (
                 <div className="space-y-2">
                   <Label>Color Scheme</Label>
                   <Select
@@ -2572,6 +2749,15 @@ function SocialGraphContent({
                       none of them are drawn, so the colours below have nothing to tint.
                     </p>
                   )}
+                  {isConnectionsView && linkGradient ? (
+                    <GraphPalettePicker
+                      value={connectionsLinkPalette}
+                      onChange={setConnectionsLinkPalette}
+                      lowLabel="Weak"
+                      highLabel="Strong"
+                      testId="connections-link"
+                    />
+                  ) : (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <Label className="text-sm text-muted-foreground">Mutual</Label>
@@ -2594,6 +2780,14 @@ function SocialGraphContent({
                       />
                     </div>
                   </div>
+                  )}
+                  {isConnectionsView && (
+                    <p className="text-xs text-muted-foreground">
+                      {linkGradient
+                        ? 'Links are tinted by connection strength. Turn off Color gradient in Filter to use mutual / one-way colors.'
+                        : 'Mutual means both sides put in about the same effort.'}
+                    </p>
+                  )}
                 </div>
 
                 <div className="pt-3 border-t space-y-2">
@@ -2842,13 +3036,13 @@ function SocialGraphContent({
                     if (graphMode === 'single-highlight') {
                       setSingleHighlightAccountId(null);
                       setGraphMode('blob');
-                      setMinConnections(3);
+                      setMinConnections(5);
                     } else if (graphMode === 'multi-highlight') {
                       const remaining = multiHighlightAccountIds.filter(id => id !== contextMenu.accountId);
                       if (remaining.length === 0) {
                         setMultiHighlightAccountIds([]);
                         setGraphMode('blob');
-                        setMinConnections(3);
+                        setMinConnections(5);
                       } else if (remaining.length === 1) {
                         setMultiHighlightAccountIds([]);
                         setGraphMode('single-highlight');
@@ -2868,7 +3062,7 @@ function SocialGraphContent({
                 className="w-full text-left px-3 py-1.5 text-sm hover-elevate"
                 onClick={() => {
                   setGraphMode('blob');
-                  setMinConnections(3);
+                  setMinConnections(5);
                   setColorScheme('distance');
                   setColorSchemeAccountId(contextMenu.accountId);
                   setContextMenu(null);

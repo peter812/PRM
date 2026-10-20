@@ -2143,7 +2143,11 @@ GET /api/ai/providers/{providerId}/models
 
 ### Universal Vectorization (Super Search)
 
-Universal vectorization embeds all primary PRM entities into a unified Qdrant collection (`prm_universal`), including `person`, `group`, `note`, `interaction`, `social_account`, `daily_note`, `image`, `ai_chat`, and `message`.
+Universal vectorization embeds all primary PRM entities into a unified Qdrant collection (`prm_universal`): `person`, `note`, `interaction`, `social_account` (only with an AI summary; embeds username, platform and summary), `post` and `story` (only with an AI summary; embeds the summary), `daily_note`, `image`, `ai_chat`, and `message_chunk`.
+
+Messages are not embedded one by one. Each conversation is split into overlapping chunks of whole messages (default 10,000 characters with 500 characters of overlap, rounded to whole messages; a single longer message gets its own chunk). Chunks are stored in `message_chunks`, and each one is a point. Chunk size and overlap are set through `POST /api/vector/universal/settings` (`chunkChars` 500–50,000, `chunkOverlap` 0 to half the size). Changing them marks every conversation for rebuild on the next Vectorize Everything.
+
+Points are kept current automatically: creating, editing or deleting a vectorized entity deletes its point and re-adds it. Adding, editing or deleting a message rebuilds its conversation's chunks a few seconds later.
 
 #### Get Universal Settings & Status
 
@@ -2162,16 +2166,63 @@ GET /api/vector/universal/stats
 }
 ```
 
-**Stats Response:**
+**Settings Response:**
+```json
+{
+  "enabled": true,
+  "collectionName": "prm_universal",
+  "chunkChars": 10000,
+  "chunkOverlap": 500
+}
+```
+
+**Stats Response** (totals count only eligible rows; `conversations` counts conversations with messages, vectorized once chunked with nothing added since; `message_chunks` is the stored chunk count):
 ```json
 {
   "person": { "total": 120, "vectorized": 120 },
-  "group": { "total": 14, "vectorized": 14 },
   "note": { "total": 85, "vectorized": 85 },
-  "interaction": { "total": 92, "vectorized": 92 },
   "social_account": { "total": 60, "vectorized": 60 },
-  "daily_note": { "total": 42, "vectorized": 42 },
-  "image": { "total": 18, "vectorized": 18 }
+  "post": { "total": 410, "vectorized": 400 },
+  "story": { "total": 35, "vectorized": 35 },
+  "conversations": { "total": 48, "vectorized": 47 },
+  "message_chunks": { "total": 212, "vectorized": 212 }
+}
+```
+
+---
+
+#### Resync or Delete One Entity's Vector
+
+```http
+POST /api/vector/universal/:type/:id/resync
+DELETE /api/vector/universal/:type/:id
+```
+
+`:type` is `person`, `image`, `note`, `interaction`, `social_account`, `post`, `story`, `daily_note`, `ai_chat`, or `conversation`. `resync` deletes the entity's point and re-adds it if the entity is still eligible. For a `conversation` it rebuilds the message chunks. `DELETE` removes the point and clears its sync status. For a `conversation` it drops all the chunks. The next Vectorize Everything re-adds whatever is still eligible.
+
+**Response:**
+```json
+{ "result": "upserted" }
+```
+`result` is `upserted`, `removed`, or `disabled` (universal vectorization is off).
+
+---
+
+#### Resolve a Message Chunk Link
+
+```http
+GET /api/message-chunks/:id
+```
+
+Returns where a `message_chunk` search hit links to. That is the me user's Messages tab when they are in the chat, otherwise the first linked person (or account) in the chat. It also returns the chunk's message ids so the page can highlight them. Returns `404` if the chunk was replaced by a rebuild.
+
+**Response:**
+```json
+{
+  "conversationId": "c7a1...",
+  "messageIds": ["m1...", "m2..."],
+  "newerCount": 130,
+  "href": "/me?tab=messages&conversation=c7a1...&chunk=9f3e..."
 }
 ```
 
@@ -2183,11 +2234,15 @@ GET /api/vector/universal/stats
 POST /api/vector/universal/vectorize-all
 ```
 
+Starts a background run and returns `202` immediately (`409` if a run is already in progress). Poll `GET /api/vector/universal/progress` (same shape) for status, and cancel with `POST /api/vector/universal/stop`.
+
 **Response:**
 ```json
 {
   "ok": true,
-  "processed": 384,
+  "running": true,
+  "stopRequested": false,
+  "processed": 0,
   "failed": 0,
   "total": 384,
   "errors": []
@@ -2201,14 +2256,19 @@ POST /api/vector/universal/vectorize-all
 Query semantic concepts across heterogeneous entities in a single ranked request.
 
 ```http
-GET /api/vector/universal/search?q=machine+learning+researcher&limit=10&type=person
+POST /api/vector/universal/search
+Content-Type: application/json
+
+{ "query": "machine learning researcher", "limit": 10, "typeFilter": ["person"] }
 ```
 
-**Query Parameters:**
-- `q` (required): Free-form semantic search query.
-- `type` (optional): Filter to a specific entity type (`person`, `group`, `note`, `interaction`, `social_account`, `daily_note`, `image`, `ai_chat`, `message`).
+**Body:**
+- `query` (required): Free-form semantic search query.
+- `typeFilter` (optional): Array of entity types to search (`person`, `note`, `interaction`, `social_account`, `post`, `story`, `daily_note`, `image`, `ai_chat`, `message_chunk`). Omit to search all.
 - `limit` (optional): Maximum results (default: 20, max: 100).
-- `threshold` (optional): Minimum cosine similarity score (default: 0.70).
+- `minScore` (optional): Minimum cosine similarity score (default: 0.3; long message chunks score lower than short entities).
+
+Post and story results include `meta.thumbnailUrl` (first image) when the post has one. Posts and stories far outnumber other types, so Super Search runs one search for them and another for everything else.
 
 **Response:**
 ```json
