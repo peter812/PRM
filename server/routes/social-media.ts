@@ -29,9 +29,9 @@ import {
   type FamilyRelationshipType,
 } from "@shared/schema";
 import multer from "multer";
-import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats } from "../prm-s3";
+import { getPrmS3Config, setPrmS3Config, testPrmS3Connection, checkPrmS3Health, isPrmS3ImageUrl, deleteImageFromPrmS3, isValidEndpointUrl, syncFaceCropStorage, getPrmS3BucketStats, listPrmS3Backups, startPrmS3Backup } from "../prm-s3";
 import { hashPassword, requireAuth } from "../auth";
-import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, resolveScrapedAccounts } from "../task-worker";
+import { triggerTaskWorker, triggerImageTaskWorker, pauseTaskWorker, resumeTaskWorker, isTaskWorkerPaused, resolveScrapedAccounts, trackPrmS3BackupTask } from "../task-worker";
 import { extractHandles } from "@shared/connection-strength";
 import { queueOsintScansForMeAccount } from "../osint-scan-queue";
 import { scrypt, timingSafeEqual } from "crypto";
@@ -140,6 +140,18 @@ export function registerRoutes(app: Express) {
       } catch (error) {
         console.error("Error fetching joined histogram:", error);
         res.status(500).json({ error: "Failed to fetch joined histogram" });
+      }
+    });
+
+    const STATS_RANGE_DAYS: Record<string, number | undefined> = { week: 7, month: 30, year: 365, all: undefined };
+    app.get("/api/social-accounts/daily-stats", async (req, res) => {
+      try {
+        const range = (req.query.range as string) ?? "month";
+        if (!(range in STATS_RANGE_DAYS)) return res.status(400).json({ error: "range must be week, month, year or all" });
+        res.json(await storage.getSocialAccountDailyStats(STATS_RANGE_DAYS[range]));
+      } catch (error) {
+        console.error("Error fetching social account daily stats:", error);
+        res.status(500).json({ error: "Failed to fetch social account daily stats" });
       }
     });
 
@@ -2151,6 +2163,48 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    // PRM-S3 backups. Each create is a prm_s3_backup task (see
+    // trackPrmS3BackupTask); the list carries the latest one so the settings
+    // card can show its progress.
+    app.get("/api/image-storage/prm-s3/backups", requireAuth, async (_req, res) => {
+      const task = (await storage.getLatestTaskByType("prm_s3_backup")) ?? null;
+      try {
+        res.json({ backups: await listPrmS3Backups(), task });
+      } catch (error: any) {
+        res.status(502).json({ error: error.message, task });
+      }
+    });
+
+    app.post("/api/image-storage/prm-s3/backups", requireAuth, async (req, res) => {
+      const { backupname } = req.body ?? {};
+      if (backupname !== undefined && typeof backupname !== "string") {
+        return res.status(400).json({ error: "backupname must be a string" });
+      }
+      let job;
+      try {
+        // Started before the task exists so a bad name, duplicate or busy
+        // PRM-S3 is reported here rather than as a failed task.
+        job = await startPrmS3Backup(backupname?.trim() || undefined);
+      } catch (error: any) {
+        const status = /\((400|409)\)/.exec(error.message)?.[1];
+        return res.status(status ? Number(status) : 502).json({ error: error.message });
+      }
+      try {
+        const task = await storage.createTask({
+          type: "prm_s3_backup",
+          status: "in_progress",
+          title: job.backupname,
+          payload: JSON.stringify({ backupname: job.backupname }),
+        });
+        await storage.updateTaskStatus(task.id, "in_progress"); // sets startedAt
+        trackPrmS3BackupTask(task.id, job.backupname)
+          .catch((err) => console.error(`[PrmS3Backup] tracking ${task.id} failed:`, err));
+        res.status(202).json(task);
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     // Polled by the client so it can warn every user when PRM-S3 is down.
     app.get("/api/prm-s3/health", async (_req, res) => {
       res.json(await checkPrmS3Health());
@@ -2829,8 +2883,22 @@ export function registerRoutes(app: Express) {
         const socialAccountId = req.query.socialAccountId as string | undefined;
 
         const conditions = [eq(socialAccountPosts.isDeleted, false)];
-        if (postType) conditions.push(eq(socialAccountPosts.postType, postType));
+        // postType may be a comma list, e.g. "post,video,carousel" for every feed post
+        if (postType) conditions.push(inArray(socialAccountPosts.postType, postType.split(",")));
         if (socialAccountId) conditions.push(postedBy(socialAccountId));
+
+        // withAccount=true attaches the poster's username and avatar for feed-style cards
+        if (req.query.withAccount === "true") {
+          const rows = await db
+            .select({ post: socialAccountPosts, username: socialAccounts.username, accountImageUrl: socialAccounts.imageUrl })
+            .from(socialAccountPosts)
+            .innerJoin(socialAccounts, eq(socialAccounts.id, socialAccountPosts.socialAccountId))
+            .where(and(...conditions))
+            .orderBy(sql`${socialAccountPosts.postedAt} desc nulls last`)
+            .limit(limit)
+            .offset(offset);
+          return res.json(rows.map(r => ({ ...r.post, username: r.username, accountImageUrl: r.accountImageUrl })));
+        }
 
         const rows = await db
           .select()

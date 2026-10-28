@@ -39,7 +39,7 @@ export type KnownFaceDetailPhoto = {
   source: ResolvedPhotoSource | null;
 };
 
-export type KnownFaceDetail = { header: KnownFaceListItem; photos: KnownFaceDetailPhoto[] };
+export type KnownFaceDetail = { header: KnownFaceListItem; photos: KnownFaceDetailPhoto[]; nextCursor: string | null };
 
 const DEFAULT_LIMIT = 60;
 
@@ -233,8 +233,14 @@ export function normalizeBox(raw: unknown): FaceBox | null {
   return { x, y, w, h };
 }
 
-/** The identity's header (same shape as a list row) plus every photo it appears in. */
-export async function knownFaceDetail(personfaceUuid: string): Promise<KnownFaceDetail | null> {
+/**
+ * The identity's header (same shape as a list row) plus one page of the photos
+ * it appears in, newest upload first. The cursor is an offset into that order.
+ */
+export async function knownFaceDetail(
+  personfaceUuid: string,
+  opts: { cursor?: string; limit: number },
+): Promise<KnownFaceDetail | null> {
   const [header] = await queryIdentities({ sort: "recent", offset: 0, limit: 1, onlyGroup: personfaceUuid });
   if (!header) return null;
 
@@ -246,42 +252,58 @@ export async function knownFaceDetail(personfaceUuid: string): Promise<KnownFace
 
   // By facial_ids rather than faces.photo_id: identical images share their faces.
   const pairs = await photosContainingFaces(faceRows.map((f) => f.id));
-  const photoIds = Array.from(new Set(pairs.map((p) => p.photoId)));
-  const photoRows = photoIds.length ? await db.select().from(photos).where(inArray(photos.id, photoIds)) : [];
-  const photoById = new Map(photoRows.map((p) => [p.id, p]));
-
-  const byPhoto = new Map<string, typeof faceRows>();
+  const facesByPhoto = new Map<string, typeof faceRows>();
   for (const { photoId, faceUuid } of pairs) {
     const f = faceById.get(faceUuid);
-    if (!f || !photoById.has(photoId)) continue;
-    const bucket = byPhoto.get(photoId);
+    if (!f) continue;
+    const bucket = facesByPhoto.get(photoId);
     if (bucket) bucket.push(f);
-    else byPhoto.set(photoId, [f]);
+    else facesByPhoto.set(photoId, [f]);
   }
 
-  const entries = await Promise.all(
-    Array.from(byPhoto.entries()).map(async ([photoId, group]) => {
-      const photo = photoById.get(photoId)!;
-      const source = await resolvePhotoSource(photo);
-      return {
-        photoId,
-        imageUrl: photo.location,
-        width: photo.widthPx,
-        height: photo.heightPx,
-        faces: group.map((f) => ({ faceUuid: f.id, box: normalizeBox(f.coordinates), autoMatchScore: f.autoMatchScore })),
-        uploadedAt: photo.uploadedAt ? new Date(photo.uploadedAt).toISOString() : null,
-        source,
-      };
-    }),
-  );
+  const photoIds = Array.from(facesByPhoto.keys());
+  const ordered = photoIds.length
+    ? (
+        await db
+          .select({ id: photos.id })
+          .from(photos)
+          .where(inArray(photos.id, photoIds))
+          .orderBy(sql`${photos.uploadedAt} DESC NULLS LAST`, sql`${photos.id} DESC`)
+      ).map((r) => r.id)
+    : [];
 
   // A null source means the photo's owning entity isn't visible to the caller
   // (resolvePhotoSource already applies the same access rules) — drop the
   // photo entirely rather than leaking its imageUrl with just the source hidden.
-  const visible = entries.filter((e) => e.source !== null);
-  visible.sort((a, b) => (b.uploadedAt ?? "").localeCompare(a.uploadedAt ?? ""));
+  // Hidden photos can leave a page short, so keep reading until it's full.
+  const visible: KnownFaceDetailPhoto[] = [];
+  let pos = opts.cursor ? Math.max(parseInt(opts.cursor, 10) || 0, 0) : 0;
+  while (visible.length < opts.limit && pos < ordered.length) {
+    const chunk = ordered.slice(pos, pos + opts.limit - visible.length);
+    pos += chunk.length;
+    const photoRows = await db.select().from(photos).where(inArray(photos.id, chunk));
+    const photoById = new Map(photoRows.map((p) => [p.id, p]));
+    const entries = await Promise.all(
+      chunk.map(async (photoId) => {
+        const photo = photoById.get(photoId);
+        if (!photo) return null;
+        const source = await resolvePhotoSource(photo);
+        if (!source) return null;
+        return {
+          photoId,
+          imageUrl: photo.location,
+          width: photo.widthPx,
+          height: photo.heightPx,
+          faces: facesByPhoto.get(photoId)!.map((f) => ({ faceUuid: f.id, box: normalizeBox(f.coordinates), autoMatchScore: f.autoMatchScore })),
+          uploadedAt: photo.uploadedAt ? new Date(photo.uploadedAt).toISOString() : null,
+          source,
+        };
+      }),
+    );
+    for (const e of entries) if (e) visible.push(e);
+  }
 
-  return { header, photos: visible };
+  return { header, photos: visible, nextCursor: pos < ordered.length ? String(pos) : null };
 }
 
 export type LikelySamePairResult = {

@@ -7,6 +7,7 @@ import { Check, Loader2, RefreshCw, Search, UserX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,8 @@ type ClusterSummary = { clusters: number; faces: number; noise: Record<string, n
 
 const NOISE_LABEL: Record<string, string> = { small: "too small", low_conf: "low confidence", blurry: "blurry", singleton: "no cluster" };
 const PAGE = 24;
+/** Suggestion chips shown in the cluster dialog before the rest fold into a "+N more" menu. */
+const VISIBLE_SUGGESTIONS = 10;
 
 const target = (s: IdentityTarget): IdentityTarget => ({ socialAccountId: s.socialAccountId, personId: s.personId, username: s.username });
 
@@ -214,7 +217,7 @@ function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
         ) : (
           <>
             <div className="flex flex-wrap gap-1.5">
-              {cluster.suggestions.map((s) => (
+              {cluster.suggestions.slice(0, VISIBLE_SUGGESTIONS).map((s) => (
                 <span key={identityId(s)} className="text-xs rounded-full border flex items-center">
                   <button type="button" className="pl-2 pr-1 py-1 hover:bg-accent rounded-l-full" disabled={actions.busy || !included.length} onClick={() => nameAs(s, s.label)} data-testid={`chip-cluster-suggestion-${identityId(s)}`}>
                     {suggestionText(s)}
@@ -224,6 +227,34 @@ function ClusterDialog({ id, onClose }: { id: string; onClose: () => void }) {
                   </button>
                 </span>
               ))}
+              {cluster.suggestions.length > VISIBLE_SUGGESTIONS && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button type="button" className="text-xs px-2 py-1 rounded-full border hover:bg-accent" data-testid="button-cluster-more-suggestions">
+                      +{cluster.suggestions.length - VISIBLE_SUGGESTIONS} more
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
+                    {cluster.suggestions.slice(VISIBLE_SUGGESTIONS).map((s) => (
+                      <DropdownMenuItem key={identityId(s)} className="text-xs gap-2" disabled={actions.busy} onSelect={(e) => (included.length ? nameAs(s, s.label) : e.preventDefault())} data-testid={`item-cluster-suggestion-${identityId(s)}`}>
+                        <span className="flex-1">{suggestionText(s)}</span>
+                        <button
+                          type="button"
+                          className="p-0.5 rounded hover:bg-background text-muted-foreground"
+                          title="Not them"
+                          disabled={actions.busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            actions.reject.mutate({ id, to: s });
+                          }}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               <button type="button" className={cn("text-xs px-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1", searching && "bg-accent")} onClick={() => setSearching((v) => !v)}>
                 <Search className="h-3 w-3" /> Name as…
               </button>

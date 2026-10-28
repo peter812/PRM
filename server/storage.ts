@@ -26,6 +26,8 @@ import {
   apiKeys,
   ssoConfig,
   socialAccounts,
+  socialAccountDailyStats,
+  type SocialAccountDailyStat,
   socialAccountTypes,
   socialFollows,
   socialNetworkChanges,
@@ -286,7 +288,7 @@ export interface IStorage {
   // People operations
   getAllPeople(searchQuery?: string): Promise<Person[]>;
   getAllPeopleWithRelationships(): Promise<Array<Person & { relationships: RelationshipWithPerson[] }>>;
-  getPeoplePaginated(offset: number, limit: number, mePersonId?: string, sortBy?: string, includeTps?: boolean): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number; hasTps: boolean }>>;
+  getPeoplePaginated(offset: number, limit: number, mePersonId?: string, sortBy?: string, includeTps?: boolean, starredOnly?: boolean): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number; hasTps: boolean }>>;
   getPersonById(id: string): Promise<PersonWithRelations | undefined>;
   createPerson(person: InsertPerson): Promise<Person>;
   updatePerson(id: string, person: Partial<InsertPerson>): Promise<Person | undefined>;
@@ -485,6 +487,8 @@ export interface IStorage {
   getSocialAccountHistoryEntry(entryId: string, options?: { listLimit?: number; listOffset?: number }): Promise<SocialAccountHistoryDetail | undefined>;
   getSocialAccountHistorySummary(socialAccountId: string): Promise<SocialAccountHistorySummary>;
   getSocialAccountJoinedHistogram(): Promise<{ month: string; count: number }[]>;
+  recordSocialAccountDailyStats(): Promise<void>;
+  getSocialAccountDailyStats(days?: number): Promise<SocialAccountDailyStat[]>;
 
   // Social account type operations
   getAllSocialAccountTypes(): Promise<SocialAccountType[]>;
@@ -525,6 +529,7 @@ export interface IStorage {
   getTasksByStatus(status: string): Promise<Task[]>;
   getAllTasks(limit?: number): Promise<Task[]>;
   getTaskById(id: string): Promise<Task | undefined>;
+  getLatestTaskByType(type: string): Promise<Task | undefined>;
   deleteAllTasks(): Promise<void>;
 
   // Photo operations
@@ -1081,8 +1086,10 @@ export class DatabaseStorage implements IStorage {
     limit: number,
     mePersonId?: string,
     sortBy?: string,
-    includeTps = false
+    includeTps = false,
+    starredOnly = false
   ): Promise<Array<Person & { maxRelationshipValue: number | null; relationshipTypeName: string | null; relationshipTypeColor: string | null; groupCount: number; hasTps: boolean }>> {
+    const starredFilter = starredOnly ? eq(people.isStarred, 1) : undefined;
     // Fetch ME user's family tree labels to calculate dynamic family relation badges
     let familyLabels = new Map<string, string>();
     if (mePersonId) {
@@ -1181,7 +1188,7 @@ export class DatabaseStorage implements IStorage {
         })
         .from(people)
         .leftJoin(meRel, eq(meRel.otherId, people.id))
-        .where(and(ne(people.id, mePersonId), eq(people.isLowValue, 0)))
+        .where(and(ne(people.id, mePersonId), eq(people.isLowValue, 0), starredFilter))
         .orderBy(
           ...(sortBy === 'elo_high'
             ? [sql`${people.eloScore} DESC`, people.firstName, people.lastName]
@@ -1256,6 +1263,7 @@ export class DatabaseStorage implements IStorage {
         and(
           mePersonId ? sql`${people.id} <> ${mePersonId}` : undefined,
           eq(people.isLowValue, 0),
+          starredFilter,
         )
       )
       .groupBy(people.id)
@@ -4449,6 +4457,35 @@ export class DatabaseStorage implements IStorage {
       .orderBy(month);
   }
 
+  // Today's totals; re-running the same day just refreshes the row.
+  async recordSocialAccountDailyStats(): Promise<void> {
+    await db.execute(sql`
+      INSERT INTO social_account_daily_stats (day, total_accounts, checked_accounts, posts_checked_accounts)
+      SELECT CURRENT_DATE,
+        count(*)::int,
+        (count(*) FILTER (WHERE scan_checked_at IS NOT NULL OR info_checked_at IS NOT NULL))::int,
+        (count(*) FILTER (WHERE posts_checked_at IS NOT NULL))::int
+      FROM social_accounts
+      ON CONFLICT (day) DO UPDATE SET
+        total_accounts = EXCLUDED.total_accounts,
+        checked_accounts = EXCLUDED.checked_accounts,
+        posts_checked_accounts = EXCLUDED.posts_checked_accounts`);
+  }
+
+  // The last `days` days of snapshots (all of them when omitted), oldest first.
+  async getSocialAccountDailyStats(days?: number): Promise<SocialAccountDailyStat[]> {
+    return db
+      .select({
+        day: socialAccountDailyStats.day,
+        total: socialAccountDailyStats.totalAccounts,
+        checked: socialAccountDailyStats.checkedAccounts,
+        postsChecked: socialAccountDailyStats.postsCheckedAccounts,
+      })
+      .from(socialAccountDailyStats)
+      .where(days ? sql`${socialAccountDailyStats.day} > CURRENT_DATE - ${days}::int` : undefined)
+      .orderBy(socialAccountDailyStats.day);
+  }
+
   // Social account type operations
   async getAllSocialAccountTypes(): Promise<SocialAccountType[]> {
     const cached = socialAccountTypesCache.get('all');
@@ -4971,6 +5008,16 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(tasks)
       .where(eq(tasks.id, id));
+    return task || undefined;
+  }
+
+  async getLatestTaskByType(type: string): Promise<Task | undefined> {
+    const [task] = await db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.type, type))
+      .orderBy(desc(tasks.createdAt))
+      .limit(1);
     return task || undefined;
   }
 

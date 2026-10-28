@@ -49,7 +49,9 @@ export function registerFaces(app: Express) {
 
   app.get("/api/faces/:personfaceUuid", requireAuth, async (req, res) => {
     try {
-      const detail = await knownFaceDetail(req.params.personfaceUuid);
+      const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+      const limit = req.query.limit ? Math.min(Math.max(Number(req.query.limit) || 15, 1), 100) : 15;
+      const detail = await knownFaceDetail(req.params.personfaceUuid, { cursor, limit });
       if (!detail) return res.status(404).json({ error: "Identity not found" });
       res.json(detail);
     } catch (error) {

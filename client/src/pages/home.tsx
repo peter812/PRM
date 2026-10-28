@@ -1,7 +1,7 @@
 import { formatPersonName, personInitials } from "@shared/person-name";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   GripVertical,
   ListTodo,
@@ -17,6 +17,7 @@ import {
   MessageSquare,
   Scan,
   Sparkles,
+  Hash,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,16 +25,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
+import { cn, safeJsonParse } from "@/lib/utils";
 import { imageDetailHref } from "@/lib/image-link";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { PostDetailDialog } from "@/components/post-detail-dialog";
+import { withImageSize } from "@shared/image-size";
 import type {
   Person,
   PersonWithRelations,
   SocialAccountWithCurrentProfile,
   Photo,
+  SocialAccountPost,
 } from "@shared/schema";
 
 type CardId =
+  | "totals"
   | "things-to-do"
   | "quick-chat"
   | "recent-people"
@@ -42,6 +49,7 @@ type CardId =
   | "recent-events";
 
 const DEFAULT_ORDER: CardId[] = [
+  "totals",
   "things-to-do",
   "quick-chat",
   "recent-people",
@@ -385,6 +393,37 @@ function RecentPhotosContent() {
   );
 }
 
+function TotalsContent() {
+  const { data } = useQuery<{ groups: number; socialAccounts: number }>({
+    queryKey: ["/api/home-counts"],
+  });
+  const stats = [
+    { href: "/groups", label: "Groups", value: data?.groups, testId: "groups" },
+    { href: "/social-accounts", label: "Social accounts", value: data?.socialAccounts, testId: "social-accounts" },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {stats.map((stat) => (
+        <Link
+          key={stat.href}
+          href={stat.href}
+          className="rounded-md p-2 hover-elevate active-elevate-2"
+          data-testid={`home-total-${stat.testId}`}
+        >
+          {stat.value === undefined ? (
+            <Skeleton className="h-7 w-12" />
+          ) : (
+            <div className="text-2xl font-semibold tabular-nums">
+              {stat.value.toLocaleString()}
+            </div>
+          )}
+          <div className="text-xs text-muted-foreground">{stat.label}</div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 function RecentEventsContent() {
   return (
     <div className="text-sm text-muted-foreground">
@@ -486,6 +525,11 @@ const CARD_DEFINITIONS: Record<
   CardId,
   { title: string; icon: React.ReactNode; render: () => React.ReactNode }
 > = {
+  totals: {
+    title: "Totals",
+    icon: <Hash className="h-4 w-4" />,
+    render: () => <TotalsContent />,
+  },
   "things-to-do": {
     title: "Things to do",
     icon: <ListTodo className="h-4 w-4" />,
@@ -517,6 +561,103 @@ const CARD_DEFINITIONS: Record<
     render: () => <RecentEventsContent />,
   },
 };
+
+/** GET /api/social-account-posts?withAccount=true row: a post plus its poster. */
+type FeedPost = SocialAccountPost & { username: string; accountImageUrl: string | null };
+
+// Feed posts are stored as post, video or carousel (server/routes/tracking.ts); stories are excluded
+const RECENT_POSTS_URL = "/api/social-account-posts?postType=post,video,carousel&limit=5&withAccount=true";
+
+/** Full-width strip of the five newest Instagram feed posts; a card opens the post modal. */
+function RecentInstagramPosts() {
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const [selectedPost, setSelectedPost] = useState<FeedPost | null>(null);
+
+  const { data: posts = [], isLoading } = useQuery<FeedPost[]>({
+    queryKey: [RECENT_POSTS_URL],
+  });
+
+  const deletePost = useMutation({
+    mutationFn: (postId: string) => apiRequest("DELETE", `/api/social-account-posts/${postId}`),
+    onSuccess: () => {
+      toast({ title: "Post deleted" });
+      queryClient.invalidateQueries({ queryKey: [RECENT_POSTS_URL] });
+    },
+    onError: (err: Error) => toast({ title: "Delete failed", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <section className="px-4 pb-6 md:px-6" data-testid="home-recent-instagram-posts">
+      <h2 className="mb-3 flex items-center gap-2 text-base font-semibold">
+        <ImageIcon className="h-4 w-4" />
+        Recent Instagram posts
+      </h2>
+      {!isLoading && posts.length === 0 ? (
+        <div className="text-sm text-muted-foreground">No posts yet.</div>
+      ) : (
+        <div className="grid auto-cols-[70%] grid-flow-col gap-4 overflow-x-auto sm:auto-cols-[40%] lg:grid-flow-row lg:grid-cols-5">
+          {isLoading
+            ? Array.from({ length: 5 }).map((_, i) => (
+                <Card key={i} className="overflow-hidden">
+                  <div className="flex items-center gap-2 p-3">
+                    <Skeleton className="h-7 w-7 rounded-full" />
+                    <Skeleton className="h-4 w-1/2" />
+                  </div>
+                  <Skeleton className="aspect-square w-full rounded-none" />
+                </Card>
+              ))
+            : posts.map((post) => {
+                const firstImage = safeJsonParse<string[]>(post.content, [])[0];
+                return (
+                  <Card
+                    key={post.id}
+                    className="cursor-pointer overflow-hidden hover-elevate"
+                    onClick={() => setSelectedPost(post)}
+                    data-testid={`home-recent-post-${post.id}`}
+                  >
+                    <Link
+                      href={`/social-accounts/${post.socialAccountId}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex items-center gap-2 p-3 hover:underline"
+                    >
+                      <Avatar className="h-7 w-7">
+                        {post.accountImageUrl && <AvatarImage src={withImageSize(post.accountImageUrl, 64)} />}
+                        <AvatarFallback className="text-xs">
+                          <AtSign className="h-3.5 w-3.5" />
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="truncate text-sm font-medium">@{post.username}</span>
+                    </Link>
+                    <div className="aspect-square bg-muted">
+                      {firstImage ? (
+                        <img src={withImageSize(firstImage, 360)} alt="" className="h-full w-full object-cover" loading="lazy" />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                          <ImageIcon className="h-6 w-6" />
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })}
+        </div>
+      )}
+      {selectedPost && (
+        <PostDetailDialog
+          open
+          onOpenChange={(open) => { if (!open) setSelectedPost(null); }}
+          post={selectedPost}
+          onEdit={() => navigate(`/social-accounts/${selectedPost.socialAccountId}?postId=${selectedPost.id}`)}
+          onDelete={() => {
+            deletePost.mutate(selectedPost.id);
+            setSelectedPost(null);
+          }}
+        />
+      )}
+    </section>
+  );
+}
 
 export default function HomePage() {
   const { data: mePerson } = useQuery<PersonWithRelations>({
@@ -686,6 +827,7 @@ export default function HomePage() {
           ))}
         </div>
       </div>
+      <RecentInstagramPosts />
     </div>
   );
 }

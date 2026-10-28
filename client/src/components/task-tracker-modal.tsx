@@ -40,6 +40,8 @@ function getTaskLabel(type: string): string {
       return "Migrate Profile Image Tiers";
     case "bake_image_variants":
       return "Bake Image Variants";
+    case "prm_s3_backup":
+      return "PRM-S3 Backup";
     case "import_social":
       return "Social Extraction Import";
     case "import_instagram":

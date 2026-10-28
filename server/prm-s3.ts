@@ -288,6 +288,115 @@ export async function getPrmS3BucketStats(): Promise<PrmS3BucketStats> {
   return (await res.json()) as PrmS3BucketStats;
 }
 
+// ── Backups (PRM-S3 `/_backup/*` extension) ──
+//
+// Header-signed SigV4 against the internal endpoint. Creates are started
+// with async=1 and followed via status, so no request is long-running.
+
+/** Progress of PRM-S3's current or most recent backup. */
+export type PrmS3BackupJob = {
+  backupname: string;
+  state: "running" | "completed" | "failed" | "cancelled";
+  startedAt: string;
+  finishedAt?: string;
+  totalFiles: number;
+  totalBytes: number;
+  doneFiles: number;
+  doneBytes: number;
+  error?: string;
+  info?: PrmS3Backup;
+};
+
+export type PrmS3Backup = {
+  backupname: string;
+  created: string;
+  zipFile: string;
+  zipBytes: number;
+  configFile?: string;
+  complete: boolean;
+};
+
+async function prmS3BackupRequest<T>(method: "GET" | "POST", action: "list" | "create" | "status" | "cancel", query: Record<string, string> = {}): Promise<T> {
+  const cfg = await getPrmS3Config();
+  const base = new URL(normalizeEndpointUrl(cfg.endpoint, "http"));
+  const path = `${base.pathname.replace(/\/+$/, "")}/_backup/${action}`;
+  const canonicalQuery = Object.entries(query)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([k, v]) => `${uriEncode(k)}=${uriEncode(v)}`)
+    .join("&");
+  const amzDate = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+  const scopeDate = amzDate.slice(0, 8);
+  const scope = `${scopeDate}/${cfg.region}/s3/aws4_request`;
+  const payloadHash = sha256Hex("");
+  const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+  const canonicalRequest = [
+    method,
+    path,
+    canonicalQuery,
+    `host:${base.host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`,
+    signedHeaders,
+    payloadHash,
+  ].join("\n");
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256Hex(canonicalRequest)].join("\n");
+  const signature = crypto.createHmac("sha256", getSigningKey(cfg.secretAccessKey, scopeDate, cfg.region)).update(stringToSign).digest("hex");
+
+  const { request } = base.protocol === "https:" ? await import("node:https") : await import("node:http");
+  return new Promise<T>((resolve, reject) => {
+    const req = request(
+      {
+        method,
+        protocol: base.protocol,
+        hostname: base.hostname,
+        port: base.port || undefined,
+        path: canonicalQuery ? `${path}?${canonicalQuery}` : path,
+        headers: {
+          "x-amz-date": amzDate,
+          "x-amz-content-sha256": payloadHash,
+          authorization: `AWS4-HMAC-SHA256 Credential=${cfg.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+          "content-length": "0",
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          if (res.statusCode && res.statusCode < 300) {
+            try {
+              resolve(JSON.parse(body) as T);
+            } catch {
+              reject(new Error(`PRM-S3 backup ${action}: unexpected response`));
+            }
+            return;
+          }
+          // Errors come back as S3 XML; surface its <Message>.
+          const message = body.match(/<Message>([\s\S]*?)<\/Message>/)?.[1] || body || `HTTP ${res.statusCode}`;
+          reject(new Error(`PRM-S3 backup ${action} failed (${res.statusCode}): ${message}`));
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+export async function listPrmS3Backups(): Promise<PrmS3Backup[]> {
+  return (await prmS3BackupRequest<{ backups: PrmS3Backup[] }>("GET", "list")).backups ?? [];
+}
+
+/** Starts a backup on PRM-S3 in the background; an empty name gets PRM-S3's default. */
+export function startPrmS3Backup(backupname?: string): Promise<PrmS3BackupJob> {
+  return prmS3BackupRequest<PrmS3BackupJob>("POST", "create", { async: "1", ...(backupname ? { backupname } : {}) });
+}
+
+export async function getPrmS3BackupStatus(): Promise<PrmS3BackupJob | null> {
+  return (await prmS3BackupRequest<{ job: PrmS3BackupJob | null }>("GET", "status")).job;
+}
+
+export async function cancelPrmS3Backup(): Promise<void> {
+  await prmS3BackupRequest("POST", "cancel");
+}
+
 export async function copyPrmS3ObjectInPlace(key: string, contentType: string = "image/jpeg"): Promise<void> {
   const { client, bucket } = await getPrmS3Client();
   await client.send(

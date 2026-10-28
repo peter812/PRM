@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -91,23 +91,49 @@ interface PotentialGroupResult {
   internalEdgesCount: number;
   signals?: GroupSignals; // Smart Multi-Signal only
   explanation?: GroupExplanation;
+  accepted?: { groupId: string; subGroupId?: string; name: string; at: string };
+}
+
+type EntityType = "people" | "social_accounts";
+type Strategy = "hybrid" | "co_following" | "network_modularity" | "bio_keywords";
+type LinkDefinition = "any" | "mutual" | "family";
+
+interface AnalysisSettings {
+  entityType: EntityType;
+  strategy: Strategy;
+  linkDefinition: LinkDefinition;
+  minGroupSize: number;
+  maxGroupSize: number;
+  resolution: number;
+  minPersonalConnections: number;
 }
 
 interface AnalysisTaskResponse {
+  taskId: string;
   status: "pending" | "in_progress" | "completed" | "failed";
   progress: number;
   progressMessage: string;
+  settings: AnalysisSettings;
+  completedAt: string | null;
   results: PotentialGroupResult[];
 }
+
+const STRATEGY_LABELS: Record<Strategy, string> = {
+  hybrid: "Smart Multi-Signal",
+  co_following: "Co-Follows",
+  network_modularity: "Network Modularity",
+  bio_keywords: "Bio Keywords",
+};
+const LINK_LABELS: Record<LinkDefinition, string> = { any: "Any connection", mutual: "Mutual", family: "Family" };
 
 export default function PotentialGroupsPage() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
   // Settings state
-  const [entityType, setEntityType] = useState<"people" | "social_accounts">("social_accounts");
-  const [strategy, setStrategy] = useState<"hybrid" | "co_following" | "network_modularity" | "bio_keywords">("hybrid");
-  const [linkDefinition, setLinkDefinition] = useState<"any" | "mutual" | "family">("any");
+  const [entityType, setEntityType] = useState<EntityType>("social_accounts");
+  const [strategy, setStrategy] = useState<Strategy>("hybrid");
+  const [linkDefinition, setLinkDefinition] = useState<LinkDefinition>("any");
   const [minGroupSize, setMinGroupSize] = useState<number>(3);
   const [maxGroupSize, setMaxGroupSize] = useState<number>(50);
   const [resolution, setResolution] = useState<number>(1.0);
@@ -141,6 +167,27 @@ export default function PotentialGroupsPage() {
     enabled: promoteMode === "add_as_subgroup" && !!targetGroupId,
   });
 
+  // Restore the last run (and the settings it used) so results survive reloads and navigation
+  const { data: latestRun } = useQuery<AnalysisTaskResponse | null>({
+    queryKey: ["/api/potential-groups/latest"],
+  });
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || latestRun === undefined) return;
+    restoredRef.current = true;
+    if (!latestRun || currentTaskId) return;
+    const s = latestRun.settings;
+    setEntityType(s.entityType);
+    setStrategy(s.strategy);
+    setLinkDefinition(s.linkDefinition);
+    if (s.minGroupSize != null) setMinGroupSize(s.minGroupSize);
+    if (s.maxGroupSize != null) setMaxGroupSize(s.maxGroupSize);
+    if (s.resolution != null) setResolution(s.resolution);
+    if (s.minPersonalConnections != null) setMinPersonalConnections(s.minPersonalConnections);
+    queryClient.setQueryData(["/api/potential-groups/results", latestRun.taskId], latestRun);
+    setCurrentTaskId(latestRun.taskId);
+  }, [latestRun, currentTaskId]);
+
   // Task execution query
   const { data: taskStatus } = useQuery<AnalysisTaskResponse>({
     queryKey: ["/api/potential-groups/results", currentTaskId],
@@ -173,7 +220,9 @@ export default function PotentialGroupsPage() {
       return res.json() as Promise<{ taskId: string }>;
     },
     onSuccess: (data) => {
+      restoredRef.current = true;
       setCurrentTaskId(data.taskId);
+      queryClient.invalidateQueries({ queryKey: ["/api/potential-groups/latest"] });
       toast({
         title: "Analysis started",
         description: "Scanning multi-signal graph connections to discover groups...",
@@ -188,13 +237,17 @@ export default function PotentialGroupsPage() {
     },
   });
 
+  // Lets the server mark the promoted cluster as accepted on the stored run
+  const acceptSource = () => ({ taskId: currentTaskId ?? undefined, resultId: selectedResult?.id });
+
   // Mutator to create group
   const createGroupMutation = useMutation({
     mutationFn: async (payload: { name: string; color: string; members: string[]; entityType: string }) => {
-      const res = await apiRequest("POST", "/api/potential-groups/create", payload);
+      const res = await apiRequest("POST", "/api/potential-groups/create", { ...payload, ...acceptSource() });
       return res.json() as Promise<{ success: boolean; groupId: string }>;
     },
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/potential-groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
       toast({
@@ -222,10 +275,11 @@ export default function PotentialGroupsPage() {
       members: string[];
       entityType: string;
     }) => {
-      const res = await apiRequest("POST", "/api/potential-groups/assign", payload);
+      const res = await apiRequest("POST", "/api/potential-groups/assign", { ...payload, ...acceptSource() });
       return res.json() as Promise<{ success: boolean; groupId: string; subGroupId?: string }>;
     },
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/potential-groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/subgroups"] });
       queryClient.invalidateQueries({ queryKey: ["/api/social-accounts"] });
@@ -347,6 +401,18 @@ export default function PotentialGroupsPage() {
       pending: "Adding...",
     },
   };
+  const runSettings = taskStatus?.settings;
+  const runSummary = runSettings && taskStatus?.completedAt
+    ? [
+        `Last run ${formatDistanceToNowStrict(new Date(taskStatus.completedAt))} ago`,
+        runSettings.entityType === "social_accounts" ? "Social Accounts" : "People",
+        runSettings.entityType === "social_accounts"
+          ? STRATEGY_LABELS[runSettings.strategy]
+          : LINK_LABELS[runSettings.linkDefinition],
+        `${Number(runSettings.resolution ?? 1).toFixed(1)}x`,
+        `size ${runSettings.minGroupSize}–${runSettings.maxGroupSize}`,
+      ].join(" · ")
+    : null;
   const accountAge = (m: MemberPreview) =>
     m.createdAt ? formatDistanceToNowStrict(new Date(m.createdAt)) : null;
 
@@ -582,6 +648,12 @@ export default function PotentialGroupsPage() {
                     Louvain Modularity
                   </Badge>
                 </div>
+                {runSummary && (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1.5 -mt-2">
+                    <CalendarClock className="h-3.5 w-3.5" />
+                    {runSummary}
+                  </p>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {taskStatus.results.map((result, idx) => (
@@ -674,6 +746,22 @@ export default function PotentialGroupsPage() {
                       </CardContent>
 
                       <CardFooter className="pt-0 pb-3">
+                        {result.accepted ? (
+                          <Button
+                            variant="secondary"
+                            className="w-full text-xs font-medium"
+                            onClick={() =>
+                              navigate(
+                                result.accepted!.subGroupId
+                                  ? `/group/${result.accepted!.groupId}/subgroup/${result.accepted!.subGroupId}`
+                                  : `/group/${result.accepted!.groupId}${runSettings?.entityType === "social_accounts" ? "?tab=social" : ""}`
+                              )
+                            }
+                          >
+                            <Check className="h-3.5 w-3.5 mr-1.5" />
+                            <span className="truncate">Accepted → {result.accepted.name}</span>
+                          </Button>
+                        ) : (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -700,6 +788,7 @@ export default function PotentialGroupsPage() {
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
+                        )}
                       </CardFooter>
                     </Card>
                   ))}

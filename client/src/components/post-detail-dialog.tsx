@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronLeft, ChevronRight, Heart, MessageCircle, Edit2, X, Trash2, Loader2, ScanFace, ScanText } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { PostSummarySection } from "@/components/account-summary";
 import { FaceBoxOverlay, type FaceBox } from "@/components/face-box-overlay";
 import { isOcrData } from "@/components/ocr-run-dialog";
 import { VideoTranscript } from "@/components/video-transcript";
+import { SeenBy } from "@/components/stories-tab";
 import {
   Dialog,
   DialogContent,
@@ -80,6 +81,29 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const images: string[] = safeJsonParse<string[]>(post.content, []);
+
+  // Warm the browser cache for every slide so paging through the carousel is instant.
+  useEffect(() => {
+    if (!open) return;
+    const videos: HTMLVideoElement[] = [];
+    for (const url of safeJsonParse<string[]>(post.content, [])) {
+      if (isVideoUrl(url)) {
+        const v = document.createElement("video");
+        v.preload = "auto";
+        v.muted = true;
+        v.src = url;
+        videos.push(v);
+      } else {
+        new Image().src = withImageSize(url, "max");
+      }
+    }
+    return () => {
+      for (const v of videos) {
+        v.removeAttribute("src");
+        v.load();
+      }
+    };
+  }, [open, post.content]);
 
   const { data: comments, isLoading: isLoadingComments } = useQuery<SocialPostCommentWithAccount[]>({
     queryKey: [`/api/social-account-posts/${post.id}/comments`],
@@ -374,6 +398,8 @@ export function PostDetailDialog({ open, onOpenChange, post, onEdit, onDelete }:
                     videoRef.current.play();
                   }}
                 />
+
+                <SeenBy seenBy={post.seenBy} />
 
                 {/* AI Summary */}
                 <PostSummarySection

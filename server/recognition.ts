@@ -275,13 +275,22 @@ type DbExec = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
  * PRM-Compute hands back the existing faces for a byte-identical image (same
  * file hash), so one face can sit in several photos; faces.photo_id only names
  * the first of them.
+ *
+ * Up to PHOTO_LOOKUP_INDEXED_MAX faces, a containment test per face narrows the
+ * photos through photos_facial_ids_gin_idx (~2ms a face); past that, one scan of
+ * every photo (a few hundred ms) is cheaper.
  */
+const PHOTO_LOOKUP_INDEXED_MAX = 100;
+
 export async function photosContainingFaces(faceIds: string[], exec: DbExec = db): Promise<{ photoId: string; faceUuid: string }[]> {
   if (!faceIds.length) return [];
+  const indexed = faceIds.length <= PHOTO_LOOKUP_INDEXED_MAX
+    ? sql`p.facial_ids @> ANY(ARRAY[${sql.join(faceIds.map((id) => sql`${JSON.stringify([{ faceUuid: id }])}::jsonb`), sql`, `)}]) AND`
+    : sql``;
   const result = await exec.execute(sql`
     SELECT DISTINCT p.id AS "photoId", e->>'faceUuid' AS "faceUuid"
     FROM photos p, jsonb_array_elements(coalesce(p.facial_ids, '[]'::jsonb)) e
-    WHERE e->>'faceUuid' IN (${sql.join(faceIds.map((id) => sql`${id}`), sql`, `)})
+    WHERE ${indexed} e->>'faceUuid' IN (${sql.join(faceIds.map((id) => sql`${id}`), sql`, `)})
   `);
   return (result as unknown as { rows: { photoId: string; faceUuid: string }[] }).rows;
 }
@@ -307,6 +316,7 @@ async function refreshFacialIdsForGroups(groupUuids: string[], exec: DbExec = db
   const groupOfFace = new Map(faceRows.map((r) => [r.id, r.personfaceUuid] as const));
 
   const affectedPhotos = await exec.select({ id: photos.id, facialIds: photos.facialIds }).from(photos).where(inArray(photos.id, photoIds));
+  const updates: { id: string; facial_ids: FacialId[] }[] = [];
   for (const photo of affectedPhotos) {
     const entries = (photo.facialIds ?? []) as FacialId[];
     let changed = false;
@@ -320,7 +330,15 @@ async function refreshFacialIdsForGroups(groupUuids: string[], exec: DbExec = db
       changed = true;
       return { ...f, personId, socialAccountId };
     });
-    if (changed) await exec.update(photos).set({ facialIds: next }).where(eq(photos.id, photo.id));
+    if (changed) updates.push({ id: photo.id, facial_ids: next });
+  }
+  // One statement for every changed photo rather than a round trip each.
+  if (updates.length) {
+    await exec.execute(sql`
+      UPDATE photos p SET facial_ids = u.facial_ids
+      FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS u(id varchar, facial_ids jsonb)
+      WHERE p.id = u.id
+    `);
   }
 }
 
@@ -445,13 +463,18 @@ export async function connectFace(input: ConnectFaceInput): Promise<ConnectFaceR
   if (faceGroup && faceGroup !== target && !faceGroupNamed) toFold.add(faceGroup);
   // Groups to fold will be moved to target (supports multiple people / social accounts per face)
   // A face in someone else's named group leaves it alone; that group keeps its other faces.
-  const movedAlone = faceRow && faceGroup && faceGroup !== target && faceGroupNamed ? faceRow.id : null;
+  // facial_ids only change for faces whose identity does: the whole target group when the person or
+  // account is newly linked to it, else just the faces joining it (folded groups and this face).
+  const targetRenamed = (!!person && person.personfaceUuid !== target) || (!!account && account.personfaceUuid !== target);
 
   await db.transaction(async (tx) => {
+    const joining = !targetRenamed && toFold.size
+      ? (await tx.select({ id: faces.id }).from(faces).where(inArray(faces.personfaceUuid, Array.from(toFold)))).map((r) => r.id)
+      : [];
     for (const group of Array.from(toFold)) await moveGroup(tx, target, group);
     if (faceRow) await tx.update(faces).set({ personfaceUuid: target, dismissedAt: null, autoMatchScore: null, ...clearedSuggestions }).where(eq(faces.id, faceRow.id));
     await linkIdentity(tx, target, identity);
-    await refreshFacialIdsForGroups([target], tx, movedAlone ? [movedAlone] : []);
+    await refreshFacialIdsForGroups(targetRenamed ? [target] : [], tx, faceRow ? [...joining, faceRow.id] : joining);
   });
   markFaceIdentitiesDirty();
 

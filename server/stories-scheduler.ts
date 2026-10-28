@@ -119,10 +119,11 @@ export type RunStart = { runId: string; status: string; error: string | null; us
 /**
  * Mint a run and ask the importer's service to start it. Returns the run's
  * status after the service answered (or failed to). Safe to call from the
- * settings page's "Run now" and from the nightly tick alike.
+ * settings page's "Run now" and from the nightly tick alike; each passes its
+ * own "Unseen only" setting.
  */
-export const triggerStoriesRun = (importer: StoryImporter): Promise<RunStart> =>
-  startRun(importer, "stories", () => ({ videos: importer.downloadVideos }));
+export const triggerStoriesRun = (importer: StoryImporter, unseenOnly: boolean): Promise<RunStart> =>
+  startRun(importer, "stories", () => ({ videos: importer.downloadVideos, unseenOnly }));
 
 /**
  * A tracking run: put the claimed jobs under the freshly minted run, then ask
@@ -242,7 +243,7 @@ async function tickStories(importer: StoryImporter, now: Date): Promise<void> {
   log(`[Stories] ${importer.label}: next run planned for ${planned.toLocaleString()}`);
 
   if (await skipToday(importer, "stories", now)) return;
-  await triggerStoriesRun(importer);
+  await triggerStoriesRun(importer, importer.unseenOnly);
 }
 
 async function tickTracking(importer: StoryImporter, now: Date): Promise<void> {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, ChevronRight, ExternalLink, ImageIcon, Info, Layers, Loader2, Sparkles, Video } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronLeft, ChevronRight, ExternalLink, Eye, ImageIcon, Info, Layers, Loader2, Sparkles, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -81,29 +81,46 @@ function HighlightHistory({ postId, highlights }: { postId: string; highlights: 
   );
 }
 
-/** Who viewed an own story, liked or replied ones first. Nothing at all until the scraper has read a list. */
-function SeenBy({ seenBy, igLink }: { seenBy: StorySeenBy | null; igLink: (username: string) => React.ReactNode }) {
+/** "Seen by N" button that opens the viewer list of an own story, liked or replied ones first. Nothing at all until the scraper has read a list. */
+export function SeenBy({ seenBy }: { seenBy: StorySeenBy | null }) {
+  const [open, setOpen] = useState(false);
   if (!seenBy?.viewers.length) return null;
   const viewers = [...seenBy.viewers].sort((a, b) => Number(Boolean(b.reply) || b.liked) - Number(Boolean(a.reply) || a.liked));
+  const likes = viewers.filter((v) => v.liked).length;
+  const replies = viewers.filter((v) => v.reply).length;
+  const tally = [likes && `${likes} ❤️`, replies && `${replies} ${replies === 1 ? "reply" : "replies"}`].filter(Boolean).join(" · ");
   return (
-    <Row label={`Seen by ${seenBy.viewerCount}`}>
-      <div className="text-xs text-muted-foreground mb-2">
-        Captured {when(seenBy.capturedAt)}
-        {viewers.length < seenBy.viewerCount && ` · ${viewers.length} listed`}
-      </div>
-      <ul className="space-y-1 max-h-72 overflow-y-auto" data-testid="list-story-seen-by">
-        {viewers.map((v) => (
-          <li key={v.pk}>
-            <span className="inline-flex items-center gap-1.5">
-              {igLink(v.username)}
-              {v.fullName && <span className="text-muted-foreground">{v.fullName}</span>}
-              {v.liked && <span title="Liked">❤️</span>}
-            </span>
-            {v.reply && <div className="ml-4 text-muted-foreground">“{v.reply}”</div>}
-          </li>
-        ))}
-      </ul>
-    </Row>
+    <>
+      <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setOpen(true)} data-testid="button-story-seen-by">
+        <Eye className="h-3.5 w-3.5" />
+        Seen by {seenBy.viewerCount}
+        {tally && <span className="text-muted-foreground"> · {tally}</span>}
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md" data-testid="dialog-story-seen-by">
+          <DialogTitle>Seen by {seenBy.viewerCount}</DialogTitle>
+          <div className="text-xs text-muted-foreground">
+            Captured {when(seenBy.capturedAt)}
+            {viewers.length < seenBy.viewerCount && ` · ${viewers.length} listed`}
+            {tally && ` · ${tally}`}
+          </div>
+          <ul className="space-y-2 max-h-[60vh] overflow-y-auto text-sm" data-testid="list-story-seen-by">
+            {viewers.map((v) => (
+              <li key={v.pk}>
+                <span className="inline-flex items-center gap-1.5">
+                  <a href={`https://www.instagram.com/${v.username}/`} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                    @{v.username}
+                  </a>
+                  {v.fullName && <span className="text-muted-foreground">{v.fullName}</span>}
+                  {v.liked && <span title="Liked">❤️</span>}
+                </span>
+                {v.reply && <div className="ml-4 text-muted-foreground">“{v.reply}”</div>}
+              </li>
+            ))}
+          </ul>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -117,7 +134,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /** One story, or a day's worth of them with arrows to step through. */
-function StoryDialog({ stories, highlights, onClose }: { stories: SocialAccountPost[]; highlights: HighlightWithStints[]; onClose: () => void }) {
+export function StoryDialog({ stories, highlights, onClose }: { stories: SocialAccountPost[]; highlights: HighlightWithStints[]; onClose: () => void }) {
   const [index, setIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const story = stories[index];
@@ -210,6 +227,7 @@ function StoryDialog({ stories, highlights, onClose }: { stories: SocialAccountP
                 </TooltipProvider>
               </span>
             </Row>
+            <SeenBy seenBy={story.seenBy} />
             {isVideo(story) && (
               <Badge variant="outline" className="gap-1">
                 <Video className="h-3 w-3" />
@@ -276,13 +294,15 @@ function StoryDialog({ stories, highlights, onClose }: { stories: SocialAccountP
               <Row label="Music">{[meta.music.title, meta.music.artist].filter(Boolean).join(" — ")}</Row>
             )}
             {meta.isAd && <Badge variant="outline">Paid partnership</Badge>}
-            <SeenBy seenBy={story.seenBy} igLink={igLink} />
           </div>
         </div>
       </DialogContent>
     </Dialog>
   );
 }
+
+// Filter value for stories that aren't currently in any highlight set.
+const NO_SET = "__none__";
 
 export function StoriesTab({ accountId, stories }: { accountId: string; stories: SocialAccountPost[] }) {
   const [newestFirst, setNewestFirst] = useState(true);
@@ -326,6 +346,8 @@ export function StoriesTab({ accountId, stories }: { accountId: string; stories:
     for (const m of set.stints) if (!m.leftSeenAt) setsOf.set(m.postId, [...(setsOf.get(m.postId) ?? []), set]);
   }
   const activeSet = live.find((h) => h.id === setFilter) ?? null;
+  const unset = stories.filter((s) => !setsOf.has(s.id));
+  const onlyUnset = setFilter === NO_SET;
 
   useEffect(() => {
     if (typeof window === "undefined" || !stories.length) return;
@@ -339,7 +361,7 @@ export function StoriesTab({ accountId, stories }: { accountId: string; stories:
   }, [stories]);
 
   const time = (p: SocialAccountPost) => new Date(p.postedAt ?? p.createdAt).getTime();
-  const sorted = [...stories].sort((a, b) => (newestFirst ? time(b) - time(a) : time(a) - time(b)));
+  const sorted = [...(onlyUnset ? unset : stories)].sort((a, b) => (newestFirst ? time(b) - time(a) : time(a) - time(b)));
 
   // A card is one story, or — combined — every story from the same local day.
   // Within a day the stories stay in posting order so the arrows read like Instagram did.
@@ -390,7 +412,7 @@ export function StoriesTab({ accountId, stories }: { accountId: string; stories:
           <button
             type="button"
             onClick={() => setSetFilter(null)}
-            className={`h-7 rounded-full border px-3 text-xs ${!activeSet ? "bg-primary text-primary-foreground border-primary" : "hover:bg-muted"}`}
+            className={`h-7 rounded-full border px-3 text-xs ${!activeSet && !onlyUnset ? "bg-primary text-primary-foreground border-primary" : "hover:bg-muted"}`}
             data-testid="chip-highlight-all"
           >
             All
@@ -428,6 +450,16 @@ export function StoriesTab({ accountId, stories }: { accountId: string; stories:
               </div>
             );
           })}
+          {unset.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSetFilter(onlyUnset ? null : NO_SET)}
+              className={`h-7 rounded-full border border-dashed px-3 text-xs ${onlyUnset ? "bg-primary text-primary-foreground border-primary" : "hover:bg-muted"}`}
+              data-testid="chip-highlight-none"
+            >
+              Not in a highlight <span className={onlyUnset ? "opacity-80" : "text-muted-foreground"}>{unset.length}</span>
+            </button>
+          )}
         </div>
       )}
       {notDownloaded > 0 && (

@@ -3,7 +3,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "../storage";
 import { db } from "../db";
-import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, tasks, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
+import { interactions, relationshipTypes, interactionTypes, people, socialNetworkChanges, socialAccountPosts, socialAccounts, socialAccountHistory, photos, aiChats, dailyNotes, notes, groups, truePersonSearch, socialFollows, tasks, type Task, type SocialAccountWithCurrentProfile, type ExtensionSession, type AiChatMessage, type AiToolCallTrace } from "@shared/schema";
 import crypto from "crypto";
 import { z } from "zod";
 import { eq, sql, isNotNull, and, inArray, desc } from "drizzle-orm";
@@ -181,11 +181,12 @@ export function registerRoutes(app: Express) {
         const limit = parseInt(req.query.limit as string) || 30;
         const sortBy = (req.query.sortBy as string) || 'relationship';
         const includeTps = req.query.includeTps === '1';
-        
+        const starredOnly = req.query.starred === 'true';
+
         // Get ME person ID to filter relationships
         const mePersonId = (await storage.getMePersonId()) ?? undefined;
-        
-        const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortBy, includeTps);
+
+        const people = await storage.getPeoplePaginated(offset, limit, mePersonId, sortBy, includeTps, starredOnly);
         res.json(people);
       } catch (error) {
         console.error("Error fetching paginated people:", error);
@@ -1073,6 +1074,20 @@ export function registerRoutes(app: Express) {
       }
     });
   
+    // Totals shown on the homepage
+    app.get("/api/home-counts", async (_req, res) => {
+      try {
+        const [[g], [sa]] = await Promise.all([
+          db.select({ count: sql<number>`count(*)::int` }).from(groups),
+          db.select({ count: sql<number>`count(*)::int` }).from(socialAccounts),
+        ]);
+        res.json({ groups: g.count, socialAccounts: sa.count });
+      } catch (error) {
+        console.error("Error fetching home counts:", error);
+        res.status(500).json({ error: "Failed to fetch home counts" });
+      }
+    });
+
     // Groups endpoints
     app.get("/api/groups", async (req, res) => {
       try {
@@ -1566,44 +1581,71 @@ export function registerRoutes(app: Express) {
       }
     });
 
+    const toAnalysisResponse = (task: Task) => {
+      let results = [];
+      if (task.status === "completed" && task.result) {
+        try {
+          results = JSON.parse(task.result);
+        } catch (e) {
+          console.error("Error parsing task result:", e);
+        }
+      }
+      return {
+        taskId: task.id,
+        status: task.status,
+        progress: task.progress,
+        progressMessage: task.progressMessage,
+        settings: JSON.parse(task.payload),
+        completedAt: task.completedAt,
+        results,
+      };
+    };
+
     // Check task status & fetch community detection results
     app.get("/api/potential-groups/results/:taskId", async (req, res) => {
       try {
-        const { taskId } = req.params;
-        const task = await storage.getTaskById(taskId);
+        const task = await storage.getTaskById(req.params.taskId);
         if (!task) {
           return res.status(404).json({ error: "Task not found" });
         }
-        let results = [];
-        if (task.status === "completed" && task.result) {
-          try {
-            results = JSON.parse(task.result);
-          } catch (e) {
-            console.error("Error parsing task result:", e);
-          }
-        }
-        res.json({
-          status: task.status,
-          progress: task.progress,
-          progressMessage: task.progressMessage,
-          results,
-        });
+        res.json(toAnalysisResponse(task));
       } catch (error) {
         console.error("Error fetching analysis results:", error);
         res.status(500).json({ error: "Failed to fetch analysis results" });
       }
     });
 
+    // Most recent run (any status), so the page can restore it after a reload
+    app.get("/api/potential-groups/latest", async (_req, res) => {
+      try {
+        const task = await storage.getLatestTaskByType("find_potential_groups");
+        res.json(task ? toAnalysisResponse(task) : null);
+      } catch (error) {
+        console.error("Error fetching latest analysis:", error);
+        res.status(500).json({ error: "Failed to fetch latest analysis" });
+      }
+    });
+
+    // Read-modify-write one group inside a run's stored results. Re-reads right
+    // before writing so concurrent updates to other groups aren't clobbered.
+    const loadResultGroups = async (taskId: string) => {
+      const task = await storage.getTaskById(taskId);
+      return task?.result ? (JSON.parse(task.result) as any[]) : null;
+    };
+    const patchResultGroup = async (taskId: string, groupId: string, patch: Record<string, unknown>) => {
+      const latest = await loadResultGroups(taskId);
+      const target = latest?.find(g => g.id === groupId);
+      if (!latest || !target) return;
+      Object.assign(target, patch);
+      await db.update(tasks).set({ result: JSON.stringify(latest) }).where(eq(tasks.id, taskId));
+    };
+
     // Explain why a Smart Multi-Signal group clustered, from its recorded signals.
     // Generated on demand and saved back into the task result; ?regenerate=1 forces a new one.
     app.post("/api/potential-groups/results/:taskId/explain/:groupId", async (req, res) => {
       try {
         const { taskId, groupId } = req.params;
-        const loadGroups = async () => {
-          const task = await storage.getTaskById(taskId);
-          return task?.result ? (JSON.parse(task.result) as any[]) : null;
-        };
-        const results = await loadGroups();
+        const results = await loadResultGroups(taskId);
         const group = results?.find(g => g.id === groupId);
         if (!group) return res.status(404).json({ error: "Group not found" });
         if (!group.signals) return res.status(400).json({ error: "Explanations are only available for Smart Multi-Signal groups." });
@@ -1633,13 +1675,7 @@ export function registerRoutes(app: Express) {
           generatedAt: new Date().toISOString(),
         };
 
-        // Re-read right before writing so a concurrent explain on another group isn't clobbered
-        const latest = await loadGroups();
-        const target = latest?.find(g => g.id === groupId);
-        if (latest && target) {
-          target.explanation = explanation;
-          await db.update(tasks).set({ result: JSON.stringify(latest) }).where(eq(tasks.id, taskId));
-        }
+        await patchResultGroup(taskId, groupId, { explanation });
         res.json(explanation);
       } catch (error: any) {
         console.error("Error explaining potential group:", error);
@@ -1674,10 +1710,17 @@ export function registerRoutes(app: Express) {
 
     const union = (a: string[] | null | undefined, b: string[]) => Array.from(new Set([...(a || []), ...b]));
 
+    // Remember on the stored run which group a cluster went to, so it shows as accepted after a reload.
+    type AcceptSource = { taskId?: string; resultId?: string };
+    const markAccepted = async ({ taskId, resultId }: AcceptSource, accepted: { groupId: string; subGroupId?: string; name: string }) => {
+      if (!taskId || !resultId) return;
+      await patchResultGroup(taskId, resultId, { accepted: { ...accepted, at: new Date().toISOString() } });
+    };
+
     // Promote potential group to actual group
     app.post("/api/potential-groups/create", async (req, res) => {
       try {
-        const { name, color, members, entityType } = req.body as {
+        const { name, color, members, entityType, taskId, resultId } = req.body as AcceptSource & {
           name: string;
           color: string;
           members: string[];
@@ -1698,6 +1741,7 @@ export function registerRoutes(app: Express) {
         });
 
         await linkAccountsToGroup(group.id, accountIds);
+        await markAccepted({ taskId, resultId }, { groupId: group.id, name });
 
         res.json({ success: true, groupId: group.id });
       } catch (error) {
@@ -1710,7 +1754,7 @@ export function registerRoutes(app: Express) {
     // sub group (existing by id, or a new one by name).
     app.post("/api/potential-groups/assign", async (req, res) => {
       try {
-        const { groupId, subGroupId, newSubGroupName, members, entityType } = req.body as {
+        const { groupId, subGroupId, newSubGroupName, members, entityType, taskId, resultId } = req.body as AcceptSource & {
           groupId: string;
           subGroupId?: string;
           newSubGroupName?: string;
@@ -1735,6 +1779,7 @@ export function registerRoutes(app: Express) {
         await linkAccountsToGroup(groupId, accountIds);
 
         let resultSubGroupId: string | undefined;
+        let acceptedName = group.name;
         if (subGroupId) {
           const subGroup = await storage.getSubGroupById(subGroupId);
           if (!subGroup || subGroup.groupId !== groupId) {
@@ -1742,6 +1787,7 @@ export function registerRoutes(app: Express) {
           }
           await storage.updateSubGroup(subGroupId, { members: union(subGroup.members, personIds) });
           resultSubGroupId = subGroupId;
+          acceptedName = `${group.name} / ${subGroup.name}`;
         } else if (newSubGroupName?.trim()) {
           const subGroup = await storage.createSubGroup({
             groupId,
@@ -1750,7 +1796,9 @@ export function registerRoutes(app: Express) {
             members: personIds,
           });
           resultSubGroupId = subGroup.id;
+          acceptedName = `${group.name} / ${subGroup.name}`;
         }
+        await markAccepted({ taskId, resultId }, { groupId, subGroupId: resultSubGroupId, name: acceptedName });
 
         res.json({ success: true, groupId, subGroupId: resultSubGroupId });
       } catch (error) {

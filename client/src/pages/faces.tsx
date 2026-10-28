@@ -82,7 +82,8 @@ type KnownFaceDetailPhoto = {
   uploadedAt: string | null;
   source: ResolvedPhotoSource | null;
 };
-type KnownFaceDetail = { header: KnownFaceListItem; photos: KnownFaceDetailPhoto[] };
+type KnownFaceDetail = { header: KnownFaceListItem; photos: KnownFaceDetailPhoto[]; nextCursor: string | null };
+const DETAIL_PAGE_SIZE = 15;
 
 function identityTitle(item: KnownFaceListItem): string {
   const people = item.people && item.people.length > 0 ? item.people : item.person ? [item.person] : [];
@@ -343,14 +344,34 @@ function IdentityDialog({
   const [removeAllOpen, setRemoveAllOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<{ faceUuid: string; label: string } | null>(null);
 
-  const { data: detail, isLoading, isError } = useQuery<KnownFaceDetail>({
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, isError } = useInfiniteQuery<KnownFaceDetail>({
     queryKey: ["/api/faces", personfaceUuid],
-    queryFn: async () => {
-      const res = await fetch(`/api/faces/${personfaceUuid}`, { credentials: "include" });
+    queryFn: async ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(DETAIL_PAGE_SIZE) });
+      if (pageParam) params.set("cursor", String(pageParam));
+      const res = await fetch(`/api/faces/${personfaceUuid}?${params.toString()}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to load identity");
       return res.json();
     },
+    initialPageParam: "" as string,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
+
+  const loaded = !!data;
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) fetchNextPage();
+      },
+      { threshold: 0.1 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loaded, fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const removeMutation = useMutation({
     mutationFn: async (faceUuid: string) => {
@@ -393,7 +414,7 @@ function IdentityDialog({
     );
   }
 
-  if (isError || !detail) {
+  if (isError || !data) {
     return (
       <Dialog open onOpenChange={(v) => !v && onClose()}>
         <DialogContent className="max-w-2xl">
@@ -403,7 +424,8 @@ function IdentityDialog({
     );
   }
 
-  const { header, photos } = detail;
+  const header = data.pages[0].header;
+  const photos = data.pages.flatMap((p) => p.photos);
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -534,6 +556,10 @@ function IdentityDialog({
             })}
           </div>
         )}
+
+        <div ref={sentinelRef} className="h-8 flex items-center justify-center">
+          {isFetchingNextPage && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+        </div>
       </DialogContent>
 
       {mergeOpen && <MergeDialog current={header} onClose={() => setMergeOpen(false)} />}

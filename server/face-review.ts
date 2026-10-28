@@ -430,7 +430,7 @@ async function buildPageCaches(pagePhotos: Photo[], kind: FaceReviewKind, withFa
     : [];
   const faceRows = allFaceUuids.length ? await db.select().from(faces).where(inArray(faces.id, allFaceUuids)) : [];
   const faceRowById = new Map(faceRows.map((f) => [f.id, f]));
-  const lookAlikeMap = await lookAlikesFor(allFaceUuids);
+  const lookAlikeMap = await lookAlikesFor(allFaceUuids, { allowStale: true });
   const clusterIds = Array.from(new Set(faceRows.map((f) => f.clusterId).filter((c): c is string => !!c)));
   const clusterSizeById = new Map(
     clusterIds.length

@@ -1,5 +1,5 @@
 import { Route, Switch, Link, useLocation, Redirect } from "wouter";
-import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive,  MessageSquare, Radar, Instagram, Server, History, Globe } from "lucide-react";
+import { ArrowLeft, User, Settings, Book, Key, Trash2, FolderSync, Users, Database, ChevronRight, Camera, ImageIcon, ListTodo, Layers, HardDrive, Chrome, Scan, Network, Table2, BrainCircuit, Wrench, Plug, Sparkles, Loader2, Search, Home, Archive,  MessageSquare, Radar, Instagram, Server, History, Globe, Palette } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -26,6 +26,7 @@ const SettingsHomePage = lazy(() => import("@/pages/settings-home"));
 const UnifiedSetupPage = lazy(() => import("@/pages/unified-setup-page"));
 const UserOptionsPage = lazy(() => import("@/pages/user-options"));
 const AppOptionsPage = lazy(() => import("@/pages/app-options"));
+const LooksSettingsPage = lazy(() => import("@/pages/looks-settings"));
 const SearchSettingsPage = lazy(() => import("@/pages/search-settings"));
 const DataTypesPage = lazy(() => import("@/pages/data-types"));
 const ApiSettingsPage = lazy(() => import("@/pages/api-settings"));
@@ -92,6 +93,7 @@ const settingsMenuItems: MenuItem[] = [
     url: "/settings/app",
     icon: Settings,
     subItems: [
+      { title: "Looks", url: "/settings/looks", icon: Palette },
       { title: "Social Graph", url: "/settings/social-graph", icon: Network },
       { title: "Chrome Extension", url: "/settings/chrome-extension", icon: Chrome },
       { title: "Search Options", url: "/settings/search", icon: Search },
@@ -175,6 +177,7 @@ export function SettingsSidebar() {
   const isInstagramActive = location.startsWith("/settings/instagram");
   const isAppOptionsActive =
     location.startsWith("/settings/app") ||
+    location.startsWith("/settings/looks") ||
     location.startsWith("/settings/social-graph") ||
     location.startsWith("/settings/chrome-extension") ||
     location.startsWith("/settings/search") ||
@@ -289,6 +292,7 @@ export default function SettingsLayout() {
           <Route path="/setup" component={UnifiedSetupPage} />
           <Route path="/user" component={UserOptionsPage} />
           <Route path="/app" component={AppOptionsPage} />
+          <Route path="/looks" component={LooksSettingsPage} />
           <Route path="/search" component={SearchSettingsPage} />
           <Route path="/maps" component={MapsSettingsPage} />
           <Route path="/data-types" component={DataTypesPage} />

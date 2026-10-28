@@ -13,11 +13,16 @@ import { db } from "../db";
 import { storage } from "../storage";
 import {
   people,
+  schooling,
   truePersonSearch,
+  jobExperienceZodSchema,
+  collegeExperienceZodSchema,
+  type CollegeExperience,
   type ExtensionSession,
   type InsertPerson,
+  type JobExperience,
 } from "@shared/schema";
-import { eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { authenticateExtensionToken } from "../auth";
 import { partialDate } from "@shared/partial-date";
@@ -141,15 +146,17 @@ export function registerRoutes(app: Express) {
   /** The person-page state PRM-chrome renders: Found + Extract status. */
   async function personStatus(tpsId: string, personId: string | null) {
     const [record] = await db
-      .select({ id: truePersonSearch.id })
+      .select({ id: truePersonSearch.id, importDate: truePersonSearch.importDate })
       .from(truePersonSearch)
       .where(eq(truePersonSearch.tpsId, tpsId))
+      .orderBy(desc(truePersonSearch.importDate))
       .limit(1);
     return {
       found: !!personId,
       personUuid: personId,
       extracted: !!record,
       tpsRecordId: record?.id ?? null,
+      lastExtractedAt: record?.importDate ?? null,
       primaryAddress: personId ? await getPrimaryAddress(personId) : null,
     };
   }
@@ -325,6 +332,13 @@ export function registerRoutes(app: Express) {
     emails: z.array(z.string()).optional(),
     relatives: z.array(tpsRelationSchema).optional(),
     associates: z.array(tpsRelationSchema).optional(),
+    businessConnections: z.array(z.object({
+      name: z.string(),
+      address: z.string().nullable().optional(),
+      startDate: partialDate.nullable().optional(),
+    })).optional(),
+    jobs: z.array(jobExperienceZodSchema).optional(),
+    colleges: z.array(collegeExperienceZodSchema).optional(),
     backgroundProfile: z.string().nullable().optional(),
     // The primary the user confirmed in PRM-chrome; absent from extensions older than 1.1.0.
     primaryAddress: z.discriminatedUnion("choice", [
@@ -332,6 +346,18 @@ export function registerRoutes(app: Express) {
       z.object({ choice: z.literal("tps"), address: z.string().min(1) }),
     ]).optional(),
   });
+
+  /** Append the incoming entries whose (case-insensitive) key isn't already in the list. */
+  function mergeNew<T extends JobExperience | CollegeExperience>(existing: T[], incoming: T[], key: (e: T) => string) {
+    const seen = new Set(existing.map((e) => key(e).trim().toLowerCase()));
+    const fresh = incoming.filter((e) => {
+      const k = key(e).trim().toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    return { list: [...existing, ...fresh], added: fresh.length };
+  }
 
   app.post("/api/v1/tps/extract", async (req, res) => {
     const session = await requireExtensionSession(req, res);
@@ -350,21 +376,34 @@ export function registerRoutes(app: Express) {
           .insert(truePersonSearch)
           .values({ ...data, importDate: now, updatedAt: now })
           .returning();
-        if (!data.personId) return { record, addressesAdded: 0, primaryAddress: null };
+        if (!data.personId) return { record, addressesAdded: 0, primaryAddress: null, jobsAdded: 0, collegesAdded: 0 };
 
         // Backfill the contact's tps_id link and merge the addresses into their history.
-        await tx.update(people).set({ tpsId: data.tpsId }).where(eq(people.id, data.personId));
+        const [person] = await tx.update(people).set({ tpsId: data.tpsId }).where(eq(people.id, data.personId)).returning();
         const { added, primaryAddress: primary } = await upsertTpsAddresses(
           tx, data.personId, tpsEntries({ ...data, currentAddressStartDate }), primaryAddress,
         );
-        return { record, addressesAdded: added, primaryAddress: primary };
+
+        // Merge TPS jobs / colleges into the contact's profile, skipping ones they already have.
+        const jobs = mergeNew(person?.jobs ?? [], data.jobs ?? [], (j) => `${j.company}|${j.position}`);
+        if (jobs.added) await tx.update(people).set({ jobs: jobs.list }).where(eq(people.id, data.personId));
+        const [school] = await tx.select().from(schooling).where(eq(schooling.personId, data.personId));
+        const colleges = mergeNew(school?.colleges ?? [], data.colleges ?? [], (c) => `${c.name}|${c.degree}`);
+        if (colleges.added) {
+          if (school) await tx.update(schooling).set({ colleges: colleges.list }).where(eq(schooling.id, school.id));
+          else await tx.insert(schooling).values({ personId: data.personId, colleges: colleges.list });
+        }
+        return { record, addressesAdded: added, primaryAddress: primary, jobsAdded: jobs.added, collegesAdded: colleges.added };
       });
 
       res.status(201).json({
         tpsRecordId: result.record.id,
         status: "extracted",
+        lastExtractedAt: result.record.importDate,
         addressesAdded: result.addressesAdded,
         primaryAddress: result.primaryAddress,
+        jobsAdded: result.jobsAdded,
+        collegesAdded: result.collegesAdded,
       });
     } catch (error) {
       console.error("Error extracting TPS record:", error);

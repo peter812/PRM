@@ -31,9 +31,12 @@ import {
   Download,
   User,
 } from "lucide-react";
-import { queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
+import type { HighlightWithStints, SocialAccountPost } from "@shared/schema";
+import { PostDetailDialog } from "@/components/post-detail-dialog";
+import { StoryDialog } from "@/components/stories-tab";
 import { withImageSize } from "@shared/image-size";
 
 const PAGE_SIZE = 24;
@@ -48,6 +51,7 @@ type PhotoImage = {
   image_url: string;
   thumb_url: string;
   face_count: number;
+  post_id: string | null;
 };
 
 type PersonPhotosResponse = {
@@ -143,13 +147,11 @@ function FaceOverlay({
 
 function PhotoModal({
   image,
-  apiUrl,
   open,
   onClose,
   onDeleted,
 }: {
   image: PhotoImage | null;
-  apiUrl: string;
   open: boolean;
   onClose: () => void;
   onDeleted: (uuid: string) => void;
@@ -350,11 +352,133 @@ function PhotoModal({
   );
 }
 
+/**
+ * Opens a person's photo the way its source wants: a social post or story opens that post/story,
+ * anything else opens the photo popup. Render `dialogs` alongside the grid.
+ */
+function usePhotoOpener(personId: string, onDeleted?: (uuid: string) => void) {
+  const [selectedImage, setSelectedImage] = useState<PhotoImage | null>(null);
+  const [selectedPost, setSelectedPost] = useState<SocialAccountPost | null>(null);
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+
+  const { data: highlights = [] } = useQuery<HighlightWithStints[]>({
+    queryKey: [`/api/social-accounts/${selectedPost?.socialAccountId}/highlights`],
+    enabled: selectedPost?.postType === "story",
+  });
+
+  const openImage = useCallback(async (img: PhotoImage) => {
+    if (img.post_id) {
+      const res = await fetch(`/api/social-account-posts/${img.post_id}`, { credentials: "include" });
+      if (res.ok) {
+        setSelectedPost(await res.json());
+        return;
+      }
+    }
+    setSelectedImage(img);
+  }, []);
+
+  const deletePost = useMutation({
+    mutationFn: (postId: string) => apiRequest("DELETE", `/api/social-account-posts/${postId}`),
+    onSuccess: () => {
+      toast({ title: "Post deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/image/query-person", personId] });
+    },
+    onError: (err: Error) => toast({ title: "Delete failed", description: err.message, variant: "destructive" }),
+  });
+
+  const handleImageDeleted = useCallback((uuid: string) => {
+    queryClient.invalidateQueries({ queryKey: ["/api/image/query-person", personId] });
+    onDeleted?.(uuid);
+  }, [personId, onDeleted]);
+
+  const dialogs = (
+    <>
+      <PhotoModal
+        image={selectedImage}
+        open={!!selectedImage}
+        onClose={() => setSelectedImage(null)}
+        onDeleted={handleImageDeleted}
+      />
+
+      {selectedPost?.postType === "story" && (
+        <StoryDialog key={selectedPost.id} stories={[selectedPost]} highlights={highlights} onClose={() => setSelectedPost(null)} />
+      )}
+      {selectedPost && selectedPost.postType !== "story" && (
+        <PostDetailDialog
+          open
+          onOpenChange={(open) => { if (!open) setSelectedPost(null); }}
+          post={selectedPost}
+          onEdit={() => navigate(`/social-accounts/${selectedPost.socialAccountId}?postId=${selectedPost.id}`)}
+          onDelete={() => {
+            deletePost.mutate(selectedPost.id);
+            setSelectedPost(null);
+          }}
+        />
+      )}
+    </>
+  );
+
+  return { openImage, dialogs };
+}
+
+/** The first few photos of a person, for the profile home tab. */
+export function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit?: number }) {
+  const { openImage, dialogs } = usePhotoOpener(personId);
+  const { data, isLoading } = useQuery<PersonPhotosResponse>({
+    queryKey: ["/api/image/query-person", personId, "overview", limit],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/image/query-person?personUuid=${encodeURIComponent(personId)}&page=1&page_size=${limit}`,
+        { credentials: "include" }
+      );
+      if (!res.ok) throw new Error("Failed to fetch photos overview");
+      return res.json();
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-4 gap-2">
+        {[...Array(limit)].map((_, i) => (
+          <div key={i} className="aspect-square bg-muted animate-pulse rounded-md" />
+        ))}
+      </div>
+    );
+  }
+
+  const images = data?.images ?? [];
+
+  if (images.length === 0) {
+    return <p className="text-xs text-muted-foreground italic">No photos recorded.</p>;
+  }
+
+  return (
+    <>
+      <div className="grid grid-cols-4 gap-2">
+        {images.map((img) => (
+          <button
+            key={img.image_uuid}
+            type="button"
+            onClick={() => openImage(img)}
+            className="block overflow-hidden rounded-md border aspect-square hover:opacity-90 transition-opacity bg-muted"
+          >
+            <img
+              src={img.thumb_url || img.image_url}
+              alt="Person thumbnail"
+              className="w-full h-full object-cover"
+            />
+          </button>
+        ))}
+      </div>
+      {dialogs}
+    </>
+  );
+}
+
 export function PersonPhotosTab({ personId }: { personId: string }) {
   const [page, setPage] = useState(1);
-  const [selectedImage, setSelectedImage] = useState<PhotoImage | null>(null);
   const [deletedUuids, setDeletedUuids] = useState<Set<string>>(new Set());
-
   const { data, isLoading, isError, error } = useQuery<PersonPhotosResponse>({
     queryKey: ["/api/image/query-person", personId, page],
     queryFn: async () => {
@@ -373,13 +497,13 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
 
   const handleDeleted = useCallback((uuid: string) => {
     setDeletedUuids((prev) => new Set([...prev, uuid]));
-    queryClient.invalidateQueries({ queryKey: ["/api/image/query-person", personId] });
-  }, [personId]);
+  }, []);
+
+  const { openImage, dialogs } = usePhotoOpener(personId, handleDeleted);
 
   const images = (data?.images ?? []).filter(img => !deletedUuids.has(img.image_uuid));
   const total = data?.total ?? 0;
   const totalPages = data?.total_pages ?? 1;
-  const apiUrl = data?.api_url ?? "";
 
   const isKeyInvalid = isError && (error as Error).message === "API_KEY_INVALID";
 
@@ -475,7 +599,7 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
           <button
             key={img.image_uuid}
             className="rounded-md border bg-card overflow-hidden hover-elevate focus:outline-none focus-visible:ring-2 focus-visible:ring-ring aspect-square"
-            onClick={() => setSelectedImage(img)}
+            onClick={() => openImage(img)}
             data-testid={`card-person-photo-${img.image_uuid}`}
           >
             <img
@@ -515,13 +639,7 @@ export function PersonPhotosTab({ personId }: { personId: string }) {
         </div>
       )}
 
-      <PhotoModal
-        image={selectedImage}
-        apiUrl={apiUrl}
-        open={!!selectedImage}
-        onClose={() => setSelectedImage(null)}
-        onDeleted={handleDeleted}
-      />
+      {dialogs}
     </div>
   );
 }

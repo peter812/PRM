@@ -39,6 +39,8 @@ export interface Importer {
   runWindow: string;
   skipDayProbability: number;
   downloadVideos: boolean;
+  unseenOnly: boolean;
+  runNowUnseenOnly: boolean;
   nextRunAt: string | null;
   lastUsername: string | null;
   trackingEnabled: boolean;

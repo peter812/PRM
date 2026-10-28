@@ -78,10 +78,41 @@ export async function mergeSocialAccounts(survivorId: string, duplicateId: strin
       WHERE coauthor_account_ids ? ${d}`);
 
     await tx.execute(sql`UPDATE tracking_jobs SET social_account_id = ${s} WHERE social_account_id = ${d}`);
+    await tx.execute(sql`UPDATE image_task_groups SET social_account_id = ${s} WHERE social_account_id = ${d}`);
+    await tx.execute(sql`UPDATE historical_account_summaries SET social_account_id = ${s} WHERE social_account_id = ${d}`);
+    // The survivor's current profile stays current; the recheck after the merge refreshes it.
+    await tx.execute(sql`UPDATE social_profile_versions SET social_account_id = ${s}, is_current = false WHERE social_account_id = ${d}`);
+    // Closed issues are history; the duplicate's open ones are about a row that is going away.
+    await tx.execute(sql`UPDATE social_account_issues SET social_account_id = ${s} WHERE social_account_id = ${d} AND status <> 'open'`);
     await tx.execute(sql`
-      UPDATE osint_scan_queue SET social_account_id = ${s} WHERE social_account_id = ${d}
-        AND NOT (status IN ('pending','running') AND EXISTS (SELECT 1 FROM osint_scan_queue o
-          WHERE o.social_account_id = ${s} AND o.tool = osint_scan_queue.tool AND o.status IN ('pending','running')))`);
+      UPDATE events SET social_account_ids = ARRAY(SELECT DISTINCT unnest(array_replace(social_account_ids, ${d}, ${s})))
+      WHERE ${d} = ANY(social_account_ids)`);
+
+    // Summary jobs: a live account job for the duplicate yields to the survivor's own.
+    await tx.execute(sql`
+      UPDATE summary_jobs SET status = 'cancelled', completed_at = now() WHERE kind = 'account' AND target_id = ${d}
+        AND status IN ('pending','running') AND EXISTS (SELECT 1 FROM summary_jobs j
+          WHERE j.kind = 'account' AND j.target_id = ${s} AND j.status IN ('pending','running'))`);
+    await tx.execute(sql`UPDATE summary_jobs SET target_id = ${s} WHERE kind = 'account' AND target_id = ${d}`);
+    await tx.execute(sql`UPDATE summary_jobs SET social_account_id = ${s} WHERE social_account_id = ${d}`);
+
+    // Highlights: one seen under both names keeps the survivor's row and takes the other's stints.
+    await tx.execute(sql`
+      UPDATE instagram_highlight_memberships m SET highlight_id = h2.id
+      FROM instagram_highlights h, instagram_highlights h2
+      WHERE m.highlight_id = h.id AND h.social_account_id = ${d}
+        AND h2.social_account_id = ${s} AND h2.instagram_id = h.instagram_id
+        AND NOT (m.left_seen_at IS NULL AND EXISTS (SELECT 1 FROM instagram_highlight_memberships o
+          WHERE o.highlight_id = h2.id AND o.story_pk = m.story_pk AND o.left_seen_at IS NULL))`);
+    await tx.execute(sql`
+      UPDATE instagram_highlights h SET social_account_id = ${s} WHERE h.social_account_id = ${d}
+        AND NOT EXISTS (SELECT 1 FROM instagram_highlights o WHERE o.social_account_id = ${s} AND o.instagram_id = h.instagram_id)`);
+
+    await tx.execute(sql`
+      UPDATE osint_scans SET social_account_id = ${s} WHERE social_account_id = ${d}
+        AND NOT (status IN ('pending','running') AND EXISTS (SELECT 1 FROM osint_scans o
+          WHERE o.social_account_id = ${s} AND o.tool = osint_scans.tool AND o.target = osint_scans.target
+            AND o.status IN ('pending','running')))`);
     await tx.execute(sql`UPDATE conversations SET social_account_id = ${s} WHERE social_account_id = ${d}`);
     await tx.execute(sql`UPDATE messages SET sender_social_account_id = ${s} WHERE sender_social_account_id = ${d}`);
     await tx.execute(sql`UPDATE message_recipients SET social_account_id = ${s} WHERE social_account_id = ${d}`);

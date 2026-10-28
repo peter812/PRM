@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, integer, serial, boolean, jsonb, real, unique, uniqueIndex, AnyPgColumn, index, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, date, integer, serial, boolean, jsonb, real, unique, uniqueIndex, AnyPgColumn, index, primaryKey } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -39,6 +39,12 @@ export interface TpsRelation {
   name: string;
   age?: string | null;
   tpsId?: string | null; // their /find/person/{id} slug, when linked on the page
+}
+
+export interface TpsBusiness {
+  name: string;
+  address?: string | null;
+  startDate?: string | null; // partial date, from TPS's "Since Mon YYYY"
 }
 
 // Users table for authentication
@@ -375,6 +381,8 @@ export const socialAccounts = pgTable("social_accounts", {
   bannedActions: text("banned_actions").array().notNull().default(sql`'{}'::text[]`),
   // Unimportant account: PRM Stories never collects its stories (already-stored ones stay).
   skipStories: boolean("skip_stories").notNull().default(false),
+  // Inbox notes this account posted, one entry per Instagram note id (inbox-notes-plan.md).
+  sentNotes: jsonb("sent_notes").$type<SentNote[]>().notNull().default(sql`'[]'::jsonb`),
   isStarred: boolean("is_starred").notNull().default(false),
   // ── Account Summary & Invalidation Tracking ──
   aiSummary: jsonb("ai_summary"),
@@ -392,6 +400,19 @@ export const socialAccounts = pgTable("social_accounts", {
   index("social_accounts_interest_level_idx").on(t.interestLevel),
   index("social_accounts_scan_due_idx").on(t.scanDueAt).where(sql`scan_due_at IS NOT NULL`),
 ]);
+
+// One row per day of social_accounts totals, written by the daily stats scheduler.
+// Checked counts only exist from the first snapshot on; totals were backfilled from created_at.
+export const socialAccountDailyStats = pgTable("social_account_daily_stats", {
+  day: date("day").primaryKey(),
+  totalAccounts: integer("total_accounts").notNull(),
+  checkedAccounts: integer("checked_accounts"),       // scan or info check ever ran; null on backfilled days
+  postsCheckedAccounts: integer("posts_checked_accounts"), // posts section ever checked, even with 0 posts
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// GET /api/social-accounts/daily-stats row; `day` is "YYYY-MM-DD".
+export type SocialAccountDailyStat = { day: string; total: number; checked: number | null; postsChecked: number | null };
 
 export interface PostImageSummary {
   imageIndex: number;
@@ -582,6 +603,15 @@ export const socialNetworkChanges = pgTable("social_network_changes", {
 }, (t) => [
   index("social_network_changes_social_account_id_idx").on(t.socialAccountId),
 ]);
+
+/** An inbox note as the stories scraper read it (inbox-notes-plan.md). A repeat sighting only appends to seenAt. */
+export interface SentNote {
+  noteId: string; // the inbox tray item id
+  text: string; // "" for a song-only note
+  song: { title: string; artist: string } | null;
+  createdAt: string;
+  seenAt: string[]; // one per run that saw it, oldest first
+}
 
 /** An own story's viewer list as the stories scraper read it from the archive (story-seen-by-plan.md). */
 export interface StorySeenBy {
@@ -1036,6 +1066,9 @@ export const truePersonSearch = pgTable("true_person_search", {
   emails: jsonb("emails").$type<string[]>().default(sql`'[]'::jsonb`),
   relatives: jsonb("relatives").$type<TpsRelation[]>().default(sql`'[]'::jsonb`),
   associates: jsonb("associates").$type<TpsRelation[]>().default(sql`'[]'::jsonb`),
+  businessConnections: jsonb("business_connections").$type<TpsBusiness[]>().default(sql`'[]'::jsonb`),
+  jobs: jsonb("jobs").$type<JobExperience[]>().default(sql`'[]'::jsonb`), // TPS "Education and Employment" — also merged into people.jobs
+  colleges: jsonb("colleges").$type<CollegeExperience[]>().default(sql`'[]'::jsonb`), // ...and into schooling.colleges
   backgroundProfile: text("background_profile"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -1196,6 +1229,8 @@ export const storyImporters = pgTable("story_importers", {
   runWindow: text("run_window").notNull().default("19:30-22:30"), // "HH:MM-HH:MM", PRM server local time
   skipDayProbability: real("skip_day_probability").notNull().default(0.08),
   downloadVideos: boolean("download_videos").notNull().default(false),
+  unseenOnly: boolean("unseen_only").notNull().default(false), // auto runs skip stories this login already viewed
+  runNowUnseenOnly: boolean("run_now_unseen_only").notNull().default(false), // the same for "Run now"; the page's checkbox, kept here
   nextRunAt: timestamp("next_run_at"), // the scheduler's only state per importer
   lastUsername: text("last_username"), // the @username the service reported on its last run
   // Morning tracking runs (account-tracking-plan.md §2.3), scheduled apart from stories.
@@ -1822,6 +1857,7 @@ export const insertSsoConfigSchema = createInsertSchema(ssoConfig).omit({
 export const insertSocialAccountSchema = createInsertSchema(socialAccounts).omit({
   id: true,
   createdAt: true,
+  sentNotes: true, // written only by notes ingest
 });
 
 export const insertSocialAccountTypeSchema = createInsertSchema(socialAccountTypes).omit({

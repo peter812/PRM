@@ -16,7 +16,8 @@ import { db } from "../db";
 import { storage } from "../storage";
 import { requireAuth } from "../auth";
 import { uploadStoryImage, uploadMedia, deleteImageFromPrmS3, deleteMediaFromPrmS3 } from "../prm-s3";
-import { photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, imageTaskGroups, type StoryImporter, type StorySeenBy } from "@shared/schema";
+import { people, photos, socialAccountPosts, socialAccounts, storyImporters, storyScrapeRuns, imageTaskGroups, type SentNote, type StoryImporter, type StorySeenBy } from "@shared/schema";
+import { formatPersonName } from "@shared/person-name";
 import { generateDeterministicUuid } from "./social-media";
 import { queueMentioned } from "./tracking";
 import { DEFAULT_WINDOW, kickManualTrackingJobs, kickManualTrackingJobsAfterRun, runForToken, storiesServiceHeaders, storiesServiceUrl, trackNow, triggerStoriesRun } from "../stories-scheduler";
@@ -57,6 +58,16 @@ const seenBySchema = z.object({
   })),
 });
 
+// One inbox note as prm-stories' deliverNotes sends it (inbox-notes-plan.md).
+const noteSchema = z.object({
+  noteId: z.string().min(1),
+  text: z.string(),
+  song: z.object({ title: z.string(), artist: z.string() }).nullable(),
+  createdAt: z.string().datetime(),
+  seenAt: z.string().datetime(),
+  user: z.object({ pk: z.string(), username: z.string().min(1), fullName: z.string().nullable() }),
+});
+
 const runSchema = z.object({
   runId: z.string().min(1),
   status: z.string().min(1),
@@ -77,15 +88,23 @@ const timeWindow = (name: string) =>
 const importerPatchSchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
   serviceUrl: z.string().trim().max(500).optional(),
+  serviceSecret: z.string().trim().min(1).max(500).optional(),
   enabled: z.boolean().optional(),
   runEveryDays: z.number().int().min(1).max(30).optional(),
   runWindow: timeWindow("runWindow").optional(),
   skipDayProbability: z.number().min(0).max(1).optional(),
   downloadVideos: z.boolean().optional(),
+  unseenOnly: z.boolean().optional(),
+  runNowUnseenOnly: z.boolean().optional(),
   trackingEnabled: z.boolean().optional(),
   trackingWindow: timeWindow("trackingWindow").optional(),
   trackingMaxJobs: z.number().int().min(1).max(500).optional(),
 }).strict();
+
+/** An importer as the settings pages see it: whether a secret is stored, never the secret. */
+function publicImporter({ serviceSecret, ...importer }: StoryImporter) {
+  return { ...importer, serviceSecretSet: serviceSecret !== "" };
+}
 
 /** The importer for `:id`, or null with a 404 already sent. */
 async function importerFor(req: Request, res: Response): Promise<StoryImporter | null> {
@@ -390,6 +409,69 @@ export function registerStories(app: Express) {
     }
   });
 
+  // An inbox note (inbox-notes-plan.md). Every sighting is kept: a note already
+  // stored only gains this run's seenAt, and the Notes page collapses repeats.
+  // An Instagram poster PRM doesn't track yet gets an account.
+  app.post("/api/v1/stories/runs/:runId/notes", async (req, res) => {
+    try {
+      if (!(await authedRunFor(req, res, req.params.runId))) return;
+      const parsed = noteSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: "Invalid request", issues: parsed.error.issues });
+      const { user, seenAt, ...note } = parsed.data;
+      const outcome = await db.transaction(async (tx) => {
+        let created = false;
+        const byName = sql`lower(${socialAccounts.username}) = ${user.username.toLowerCase()} AND ${socialAccounts.typeId} = ${INSTAGRAM_TYPE_ID}`;
+        let [account] = await tx.select({ id: socialAccounts.id, sentNotes: socialAccounts.sentNotes }).from(socialAccounts).where(byName).limit(1).for("update");
+        if (!account) {
+          [account] = await tx.insert(socialAccounts)
+            .values({ username: user.username, nickname: user.fullName, typeId: INSTAGRAM_TYPE_ID, internalAccountCreationType: "inbox notes", accountUrl: `https://instagram.com/${user.username}` })
+            .returning({ id: socialAccounts.id, sentNotes: socialAccounts.sentNotes });
+          created = true;
+        }
+        const notes = [...account.sentNotes];
+        const i = notes.findIndex((n) => n.noteId === note.noteId);
+        if (i < 0) notes.push({ ...note, seenAt: [seenAt] });
+        else if (notes[i].seenAt.includes(seenAt)) return "seen_again"; // a retried delivery
+        else notes[i] = { ...notes[i], seenAt: [...notes[i].seenAt, seenAt].sort() };
+        await tx.update(socialAccounts).set({ sentNotes: notes }).where(eq(socialAccounts.id, account.id));
+        return created ? "created_account" : i < 0 ? "stored" : "seen_again";
+      });
+      res.json({ outcome });
+    } catch (error) {
+      console.error("Error storing inbox note:", error);
+      res.status(500).json({ error: "Failed to store note" });
+    }
+  });
+
+  // Every stored inbox note, newest first, for the Notes page. (/api/notes is the person notes table.)
+  // ?socialAccountId= narrows it to one account's notes, for that account's Notes tab.
+  app.get("/api/inbox-notes", async (req, res) => {
+    try {
+      const accountId = typeof req.query.socialAccountId === "string" ? req.query.socialAccountId : null;
+      const rows = await db
+        .select({
+          socialAccountId: socialAccounts.id,
+          username: socialAccounts.username,
+          imageUrl: socialAccounts.imageUrl,
+          ownerUuid: socialAccounts.ownerUuid,
+          firstName: people.firstName,
+          lastName: people.lastName,
+          nickname: people.nickname,
+          sentNotes: socialAccounts.sentNotes,
+        })
+        .from(socialAccounts)
+        .leftJoin(people, eq(people.id, socialAccounts.ownerUuid))
+        .where(and(sql`jsonb_array_length(${socialAccounts.sentNotes}) > 0`, accountId ? eq(socialAccounts.id, accountId) : undefined));
+      const notes = rows.flatMap(({ sentNotes, firstName, lastName, nickname, ...account }) =>
+        sentNotes.map((n: SentNote) => ({ ...account, ownerName: account.ownerUuid ? formatPersonName({ firstName, lastName, nickname }) : null, ...n })));
+      notes.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      res.json(notes);
+    } catch (error) {
+      console.error("Error listing inbox notes:", error);
+      res.status(500).json({ error: "Failed to list notes" });
+    }
+  });
+
   // The run manifest, sent once everything above is done. The row already
   // exists (PRM minted it); this fills in the result. Idempotent.
   app.post("/api/v1/stories/runs", async (req, res) => {
@@ -411,7 +493,11 @@ export function registerStories(app: Express) {
       // importer_id is not in `row`, so the upsert keeps the card PRM minted the run under; a new run takes the token's.
       await db.insert(storyScrapeRuns).values({ id: m.runId, importerId: run.importerId, ...row }).onConflictDoUpdate({ target: storyScrapeRuns.id, set: row });
       // The closing manifest follows every job's result: a tracking job still open was never reported (a start that failed, say).
-      if (m.finishedAt) await failUnfinishedJobs(m.runId, m.status);
+      // Manual jobs queued while this run held the importer go next.
+      if (m.finishedAt) {
+        await failUnfinishedJobs(m.runId, m.status);
+        kickManualTrackingJobsAfterRun();
+      }
       res.status(201).json({ ok: true });
     } catch (error) {
       console.error("Error storing story run:", error);
@@ -550,9 +636,9 @@ export function registerStories(app: Express) {
   });
 
   // ── Importers: one card per prm-stories install ──
-  app.get("/api/stories/importers", async (_req, res) => {
+  app.get("/api/stories/importers", requireAuth, async (_req, res) => {
     try {
-      res.json(await db.select().from(storyImporters).orderBy(storyImporters.createdAt));
+      res.json((await db.select().from(storyImporters).orderBy(storyImporters.createdAt)).map(publicImporter));
     } catch (error) {
       console.error("Error listing story importers:", error);
       res.status(500).json({ error: "Failed to list importers" });
@@ -563,7 +649,7 @@ export function registerStories(app: Express) {
     try {
       const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(storyImporters);
       const [created] = await db.insert(storyImporters).values({ label: `Importer ${n + 1}`, runWindow: DEFAULT_WINDOW }).returning();
-      res.status(201).json(created);
+      res.status(201).json(publicImporter(created));
     } catch (error) {
       console.error("Error creating story importer:", error);
       res.status(500).json({ error: "Failed to create importer" });
@@ -591,7 +677,7 @@ export function registerStories(app: Express) {
         .set({ ...patch, ...(reschedule ? { nextRunAt: null } : {}), ...(rescheduleTracking ? { nextTrackingRunAt: null } : {}) })
         .where(eq(storyImporters.id, importer.id))
         .returning();
-      res.json(updated);
+      res.json(publicImporter(updated));
     } catch (error) {
       console.error("Error updating story importer:", error);
       res.status(500).json({ error: "Failed to update importer" });
@@ -653,7 +739,7 @@ export function registerStories(app: Express) {
     try {
       const importer = await importerFor(req, res);
       if (!importer) return;
-      res.json(await triggerStoriesRun(importer));
+      res.json(await triggerStoriesRun(importer, importer.runNowUnseenOnly));
     } catch (error) {
       console.error("Error triggering story run:", error);
       res.status(500).json({ error: "Failed to trigger run" });

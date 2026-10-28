@@ -66,6 +66,22 @@ type FaceReviewFace = {
   lookAlikes: FaceReviewFaceLookAlike[];
 };
 
+type FaceState = Pick<FaceReviewFace, "identified" | "dismissed" | "autoMatchScore">;
+const faceState = (f: FaceReviewFace): FaceState => ({ identified: f.identified, dismissed: f.dismissed, autoMatchScore: f.autoMatchScore });
+
+/** An optimistic queue edit: the faces' states before it, to restore if the server refuses it. */
+type Optimistic = { photoId: string; key: unknown[]; before: Map<string, FaceState>; states: Map<string, Partial<FaceState>> };
+
+/** apiRequest's "409: {"error":"…"}" as just the server's message. */
+function serverError(err: Error): string {
+  const body = err.message.replace(/^\d+:\s*/, "");
+  try {
+    return JSON.parse(body).error ?? body;
+  } catch {
+    return body;
+  }
+}
+
 type FaceReviewItem = {
   photoId: string;
   imageUrl: string;
@@ -277,21 +293,62 @@ export default function FaceReviewPage() {
   const currentPhotoId = useRef<string | undefined>(undefined);
   currentPhotoId.current = item?.photoId;
 
-  // Replace the photo in every cached page with a refreshed copy (after assign/dismiss). Identical
-  // images share their faces, so the same face in other queued photos takes the new state too.
-  function patchItem(updated: FaceReviewItem) {
-    const faceState = new Map(updated.faces.map((f) => [f.faceUuid, { identified: f.identified, dismissed: f.dismissed, autoMatchScore: f.autoMatchScore }]));
+  // Optimistic face states still waiting on the server, so a reply to an earlier action doesn't undo them.
+  const pendingFaces = useRef(new Map<string, Partial<FaceState>>());
+  const withPending = (f: FaceReviewFace): FaceReviewFace => (pendingFaces.current.has(f.faceUuid) ? { ...f, ...pendingFaces.current.get(f.faceUuid) } : f);
+
+  // Set faces' state in every cached page. Identical images share their faces, so the same face in
+  // other queued photos takes the new state too; `replace` swaps that photo in whole.
+  function patchFaces(faceState: Map<string, Partial<FaceState>>, replace?: FaceReviewItem, key: unknown[] = queueKey) {
     const sync = (it: FaceReviewItem): FaceReviewItem =>
       it.faces.some((f) => faceState.has(f.faceUuid))
         ? { ...it, faces: it.faces.map((f) => (faceState.has(f.faceUuid) ? { ...f, ...faceState.get(f.faceUuid) } : f)) }
         : it;
     queryClient.setQueryData<{ pages: FaceReviewPage[]; pageParams: unknown[] } | undefined>(
-      queueKey,
+      key,
       (old) => old && {
         ...old,
-        pages: old.pages.map((page) => ({ ...page, items: page.items.map((it) => (it.photoId === updated.photoId ? updated : sync(it))) })),
+        pages: old.pages.map((page) => ({ ...page, items: page.items.map((it) => (it.photoId === replace?.photoId ? replace : sync(it))) })),
       },
     );
+  }
+
+  // Replace the photo in every cached page with a refreshed copy (after assign/dismiss).
+  function patchItem(updated: FaceReviewItem) {
+    const item = { ...updated, faces: updated.faces.map(withPending) };
+    patchFaces(new Map(item.faces.map((f) => [f.faceUuid, faceState(f)])), item);
+  }
+
+  // Queue actions apply at once (and run on the server one at a time, via the shared mutation scope):
+  // the photo updates and, when it's now resolved, the queue advances without waiting for the reply.
+  function applyOptimistic(photoId: string, states: Map<string, Partial<FaceState>>, advance: boolean): Optimistic {
+    const it = items.find((i) => i.photoId === photoId);
+    const before = new Map((it?.faces ?? []).filter((f) => states.has(f.faceUuid)).map((f) => [f.faceUuid, faceState(f)]));
+    states.forEach((s, faceUuid) => pendingFaces.current.set(faceUuid, s));
+    if (it) {
+      const next = { ...it, faces: it.faces.map(withPending) };
+      if (advance) advanceIfDone(next);
+      else patchItem(next);
+    }
+    return { photoId, key: queueKey, before, states };
+  }
+
+  function settle(ctx: Optimistic | undefined) {
+    ctx?.states.forEach((s, faceUuid) => {
+      if (pendingFaces.current.get(faceUuid) === s) pendingFaces.current.delete(faceUuid);
+    });
+  }
+
+  // The server refused: restore the faces, go back to the photo and say why.
+  function rollback(ctx: Optimistic | undefined, title: string, err: Error) {
+    toast({ title, description: serverError(err), variant: "destructive" });
+    if (!ctx) return;
+    settle(ctx);
+    patchFaces(ctx.before, undefined, ctx.key);
+    if (ctx.key.join() !== queueKey.join()) return;
+    if (currentPhotoId.current === ctx.photoId) window.clearTimeout(advanceTimerRef.current);
+    const at = (queryClient.getQueryData<{ pages: FaceReviewPage[] }>(queueKey)?.pages.flatMap((p) => p.items) ?? []).findIndex((i) => i.photoId === ctx.photoId);
+    if (at >= 0) setIndex(at);
   }
 
   // Quality-noise faces don't hold a photo in the queue unless "Show noise" is on (matches faceQualifies).
@@ -366,29 +423,39 @@ export default function FaceReviewPage() {
     }
   }
 
+  // Every queue action shares one scope, so their requests reach the server in the order they were made.
+  const queueScope = { id: "face-review-queue" };
+  const onSaved = (updated: FaceReviewItem, _vars: unknown, ctx: Optimistic | undefined) => {
+    settle(ctx);
+    patchItem(updated);
+    queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
+  };
+
+  // `label` only names the face until the server's reply arrives; it isn't sent.
   const assignMutation = useMutation({
-    mutationFn: async (vars: { photoId: string; faceUuid: string; socialAccountId?: string; personId?: string; username?: string }) => {
+    scope: queueScope,
+    mutationFn: async ({ label: _label, ...vars }: { photoId: string; faceUuid: string; label: string; socialAccountId?: string; personId?: string; username?: string }) => {
       const res = await apiRequest("POST", "/api/face-review/assign", { ...vars, kind });
       return (await res.json()) as FaceReviewItem;
     },
-    onSuccess: (updated) => {
-      advanceIfDone(updated);
-      queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
+    onMutate: (vars) => {
       setSearchFace(null);
       setFocusedFace(null);
+      const identified = { socialAccountId: vars.socialAccountId, personId: vars.personId, label: vars.label };
+      return applyOptimistic(vars.photoId, new Map([[vars.faceUuid, { identified, dismissed: false, autoMatchScore: null }]]), true);
     },
-    onError: () => toast({ title: "Couldn't assign that face", variant: "destructive" }),
+    onSuccess: onSaved,
+    onError: (err: Error, _vars, ctx) => rollback(ctx, "Couldn't assign that face", err),
   });
 
   // faceUuids: one face (Skip) or every open face in the photo (Skip all).
   const dismissMutation = useMutation({
+    scope: queueScope,
     mutationFn: async (vars: { photoId: string; faceUuids: string[] }) => {
       const res = await apiRequest("POST", "/api/face-review/dismiss", { ...vars, kind });
       return (await res.json()) as FaceReviewItem;
     },
-    onSuccess: (updated, vars) => {
-      advanceIfDone(updated);
-      queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
+    onMutate: (vars) => {
       toast({
         title: vars.faceUuids.length > 1 ? `Skipped ${vars.faceUuids.length} faces` : "Skipped this face",
         action: (
@@ -397,44 +464,47 @@ export default function FaceReviewPage() {
           </ToastAction>
         ),
       });
+      return applyOptimistic(vars.photoId, new Map(vars.faceUuids.map((u) => [u, { dismissed: true }])), true);
     },
-    onError: (_err, vars) => toast({ title: vars.faceUuids.length > 1 ? "Couldn't skip those faces" : "Couldn't skip that face", variant: "destructive" }),
+    onSuccess: onSaved,
+    onError: (err: Error, vars, ctx) => rollback(ctx, vars.faceUuids.length > 1 ? "Couldn't skip those faces" : "Couldn't skip that face", err),
   });
 
   const undismissMutation = useMutation({
+    scope: queueScope,
     mutationFn: async (vars: { photoId: string; faceUuids: string[] }) => {
       const res = await apiRequest("POST", "/api/face-review/undismiss", { ...vars, kind });
       return (await res.json()) as FaceReviewItem;
     },
-    onSuccess: (updated) => {
-      patchItem(updated);
-      queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
-    },
+    onMutate: (vars) => applyOptimistic(vars.photoId, new Map(vars.faceUuids.map((u) => [u, { dismissed: false }])), false),
+    onSuccess: onSaved,
+    onError: (err: Error, vars, ctx) => rollback(ctx, vars.faceUuids.length > 1 ? "Couldn't unskip those faces" : "Couldn't unskip that face", err),
   });
 
   // The ✕ on a named face box: unlink it (the face comes back for review), with Undo re-assigning it.
   const unassignMutation = useMutation({
+    scope: queueScope,
     mutationFn: async (vars: { photoId: string; face: FaceReviewFace }) => {
       const res = await apiRequest("POST", "/api/face-review/unassign", { photoId: vars.photoId, faceUuid: vars.face.faceUuid, kind });
       return (await res.json()) as FaceReviewItem;
     },
-    onSuccess: (updated, { photoId, face }) => {
-      patchItem(updated);
-      queryClient.invalidateQueries({ queryKey: ["/api/face-review/counts"] });
+    onMutate: ({ photoId, face }) => {
       const was = face.identified;
       toast({
         title: `Removed ${was?.label ?? "the name"} from this face`,
         action: was ? (
           <ToastAction
             altText="Undo"
-            onClick={() => assignMutation.mutate({ photoId, faceUuid: face.faceUuid, socialAccountId: was.socialAccountId, personId: was.personId })}
+            onClick={() => assignMutation.mutate({ photoId, faceUuid: face.faceUuid, label: was.label, socialAccountId: was.socialAccountId, personId: was.personId })}
           >
             Undo
           </ToastAction>
         ) : undefined,
       });
+      return applyOptimistic(photoId, new Map([[face.faceUuid, { identified: null, autoMatchScore: null }]]), false);
     },
-    onError: () => toast({ title: "Couldn't remove that name", variant: "destructive" }),
+    onSuccess: onSaved,
+    onError: (err: Error, _vars, ctx) => rollback(ctx, "Couldn't remove that name", err),
   });
 
   const autoAssignMutation = useMutation({
@@ -511,23 +581,23 @@ export default function FaceReviewPage() {
         setIndex((i) => Math.max(i - 1, 0));
       } else if (e.key === " ") {
         e.preventDefault();
-        if (item && !dismissedFilter && actionableFaces.length > 0 && !dismissMutation.isPending) {
+        if (item && !dismissedFilter && actionableFaces.length > 0) {
           dismissMutation.mutate({ photoId: item.photoId, faceUuids: actionableFaces.map((f) => f.faceUuid) });
         }
-      } else if (e.key.toLowerCase() === "d" && focusedFace && item && !dismissedFilter && !dismissMutation.isPending) {
+      } else if (e.key.toLowerCase() === "d" && focusedFace && item && !dismissedFilter) {
         dismissMutation.mutate({ photoId: item.photoId, faceUuids: [focusedFace] });
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actionableFaces, focusedFace, item, items.length, dismissedFilter, dismissMutation.isPending, canGoNext, queueQuery.isFetchingNextPage]);
+  }, [actionableFaces, focusedFace, item, items.length, dismissedFilter, canGoNext, queueQuery.isFetchingNextPage]);
 
   const kindOffToggle = autoSettings && !autoSettings[kind]?.face;
 
   // Profile tab: is the connected account already identified in this photo?
   const profileAccountPlaced = !!item?.account && item.faces.some((f) => f.identified?.socialAccountId === item.account!.id);
   const assignProfileAccount = (faceUuid: string) =>
-    item?.account && assignMutation.mutate({ photoId: item.photoId, faceUuid, socialAccountId: item.account.id });
+    item?.account && assignMutation.mutate({ photoId: item.photoId, faceUuid, label: `@${item.account.username}`, socialAccountId: item.account.id });
 
   // Identities already on a face in this photo stay assignable (one person can appear more than
   // once in a photo); they're listed after the others and marked.
@@ -641,7 +711,7 @@ export default function FaceReviewPage() {
                 }))}
                 onRemove={(key) => {
                   const face = item.faces.find((f) => f.faceUuid === key);
-                  if (face?.identified && !unassignMutation.isPending) unassignMutation.mutate({ photoId: item.photoId, face });
+                  if (face?.identified) unassignMutation.mutate({ photoId: item.photoId, face });
                 }}
               />
             </div>
@@ -668,7 +738,6 @@ export default function FaceReviewPage() {
                 variant="outline"
                 size="sm"
                 className="w-full"
-                disabled={dismissMutation.isPending}
                 onClick={() => dismissMutation.mutate({ photoId: item.photoId, faceUuids: actionableFaces.map((f) => f.faceUuid) })}
                 data-testid="button-dismiss-all"
               >
@@ -809,7 +878,7 @@ export default function FaceReviewPage() {
                           key={`${s.socialAccountId ?? s.personId ?? s.username}-${s.reason}`}
                           type="button"
                           className="text-xs px-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1"
-                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, socialAccountId: s.socialAccountId, personId: s.personId, username: s.username }); }}
+                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label: s.label, socialAccountId: s.socialAccountId, personId: s.personId, username: s.username }); }}
                           data-testid={`chip-suggestion-${s.socialAccountId ?? s.personId ?? s.username}`}
                         >
                           {suggestionLabel(item.kind, s)}
@@ -822,7 +891,7 @@ export default function FaceReviewPage() {
                           key={la.personfaceUuid}
                           type="button"
                           className="text-xs pl-1 pr-2 py-1 rounded-full border hover:bg-accent flex items-center gap-1.5"
-                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, socialAccountId: la.socialAccountId, personId: la.personId }); }}
+                          onClick={(e) => { e.stopPropagation(); assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label: la.label, socialAccountId: la.socialAccountId, personId: la.personId }); }}
                           data-testid={`chip-lookalike-${la.personfaceUuid}`}
                         >
                           <img src={withImageSize(la.cropUrl, 64)} alt="" className="h-4 w-4 rounded-full object-cover" />
@@ -862,7 +931,7 @@ export default function FaceReviewPage() {
                     {isSearching && (
                       <IdentitySearch
                         placedIds={placedIds}
-                        onPick={(target) => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, ...target })}
+                        onPick={(target, label) => assignMutation.mutate({ photoId: item.photoId, faceUuid: face.faceUuid, label: label ?? `@${target.username ?? "…"}`, ...target })}
                         onCancel={() => setSearchFace(null)}
                       />
                     )}

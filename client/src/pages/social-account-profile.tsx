@@ -31,7 +31,7 @@ import {
   DEFAULT_MAX_RECORDS,
   type ExtractAction,
 } from "@/lib/extension-bridge";
-import { isValidHexColor, getInitials } from "@/lib/utils";
+import { getInitials } from "@/lib/utils";
 import { postPosters } from "@/lib/instagram";
 import { useMutation } from "@tanstack/react-query";
 import type { SocialAccountWithCurrentProfile, Person, SocialAccountType, SocialAccountPost, SocialAccountHistoryEntry, TrackingJob, PrimaryAddress } from "@shared/schema";
@@ -47,8 +47,10 @@ import { PostDialog } from "@/components/post-dialog";
 import { PostDetailDialog } from "@/components/post-detail-dialog";
 import { ProfilePhotoDialog } from "@/components/profile-photo-dialog";
 import { SiInstagram } from "react-icons/si";
+import { SocialPlatformIcon } from "@/components/social-platform-icon";
 import { MessagesTab } from "@/components/messages-tab";
 import { StoriesTab } from "@/components/stories-tab";
+import { NotesList } from "@/pages/notes";
 import { SocialAccountHistoryTab } from "@/components/social-account-history-tab";
 import { InsightsTab } from "@/components/insights-tab";
 import { AccountOsintCard } from "@/components/osint-results";
@@ -84,6 +86,8 @@ export default function SocialAccountProfile() {
 
   const getTabFromSearch = () => {
     if (typeof window === "undefined") return "account";
+    // Notes has its own path, /social-accounts/:uuid/notes, rather than ?tab=.
+    if (window.location.pathname.endsWith("/notes")) return "notes";
     const params = new URLSearchParams(window.location.search);
     const tabParam = params.get("tab");
     if (tabParam && VALID_TABS.includes(tabParam)) {
@@ -104,14 +108,14 @@ export default function SocialAccountProfile() {
   const handleTabChange = (newTab: string) => {
     setActiveTab(newTab);
     const params = new URLSearchParams(window.location.search);
-    if (newTab === "account") {
+    if (newTab === "account" || newTab === "notes") {
       params.delete("tab");
     } else {
       params.set("tab", newTab);
     }
     const searchStr = params.toString();
-    const newUrl = `${window.location.pathname}${searchStr ? `?${searchStr}` : ""}`;
-    window.history.replaceState(null, "", newUrl);
+    const path = `/social-accounts/${uuid}${newTab === "notes" ? "/notes" : ""}`;
+    window.history.replaceState(null, "", `${path}${searchStr ? `?${searchStr}` : ""}`);
   };
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isChangeUsernameOpen, setIsChangeUsernameOpen] = useState(false);
@@ -501,14 +505,81 @@ export default function SocialAccountProfile() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col h-full">
-        <div className="border-b px-6 py-4">
-          <Skeleton className="h-8 w-32 mb-6" />
-          <div className="flex items-start gap-6">
-            <Skeleton className="w-24 h-24 rounded-full" />
-            <div className="flex-1 space-y-3">
-              <Skeleton className="h-8 w-1/3" />
-              <Skeleton className="h-4 w-1/4" />
+      <div className="flex flex-col h-full overflow-hidden" data-testid="skeleton-social-account">
+        {/* Top bar */}
+        <div className="border-b px-4 py-2 flex items-center justify-between shrink-0 bg-card/40">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-8 w-8 rounded-full" />
+            <div className="space-y-1.5">
+              <Skeleton className="h-3.5 w-32" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-8 w-36" />
+            <Skeleton className="h-8 w-24" />
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+          {/* Tab sidebar */}
+          <div className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r bg-card/25 flex flex-col justify-between">
+            <div className="p-3 space-y-1">
+              <Skeleton className="h-9 w-full rounded-md" />
+              {[16, 12, 14, 20, 24, 14, 16, 18].map((w, i) => (
+                <div key={i} className="h-9 px-3 flex items-center">
+                  <Skeleton className="h-3.5" style={{ width: `${w * 4}px` }} />
+                </div>
+              ))}
+            </div>
+            <div className="hidden md:block p-4 border-t bg-muted/15 space-y-4">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="space-y-1.5">
+                  <Skeleton className="h-2.5 w-20" />
+                  <Skeleton className="h-3 w-32" />
+                  <Skeleton className="h-3 w-28" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Account tab */}
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex flex-col lg:flex-row gap-6 items-start">
+              <div className="flex-1 space-y-6 w-full min-w-0">
+                <div className="space-y-2">
+                  <Skeleton className="h-8 w-1/3" />
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-4 w-2/3" />
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <Skeleton key={i} className="h-20 rounded-md" />
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {["aspect-square", "aspect-[9/16]"].map((aspect) => (
+                    <Card key={aspect} className="p-4 space-y-3 shadow-none">
+                      <Skeleton className="h-4 w-24" />
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {Array.from({ length: 4 }).map((_, i) => (
+                          <Skeleton key={i} className={`${aspect} rounded-md w-full`} />
+                        ))}
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Skeleton className="h-14 rounded-lg" />
+                  <Skeleton className="h-14 rounded-lg" />
+                </div>
+                <Skeleton className="h-28 w-full rounded-lg" />
+              </div>
+              <div className="w-full lg:w-80 shrink-0 space-y-4">
+                <Skeleton className="aspect-square w-full rounded-2xl" />
+                <Skeleton className="h-8 w-full rounded-md" />
+                <Skeleton className="h-72 w-full rounded-lg" />
+              </div>
             </div>
           </div>
         </div>
@@ -699,14 +770,7 @@ export default function SocialAccountProfile() {
               </Button>
               {accountType && (
                 <Link href={`/social-accounts?type=${accountType.id}`}>
-                  <Badge 
-                    variant="outline" 
-                    className="cursor-pointer text-[10px] px-1 py-0 h-4 leading-none"
-                    style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                    data-testid="badge-account-type"
-                  >
-                    {accountType.name}
-                  </Badge>
+                  <SocialPlatformIcon type={accountType} className="cursor-pointer" />
                 </Link>
               )}
               {isFollowingYou && (
@@ -866,6 +930,13 @@ export default function SocialAccountProfile() {
                 Messages
               </TabsTrigger>
               <TabsTrigger
+                value="notes"
+                className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
+                data-testid="tab-notes"
+              >
+                Notes
+              </TabsTrigger>
+              <TabsTrigger
                 value="connections"
                 className="justify-start px-3 py-2 text-left rounded-md w-full data-[state=active]:bg-muted data-[state=active]:text-foreground border-0"
                 data-testid="tab-connections"
@@ -1023,14 +1094,7 @@ export default function SocialAccountProfile() {
                     </h2>
                     {accountType && (
                       <Link href={`/social-accounts?type=${accountType.id}`}>
-                        <Badge 
-                          variant="outline" 
-                          className="cursor-pointer text-xs px-2 py-0.5"
-                          style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                          data-testid="badge-account-main-type"
-                        >
-                          {accountType.name}
-                        </Badge>
+                        <SocialPlatformIcon type={accountType} className="cursor-pointer [&_svg]:h-5 [&_svg]:w-5" />
                       </Link>
                     )}
                     {isFollowingYou && (
@@ -1354,7 +1418,7 @@ export default function SocialAccountProfile() {
                     {/* Account type */}
                     <div>
                       <span className="text-[10px] text-muted-foreground uppercase font-semibold block">Account Type</span>
-                      <span className="text-foreground" data-testid="text-details-account-type">{accountType?.name || "Unknown"}</span>
+                      <span className="text-foreground inline-flex items-center gap-1.5" data-testid="text-details-account-type">{accountType && <SocialPlatformIcon type={accountType} />}{accountType?.name || "Unknown"}</span>
                     </div>
 
                     {/* Status (Public / Private) */}
@@ -1784,6 +1848,9 @@ export default function SocialAccountProfile() {
             <MessagesTab socialAccountId={account.id} />
           </TabsContent>
 
+          <TabsContent value="notes" className="mt-0 flex-1 min-h-0 overflow-y-auto p-6">
+            <NotesList socialAccountId={account.id} />
+          </TabsContent>
           <TabsContent value="connections" className="mt-0 flex-1 min-h-0 overflow-y-auto">
             <ConnectionsTab socialAccountId={account.id} />
           </TabsContent>

@@ -274,7 +274,7 @@ async function clusterSuggestions(ids: string[]): Promise<Map<string, { suggesti
       FROM face_cluster_rejections r JOIN faces ON faces.id = r.face_id WHERE ${inArray(faces.clusterId, ids)} GROUP BY 1, 2`),
     db.select({ id: faceClusters.id, medoid: faceClusters.medoidFaceId }).from(faceClusters).where(inArray(faceClusters.id, ids)),
   ]);
-  const lookAlikes = await lookAlikesFor(medoids.map((m) => m.medoid));
+  const lookAlikes = await lookAlikesFor(medoids.map((m) => m.medoid), { allowStale: true });
   const topLookAlike = (cluster: string) => lookAlikes.get(medoids.find((m) => m.id === cluster)?.medoid ?? "")?.[0];
   const lookAlikeIdentities = await buildIdentityCache(Array.from(new Set(ids.map(topLookAlike).filter((la) => !!la).map((la) => la!.personfaceUuid))));
   const rejected = new Map(rejections.rows.map((r) => [`${r.cluster}|${r.identity}`, r.n]));

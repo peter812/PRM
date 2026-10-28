@@ -14,6 +14,8 @@ import {
   Check,
   X,
   Edit2,
+  Building2,
+  Briefcase,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -25,11 +27,14 @@ import {
   type TruePersonSearch,
   type TpsAddress,
   type TpsRelation,
+  type TpsBusiness,
+  type JobExperience,
+  type CollegeExperience,
   type PersonWithRelations,
   formatPhoneNumberForDisplay,
   getTruePeopleSearchUrl,
 } from "@shared/schema";
-import { formatDateRange } from "@shared/partial-date";
+import { formatDateRange, formatPartialDate } from "@shared/partial-date";
 
 interface TrueDbTabProps {
   person: PersonWithRelations;
@@ -290,6 +295,9 @@ export function TrueDbTab({ person }: TrueDbTabProps) {
   const emails = (data.emails as string[] | null) ?? [];
   const relatives = (data.relatives as TpsRelation[] | null) ?? [];
   const associates = (data.associates as TpsRelation[] | null) ?? [];
+  const businesses = (data.businessConnections as TpsBusiness[] | null) ?? [];
+  const jobs = (data.jobs as JobExperience[] | null) ?? [];
+  const colleges = (data.colleges as CollegeExperience[] | null) ?? [];
   const sourceUrl = tpsPersonUrl(data.tpsId);
 
   // Compute recommendations from the latest record (records[0])
@@ -534,6 +542,45 @@ export function TrueDbTab({ person }: TrueDbTabProps) {
       {associates.length > 0 && (
         <Section icon={UserPlus} title="Possible Associates">
           <RelationList items={associates} />
+        </Section>
+      )}
+
+      {/* Business Connections */}
+      {businesses.length > 0 && (
+        <Section icon={Building2} title="Business Connections">
+          <ul className="space-y-2">
+            {businesses.map((b, i) => (
+              <li key={`${b.name}-${i}`} className="text-sm">
+                <div className="font-medium">{b.name}</div>
+                {b.address && <div className="text-xs text-muted-foreground">{b.address}</div>}
+                {b.startDate && <div className="text-xs text-muted-foreground">Since {formatPartialDate(b.startDate)}</div>}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {/* Education & Employment */}
+      {(jobs.length > 0 || colleges.length > 0) && (
+        <Section icon={Briefcase} title="Education & Employment">
+          <ul className="space-y-2">
+            {jobs.map((j, i) => (
+              <li key={`job-${j.company}-${i}`} className="text-sm">
+                <div className="font-medium">{j.position ? `${j.position}, ${j.company}` : j.company}</div>
+                {formatDateRange(j.startDate, j.endDate) && (
+                  <div className="text-xs text-muted-foreground">{formatDateRange(j.startDate, j.endDate)}</div>
+                )}
+              </li>
+            ))}
+            {colleges.map((c, i) => (
+              <li key={`college-${c.name}-${i}`} className="text-sm">
+                <div className="font-medium">{c.degree ? `${c.degree}, ${c.name}` : c.name}</div>
+                {formatDateRange(c.startDate, c.endDate) && (
+                  <div className="text-xs text-muted-foreground">{formatDateRange(c.startDate, c.endDate)}</div>
+                )}
+              </li>
+            ))}
+          </ul>
         </Section>
       )}
 

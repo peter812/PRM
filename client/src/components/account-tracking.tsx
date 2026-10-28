@@ -39,6 +39,21 @@ const BLOCKER_TEXT = { private: "private account", too_many_follows: "over 10,00
 
 const when = (d: string | Date | null | undefined) => (d ? new Date(d).toLocaleDateString([], { month: "short", day: "numeric" }) : "—");
 
+/** "in 3 days", or hours when it's due today. */
+function untilScan(d: string | Date) {
+  const due = new Date(d);
+  const now = new Date();
+  const ms = due.getTime() - now.getTime();
+  if (ms <= 0) return "overdue — on the next tracking run";
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOf(due) - startOf(now)) / 86_400_000);
+  if (days === 0) {
+    const hours = Math.ceil(ms / 3_600_000);
+    return `in ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
+  return days === 1 ? "tomorrow" : `in ${days} days`;
+}
+
 export function AccountTracking({ account }: { account: SocialAccount }) {
   const { toast } = useToast();
   const { data: settings } = useQuery<Record<string, string | null>>({ queryKey: ["/api/settings"] });
@@ -78,6 +93,8 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
   const finished = (jobs ?? []).filter((j) => j.status !== "queued" && j.status !== "running").slice(0, 10);
   const openKinds = new Set(open.map((j) => j.kind));
   const isNone = account.interestLevel === "none";
+  const scanDays = scanCadence(account, parseScanCadences(settings?.tracking_level_defaults));
+  const nextScan = !isNone && !paused && scanDays != null && !trackingBlocker(account, "scan") ? account.scanDueAt : null;
 
   return (
     <div data-testid="card-tracking">
@@ -88,6 +105,11 @@ export function AccountTracking({ account }: { account: SocialAccount }) {
           <span className="text-[11px] text-muted-foreground">set automatically</span>
         )}
       </div>
+      {nextScan && (
+        <p className="text-[11px] text-muted-foreground mt-1" data-testid="text-next-scan">
+          Next scan {untilScan(nextScan)}
+        </p>
+      )}
       <Button variant="outline" size="sm" className="mt-2 h-7 text-xs gap-1.5" onClick={() => setEditing(true)} data-testid="button-edit-tracking">
         <RefreshCw className="h-3.5 w-3.5" />
         Edit tracking

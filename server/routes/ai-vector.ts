@@ -1202,6 +1202,7 @@ export function registerRoutes(app: Express) {
             image_url: photo.location,
             thumb_url: photo.location,
             face_count: faceCount,
+            post_id: photo.prmLocation.startsWith("post:") ? photo.prmLocation.slice("post:".length).trim() : null,
           };
         });
   

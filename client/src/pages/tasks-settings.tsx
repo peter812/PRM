@@ -16,6 +16,7 @@ import {
 import { Loader2, CheckCircle2, XCircle, Clock, Trash2, Pause, CirclePlay, Download } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { formatBytes } from "@/lib/utils";
 import type { Task } from "@shared/schema";
 
 function getTaskLabel(type: string): string {
@@ -30,6 +31,8 @@ function getTaskLabel(type: string): string {
       return "Migrate Profile Image Tiers";
     case "bake_image_variants":
       return "Bake Image Variants";
+    case "prm_s3_backup":
+      return "PRM-S3 Backup";
     case "import_social":
       return "Social Extraction Import";
     case "import_instagram":
@@ -120,6 +123,13 @@ function TaskResultDisplay({ task }: { task: Task }) {
         <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
           Baked: {result.baked}, Skipped: {result.skipped}, Failed: {result.failed}, Total: {result.total}
           {result.cancelled && " (cancelled)"}
+        </span>
+      );
+    }
+    if (task.type === "prm_s3_backup") {
+      return (
+        <span className="text-xs text-muted-foreground" data-testid={`text-task-result-${task.id}`}>
+          {result.backupname}: {result.files} files, {formatBytes(result.zipBytes)}
         </span>
       );
     }

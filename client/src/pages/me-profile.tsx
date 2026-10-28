@@ -26,7 +26,7 @@ import { ChoosePersonImageDialog } from "@/components/choose-person-image-dialog
 import { PersonSocialAccountsChips } from "@/components/person-social-accounts-chips";
 import { PersonTagsChips } from "@/components/person-tags-chips";
 import { PersonFlowTab } from "@/components/person-flow-tab";
-import { PersonPhotosTab } from "@/components/person-photos-tab";
+import { PersonPhotosOverview, PersonPhotosTab } from "@/components/person-photos-tab";
 import { OUTDATED_TEXT, OutdatedBadge, PersonAddresses } from "@/components/person-addresses";
 import { mapHref } from "@/lib/map-shared";
 import { ReferenceMatchesDialog, type ReferenceProbe } from "@/components/reference-matches-dialog";
@@ -36,56 +36,6 @@ const FamilyTreeTab = lazy(() =>
     default: module.FamilyTreeTab,
   }))
 );
-
-function PersonPhotosOverview({ personId, limit = 4 }: { personId: string; limit?: number }) {
-  const { data, isLoading } = useQuery<any>({
-    queryKey: ["/api/image/query-person-overview", personId, limit],
-    queryFn: async () => {
-      const res = await fetch(
-        `/api/image/query-person?personUuid=${encodeURIComponent(personId)}&page=1&page_size=${limit}`,
-        { credentials: "include" }
-      );
-      if (!res.ok) throw new Error("Failed to fetch photos overview");
-      return res.json();
-    },
-  });
-
-  if (isLoading) {
-    return (
-      <div className="grid grid-cols-4 gap-2">
-        {[...Array(limit)].map((_, i) => (
-          <div key={i} className="aspect-square bg-muted animate-pulse rounded-md" />
-        ))}
-      </div>
-    );
-  }
-
-  const images = data?.images ?? [];
-
-  if (images.length === 0) {
-    return <p className="text-xs text-muted-foreground italic">No photos recorded.</p>;
-  }
-
-  return (
-    <div className="grid grid-cols-4 gap-2">
-      {images.map((img: any) => (
-        <a
-          key={img.image_uuid}
-          href={img.image_url}
-          target="_blank"
-          rel="noreferrer"
-          className="block overflow-hidden rounded-md border aspect-square hover:opacity-90 transition-opacity bg-muted"
-        >
-          <img
-            src={img.thumb_url || img.image_url}
-            alt="Person thumbnail"
-            className="w-full h-full object-cover"
-          />
-        </a>
-      ))}
-    </div>
-  );
-}
 
 export default function MeProfile() {
   // ?tab= opens a tab directly, e.g. a message-chunk link to the Messages tab.

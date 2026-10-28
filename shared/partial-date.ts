@@ -34,7 +34,7 @@ export function formatDateRange(start: string | null | undefined, end: string | 
  */
 export function parseTpsRange(text: string | null | undefined): { start: string | null; end: string | null } {
   const side = (s: string | undefined) => {
-    const match = s?.trim().match(/^(?:([A-Za-z]{3})[a-z]*\s+)?(\d{4})$/);
+    const match = s?.trim().match(/^(?:([A-Za-z]{3})[A-Za-z]*\s+)?(\d{4})$/);
     if (!match) return null;
     const month = match[1] ? MONTHS.indexOf(match[1][0].toUpperCase() + match[1].slice(1, 3).toLowerCase()) + 1 : 0;
     return month ? `${match[2]}-${String(month).padStart(2, "0")}` : match[2];

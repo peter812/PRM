@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
-import { Plus, X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown, BarChart3, Star } from "lucide-react";
+import { X, Users2, Edit2, ExternalLink, Download, Upload, LayoutList, LayoutGrid, Maximize2, RefreshCw, ChevronDown, BarChart3, Star, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -17,6 +17,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -39,10 +40,11 @@ import { useToast } from "@/hooks/use-toast";
 import { useDebounce } from "@/hooks/use-debounce";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { cn, getInitials, isValidHexColor } from "@/lib/utils";
+import { SocialPlatformIcon } from "@/components/social-platform-icon";
 import { INSTAGRAM_TYPE_ID, type SocialAccountWithCurrentProfile, type Person, type SocialAccountType } from "@shared/schema";
 import { withImageSize } from "@shared/image-size";
 import { RECENT_CHECK_HOURS, TRACKING_KINDS, TRACKING_KIND_LABEL, type TrackingKind } from "@shared/interest-level";
-import { AccountCreationTimelineDialog } from "@/components/account-creation-timeline-dialog";
+import { SocialAccountStatsDialog } from "@/components/account-creation-timeline-dialog";
 import { SocialAccountDialog } from "@/components/social-account-dialog";
 import { ExportSocialAccountDialog } from "@/components/export-social-account-dialog";
 
@@ -122,7 +124,6 @@ function StarToggle({ account }: { account: SocialAccountWithCurrentProfile }) {
 export default function SocialAccountsList() {
   const [, navigate] = useLocation();
   const searchParams = useSearch();
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<SocialAccountWithCurrentProfile | null>(null);
   const [accountToEdit, setAccountToEdit] = useState<SocialAccountWithCurrentProfile | null>(null);
@@ -155,6 +156,8 @@ export default function SocialAccountsList() {
   const typeIdFromUrl = urlParams.get("type") || "";
   const [selectedTypeId, setSelectedTypeId] = useState(typeIdFromUrl);
   const [interestLevel, setInterestLevel] = useState("all");
+  const activeFilterCount =
+    [selectedTypeId && selectedTypeId !== "all", interestLevel !== "all", showFollowsYou, starredOnly].filter(Boolean).length;
 
   useEffect(() => {
     setSelectedTypeId(typeIdFromUrl);
@@ -301,9 +304,6 @@ export default function SocialAccountsList() {
           <h1 className="text-xl md:text-2xl font-semibold truncate flex-1 md:flex-initial md:shrink-0" data-testid="text-page-title">
             Social Accounts
           </h1>
-          <Button onClick={() => setIsAddDialogOpen(true)} size="icon" className="md:hidden shrink-0" data-testid="button-add-account-mobile">
-            <Plus className="h-4 w-4" />
-          </Button>
           <div className="hidden md:block min-w-[200px] max-w-md">
             <Input
               placeholder="Search accounts..."
@@ -312,49 +312,68 @@ export default function SocialAccountsList() {
               data-testid="input-search-accounts"
             />
           </div>
-          <Select value={selectedTypeId || "all"} onValueChange={handleTypeChange}>
-            <SelectTrigger className="w-[140px] md:w-[180px] shrink-0 md:ml-auto" data-testid="select-type-filter">
-              <SelectValue placeholder="All Types" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Types</SelectItem>
-              {socialAccountTypes?.map((type) => (
-                <SelectItem key={type.id} value={type.id}>
-                  <span className="flex items-center gap-2">
-                    {isValidHexColor(type.color) && (
-                      <span 
-                        className="w-2 h-2 rounded-full" 
-                        style={{ backgroundColor: type.color }}
-                      />
-                    )}
-                    {type.name}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <InterestLevelSelect value={interestLevel} onChange={setInterestLevel} allowAll className="w-[130px] shrink-0" />
-          <div className="flex items-center gap-2 shrink-0">
-            <Switch
-              id="follows-you"
-              checked={showFollowsYou}
-              onCheckedChange={setShowFollowsYou}
-              data-testid="switch-follows-you"
-            />
-            <Label htmlFor="follows-you" className="cursor-pointer whitespace-nowrap">
-              Follows you
-            </Label>
-          </div>
-          <Button
-            variant={starredOnly ? "secondary" : "ghost"}
-            size="icon"
-            className="shrink-0 text-yellow-500 hover:text-yellow-600"
-            onClick={() => setStarredOnly((v) => !v)}
-            title={starredOnly ? "Show all accounts" : "Show starred only"}
-            data-testid="button-filter-starred"
-          >
-            <Star className={`h-4 w-4 ${starredOnly ? "fill-current" : ""}`} />
-          </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="shrink-0 md:ml-auto" data-testid="button-filters">
+                <SlidersHorizontal className="h-4 w-4" />
+                Filters
+                {activeFilterCount > 0 && (
+                  <Badge variant="secondary" className="px-1.5 py-0 text-xs">{activeFilterCount}</Badge>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-64 space-y-4">
+              <div className="space-y-1.5">
+                <Label>Account type</Label>
+                <Select value={selectedTypeId || "all"} onValueChange={handleTypeChange}>
+                  <SelectTrigger data-testid="select-type-filter">
+                    <SelectValue placeholder="All Types" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Types</SelectItem>
+                    {socialAccountTypes?.map((type) => (
+                      <SelectItem key={type.id} value={type.id}>
+                        <span className="flex items-center gap-2">
+                          {isValidHexColor(type.color) && (
+                            <span
+                              className="w-2 h-2 rounded-full"
+                              style={{ backgroundColor: type.color }}
+                            />
+                          )}
+                          {type.name}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Interest</Label>
+                <InterestLevelSelect value={interestLevel} onChange={setInterestLevel} allowAll className="w-full" />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="follows-you" className="cursor-pointer">Follows you</Label>
+                <Switch
+                  id="follows-you"
+                  checked={showFollowsYou}
+                  onCheckedChange={setShowFollowsYou}
+                  data-testid="switch-follows-you"
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="starred-only" className="cursor-pointer flex items-center gap-1.5">
+                  <Star className="h-4 w-4 text-yellow-500" />
+                  Starred only
+                </Label>
+                <Switch
+                  id="starred-only"
+                  checked={starredOnly}
+                  onCheckedChange={setStarredOnly}
+                  data-testid="switch-filter-starred"
+                />
+              </div>
+            </PopoverContent>
+          </Popover>
           <div className="flex items-center gap-2 shrink-0">
             <Select
               value={viewMode}
@@ -382,10 +401,6 @@ export default function SocialAccountsList() {
           <Button variant="outline" onClick={() => setIsStatsOpen(true)} className="shrink-0" data-testid="button-stats">
             <BarChart3 className="h-4 w-4" />
             Stats
-          </Button>
-          <Button onClick={() => setIsAddDialogOpen(true)} className="hidden md:inline-flex shrink-0" data-testid="button-add-account">
-            <Plus className="h-4 w-4" />
-            Add Account
           </Button>
         </div>
         {selectedIds.size > 0 && (
@@ -436,7 +451,7 @@ export default function SocialAccountsList() {
                       <th className="py-2 px-3 w-8"></th>
                       <th className="py-2 px-3 font-medium">Username</th>
                       <th className="py-2 px-3 font-medium">Nickname</th>
-                      <th className="py-2 px-3 font-medium">Type</th>
+                      <th className="py-2 px-3 font-medium w-8" title="Account type"></th>
                       <th className="py-2 px-3 font-medium">Status</th>
                       <th className="py-2 px-3 font-medium">Interest</th>
                       <th className="py-2 px-3 font-medium">Followers</th>
@@ -451,7 +466,7 @@ export default function SocialAccountsList() {
                         <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-24" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-20" /></td>
-                        <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
+                        <td className="py-2 px-3"><Skeleton className="h-4 w-4" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-16" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-14" /></td>
                         <td className="py-2 px-3"><Skeleton className="h-4 w-12" /></td>
@@ -563,7 +578,7 @@ export default function SocialAccountsList() {
                       </th>
                       <th className="py-2 px-3 font-medium">Username</th>
                       <th className="py-2 px-3 font-medium">Nickname</th>
-                      <th className="py-2 px-3 font-medium">Type</th>
+                      <th className="py-2 px-3 font-medium w-8" title="Account type"></th>
                       <th className="py-2 px-3 font-medium">Status</th>
                       <th className="py-2 px-3 font-medium">Interest</th>
                       <th className="py-2 px-3 font-medium">Followers</th>
@@ -597,18 +612,14 @@ export default function SocialAccountsList() {
                           </td>
                           <td className="py-2 px-3">
                             {accountType && (
-                              <Badge 
-                                variant="outline" 
-                                className="text-xs cursor-pointer"
-                                style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                              <SocialPlatformIcon
+                                type={accountType}
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
                                   navigate(`/social-accounts?type=${accountType.id}`);
                                 }}
-                              >
-                                {accountType.name}
-                              </Badge>
+                              />
                             )}
                           </td>
                           <td className="py-2 px-3">
@@ -708,31 +719,14 @@ export default function SocialAccountsList() {
                                 <StarToggle account={account} />
                               </h3>
                               {accountType && (
-                                <>
-                                  <span
-                                    className="md:hidden w-2.5 h-2.5 rounded-full shrink-0 cursor-pointer"
-                                    style={isValidHexColor(accountType.color) ? { backgroundColor: accountType.color } : undefined}
-                                    data-testid={`dot-type-${account.id}`}
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      navigate(`/social-accounts?type=${accountType.id}`);
-                                    }}
-                                  />
-                                  <Badge 
-                                    variant="outline" 
-                                    className="text-xs cursor-pointer hidden md:inline-flex"
-                                    style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
-                                    data-testid={`badge-type-${account.id}`}
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      navigate(`/social-accounts?type=${accountType.id}`);
-                                    }}
-                                  >
-                                    {accountType.name}
-                                  </Badge>
-                                </>
+                                <SocialPlatformIcon
+                                  type={accountType}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    navigate(`/social-accounts?type=${accountType.id}`);
+                                  }}
+                                />
                               )}
                               {isFollowingYou && (
                                 <Badge variant="secondary" className="text-xs">
@@ -860,18 +854,15 @@ export default function SocialAccountsList() {
                                 <StarToggle account={account} />
                               </h3>
                               {accountType && (
-                                <Badge 
-                                  variant="outline" 
-                                  className="text-xs cursor-pointer"
-                                  style={isValidHexColor(accountType.color) ? { borderColor: accountType.color, color: accountType.color } : undefined}
+                                <SocialPlatformIcon
+                                  type={accountType}
+                                  className="[&_svg]:h-5 [&_svg]:w-5"
                                   onClick={(e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     navigate(`/social-accounts?type=${accountType.id}`);
                                   }}
-                                >
-                                  {accountType.name}
-                                </Badge>
+                                />
                               )}
                               {isFollowingYou && (
                                 <Badge variant="secondary" className="text-xs">
@@ -1037,26 +1028,15 @@ export default function SocialAccountsList() {
             <h3 className="text-lg font-medium mb-2">
               {debouncedSearch || showFollowsYou || (selectedTypeId && selectedTypeId !== "all") ? "No accounts found" : "No social accounts"}
             </h3>
-            <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-              {debouncedSearch || showFollowsYou || (selectedTypeId && selectedTypeId !== "all")
-                ? "Try adjusting your search or filters"
-                : "Get started by adding your first social account"}
-            </p>
-            {!debouncedSearch && !showFollowsYou && (!selectedTypeId || selectedTypeId === "all") && (
-              <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-account-empty">
-                <Plus className="h-4 w-4" />
-                Add Account
-              </Button>
+            {(debouncedSearch || showFollowsYou || (selectedTypeId && selectedTypeId !== "all")) && (
+              <p className="text-sm text-muted-foreground mb-6 max-w-sm">Try adjusting your search or filters</p>
             )}
           </div>
         )}
       </div>
 
-      {isAddDialogOpen && (
-        <SocialAccountDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
-      )}
       {isStatsOpen && (
-        <AccountCreationTimelineDialog open={isStatsOpen} onOpenChange={setIsStatsOpen} />
+        <SocialAccountStatsDialog open={isStatsOpen} onOpenChange={setIsStatsOpen} />
       )}
 
       {accountToEdit && (

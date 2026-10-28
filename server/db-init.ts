@@ -1,11 +1,7 @@
 import { execSync } from "child_process";
-import { desc, isNotNull, sql } from "drizzle-orm";
-import { truePersonSearch } from "@shared/schema";
-import { db, pool } from "./db";
-import { tpsEntries, upsertTpsAddresses } from "./person-addresses";
+import { pool } from "./db";
 import { log } from "./vite";
 import { applyBigAccountRule, applyMeRule } from "./tracking";
-import { isExternalUrl } from "./ai/http";
 
 /**
  * Drops all tables in the database
@@ -244,64 +240,9 @@ async function addColumnIfNotExists(
 }
 
 /**
- * Instagram stories used to be configured by flat app_settings keys for a single
- * scraper. Turn those into the first story_importers row, attach the runs made
- * under them, and drop the keys.
- */
-async function migrateStorySettingsToImporter(): Promise<void> {
-  const keys = [
-    "stories_enabled",
-    "stories_api_url",
-    "stories_run_window",
-    "stories_run_every_days",
-    "stories_skip_day_probability",
-    "stories_next_run_at",
-  ];
-  const { rows } = await pool.query(`SELECT key, value FROM app_settings WHERE key = ANY($1)`, [keys]);
-  if (rows.length === 0) return;
-  const old = Object.fromEntries(rows.map((r: { key: string; value: string }) => [r.key, r.value])) as Record<string, string | undefined>;
-
-  const { rows: existing } = await pool.query(`SELECT 1 FROM story_importers LIMIT 1`);
-  if (existing.length === 0) {
-    const everyDays = Math.round(Number(old.stories_run_every_days));
-    const skip = Number(old.stories_skip_day_probability);
-    const nextRun = old.stories_next_run_at && !Number.isNaN(Date.parse(old.stories_next_run_at)) ? new Date(old.stories_next_run_at) : null;
-    const { rows: [importer] } = await pool.query(
-      `INSERT INTO story_importers (label, service_url, enabled, run_every_days, run_window, skip_day_probability, next_run_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [
-        "Importer 1",
-        old.stories_api_url ?? "",
-        old.stories_enabled === "true",
-        Number.isFinite(everyDays) && everyDays >= 1 ? Math.min(everyDays, 30) : 1,
-        /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(old.stories_run_window ?? "") ? old.stories_run_window : "19:30-22:30",
-        Number.isFinite(skip) && skip >= 0 && skip <= 1 ? skip : 0.08,
-        nextRun,
-      ],
-    );
-    await pool.query(`UPDATE story_scrape_runs SET importer_id = $1 WHERE importer_id IS NULL`, [importer.id]);
-    log("Migrated Instagram stories settings into story_importers");
-  }
-  await pool.query(`DELETE FROM app_settings WHERE key = ANY($1)`, [keys]);
-}
-
-/**
- * PRM-S3 is the only image backend now. Older installs let admins pick local
- * disk or an AWS bucket, first per user (users.image_storage_mode, plus
- * stories_image_storage for stories) and later via one app setting; all three
- * are dropped.
- */
-async function dropLegacyImageStorageMode(): Promise<void> {
-  if (await columnExists("users", "image_storage_mode")) {
-    await pool.query(`ALTER TABLE users DROP COLUMN image_storage_mode`);
-  }
-  await pool.query(`DELETE FROM app_settings WHERE key IN ('image_storage_mode', 'stories_image_storage')`);
-}
-
-/**
  * The retired `_hq` url columns (image-sizes-plan.md Phase 3), read raw so the
- * migrate_profile_image_tiers job and the orphan sweep work both before and after
- * dropLegacyHqImageColumns: empty once the columns are gone.
+ * migrate_profile_image_tiers job and the orphan sweep work whether or not the
+ * columns still exist: empty once they are gone.
  */
 export async function legacyHqImageUrls(): Promise<{
   accounts: { id: string; imageUrl: string | null; imageUrlHq: string }[];
@@ -330,123 +271,28 @@ export async function legacyProfileImagesPending(): Promise<{ hqAccounts: number
   return { hqAccounts: accounts.length, hqHistory: history.length, thumbs: rows[0].n };
 }
 
-/**
- * Drops image_url_hq / previous_image_url_hq once migrate_profile_image_tiers has
- * moved every value out of them and deleted the generated 150px thumbs. A separate,
- * later step so a half-run migration cannot strand data.
- */
-async function dropLegacyHqImageColumns(): Promise<void> {
-  if (
-    !(await columnExists("social_accounts", "image_url_hq")) &&
-    !(await columnExists("social_account_history", "previous_image_url_hq"))
-  ) {
-    return;
-  }
-  const { hqAccounts, hqHistory, thumbs } = await legacyProfileImagesPending();
-  if (hqAccounts || hqHistory || thumbs) {
-    log(`Profile image tier migration still pending (${hqAccounts} accounts, ${hqHistory} history rows, ${thumbs} thumbs); keeping image_url_hq / previous_image_url_hq`);
-    return;
-  }
+/** Creates the social_follows edge table on databases that predate it. */
+async function ensureSocialFollowsTable(): Promise<void> {
+  if (await tableExists("social_follows")) return;
   await pool.query(`
-    ALTER TABLE social_accounts DROP COLUMN IF EXISTS image_url_hq;
-    ALTER TABLE social_account_history DROP COLUMN IF EXISTS previous_image_url_hq;
+    CREATE TABLE social_follows (
+      follower_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+      followed_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+      detected_at TIMESTAMP NOT NULL DEFAULT NOW(),
+      source TEXT,
+      PRIMARY KEY (follower_id, followed_id)
+    )
   `);
-  log("Dropped image_url_hq / previous_image_url_hq: profile image tier migration complete");
+  await pool.query(`CREATE INDEX IF NOT EXISTS social_follows_followed_id_idx ON social_follows(followed_id)`);
+  log("Created social_follows table");
 }
 
 /**
- * Migrates follower/following storage to the social_follows edge table.
- * Creates social_follows, backfills it from the deprecated social_network_state
- * arrays (and legacy social_network_snapshots) if present, then drops them.
+ * The current-profile columns on social_accounts and the social_account_history
+ * journal (v4). The legacy social_profile_versions table is intentionally kept:
+ * code still reads it.
  */
-async function migrateToSocialFollows(): Promise<void> {
-  const followsExists = await tableExists("social_follows");
-  if (!followsExists) {
-    await pool.query(`
-      CREATE TABLE social_follows (
-        follower_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
-        followed_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
-        detected_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        source TEXT,
-        PRIMARY KEY (follower_id, followed_id)
-      )
-    `);
-    await pool.query(`CREATE INDEX IF NOT EXISTS social_follows_followed_id_idx ON social_follows(followed_id)`);
-    log("Created social_follows table");
-  }
-
-  // Backfill from social_network_state arrays, then drop the table.
-  // Entries in the arrays that don't reference an existing account are skipped.
-  const stateExists = await tableExists("social_network_state");
-  if (stateExists) {
-    log("Migrating social_network_state arrays to social_follows...");
-    await pool.query(`
-      INSERT INTO social_follows (follower_id, followed_id, source)
-      SELECT DISTINCT f.fid, sns.social_account_id, 'migration'
-      FROM social_network_state sns, unnest(sns.followers) AS f(fid)
-      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = f.fid)
-        AND f.fid <> sns.social_account_id
-      ON CONFLICT DO NOTHING
-    `);
-    await pool.query(`
-      INSERT INTO social_follows (follower_id, followed_id, source)
-      SELECT DISTINCT sns.social_account_id, g.gid, 'migration'
-      FROM social_network_state sns, unnest(sns.following) AS g(gid)
-      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = g.gid)
-        AND g.gid <> sns.social_account_id
-      ON CONFLICT DO NOTHING
-    `);
-    await pool.query(`DROP TABLE social_network_state`);
-    log("Migrated social_network_state to social_follows and dropped old table");
-  }
-
-  // Very old databases: latest snapshot per account from social_network_snapshots.
-  const snapshotsExists = await tableExists("social_network_snapshots");
-  if (snapshotsExists) {
-    log("Migrating social_network_snapshots to social_follows...");
-    await pool.query(`
-      INSERT INTO social_follows (follower_id, followed_id, source)
-      SELECT DISTINCT f.fid, s.social_account_id, 'migration'
-      FROM (
-        SELECT DISTINCT ON (social_account_id) social_account_id, followers
-        FROM social_network_snapshots ORDER BY social_account_id, captured_at DESC
-      ) s, unnest(COALESCE(s.followers, ARRAY[]::text[])) AS f(fid)
-      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = f.fid)
-        AND f.fid <> s.social_account_id
-      ON CONFLICT DO NOTHING
-    `);
-    await pool.query(`
-      INSERT INTO social_follows (follower_id, followed_id, source)
-      SELECT DISTINCT s.social_account_id, g.gid, 'migration'
-      FROM (
-        SELECT DISTINCT ON (social_account_id) social_account_id, following
-        FROM social_network_snapshots ORDER BY social_account_id, captured_at DESC
-      ) s, unnest(COALESCE(s.following, ARRAY[]::text[])) AS g(gid)
-      WHERE EXISTS (SELECT 1 FROM social_accounts sa WHERE sa.id = g.gid)
-        AND g.gid <> s.social_account_id
-      ON CONFLICT DO NOTHING
-    `);
-    await pool.query(`DROP TABLE social_network_snapshots`);
-    log("Migrated social_network_snapshots to social_follows and dropped old table");
-  }
-}
-
-/**
- * Flattens the current profile back onto social_accounts and builds the
- * social_account_history journal (v4).
- *
- * This replaces the older migrateSocialAccountsToHistorical(), which moved the
- * other direction — into social_profile_versions. That function had to be deleted
- * rather than merely left unused: it keyed off `social_profile_versions exists`
- * and `social_accounts.nickname exists`, so once this migration re-added nickname
- * it would have re-created the versions table and then DROPPED the flattened
- * columns on the very next boot.
- *
- * The two legacy tables are intentionally NOT dropped here. ~214 server references
- * and 21 client files still read them; the drop is a separate guarded step that
- * runs only once those readers are repointed (see dropLegacyProfileTables below).
- */
-async function migrateSocialAccountsToJournal(): Promise<void> {
+async function ensureSocialAccountHistorySchema(): Promise<void> {
   // 1. Current-profile columns on social_accounts.
   await addColumnIfNotExists("social_accounts", "last_scraped_at", "TIMESTAMP");
   await addColumnIfNotExists("social_accounts", "nickname", "TEXT");
@@ -498,7 +344,6 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
   // The kind index is partial. Neighbour rows are the bulk of this table, and the only
   // kind-filtered listing anyone browses is 'direct', so restricting the index means
   // the neighbour insert path maintains one index instead of two.
-  await pool.query(`DROP INDEX IF EXISTS social_account_history_kind_idx`);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS social_account_history_direct_idx
     ON social_account_history (social_account_id, detected_at DESC)
@@ -516,102 +361,9 @@ async function migrateSocialAccountsToJournal(): Promise<void> {
   await addColumnIfNotExists("social_accounts", "is_hq_image", "BOOLEAN NOT NULL DEFAULT FALSE");
   await addColumnIfNotExists("social_account_history", "image_change", "TEXT");
 
-  // 2b. Indexes the ingest path depends on.
-  //
-  // shared/schema.ts declares these, but nothing ever created them: the tables here
-  // are built with raw CREATE TABLE and drizzle-kit push has not run against this
-  // database. `social_accounts` was carrying nothing but its primary key, so every
-  // username lookup was a sequential scan over the whole table — which is what made
-  // the old per-row import (one lookup per CSV row) so expensive.
-  //
-  // Only the two the import and diff engine actually use are created here. The other
-  // declared-but-absent indexes on social_accounts (owner_uuid, group_id,
-  // type_id) affect other pages and are left alone deliberately.
-  // Username wants to be UNIQUE: shared/schema.ts declares it so, and the bulk import
-  // inserts by handle, so without the constraint two runs naming the same new account
-  // create two rows and split that node's graph.
-  //
-  // An earlier build of this migration created it non-unique, so a plain
-  // IF NOT EXISTS would leave that weaker index in place. Duplicates also make the
-  // unique build fail, and that must not take the boot down — report and move on.
-  const { rows: [{ isunique }] } = await pool.query(`
-    SELECT COALESCE(bool_or(indisunique), false) AS isunique
-    FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-    WHERE c.relname = 'social_accounts_username_idx'
-  `);
-  if (!isunique) {
-    const { rows: dupes } = await pool.query(`
-      SELECT username, COUNT(*)::int AS n FROM social_accounts
-      GROUP BY username HAVING COUNT(*) > 1 ORDER BY n DESC LIMIT 5
-    `);
-    if (dupes.length > 0) {
-      log(`WARNING: social_accounts.username is not unique — ${dupes.length}+ duplicate handles ` +
-          `(e.g. ${dupes.map(d => `${d.username} x${d.n}`).join(", ")}). ` +
-          `Merge them, then restart to build the unique index.`);
-      await pool.query(`CREATE INDEX IF NOT EXISTS social_accounts_username_idx ON social_accounts (username)`);
-    } else {
-      await pool.query(`DROP INDEX IF EXISTS social_accounts_username_idx`);
-      await pool.query(`CREATE UNIQUE INDEX social_accounts_username_idx ON social_accounts (username)`);
-      log("Built unique index on social_accounts.username");
-    }
-  }
-
-  // Deliberately dropped, not created: social_follows has
-  // PRIMARY KEY (follower_id, followed_id), whose index already serves every lookup on
-  // follower_id. A separate one only adds a write per edge to the hottest insert path
-  // in the app. social_follows_followed_id_idx, created with the table, is the one that
-  // earns its keep — it serves the followers half of the diff.
-  await pool.query(`DROP INDEX IF EXISTS social_follows_follower_id_idx`);
-
-  // Everything below backfills from the legacy tables, and is first-run-only: these
-  // are full-table statements that have no business running on every boot. The
-  // baseline count is the marker — it is written at the end of this function and
-  // never removed, so its presence means the backfill has already happened.
-  const { rows: [{ count: baselineCount }] } = await pool.query(
-    `SELECT COUNT(*)::int AS count FROM social_account_history WHERE entry_kind = 'baseline'`
-  );
-  if (baselineCount > 0) return;
-
-  const hasLegacyVersions = await tableExists("social_profile_versions");
-
-  // 3. Copy each account's current profile down onto the account row. Only fills
-  //    columns that are still empty, so re-running can never clobber newer writes.
-  if (hasLegacyVersions) {
-    await pool.query(`
-      UPDATE social_accounts sa SET
-        nickname           = COALESCE(sa.nickname, spv.nickname),
-        bio                = COALESCE(sa.bio, spv.bio),
-        account_url        = COALESCE(sa.account_url, spv.account_url),
-        image_url          = COALESCE(sa.image_url, spv.image_url),
-        external_image_url = COALESCE(sa.external_image_url, spv.external_image_url)
-      FROM social_profile_versions spv
-      WHERE spv.social_account_id = sa.id AND spv.is_current = true
-    `);
-    log("Flattened current profile versions onto social_accounts");
-  }
-
-  // 4. Seed the denormalized counts from the live edge table. After this point
-  //    applySnapshot() is the only writer of these two columns.
-  await pool.query(`
-    UPDATE social_accounts sa SET
-      followers_count = (SELECT COUNT(*) FROM social_follows WHERE followed_id = sa.id),
-      following_count = (SELECT COUNT(*) FROM social_follows WHERE follower_id = sa.id)
-  `);
-
-  // 5. One synthetic baseline per account, so the History tab is not empty on day one
-  //    and the next real scrape has something to diff against. Writing this last is
-  //    what makes the early return at the top of this section correct.
-  await pool.query(`
-    INSERT INTO social_account_history (
-      social_account_id, batch_id, entry_kind, change_source, capture_scope,
-      detected_at, followers_after, following_after
-    )
-    SELECT sa.id, gen_random_uuid(), 'baseline', 'migration', 'none',
-           COALESCE(sa.last_scraped_at, sa.created_at, NOW()),
-           sa.followers_count, sa.following_count
-    FROM social_accounts sa
-  `);
-  log("Seeded edge counts and wrote baseline history entries");
+  // Username is UNIQUE (shared/schema.ts): the bulk import inserts by handle, so without
+  // it two runs naming the same new account would create two rows.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS social_accounts_username_idx ON social_accounts (username)`);
 }
 
 /**
@@ -687,6 +439,7 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_id: "TEXT",
         vector_synced_at: "TIMESTAMP",
         is_simple: "BOOLEAN NOT NULL DEFAULT TRUE",
+        sent_notes: "JSONB NOT NULL DEFAULT '[]'::jsonb", // inbox-notes-plan.md
         // Tracking (account-tracking-plan.md §7)
         interest_level: "TEXT NOT NULL DEFAULT 'none'",
         interest_level_manual: "BOOLEAN NOT NULL DEFAULT FALSE",
@@ -717,6 +470,7 @@ async function validateAndSyncSchema(): Promise<void> {
         vector_synced_at: "TIMESTAMP",
         agent_mode: "BOOLEAN NOT NULL DEFAULT FALSE",
         context_entities: "JSONB NOT NULL DEFAULT '[]'::jsonb",
+        provider_id: "TEXT NOT NULL DEFAULT ''",
       },
       daily_notes: {
         vector_id: "TEXT",
@@ -784,6 +538,8 @@ async function validateAndSyncSchema(): Promise<void> {
         tracking_window: "TEXT NOT NULL DEFAULT '07:00-10:00'",
         tracking_max_jobs: "INTEGER NOT NULL DEFAULT 40",
         next_tracking_run_at: "TIMESTAMP",
+        unseen_only: "BOOLEAN NOT NULL DEFAULT FALSE",
+        run_now_unseen_only: "BOOLEAN NOT NULL DEFAULT FALSE",
       },
       tracking_jobs: {
         batch_id: "VARCHAR",
@@ -891,23 +647,10 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS osint_scans_person_tool_status_idx ON osint_scans (person_id, tool, status, completed_at);
       ALTER TABLE osint_scans ADD COLUMN IF NOT EXISTS person_id VARCHAR REFERENCES people(id) ON DELETE CASCADE;
       -- Live rows are unique per owner (account or person) + tool + target: a person has several targets.
-      DROP INDEX IF EXISTS osint_scans_live_uniq;
       CREATE UNIQUE INDEX IF NOT EXISTS osint_scans_live_owner_uniq ON osint_scans ((coalesce(social_account_id, person_id)), tool, target)
         WHERE status IN ('pending','running');
       CREATE UNIQUE INDEX IF NOT EXISTS osint_scans_live_demo_uniq ON osint_scans (tool, target)
         WHERE social_account_id IS NULL AND person_id IS NULL AND status IN ('pending','running');
-      -- osint_scan_queue (auto scans only) was superseded by osint_scans: carry its rows over once.
-      DO $$ BEGIN
-        IF to_regclass('osint_scan_queue') IS NOT NULL THEN
-          INSERT INTO osint_scans (id, tool, target, social_account_id, status, attempts, error, created_at, completed_at)
-          SELECT q.id, q.tool, sa.username, q.social_account_id,
-                 CASE WHEN q.status = 'running' THEN 'pending' ELSE q.status END,
-                 q.attempts, q.error, q.created_at, q.completed_at
-          FROM osint_scan_queue q JOIN social_accounts sa ON sa.id = q.social_account_id
-          ON CONFLICT DO NOTHING;
-          DROP TABLE osint_scan_queue;
-        END IF;
-      END $$;
       CREATE TABLE IF NOT EXISTS story_scrape_runs (
         id VARCHAR PRIMARY KEY,
         status TEXT NOT NULL,
@@ -919,7 +662,6 @@ async function validateAndSyncSchema(): Promise<void> {
         token_hash TEXT,
         token_expires_at TIMESTAMP
       );
-      ALTER TABLE story_scrape_runs DROP COLUMN IF EXISTS user_id;
       CREATE INDEX IF NOT EXISTS story_scrape_runs_started_idx ON story_scrape_runs (started_at);
       CREATE INDEX IF NOT EXISTS story_scrape_runs_token_idx ON story_scrape_runs (token_hash);
       CREATE TABLE IF NOT EXISTS story_importers (
@@ -932,6 +674,8 @@ async function validateAndSyncSchema(): Promise<void> {
         run_window TEXT NOT NULL DEFAULT '19:30-22:30',
         skip_day_probability REAL NOT NULL DEFAULT 0.08,
         download_videos BOOLEAN NOT NULL DEFAULT false,
+        unseen_only BOOLEAN NOT NULL DEFAULT false,
+        run_now_unseen_only BOOLEAN NOT NULL DEFAULT false,
         next_run_at TIMESTAMP,
         last_username TEXT,
         created_at TIMESTAMP NOT NULL DEFAULT now()
@@ -965,8 +709,6 @@ async function validateAndSyncSchema(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS social_post_comments_post_id_idx ON social_post_comments (post_id);
       CREATE INDEX IF NOT EXISTS social_post_comments_username_idx ON social_post_comments (username);
-      ALTER TABLE social_account_posts DROP COLUMN IF EXISTS comments;
-      ALTER TABLE social_accounts DROP COLUMN IF EXISTS historical_summary_ids;
       CREATE TABLE IF NOT EXISTS social_account_issues (
         id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         social_account_id VARCHAR NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
@@ -1028,28 +770,6 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS image_task_groups_social_run_id_idx ON image_task_groups (social_run_id);
       CREATE INDEX IF NOT EXISTS image_task_groups_created_at_idx ON image_task_groups (created_at);
       CREATE INDEX IF NOT EXISTS image_tasks_group_id_idx ON image_tasks (image_task_group_id);
-      -- Retroactively sync any completed image task groups
-      UPDATE image_task_groups g
-      SET status = 'completed', completed_at = COALESCE(g.completed_at, now())
-      WHERE g.status IN ('pending', 'in_progress')
-        AND NOT EXISTS (
-          SELECT 1 FROM image_tasks t
-          WHERE t.image_task_group_id = g.id
-            AND t.status IN ('pending', 'in_progress')
-        )
-        AND EXISTS (
-          SELECT 1 FROM image_tasks t
-          WHERE t.image_task_group_id = g.id
-            AND t.status = 'completed'
-        );
-      -- Accounts already broken before the table existed: their latest job says not_found.
-      -- No-op once an issue of that kind exists for the account, whatever its status.
-      INSERT INTO social_account_issues (social_account_id, kind, job_id, job_kind, first_seen_at, last_seen_at)
-      SELECT j.social_account_id, 'not_found', j.id, j.kind, COALESCE(j.finished_at, now()), COALESCE(j.finished_at, now())
-      FROM tracking_jobs j
-      WHERE j.status = 'skipped' AND j.result->>'reason' = 'not_found'
-        AND j.id = (SELECT id FROM tracking_jobs WHERE social_account_id = j.social_account_id AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1)
-        AND NOT EXISTS (SELECT 1 FROM social_account_issues i WHERE i.social_account_id = j.social_account_id AND i.kind = 'not_found');
     `);
 
     // Check and add missing columns
@@ -1072,19 +792,6 @@ async function validateAndSyncSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS social_account_posts_coauthor_account_ids_idx ON social_account_posts USING gin (coauthor_account_ids);
       CREATE INDEX IF NOT EXISTS tracking_jobs_batch_idx ON tracking_jobs (batch_id);
     `);
-    // Stories stored before instagram_pk was recorded for them: their photo kept the pk.
-    await pool.query(`
-      UPDATE social_account_posts sap SET instagram_pk = p.og_metadata->>'storyPk'
-      FROM photos p
-      WHERE p.prm_location = 'post:' || sap.id
-        AND sap.post_type = 'story'
-        AND sap.instagram_pk IS NULL
-        AND p.og_metadata->>'storyPk' IS NOT NULL
-    `);
-    await migrateStorySettingsToImporter();
-    await dropLegacyImageStorageMode();
-    // Facial intelligence and AI are always on now; their toggles' settings are retired.
-    await pool.query(`DELETE FROM app_settings WHERE key IN ('facial_intelligence_enabled', 'ai_enabled')`);
 
     // Tracking: the due-date index needs the column the loop above just added, and
     // the "me" rule (accounts on either side of a me account start at medium) is
@@ -1095,44 +802,8 @@ async function validateAndSyncSchema(): Promise<void> {
       -- Story items find their account by LOWER(username).
       CREATE INDEX IF NOT EXISTS social_accounts_username_lower_idx ON social_accounts (LOWER(username));
     `);
-    await migrateToScans();
     await applyMeRule();
     await applyBigAccountRule();
-
-    // Backfill image_uuid for notes and interactions from the photos table
-    // (safe to run repeatedly — only updates rows where image_uuid is still NULL)
-    const photosExists = await tableExists("photos");
-    if (photosExists) {
-      await pool.query(`
-        UPDATE notes n
-        SET image_uuid = p.id
-        FROM photos p
-        WHERE n.image_url IS NOT NULL
-          AND n.image_url <> ''
-          AND n.image_uuid IS NULL
-          AND p.location = n.image_url
-      `);
-      await pool.query(`
-        UPDATE interactions i
-        SET image_uuid = p.id
-        FROM photos p
-        WHERE i.image_url IS NOT NULL
-          AND i.image_url <> ''
-          AND i.image_uuid IS NULL
-          AND p.location = i.image_url
-      `);
-      log("Backfilled image_uuid for notes and interactions from photos table");
-
-      // Person pictures uploaded before uploads were tagged with their person: the
-      // current one is still traceable through people.image_url.
-      await pool.query(`
-        UPDATE photos ph
-        SET prm_location = 'person_image:' || p.id
-        FROM people p
-        WHERE ph.location = p.image_url
-          AND ph.prm_location = 'unknown'
-      `);
-    }
 
     // Ensure lineage table exists
     const lineageExists = await tableExists("lineage");
@@ -1218,6 +889,22 @@ async function validateAndSyncSchema(): Promise<void> {
       log("app_settings table created successfully");
     }
 
+    // AI provider connections (Ollama / OpenAI-compatible)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ai_providers (
+        id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        auth_type TEXT NOT NULL DEFAULT 'none',
+        username TEXT NOT NULL DEFAULT '',
+        secret TEXT NOT NULL DEFAULT '',
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        is_external BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+
     // Ensure ai_chats table exists
     const aiChatsExists = await tableExists("ai_chats");
     if (!aiChatsExists) {
@@ -1257,7 +944,7 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("sex_guess_queue table created successfully");
     }
-    // Ensure snooze_until column exists (added in later migration)
+    // Ensure snooze_until column exists
     await addColumnIfNotExists("sex_guess_queue", "snooze_until", "TIMESTAMP");
 
     // Ensure daily_notes tables exist
@@ -1313,12 +1000,9 @@ async function validateAndSyncSchema(): Promise<void> {
       log("daily_note_audit_logs table created successfully");
     }
 
-    // Migrate follower/following storage to the social_follows edge table (v3)
-    await migrateToSocialFollows();
-
-    // Flatten the current profile back onto social_accounts and build the history journal (v4)
-    await migrateSocialAccountsToJournal();
-    await dropLegacyHqImageColumns();
+    // Follower/following edges, and the social account history journal
+    await ensureSocialFollowsTable();
+    await ensureSocialAccountHistorySchema();
 
     // Create conversations table if it doesn't exist
     const conversationsExists = await tableExists("conversations");
@@ -1452,15 +1136,6 @@ async function validateAndSyncSchema(): Promise<void> {
     await addColumnIfNotExists("faces", "verify_personface_uuid", "VARCHAR");
     await addColumnIfNotExists("faces", "verify_score", "REAL");
     await pool.query(`CREATE INDEX IF NOT EXISTS faces_verify_personface_uuid_idx ON faces (verify_personface_uuid) WHERE verify_personface_uuid IS NOT NULL`);
-    // Two-tier auto-assign (face-clustering-plan.md §4), once: the old 0.55 default saved from the
-    // settings page becomes the new 0.75; any other stored value was a deliberate choice and stays.
-    await pool.query(`
-      WITH first_time AS (
-        INSERT INTO app_settings (key, value) VALUES ('face_two_tier_migrated', 'true') ON CONFLICT (key) DO NOTHING RETURNING 1
-      )
-      UPDATE app_settings SET value = '0.75'
-      WHERE key = 'face_auto_assign_min_score' AND value = '0.55' AND EXISTS (SELECT 1 FROM first_time)
-    `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS face_clusters (
         id VARCHAR PRIMARY KEY,
@@ -1523,31 +1198,6 @@ async function validateAndSyncSchema(): Promise<void> {
       `);
       log("face_pair_dismissals table created successfully");
     }
-    // Ensure unique constraint/index on face_pair_dismissals (group_a_uuid, group_b_uuid)
-    await pool.query(`
-      DO $$
-      BEGIN
-        IF EXISTS (
-          SELECT 1 FROM pg_indexes 
-          WHERE tablename = 'face_pair_dismissals' 
-            AND indexname = 'face_pair_dismissals_pair_idx'
-        ) THEN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_index i
-            JOIN pg_class c ON c.oid = i.indexrelid
-            WHERE c.relname = 'face_pair_dismissals_pair_idx' AND i.indisunique
-          ) THEN
-            DROP INDEX face_pair_dismissals_pair_idx;
-          END IF;
-        END IF;
-      END $$;
-    `);
-    // Dismissals used to be per user, so one pair can appear more than once; keep the oldest.
-    await pool.query(`
-      DELETE FROM face_pair_dismissals a USING face_pair_dismissals b
-      WHERE a.group_a_uuid = b.group_a_uuid AND a.group_b_uuid = b.group_b_uuid
-        AND (a.created_at, a.id) > (b.created_at, b.id)
-    `);
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS face_pair_dismissals_pair_idx ON face_pair_dismissals (group_a_uuid, group_b_uuid)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS face_pair_dismissals_group_a_idx ON face_pair_dismissals (group_a_uuid)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS face_pair_dismissals_group_b_idx ON face_pair_dismissals (group_b_uuid)`);
@@ -1590,6 +1240,30 @@ async function validateAndSyncSchema(): Promise<void> {
         )
       `);
       log("prm_face_api_keys table created successfully");
+    }
+
+    if (!(await tableExists("social_account_daily_stats"))) {
+      log("Creating social_account_daily_stats table...");
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS social_account_daily_stats (
+          day DATE PRIMARY KEY,
+          total_accounts INTEGER NOT NULL,
+          checked_accounts INTEGER,
+          posts_checked_accounts INTEGER,
+          created_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+      `);
+      // Totals for every past day can be rebuilt from created_at (accounts deleted since are missing);
+      // checked counts can't, so those stay null until the scheduler's first snapshot.
+      await pool.query(`
+        WITH created AS (SELECT created_at::date AS day, count(*) AS n FROM social_accounts GROUP BY 1),
+        days AS (SELECT d::date AS day FROM generate_series((SELECT min(day) FROM created), CURRENT_DATE - 1, interval '1 day') d)
+        INSERT INTO social_account_daily_stats (day, total_accounts)
+        SELECT days.day, (sum(coalesce(created.n, 0)) OVER (ORDER BY days.day))::int
+        FROM days LEFT JOIN created USING (day)
+        ON CONFLICT (day) DO NOTHING
+      `);
+      log("social_account_daily_stats table created successfully");
     }
 
     if (!(await tableExists("setup_state"))) {
@@ -1657,22 +1331,21 @@ async function validateAndSyncSchema(): Promise<void> {
           emails JSONB NOT NULL DEFAULT '[]'::jsonb,
           relatives JSONB NOT NULL DEFAULT '[]'::jsonb,
           associates JSONB NOT NULL DEFAULT '[]'::jsonb,
+          business_connections JSONB NOT NULL DEFAULT '[]'::jsonb,
+          jobs JSONB NOT NULL DEFAULT '[]'::jsonb,
+          colleges JSONB NOT NULL DEFAULT '[]'::jsonb,
           background_profile TEXT,
           created_at TIMESTAMP NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
       `);
       log("true_person_search table created successfully");
-    } else {
-      // Drop unique constraint on true_person_search.tps_id to allow multiple entries
-      try {
-        await pool.query(`
-          ALTER TABLE true_person_search DROP CONSTRAINT IF EXISTS true_person_search_tps_id_key;
-        `);
-      } catch (err) {
-        log(`Error dropping unique constraint on true_person_search.tps_id: ${err}`);
-      }
     }
+    await pool.query(`
+      ALTER TABLE true_person_search ADD COLUMN IF NOT EXISTS business_connections JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE true_person_search ADD COLUMN IF NOT EXISTS jobs JSONB NOT NULL DEFAULT '[]'::jsonb;
+      ALTER TABLE true_person_search ADD COLUMN IF NOT EXISTS colleges JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `);
 
     // Map demo geocode cache (map-page-plan.md §2)
     await pool.query(`
@@ -1737,105 +1410,6 @@ async function validateAndSyncSchema(): Promise<void> {
     log(`Schema validation error: ${error}`);
     // Don't throw - continue initialization
   }
-}
-
-/**
- * Ensures the sso_email column exists in the users table
- * Adds it retroactively if it doesn't exist
- */
-async function ensureSsoEmailColumn(): Promise<void> {
-  try {
-    // Check if the column exists
-    const result = await pool.query(`
-      SELECT EXISTS (
-        SELECT 1 
-        FROM information_schema.columns 
-        WHERE table_name = 'users' 
-        AND column_name = 'sso_email'
-      ) as column_exists
-    `);
-    
-    const columnExists = result.rows[0]?.column_exists || false;
-    
-    if (!columnExists) {
-      log("sso_email column not found. Adding it to users table...");
-      
-      // Add the column
-      await pool.query(`
-        ALTER TABLE users 
-        ADD COLUMN sso_email TEXT
-      `);
-      
-      log("sso_email column added successfully");
-    }
-  } catch (error) {
-    log(`Note: Could not check/add sso_email column: ${error}`);
-    // Don't throw - this is a non-critical migration
-  }
-}
-
-/**
- * One scan due date per account instead of one per kind (account-scan-plan.md
- * §1): the earliest old due date, so nobody jumps the queue or falls off it,
- * and the info override as the scan override. Queued schedule jobs of the old
- * kinds are re-derived as scans. Runs once: the old columns go at the end.
- */
-async function migrateToScans(): Promise<void> {
-  if (!(await columnExists("social_accounts", "info_due_at"))) return;
-  // Older databases never got some of the per-kind columns.
-  const dueCols: string[] = [];
-  for (const col of ["info_due_at", "posts_due_at", "highlights_due_at"]) {
-    if (await columnExists("social_accounts", col)) dueCols.push(col);
-  }
-  await pool.query(`
-    UPDATE social_accounts SET
-      scan_due_at = COALESCE(scan_due_at, LEAST(${dueCols.join(", ")})),
-      scan_every_days = COALESCE(scan_every_days, info_every_days);
-    DELETE FROM tracking_jobs WHERE origin = 'schedule' AND status = 'queued' AND kind <> 'scan';
-    DROP INDEX IF EXISTS social_accounts_info_due_idx;
-    DROP INDEX IF EXISTS social_accounts_posts_due_idx;
-    DROP INDEX IF EXISTS social_accounts_highlights_due_idx;
-    DROP INDEX IF EXISTS social_accounts_follows_due_idx;
-    ALTER TABLE social_accounts
-      DROP COLUMN IF EXISTS info_due_at, DROP COLUMN IF EXISTS follows_due_at,
-      DROP COLUMN IF EXISTS posts_due_at, DROP COLUMN IF EXISTS highlights_due_at,
-      DROP COLUMN IF EXISTS info_every_days, DROP COLUMN IF EXISTS follows_every_days,
-      DROP COLUMN IF EXISTS posts_every_days, DROP COLUMN IF EXISTS highlights_every_days;
-  `);
-}
-
-/**
- * Drops the multi-user ownership columns (Guides/pathway-to-single-user.md, Phase 3).
- * drizzle-kit push only runs on a fresh database, so existing ones are cleaned here.
- * Idempotent: every statement is IF EXISTS.
- */
-async function dropMultiUserColumns(): Promise<void> {
-  const drops: Array<[table: string, columns: string[]]> = [
-    ["people", ["user_id", "created_by_user_id", "visibility"]],
-    ["social_accounts", ["created_by_user_id", "visibility"]],
-    ["groups", ["created_by_user_id", "visibility"]],
-    ["interactions", ["created_by_user_id", "visibility"]],
-    ["conversations", ["created_by_user_id", "visibility"]],
-    ["insights", ["created_by_user_id", "visibility"]],
-    ["relationships", ["created_by_user_id"]],
-    ["photos", ["created_by_user_id"]],
-    ["notes", ["user_id"]],
-    ["daily_notes", ["user_id"]],
-    ["tasks", ["user_id"]],
-    ["image_tasks", ["user_id"]],
-    ["image_task_groups", ["user_id"]],
-    ["ai_chats", ["user_id"]],
-    ["face_pair_dismissals", ["user_id"]],
-    ["osint_scans", ["requested_by_user_id"]],
-    ["tracking_jobs", ["requested_by"]],
-    ["social_account_issues", ["resolved_by"]],
-    ["users", ["role"]],
-  ];
-  for (const [table, columns] of drops) {
-    if (!(await tableExists(table))) continue;
-    await pool.query(`ALTER TABLE ${table} ${columns.map((c) => `DROP COLUMN IF EXISTS ${c}`).join(", ")}`);
-  }
-  await pool.query(`DROP TABLE IF EXISTS user_settings`);
 }
 
 /**
@@ -1961,35 +1535,6 @@ export async function resetDatabase(
 }
 
 /**
- * people.address becomes each person's primary address row, then every person's
- * latest TPS record is merged in (address-history-plan.md §2.4). Runs once: the
- * column is dropped in the same transaction.
- */
-async function migrateAddressHistory(): Promise<void> {
-  if (!(await columnExists("people", "address"))) return;
-  try {
-    log("Migrating people.address and TPS records to person_addresses...");
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`
-        INSERT INTO person_addresses (person_id, address, is_primary, source)
-        SELECT id, trim(address), 1, 'legacy' FROM people WHERE trim(coalesce(address, '')) <> ''
-        ON CONFLICT DO NOTHING
-      `);
-      const latest = await tx.selectDistinctOn([truePersonSearch.personId]).from(truePersonSearch)
-        .where(isNotNull(truePersonSearch.personId))
-        .orderBy(truePersonSearch.personId, desc(truePersonSearch.importDate));
-      for (const record of latest) {
-        await upsertTpsAddresses(tx, record.personId!, tpsEntries(record), undefined);
-      }
-      await tx.execute(sql`ALTER TABLE people DROP COLUMN address`);
-    });
-    log("Address history migration complete");
-  } catch (error) {
-    log(`Address history migration failed: ${error}`);
-  }
-}
-
-/**
  * Initializes the database:
  * - If no users exist, drops all tables and recreates them
  * - Seeds default data (relationship types)
@@ -2022,325 +1567,14 @@ export async function initializeDatabase(): Promise<void> {
       // Validate schema and add missing columns if needed
       await validateAndSyncSchema();
 
-      // Single-user: drop the old ownership columns.
-      await dropMultiUserColumns();
-
       // Always seed defaults so new types (e.g. Ex-spouse) are picked up by existing databases.
       // Seed functions check for existing names before inserting, making this idempotent.
       await seedRelationshipTypes();
       await seedInteractionTypes();
       await seedSocialAccountTypes();
     }
-
-    // Migrate Partner relationship types to spouse role if needed
-    await migratePartnerToSpouse();
-
-    // Migrate family relationships to highly normalized tables
-    await migrateFamilyToNormalizedSchema();
-
-    // Migrate old pending-import creation types to PRM-chrome import
-    await migratePendingImportCreationType();
-
-    // Single Ollama connection → ai_providers table + (provider, model) settings
-    await migrateOllamaToAiProviders();
-
-    // people.address + TPS records → person_addresses
-    await migrateAddressHistory();
   } catch (error) {
     log(`Database initialization failed: ${error}`);
     throw error;
   }
-}
-
-/**
- * Migrates existing 'Partner' relationship types to 'Family' relationship type
- * with 'spouse' family relationship type role, then deletes the 'Partner' type.
- */
-async function migratePartnerToSpouse(): Promise<void> {
-  log("Migrating 'Partner' relationship type to family 'spouse'...");
-  try {
-    // 1. Get 'Partner' type ID
-    const partnerTypeRes = await pool.query(
-      "SELECT id FROM relationship_types WHERE LOWER(name) = 'partner'"
-    );
-    if (partnerTypeRes.rows.length === 0) {
-      log("'Partner' relationship type not found. Skipping migration.");
-      return;
-    }
-    const partnerTypeId = partnerTypeRes.rows[0].id;
-
-    // 2. Get or create 'Family' type ID
-    let familyTypeId;
-    const familyTypeRes = await pool.query(
-      "SELECT id FROM relationship_types WHERE LOWER(name) = 'family'"
-    );
-    if (familyTypeRes.rows.length === 0) {
-      log("'Family' relationship type not found. Creating it...");
-      const insertRes = await pool.query(
-        `INSERT INTO relationship_types (name, color, value, notes)
-         VALUES ('Family', '#ef4444', 90, 'Family member')
-         RETURNING id`
-      );
-      familyTypeId = insertRes.rows[0].id;
-    } else {
-      familyTypeId = familyTypeRes.rows[0].id;
-    }
-
-    // 3. Find all relationships of type 'Partner'
-    const partnerRels = await pool.query(
-      "SELECT id, from_person_id, to_person_id FROM relationships WHERE type_id = $1",
-      [partnerTypeId]
-    );
-
-    log(`Found ${partnerRels.rows.length} relationships of type 'Partner' to migrate.`);
-
-    for (const rel of partnerRels.rows) {
-      // Check if a family relationship already exists between these people
-      const existingFamilyRes = await pool.query(
-        `SELECT id FROM relationships 
-         WHERE from_person_id = $1 AND to_person_id = $2 
-           AND family_relationship_type IS NOT NULL`,
-        [rel.from_person_id, rel.to_person_id]
-      );
-
-      if (existingFamilyRes.rows.length > 0) {
-        // Duplicate relationship: delete the partner one
-        log(`Deleting duplicate partner relationship (ID: ${rel.id}) between ${rel.from_person_id} and ${rel.to_person_id}`);
-        await pool.query("DELETE FROM relationships WHERE id = $1", [rel.id]);
-      } else {
-        // Update to Family with familyRelationshipType = 'spouse'
-        log(`Migrating relationship (ID: ${rel.id}) to Family ('spouse')`);
-        await pool.query(
-          `UPDATE relationships 
-           SET type_id = $1, family_relationship_type = 'spouse' 
-           WHERE id = $2`,
-          [familyTypeId, rel.id]
-        );
-      }
-    }
-
-    // 4. Delete the 'Partner' relationship type
-    await pool.query("DELETE FROM relationship_types WHERE id = $1", [partnerTypeId]);
-    log("Removed 'Partner' relationship type from database.");
-
-  } catch (error) {
-    log(`Error migrating Partner to spouse: ${error}`);
-  }
-}
-
-/**
- * Migrates family relationships from the generic `relationships` table
- * to `lineage` and `partnerships` tables, then prunes them and deletes the 'Family' relationship type.
- */
-async function migrateFamilyToNormalizedSchema(): Promise<void> {
-  log("Checking for family migration to normalized schema...");
-  try {
-    // 1. Check if lineage and partnerships tables are empty
-    const lineageCountRes = await pool.query("SELECT COUNT(*) FROM lineage");
-    const partnershipsCountRes = await pool.query("SELECT COUNT(*) FROM partnerships");
-    const lineageCount = parseInt(lineageCountRes.rows[0].count, 10);
-    const partnershipsCount = parseInt(partnershipsCountRes.rows[0].count, 10);
-
-    if (lineageCount > 0 || partnershipsCount > 0) {
-      log("Lineage or partnerships tables already have data. Skipping migration.");
-      return;
-    }
-
-    // 2. Query all relationships that have a familyRelationshipType
-    const familyRelsRes = await pool.query(`
-      SELECT id, from_person_id, to_person_id, family_relationship_type, notes, created_at
-      FROM relationships
-      WHERE family_relationship_type IS NOT NULL
-    `);
-
-    log(`Found ${familyRelsRes.rows.length} family relationships to migrate.`);
-
-    let lineageMigrated = 0;
-    let partnershipsMigrated = 0;
-
-    for (const rel of familyRelsRes.rows) {
-      const { from_person_id, to_person_id, family_relationship_type, created_at } = rel;
-      const type = family_relationship_type.toLowerCase();
-
-      // Parent-child roles
-      const parentRoles = ["father", "mother", "parent", "stepfather", "stepmother", "stepparent"];
-      const childRoles = ["child", "son", "daughter", "stepchild", "stepson", "stepdaughter"];
-      // Partner roles
-      const partnerRoles = ["spouse", "partner", "ex_spouse", "ex_partner"];
-
-      if (parentRoles.includes(type) || childRoles.includes(type)) {
-        let parentId: string;
-        let childId: string;
-
-        if (parentRoles.includes(type)) {
-          parentId = to_person_id;
-          childId = from_person_id;
-        } else {
-          parentId = from_person_id;
-          childId = to_person_id;
-        }
-
-        const isStep = type.startsWith("step");
-        const lineageType = isStep ? "step" : "biological";
-
-        // Insert into lineage
-        await pool.query(`
-          INSERT INTO lineage (child_id, parent_id, lineage_type, created_at)
-          VALUES ($1, $2, $3, COALESCE($4, NOW()))
-          ON CONFLICT (child_id, parent_id) DO NOTHING
-        `, [childId, parentId, lineageType, created_at]);
-        lineageMigrated++;
-      } else if (partnerRoles.includes(type)) {
-        // Enforce canon order person1Id < person2Id
-        const person1Id = from_person_id < to_person_id ? from_person_id : to_person_id;
-        const person2Id = from_person_id < to_person_id ? to_person_id : from_person_id;
-
-        // Map status
-        let status = "partner";
-        if (type === "spouse") status = "married";
-        else if (type === "ex_spouse") status = "divorced";
-        else if (type === "partner") status = "partner";
-        else if (type === "ex_partner") status = "ex_partner";
-
-        // Insert into partnerships
-        await pool.query(`
-          INSERT INTO partnerships (person1_id, person2_id, status, created_at)
-          VALUES ($1, $2, $3, COALESCE($4, NOW()))
-          ON CONFLICT (person1_id, person2_id) DO NOTHING
-        `, [person1Id, person2Id, status, created_at]);
-        partnershipsMigrated++;
-      }
-    }
-
-    log(`Migrated ${lineageMigrated} lineage records and ${partnershipsMigrated} partnership records.`);
-
-    // 3. Prune these family rows from relationships
-    if (familyRelsRes.rows.length > 0) {
-      const pruneRes = await pool.query(`
-        DELETE FROM relationships
-        WHERE family_relationship_type IS NOT NULL
-      `);
-      log(`Pruned ${pruneRes.rowCount} family relationships from generic table.`);
-    }
-
-    // 4. Delete the "Family" type from relationship_types
-    await pool.query(`
-      DELETE FROM relationship_types
-      WHERE LOWER(name) = 'family'
-    `);
-    log("Deleted 'Family' relationship type from database.");
-
-  } catch (error) {
-    log(`Error migrating family relationships to normalized schema: ${error}`);
-  }
-}
-
-/**
- * Migrates existing 'pending-import-ingest' and 'pending-import-contact' creation types
- * on social_accounts to 'PRM-chrome import'.
- */
-async function migratePendingImportCreationType(): Promise<void> {
-  try {
-    if (await tableExists("social_accounts")) {
-      const res = await pool.query(`
-        UPDATE social_accounts
-        SET internal_account_creation_type = 'PRM-chrome import'
-        WHERE internal_account_creation_type IN ('pending-import-ingest', 'pending-import-contact')
-      `);
-      if (res.rowCount && res.rowCount > 0) {
-        log(`Updated ${res.rowCount} social account(s) creation type to 'PRM-chrome import'`);
-      }
-    }
-
-    if (await tableExists("social_profile_versions") && await tableExists("social_accounts")) {
-      const resUrl = await pool.query(`
-        UPDATE social_profile_versions spv
-        SET account_url = 'https://instagram.com/' || sa.username
-        FROM social_accounts sa
-        WHERE spv.social_account_id = sa.id
-          AND spv.is_current = true
-          AND sa.internal_account_creation_type = 'PRM-chrome import'
-          AND (spv.account_url IS NULL OR spv.account_url = '' OR spv.account_url NOT LIKE '%instagram.com%')
-      `);
-      if (resUrl.rowCount && resUrl.rowCount > 0) {
-        log(`Populated account_url for ${resUrl.rowCount} PRM-chrome imported profile version(s)`);
-      }
-    }
-  } catch (error) {
-    log(`Note: could not update pending import creation type or account url: ${error}`);
-  }
-}
-
-/**
- * Creates ai_providers and moves the legacy single-Ollama settings onto it:
- * the old connection becomes the default provider, every ollama_* model key is
- * renamed to its ai_* key with a sibling *_provider key, and existing chats are
- * pinned to that provider. Idempotent: the old keys are deleted once migrated.
- */
-async function migrateOllamaToAiProviders(): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ai_providers (
-      id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
-      name TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      base_url TEXT NOT NULL,
-      auth_type TEXT NOT NULL DEFAULT 'none',
-      username TEXT NOT NULL DEFAULT '',
-      secret TEXT NOT NULL DEFAULT '',
-      is_default BOOLEAN NOT NULL DEFAULT FALSE,
-      is_external BOOLEAN NOT NULL DEFAULT FALSE,
-      created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    )
-  `);
-  await addColumnIfNotExists("ai_chats", "provider_id", "TEXT NOT NULL DEFAULT ''");
-
-  const { rows } = await pool.query<{ key: string; value: string }>(
-    `SELECT key, value FROM app_settings WHERE key LIKE 'ollama\\_%'`,
-  );
-  if (rows.length === 0) return;
-  const old = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-  log("Migrating Ollama settings to AI providers...");
-
-  let providerId = "";
-  const apiUrl = (old.ollama_api_url ?? "").trim();
-  const { rows: existing } = await pool.query(`SELECT 1 FROM ai_providers LIMIT 1`);
-  if (apiUrl && existing.length === 0) {
-    const basic = old.ollama_auth_required === "true";
-    const { rows: [inserted] } = await pool.query<{ id: string }>(
-      `INSERT INTO ai_providers (name, kind, base_url, auth_type, username, secret, is_default, is_external)
-       VALUES ('Ollama', 'ollama', $1, $2, $3, $4, TRUE, $5) RETURNING id`,
-      [apiUrl, basic ? "basic" : "none", basic ? old.ollama_username ?? "" : "", basic ? old.ollama_password ?? "" : "", isExternalUrl(apiUrl)],
-    );
-    providerId = inserted.id;
-    await pool.query(`UPDATE ai_chats SET provider_id = $1 WHERE model <> '' AND provider_id = ''`, [providerId]);
-  }
-
-  const set = (key: string, value: string) =>
-    pool.query(`INSERT INTO app_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [key, value]);
-
-  const modelKeys: [string, string, string][] = [
-    ["ollama_model", "ai_vision_model", "ai_vision_provider"],
-    ["ollama_text_model", "ai_text_model", "ai_text_provider"],
-    ["ollama_events_model", "ai_events_model", "ai_events_provider"],
-    ["ollama_sex_guess_model", "ai_sex_guess_model", "ai_sex_guess_provider"],
-  ];
-  for (const [from, modelKey, providerKey] of modelKeys) {
-    if (!old[from]) continue;
-    await set(modelKey, old[from]);
-    await set(providerKey, providerId);
-  }
-  const vectorModel = await pool.query(`SELECT 1 FROM app_settings WHERE key = 'vector_embedding_model' AND value <> ''`);
-  if (vectorModel.rows.length > 0) await set("vector_embedding_provider", providerId);
-
-  const renames: [string, string][] = [
-    ["ollama_prompt", "ai_vision_prompt"],
-    ["ollama_events_prompt", "ai_events_prompt"],
-    ["ollama_auto_describe_images", "ai_auto_describe_images"],
-  ];
-  for (const [from, to] of renames) {
-    if (old[from] !== undefined) await set(to, old[from]);
-  }
-
-  await pool.query(`DELETE FROM app_settings WHERE key LIKE 'ollama\\_%'`);
-  log(`Migrated ${rows.length} Ollama setting(s)${providerId ? " and created the default \"Ollama\" provider" : ""}`);
 }

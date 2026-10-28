@@ -2,7 +2,7 @@ import { storage } from "./storage";
 import { db, pool } from "./db";
 import { legacyHqImageUrls, legacyProfileImagesPending } from "./db-init";
 import { syncEntityInBackground } from "./vector-universal";
-import { uploadImage, uploadMedia, listPrmS3ObjectKeys, copyPrmS3ObjectInPlace, isPrmS3VariantBaked, deleteImageFromPrmS3, getPrmS3Client } from "./prm-s3";
+import { uploadImage, uploadMedia, listPrmS3ObjectKeys, copyPrmS3ObjectInPlace, isPrmS3VariantBaked, deleteImageFromPrmS3, getPrmS3Client, getPrmS3BackupStatus, cancelPrmS3Backup } from "./prm-s3";
 import { CopyObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import AdmZip from "adm-zip";
 import { loadThreadFolder, type ParsedThread, type ParsedMessage, type ParsedMedia } from "./instagram-dm-import";
@@ -31,7 +31,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
-import { eq, and, or, isNotNull, inArray, like } from "drizzle-orm";
+import { eq, and, or, ne, isNotNull, inArray, like } from "drizzle-orm";
 import Papa from "papaparse";
 import { sseManager } from "./middleware/sse";
 
@@ -1228,6 +1228,9 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     chunks.push(`      ${xmlJsonTag("emails", tps.emails)}\n`);
     chunks.push(`      ${xmlJsonTag("relatives", tps.relatives)}\n`);
     chunks.push(`      ${xmlJsonTag("associates", tps.associates)}\n`);
+    chunks.push(`      ${xmlJsonTag("business_connections", tps.businessConnections)}\n`);
+    chunks.push(`      ${xmlJsonTag("jobs", tps.jobs)}\n`);
+    chunks.push(`      ${xmlJsonTag("colleges", tps.colleges)}\n`);
     chunks.push(`      ${xmlTag("background_profile", tps.backgroundProfile || "")}\n`);
     chunks.push(`      ${xmlTag("created_at", tps.createdAt)}\n`);
     chunks.push(`      ${xmlTag("updated_at", tps.updatedAt)}\n`);
@@ -1318,6 +1321,8 @@ async function generateExportXml(chunks: XmlFileWriter, options: {
     chunks.push(`      ${xmlTag("run_window", imp.runWindow)}\n`);
     chunks.push(`      ${xmlTag("skip_day_probability", imp.skipDayProbability)}\n`);
     chunks.push(`      ${xmlTag("download_videos", imp.downloadVideos)}\n`);
+    chunks.push(`      ${xmlTag("unseen_only", imp.unseenOnly)}\n`);
+    chunks.push(`      ${xmlTag("run_now_unseen_only", imp.runNowUnseenOnly)}\n`);
     chunks.push(`      ${xmlTag("next_run_at", imp.nextRunAt)}\n`);
     chunks.push(`      ${xmlTag("last_username", imp.lastUsername || "")}\n`);
     chunks.push(`      ${xmlTag("tracking_enabled", imp.trackingEnabled)}\n`);
@@ -2630,6 +2635,9 @@ export async function executeImportXml(
       emails: parseOptJson<any[]>(block, "emails", []),
       relatives: parseOptJson<any[]>(block, "relatives", []),
       associates: parseOptJson<any[]>(block, "associates", []),
+      businessConnections: parseOptJson<any[]>(block, "business_connections", []),
+      jobs: parseOptJson<any[]>(block, "jobs", []),
+      colleges: parseOptJson<any[]>(block, "colleges", []),
       backgroundProfile: parseOptStr(block, "background_profile"),
       createdAt: parseOptDate(block, "created_at") ?? new Date(),
       updatedAt: parseOptDate(block, "updated_at") ?? new Date(),
@@ -2826,6 +2834,8 @@ export async function executeImportXml(
       runWindow: parseOptStr(block, "run_window") || "daytime",
       skipDayProbability: parseOptFloat(block, "skip_day_probability") ?? 0.14,
       downloadVideos: parseOptBool(block, "download_videos", true),
+      unseenOnly: parseOptBool(block, "unseen_only", false),
+      runNowUnseenOnly: parseOptBool(block, "run_now_unseen_only", false),
       nextRunAt: parseOptDate(block, "next_run_at"),
       lastUsername: parseOptStr(block, "last_username"),
       trackingEnabled: parseOptBool(block, "tracking_enabled", false),
@@ -5926,11 +5936,79 @@ function schedulePoll() {
   }, POLL_INTERVAL_MS);
 }
 
+// ── PRM-S3 backups ──
+//
+// A prm_s3_backup task runs outside the serial queue: PRM-S3 does the work
+// and this only polls its status, so other tasks keep moving meanwhile. The
+// route starts the backup and inserts the task already in_progress, which
+// keeps getNextPendingTask from ever picking it up.
+
+const PRM_S3_BACKUP_POLL_MS = 2000;
+
+function formatGb(bytes: number): string {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
+/** Mirrors PRM-S3's progress for `backupname` onto the task until it ends. */
+export async function trackPrmS3BackupTask(taskId: string, backupname: string): Promise<void> {
+  let lastProgress = "";
+  let lastPct = 0;
+  for (;;) {
+    if (await isTaskCancelled(taskId)) {
+      await cancelPrmS3Backup().catch((err) => log(`[PrmS3Backup] cancel ${backupname}: ${err.message}`));
+      log(`[PrmS3Backup] ${backupname} cancelled by user`);
+      return;
+    }
+    let job;
+    try {
+      job = await getPrmS3BackupStatus();
+    } catch (err: any) {
+      // Transient: PRM-S3 may be briefly unreachable. Keep polling.
+      await storage.updateTaskProgress(taskId, lastPct, `PRM-S3 unreachable: ${err.message}`);
+      lastProgress = "";
+      await new Promise((r) => setTimeout(r, PRM_S3_BACKUP_POLL_MS * 5));
+      continue;
+    }
+    if (!job || job.backupname !== backupname) {
+      await storage.updateTaskStatus(taskId, "failed", "PRM-S3 is no longer tracking this backup (was it restarted?)");
+      return;
+    }
+    if (job.state === "completed") {
+      await storage.updateTaskStatus(taskId, "completed", JSON.stringify({ backupname, zipBytes: job.info?.zipBytes ?? job.doneBytes, files: job.doneFiles }));
+      log(`[PrmS3Backup] ${backupname} completed`);
+      return;
+    }
+    if (job.state !== "running") {
+      // Cancelled on the PRM-S3 side (e.g. via its API) or failed.
+      await storage.updateTaskStatus(taskId, job.state === "cancelled" ? "cancelled" : "failed", job.error || `Backup ${job.state}`);
+      return;
+    }
+    const progress = job.totalBytes ? Math.min(99, Math.floor((job.doneBytes / job.totalBytes) * 100)) : 0;
+    const message = job.totalFiles
+      ? `${job.doneFiles.toLocaleString()} / ${job.totalFiles.toLocaleString()} files · ${formatGb(job.doneBytes)} / ${formatGb(job.totalBytes)}`
+      : "Counting files...";
+    if (`${progress}|${message}` !== lastProgress) {
+      await storage.updateTaskProgress(taskId, progress, message);
+      lastProgress = `${progress}|${message}`;
+      lastPct = progress;
+    }
+    await new Promise((r) => setTimeout(r, PRM_S3_BACKUP_POLL_MS));
+  }
+}
+
 async function recoverStaleTasksOnStartup(): Promise<void> {
   try {
     await db.update(tasks)
       .set({ status: "failed", result: "Interrupted by server restart" })
-      .where(eq(tasks.status, "in_progress"));
+      .where(and(eq(tasks.status, "in_progress"), ne(tasks.type, "prm_s3_backup")));
+    // Backups run on PRM-S3, so a PRM restart doesn't stop them: pick the
+    // tracking back up (it fails the task if PRM-S3 has moved on).
+    const backups = await db.select().from(tasks)
+      .where(and(eq(tasks.status, "in_progress"), eq(tasks.type, "prm_s3_backup")));
+    for (const t of backups) {
+      trackPrmS3BackupTask(t.id, JSON.parse(t.payload).backupname)
+        .catch((err) => log(`[PrmS3Backup] tracking ${t.id} failed: ${err.message}`));
+    }
     await db.update(imageTasks)
       .set({ status: "failed", result: "Interrupted by server restart" })
       .where(eq(imageTasks.status, "in_progress"));

@@ -6,10 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Server, Loader2, ImageIcon, Images, TriangleAlert, Database, Trash2, Wrench, CheckCircle2, XCircle, Sparkles, Video, Files } from "lucide-react";
+import { Server, Loader2, ImageIcon, Images, TriangleAlert, Database, Trash2, Wrench, CheckCircle2, XCircle, Sparkles, Video, Files, Archive } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatBytes } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 
 type ImageStats = {
   images: number; // one per picture, however many sizes are baked
@@ -32,6 +34,19 @@ type PrmS3ConfigResponse = {
   hasSecretKey: boolean;
   accessKeyId: string;
   secretAccessKey: string;
+};
+
+type PrmS3Backup = {
+  backupname: string;
+  created: string;
+  zipBytes: number;
+  complete: boolean; // zip and config file both present
+};
+
+type PrmS3BackupsResponse = {
+  backups: PrmS3Backup[];
+  // Latest prm_s3_backup task; result is the error text when it failed.
+  task: { id: string; title: string; status: string; progress: number; progressMessage: string | null; result: string | null } | null;
 };
 
 type BackfillResult = {
@@ -122,6 +137,32 @@ export default function ImageStorageSettingsPage() {
     onError: (error: Error) => {
       setTestResult({ ok: false, message: error.message });
       toast({ title: "PRM-S3 Connection Failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const [backupName, setBackupName] = useState("");
+
+  const { data: backupsData, isLoading: backupsLoading, isError: backupsError } = useQuery<PrmS3BackupsResponse>({
+    queryKey: ["/api/image-storage/prm-s3/backups"],
+    // Poll while a backup is being written for its progress, and so it shows up when it lands.
+    refetchInterval: (query) => (query.state.data?.task?.status === "in_progress" ? 2000 : false),
+  });
+  const backupTask = backupsData?.task;
+  const backupRunning = backupTask?.status === "in_progress";
+
+  const createBackupMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/image-storage/prm-s3/backups", backupName.trim() ? { backupname: backupName.trim() } : {});
+      return res.json() as Promise<{ title: string }>;
+    },
+    onSuccess: (data) => {
+      setBackupName("");
+      queryClient.invalidateQueries({ queryKey: ["/api/image-storage/prm-s3/backups"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+      toast({ title: "Backup started", description: `Writing ${data.title}. Progress is in the task tracker.` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to start backup", description: error.message, variant: "destructive" });
     },
   });
 
@@ -263,7 +304,7 @@ export default function ImageStorageSettingsPage() {
               </p>
             </div>
 
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 md:col-span-2">
               <Label htmlFor="prm-delivery-mode">Delivery Mode</Label>
               <Select value={form.deliveryMode} onValueChange={(val) => setForm((prev) => ({ ...prev, deliveryMode: val as PrmS3DeliveryMode }))}>
                 <SelectTrigger id="prm-delivery-mode" className="w-[260px]" data-testid="select-prm-s3-delivery-mode">
@@ -311,7 +352,7 @@ export default function ImageStorageSettingsPage() {
               />
             </div>
 
-            <div className="space-y-1.5 md:col-span-2">
+            <div className="space-y-1.5">
               <Label htmlFor="prm-secret-key">Secret Access Key</Label>
               <Input
                 id="prm-secret-key"
@@ -373,27 +414,27 @@ export default function ImageStorageSettingsPage() {
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </div>
             ) : stats ? (
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div className="flex flex-col p-4 rounded-lg border bg-card">
+              <div className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(12rem,1fr))]">
+                <div className="flex flex-col min-w-0 p-4 rounded-lg border bg-card">
                   <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
                     <ImageIcon className="h-4 w-4 text-primary" />
                     Images
                   </div>
-                  <span className="text-3xl font-bold" data-testid="text-total-images">{stats.images.toLocaleString()}</span>
+                  <span className="text-3xl font-bold tabular-nums truncate" data-testid="text-total-images">{stats.images.toLocaleString()}</span>
                 </div>
-                <div className="flex flex-col p-4 rounded-lg border bg-card">
+                <div className="flex flex-col min-w-0 p-4 rounded-lg border bg-card">
                   <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
                     <Video className="h-4 w-4 text-primary" />
                     Videos
                   </div>
-                  <span className="text-3xl font-bold" data-testid="text-total-videos">{stats.videos.toLocaleString()}</span>
+                  <span className="text-3xl font-bold tabular-nums truncate" data-testid="text-total-videos">{stats.videos.toLocaleString()}</span>
                 </div>
-                <div className="flex flex-col p-4 rounded-lg border bg-card">
+                <div className="flex flex-col min-w-0 p-4 rounded-lg border bg-card">
                   <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
                     <Files className="h-4 w-4 text-primary" />
                     Total
                   </div>
-                  <span className="text-3xl font-bold" data-testid="text-total-files">{stats.total.toLocaleString()}</span>
+                  <span className="text-3xl font-bold tabular-nums truncate" data-testid="text-total-files">{stats.total.toLocaleString()}</span>
                   <span className="text-xs text-muted-foreground mt-1">
                     includes {stats.variants.toLocaleString()} size variants · {formatBytes(stats.objectBytes + stats.variantBytes)}
                   </span>
@@ -401,6 +442,91 @@ export default function ImageStorageSettingsPage() {
               </div>
             ) : (
               <p className="text-sm text-muted-foreground" data-testid="text-stats-unavailable">Stats unavailable — PRM-S3 could not be reached.</p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* PRM-S3 Backups */}
+        <Card data-testid="card-prm-s3-backups">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Archive className="h-5 w-5 text-primary" />
+              PRM-S3 Backups
+            </CardTitle>
+            <CardDescription>
+              Each backup is a zip of every bucket plus a copy of the PRM-S3 config, written to the server's backup
+              directory. Restore with <code className="text-xs">restore-backup.bat</code> / <code className="text-xs">.sh</code> while PRM-S3 is stopped.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Input
+                value={backupName}
+                onChange={(e) => setBackupName(e.target.value)}
+                placeholder="Name (optional, defaults to backup-<date>-<time>)"
+                maxLength={100}
+                disabled={backupRunning}
+                data-testid="input-backup-name"
+              />
+              <Button
+                onClick={() => createBackupMutation.mutate()}
+                disabled={backupRunning || createBackupMutation.isPending}
+                className="shrink-0"
+                data-testid="button-create-backup"
+              >
+                {backupRunning || createBackupMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Archive className="h-4 w-4 mr-2" />
+                )}
+                Create Backup
+              </Button>
+            </div>
+
+            {backupRunning && backupTask && (
+              <div className="p-3 rounded-md space-y-2 text-sm border bg-muted/50" data-testid="status-backup-running">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                  <span className="font-medium truncate">{backupTask.title}</span>
+                  <span className="ml-auto tabular-nums text-muted-foreground">{backupTask.progress}%</span>
+                </div>
+                <Progress value={backupTask.progress} className="h-2" />
+                {backupTask.progressMessage && <p className="text-xs text-muted-foreground">{backupTask.progressMessage}</p>}
+              </div>
+            )}
+            {(backupTask?.status === "failed" || backupTask?.status === "cancelled") && (
+              <div className="p-3 rounded-md flex items-center gap-2 text-sm bg-destructive/10 text-destructive border border-destructive/20" data-testid="status-backup-error">
+                <XCircle className="h-4 w-4 shrink-0" />
+                <span>
+                  Backup {backupTask.title} {backupTask.status}
+                  {backupTask.result ? `: ${backupTask.result}` : ""}
+                </span>
+              </div>
+            )}
+
+            {backupsLoading ? (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : backupsError ? (
+              <p className="text-sm text-muted-foreground" data-testid="text-backups-unavailable">Backups unavailable — PRM-S3 could not be reached.</p>
+            ) : !backupsData?.backups.length ? (
+              <p className="text-sm text-muted-foreground" data-testid="text-no-backups">No backups yet.</p>
+            ) : (
+              <div className="rounded-md border divide-y" data-testid="list-backups">
+                {backupsData.backups.map((b) => (
+                  <div key={b.backupname} className="flex items-center gap-3 px-3 py-2 text-sm" data-testid={`row-backup-${b.backupname}`}>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">{b.backupname}</div>
+                      <div className="text-xs text-muted-foreground">{new Date(b.created).toLocaleString()}</div>
+                    </div>
+                    <span className="text-xs text-muted-foreground tabular-nums shrink-0">{formatBytes(b.zipBytes)}</span>
+                    {!b.complete && (
+                      <Badge variant="destructive" className="shrink-0" title="The zip or config file is missing">Incomplete</Badge>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>

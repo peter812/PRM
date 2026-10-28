@@ -319,7 +319,7 @@ const EVERY_DAYS_OPTIONS = [
 ];
 
 type ImporterPatch = Partial<Pick<Importer,
-  "runEveryDays" | "runWindow" | "enabled" | "skipDayProbability" | "downloadVideos" | "trackingEnabled" | "trackingWindow" | "trackingMaxJobs">>;
+  "runEveryDays" | "runWindow" | "enabled" | "skipDayProbability" | "downloadVideos" | "unseenOnly" | "runNowUnseenOnly" | "trackingEnabled" | "trackingWindow" | "trackingMaxJobs">>;
 
 function useSaveImporter(id: string) {
   const { toast } = useToast();
@@ -404,22 +404,36 @@ function StorySchedule({ importer }: { importer: Importer }) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between rounded-md border px-3 py-2">
-        <div className="pr-4">
-          <Label htmlFor={`enabled-${importer.id}`} className="cursor-pointer">Enable auto run</Label>
-          <p className="text-xs text-muted-foreground">
-            {importer.enabled && nextRunAt
-              ? <>Next run: <strong data-testid={`text-importer-next-run-${importer.id}`}>{nextRunAt.toLocaleString()}</strong></>
-              : importer.enabled ? "Planning the next run…" : "Runs only when you press Run now."}
-          </p>
+      <div className="rounded-md border divide-y">
+        <div className="flex items-center justify-between px-3 py-2">
+          <div className="pr-4">
+            <Label htmlFor={`enabled-${importer.id}`} className="cursor-pointer">Enable auto run</Label>
+            <p className="text-xs text-muted-foreground">
+              {importer.enabled && nextRunAt
+                ? <>Next run: <strong data-testid={`text-importer-next-run-${importer.id}`}>{nextRunAt.toLocaleString()}</strong></>
+                : importer.enabled ? "Planning the next run…" : "Runs only when you press Run now."}
+            </p>
+          </div>
+          <Switch
+            id={`enabled-${importer.id}`}
+            checked={importer.enabled}
+           
+            onCheckedChange={(v) => save.mutate({ enabled: v })}
+            data-testid={`switch-importer-enabled-${importer.id}`}
+          />
         </div>
-        <Switch
-          id={`enabled-${importer.id}`}
-          checked={importer.enabled}
-         
-          onCheckedChange={(v) => save.mutate({ enabled: v })}
-          data-testid={`switch-importer-enabled-${importer.id}`}
-        />
+        <div className="flex items-center justify-between px-3 py-2">
+          <div className="pr-4">
+            <Label htmlFor={`unseen-${importer.id}`} className="cursor-pointer">Unseen only</Label>
+            <p className="text-xs text-muted-foreground">Auto runs skip stories this Instagram login has already viewed, on any device.</p>
+          </div>
+          <Switch
+            id={`unseen-${importer.id}`}
+            checked={importer.unseenOnly}
+            onCheckedChange={(v) => save.mutate({ unseenOnly: v })}
+            data-testid={`switch-importer-unseen-only-${importer.id}`}
+          />
+        </div>
       </div>
 
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -464,10 +478,21 @@ function StorySchedule({ importer }: { importer: Importer }) {
         </CollapsibleContent>
       </Collapsible>
 
-      <Button className="self-start" onClick={() => runNow.mutate()} disabled={runNow.isPending || !importer.serviceUrl} data-testid={`button-importer-run-now-${importer.id}`}>
-        {runNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-        {runNow.isPending ? "Checking Instagram login…" : "Run now"}
-      </Button>
+      <div className="flex flex-wrap items-center gap-4">
+        <Button onClick={() => runNow.mutate()} disabled={runNow.isPending || !importer.serviceUrl} data-testid={`button-importer-run-now-${importer.id}`}>
+          {runNow.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+          {runNow.isPending ? "Checking Instagram login…" : "Run now"}
+        </Button>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id={`run-now-unseen-${importer.id}`}
+            checked={importer.runNowUnseenOnly}
+            onCheckedChange={(v) => save.mutate({ runNowUnseenOnly: v === true })}
+            data-testid={`checkbox-importer-run-now-unseen-only-${importer.id}`}
+          />
+          <Label htmlFor={`run-now-unseen-${importer.id}`} className="cursor-pointer">Unseen only</Label>
+        </div>
+      </div>
     </>
   );
 }

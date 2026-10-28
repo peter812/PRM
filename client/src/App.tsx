@@ -12,12 +12,12 @@ import { toast } from "@/hooks/use-toast";
 import { GlobalSearch } from "@/components/global-search";
 import { MobileBottomNav } from "@/components/mobile-bottom-nav";
 import { UniversalAddButton } from "@/components/universal-add-button";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { useThemeSync } from "@/lib/theme";
 import { StatusDot } from "@/components/status-dot";
 import { TaskTrackerModal } from "@/components/task-tracker-modal";
 import { PrmS3StatusGuard } from "@/components/prm-s3-status";
 import { Button } from "@/components/ui/button";
-import { Settings, LogOut, Home, Loader2 } from "lucide-react";
+import { Settings, Home, Loader2 } from "lucide-react";
 import { SettingsSidebar } from "@/pages/settings-layout";
 
 const PersonDialog = lazy(() =>
@@ -88,6 +88,7 @@ const PendingSocialImportsPage = lazy(() => import("@/pages/pending-social-impor
 const SocialTrackingPage = lazy(() => import("@/pages/social-tracking"));
 const SocialAccountsIssuesPage = lazy(() => import("@/pages/social-accounts-issues"));
 const InstagramSummariesPage = lazy(() => import("@/pages/instagram-summaries"));
+const NotesPage = lazy(() => import("@/pages/notes"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 
@@ -226,7 +227,9 @@ function Router() {
         <ProtectedRoute path="/social-accounts/tracking" component={SocialTrackingPage} />
         <ProtectedRoute path="/social-accounts/issues" component={SocialAccountsIssuesPage} />
         <ProtectedRoute path="/social-accounts/summaries" component={InstagramSummariesPage} />
+        <ProtectedRoute path="/social-accounts/notes" component={NotesPage} />
         <ProtectedRoute path="/social-accounts/:uuid" component={SocialAccountProfile} />
+        <ProtectedRoute path="/social-accounts/:uuid/notes" component={SocialAccountProfile} />
         <ProtectedRoute path="/graph" component={Graph} />
         <ProtectedRoute path="/graph-3d" component={GraphRedirect} />
         <ProtectedRoute path="/social-graph-3d" component={SocialGraph3D} />
@@ -289,7 +292,7 @@ function useInitialRoutePrefetch(location: string) {
       let includeTps = false;
       try { includeTps = localStorage.getItem("people-list-view-mode") === "details"; } catch {}
       void queryClient.prefetchInfiniteQuery({
-        queryKey: ["/api/people/paginated", { sortBy: "relationship", includeTps }],
+        queryKey: ["/api/people/paginated", { sortBy: "relationship", includeTps, starredOnly: false }],
         queryFn: async ({ pageParam = 0 }) => {
           const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=relationship${includeTps ? "&includeTps=1" : ""}`, {
             credentials: "include",
@@ -338,7 +341,7 @@ function useInitialRoutePrefetch(location: string) {
 
 function AppLayout() {
   const [location, navigate] = useLocation();
-  const { user, logoutMutation } = useAuth();
+  const { user } = useAuth();
   const [isAddPersonDialogOpen, setIsAddPersonDialogOpen] = useState(false);
   const [isAddSocialAccountDialogOpen, setIsAddSocialAccountDialogOpen] = useState(false);
   const [isAddRelationshipDialogOpen, setIsAddRelationshipDialogOpen] = useState(false);
@@ -346,6 +349,7 @@ function AppLayout() {
   const [isAddInteractionDialogOpen, setIsAddInteractionDialogOpen] = useState(false);
   const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
   const [isAddPhotoDialogOpen, setIsAddPhotoDialogOpen] = useState(false);
+  useThemeSync();
   useInitialRoutePrefetch(location);
   useExportNotifier();
   useSignedMediaRefresh();
@@ -414,9 +418,6 @@ function AppLayout() {
                     onAddNote={() => setIsAddNoteDialogOpen(true)}
                     onAddPhoto={() => setIsAddPhotoDialogOpen(true)}
                   />
-                  <div className="hidden md:flex items-center">
-                    <ThemeToggle />
-                  </div>
                   <StatusDot />
                   <div className="hidden md:flex items-center gap-1">
                     {isSettingsPage ? (
@@ -440,23 +441,8 @@ function AppLayout() {
                         <Settings className="h-4 w-4" />
                       </Button>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => logoutMutation.mutate()}
-                      disabled={logoutMutation.isPending}
-                      data-testid="header-button-logout"
-                    >
-                      <LogOut className="h-4 w-4" />
-                    </Button>
                   </div>
                 </>
-              )}
-              {!user && (
-                <div className="hidden md:flex items-center">
-                  <ThemeToggle />
-                </div>
               )}
             </div>
           </header>

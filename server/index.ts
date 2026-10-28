@@ -17,6 +17,7 @@ import { startSummaryRunner } from "./summary-queue";
 import { startStoriesScheduler } from "./stories-scheduler";
 import { startFaceAutoAssignScheduler } from "./recognition";
 import { startFaceClusteringScheduler } from "./face-clusters";
+import { storage } from "./storage";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { etagMiddleware } from "./middleware/etag-cache";
 import { prmS3DirectMiddleware } from "./middleware/prm-s3-direct";
@@ -207,5 +208,10 @@ app.use(prmS3DirectMiddleware);
     startStoriesScheduler();
     startFaceAutoAssignScheduler();
     startFaceClusteringScheduler();
+    // Daily social account totals for the Stats dialog; a restart just refreshes today's row.
+    const snapshotAccountStats = () =>
+      storage.recordSocialAccountDailyStats().catch((err) => log(`[AccountStats] snapshot failed: ${err?.message ?? err}`));
+    void snapshotAccountStats();
+    setInterval(snapshotAccountStats, 24 * 60 * 60 * 1000);
   });
 })();

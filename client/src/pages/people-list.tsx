@@ -1,7 +1,7 @@
 import { formatPersonName, personInitials } from "@shared/person-name";
 import { useInfiniteQuery, useMutation } from "@tanstack/react-query";
-import { Plus, X, Star, Trophy, ArrowUpDown, ArrowUp, ArrowDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink, CircleCheck } from "lucide-react";
-import { useState, useRef, useEffect, useMemo, lazy, Suspense } from "react";
+import { X, Star, Trophy, ArrowUpDown, SlidersHorizontal, ArrowUp, ArrowDown, CalendarDays, LayoutList, LayoutGrid, Maximize2, Phone, Mail, ExternalLink, CircleCheck } from "lucide-react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -15,6 +15,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,10 +35,6 @@ import { withImageSize } from "@shared/image-size";
 import { useToast } from "@/hooks/use-toast";
 import { PersonContextMenu, PersonActionButton } from "@/components/person-context-menu";
 import { PersonTagsCell } from "@/components/person-tags-cell";
-
-const PersonDialog = lazy(() =>
-  import("@/components/person-dialog").then((m) => ({ default: m.PersonDialog }))
-);
 
 type SortOption = "relationship" | "added" | "starred" | "elo_high" | "elo_low";
 type ViewMode = "details" | "snug" | "expanded";
@@ -73,10 +72,10 @@ function TpsCheck({ person }: { person: PersonWithRelationship }) {
 }
 
 export default function PeopleList() {
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [personToDelete, setPersonToDelete] = useState<PersonWithRelationship | null>(null);
   const [starredStates, setStarredStates] = useState<Record<string, number>>({});
   const [sortBy, setSortBy] = useState<SortOption>("relationship");
+  const [starredOnly, setStarredOnly] = useState(false);
   const [tableSortColumn, setTableSortColumn] = useState<string | null>(null);
   const [tableSortDirection, setTableSortDirection] = useState<"asc" | "desc">("asc");
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -96,9 +95,9 @@ export default function PeopleList() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery<PersonWithRelationship[]>({
-    queryKey: ["/api/people/paginated", { sortBy, includeTps }],
+    queryKey: ["/api/people/paginated", { sortBy, includeTps, starredOnly }],
     queryFn: async ({ pageParam = 0 }) => {
-      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=${sortBy}${includeTps ? "&includeTps=1" : ""}`);
+      const response = await fetch(`/api/people/paginated?offset=${pageParam}&limit=30&sortBy=${sortBy}${includeTps ? "&includeTps=1" : ""}${starredOnly ? "&starred=true" : ""}`);
       if (!response.ok) throw new Error("Failed to fetch people");
       return response.json();
     },
@@ -235,30 +234,55 @@ export default function PeopleList() {
 
   return (
     <div className="flex flex-col h-full overflow-auto" ref={scrollContainerRef}>
-      <div className="border-b px-6 py-4 sticky top-0 z-10 backdrop-blur-xl bg-background/70">
+      <div className="border-b px-4 md:px-6 py-1.5 sticky top-0 z-10 backdrop-blur-xl bg-background/70">
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <h1 className="text-3xl font-semibold" data-testid="text-page-title">
+          <h1 className="text-xl md:text-2xl font-semibold" data-testid="text-page-title">
             People
           </h1>
           <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2">
-              <ArrowUpDown className="h-4 w-4 text-muted-foreground" />
-              <Select
-                value={sortBy}
-                onValueChange={(val) => setSortBy(val as SortOption)}
-              >
-                <SelectTrigger className="w-48" data-testid="select-sort-by">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SORT_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value} data-testid={`select-item-sort-${opt.value}`}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" data-testid="button-filters">
+                  <SlidersHorizontal className="h-4 w-4" />
+                  Filters
+                  {starredOnly && (
+                    <Badge variant="secondary" className="px-1.5 py-0 text-xs">1</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-64 space-y-4">
+                <div className="space-y-1.5">
+                  <Label>Sort by</Label>
+                  <Select
+                    value={sortBy}
+                    onValueChange={(val) => setSortBy(val as SortOption)}
+                  >
+                    <SelectTrigger data-testid="select-sort-by">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SORT_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value} data-testid={`select-item-sort-${opt.value}`}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="starred-only" className="cursor-pointer flex items-center gap-1.5">
+                    <Star className="h-4 w-4 text-yellow-500" />
+                    Starred only
+                  </Label>
+                  <Switch
+                    id="starred-only"
+                    checked={starredOnly}
+                    onCheckedChange={setStarredOnly}
+                    data-testid="switch-filter-starred"
+                  />
+                </div>
+              </PopoverContent>
+            </Popover>
             <div className="flex items-center gap-2">
               <Select
                 value={viewMode}
@@ -268,7 +292,7 @@ export default function PeopleList() {
                   localStorage.setItem("people-list-view-mode", mode);
                 }}
               >
-                <SelectTrigger className="w-40" data-testid="select-view-mode">
+                <SelectTrigger className="w-40 h-9" data-testid="select-view-mode">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -283,15 +307,11 @@ export default function PeopleList() {
                 </SelectContent>
               </Select>
             </div>
-            <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person">
-              <Plus className="h-4 w-4" />
-              Add Person
-            </Button>
           </div>
         </div>
       </div>
 
-      <div className={`flex-1 ${viewMode === "details" ? "px-0" : "px-3 md:px-6"} py-6`}>
+      <div className={`flex-1 ${viewMode === "details" ? "px-0" : "px-3 md:px-6"} pt-2 pb-3`}>
         {isLoading ? (
           <>
             {/* Details View Skeleton */}
@@ -912,22 +932,12 @@ export default function PeopleList() {
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <Users className="h-16 w-16 text-muted-foreground mb-4" />
             <h3 className="text-lg font-medium mb-2">No people found</h3>
-            <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-              Get started by adding your first contact
-            </p>
-            <Button onClick={() => setIsAddDialogOpen(true)} data-testid="button-add-person-empty">
-              <Plus className="h-4 w-4" />
-              Add Person
-            </Button>
+            {starredOnly && (
+              <p className="text-sm text-muted-foreground mb-6 max-w-sm">Try adjusting your filters</p>
+            )}
           </div>
         )}
       </div>
-
-      {isAddDialogOpen && (
-        <Suspense fallback={null}>
-          <PersonDialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen} />
-        </Suspense>
-      )}
 
       <AlertDialog open={!!personToDelete} onOpenChange={(open) => !open && setPersonToDelete(null)}>
         <AlertDialogContent>

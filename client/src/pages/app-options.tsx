@@ -9,42 +9,42 @@ import { Network, Chrome, Key, Search, Sparkles, Layers, Trash2, ChevronRight } 
 
 const APP_OPTIONS = [
   {
-    href: "/settings/social-graph",
+    href: "~/settings/social-graph",
     icon: Network,
     title: "Social Graph",
     description: "Set the default mode and account for the social account graph view",
     testId: "card-social-graph-link",
   },
   {
-    href: "/settings/chrome-extension",
+    href: "~/settings/chrome-extension",
     icon: Chrome,
     title: "Chrome Extension",
     description: "Configure the Chrome extension connection and sync settings",
     testId: "card-chrome-extension-link",
   },
   {
-    href: "/settings/api/settings",
+    href: "~/settings/api/settings",
     icon: Key,
     title: "API Settings",
     description: "Manage API keys and access credentials for external integrations",
     testId: "card-api-settings-link",
   },
   {
-    href: "/settings/search",
+    href: "~/settings/search",
     icon: Search,
     title: "Search Options",
     description: "Customize the order and visibility of global search results",
     testId: "card-search-options-link",
   },
   {
-    href: "/settings/data-types",
+    href: "~/settings/data-types",
     icon: Layers,
     title: "Data Types",
     description: "Manage relationship types, interaction types, and social account types",
     testId: "card-data-types-link",
   },
   {
-    href: "/settings/delete",
+    href: "~/settings/delete",
     icon: Trash2,
     title: "Delete Options",
     description: "Reset or clean up database records, media, and cached data",

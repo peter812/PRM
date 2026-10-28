@@ -83,16 +83,37 @@ export function markFaceIdentitiesDirty(): void {
   dirty = true;
 }
 
-export async function ensureCentroids(): Promise<void> {
+/**
+ * A rebuild loads every named face's embedding (seconds on a large library). `allowStale` (UI
+ * reads) answers from the current centroids and rebuilds in the background; only a first build
+ * is waited for.
+ */
+export async function ensureCentroids(opts?: { allowStale?: boolean }): Promise<void> {
   if (!dirty && centroids.size > 0 && Date.now() - builtAt <= CENTROID_MAX_AGE_MS) return;
-  if (rebuildPromise) return rebuildPromise;
-  rebuildPromise = rebuildCentroids().finally(() => {
-    rebuildPromise = null;
-  });
+  if (!rebuildPromise) {
+    rebuildPromise = rebuildCentroids().finally(() => {
+      rebuildPromise = null;
+    });
+  }
+  if (opts?.allowStale && centroids.size > 0) {
+    rebuildPromise.catch((err) => console.error("[FaceLookalikes] centroid rebuild failed:", err?.message ?? err));
+    return;
+  }
   return rebuildPromise;
 }
 
 async function rebuildCentroids(): Promise<void> {
+  // Cleared up front so a change made while this runs marks the cache dirty again.
+  dirty = false;
+  try {
+    await loadCentroids();
+  } catch (err) {
+    dirty = true;
+    throw err;
+  }
+}
+
+async function loadCentroids(): Promise<void> {
   const rawRows = await db.execute(sql`
     SELECT f.personface_uuid AS "personfaceUuid", f.embedding
     FROM faces f
@@ -131,7 +152,6 @@ async function rebuildCentroids(): Promise<void> {
     }
   }
   centroids = next;
-  dirty = false;
   builtAt = Date.now();
 }
 
@@ -141,12 +161,13 @@ export type LookAlike = { personfaceUuid: string; score: number };
  * Top 3 known identities (at or above the threshold) each of `faceUuids`
  * looks like, best first, excluding the face's own group and any identity the
  * user has said it isn't (face_pair_dismissals, written by ✕ / "Not them").
- * Rebuilds the centroid cache first when it's dirty or empty.
+ * Rebuilds the centroid cache first when it's dirty or empty; `allowStale`
+ * (UI reads) doesn't wait for that, see ensureCentroids.
  */
-export async function lookAlikesFor(faceUuids: string[], opts?: { minScore?: number }): Promise<Map<string, LookAlike[]>> {
+export async function lookAlikesFor(faceUuids: string[], opts?: { minScore?: number; allowStale?: boolean }): Promise<Map<string, LookAlike[]>> {
   const result = new Map<string, LookAlike[]>();
   if (!faceUuids.length) return result;
-  await ensureCentroids();
+  await ensureCentroids({ allowStale: opts?.allowStale });
   if (!centroids.size) return result;
 
   const threshold = opts?.minScore ?? (await getLookalikeMinScore());

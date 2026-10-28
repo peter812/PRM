@@ -9,9 +9,6 @@ import {
   Link2,
   Settings,
   LogOut,
-  Moon,
-  Sun,
-  Monitor,
   Mic,
   Map as MapIcon,
   Globe,
@@ -28,9 +25,9 @@ import {
   Inbox,
   Activity,
   AlertTriangle,
+  StickyNote,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Sidebar,
@@ -110,6 +107,11 @@ const menuItems = [
         url: "/social-accounts/summaries",
         icon: Sparkles,
       },
+      {
+        title: "Notes",
+        url: "/social-accounts/notes",
+        icon: StickyNote,
+      },
     ],
   },
   {
@@ -187,7 +189,6 @@ const menuItems = [
 export function AppSidebar() {
   const [location, navigate] = useLocation();
   const { user, logoutMutation } = useAuth();
-  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
 
   const { data: settings } = useQuery<Record<string, string>>({
     queryKey: ["/api/settings"],
@@ -210,42 +211,6 @@ export function AppSidebar() {
   });
 
   const displayedMenuItems = demosEnabled ? menuItems : menuItems.filter(item => item.title !== "Demos");
-
-  useEffect(() => {
-    const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | null;
-    const initialTheme = savedTheme || "system";
-    setTheme(initialTheme);
-    const effective = initialTheme === "system"
-      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-      : initialTheme;
-    document.documentElement.classList.toggle("dark", effective === "dark");
-    window.dispatchEvent(new Event("theme-change"));
-  }, []);
-
-  // Listen for system theme changes when in system mode
-  useEffect(() => {
-    if (theme !== "system") return;
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => {
-      const effective = mql.matches ? "dark" : "light";
-      document.documentElement.classList.toggle("dark", effective === "dark");
-      window.dispatchEvent(new Event("theme-change"));
-    };
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, [theme]);
-
-  const handleThemeToggle = () => {
-    const order: Array<"light" | "dark" | "system"> = ["light", "dark", "system"];
-    const next = order[(order.indexOf(theme) + 1) % order.length];
-    setTheme(next);
-    localStorage.setItem("theme", next);
-    const effective = next === "system"
-      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
-      : next;
-    document.documentElement.classList.toggle("dark", effective === "dark");
-    window.dispatchEvent(new Event("theme-change"));
-  };
 
   const handleSettingsClick = () => {
     navigate("/settings");
@@ -355,65 +320,37 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarSeparator className="md:hidden" />
-      <SidebarFooter className="md:hidden">
-        <SidebarMenu>
-          {user && (
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                onClick={handleSettingsClick}
-                isActive={location.startsWith("/settings")}
-                tooltip="Settings"
-                data-testid="sidebar-button-settings"
-              >
-                <Settings />
-                <span>Settings</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          )}
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              onClick={handleThemeToggle}
-              tooltip={
-                theme === "system"
-                  ? "System theme"
-                  : theme === "light"
-                  ? "Dark mode"
-                  : "Light mode"
-              }
-              data-testid="sidebar-button-theme"
-            >
-              {theme === "system" ? (
-                <Monitor />
-              ) : theme === "light" ? (
-                <Moon />
-              ) : (
-                <Sun />
-              )}
-              <span>
-                {theme === "system"
-                  ? "System theme"
-                  : theme === "light"
-                  ? "Dark mode"
-                  : "Light mode"}
-              </span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          {user && (
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                onClick={handleLogout}
-                disabled={logoutMutation.isPending}
-                tooltip="Log out"
-                data-testid="sidebar-button-logout"
-              >
-                <LogOut />
-                <span>Log out</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          )}
-        </SidebarMenu>
-      </SidebarFooter>
+      {user && (
+        <>
+          <SidebarSeparator />
+          <SidebarFooter>
+            <SidebarMenu>
+              <SidebarMenuItem className="md:hidden">
+                <SidebarMenuButton
+                  onClick={handleSettingsClick}
+                  isActive={location.startsWith("/settings")}
+                  tooltip="Settings"
+                  data-testid="sidebar-button-settings"
+                >
+                  <Settings />
+                  <span>Settings</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  onClick={handleLogout}
+                  disabled={logoutMutation.isPending}
+                  tooltip="Log out"
+                  data-testid="sidebar-button-logout"
+                >
+                  <LogOut />
+                  <span>Log out</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarFooter>
+        </>
+      )}
     </Sidebar>
   );
 }
